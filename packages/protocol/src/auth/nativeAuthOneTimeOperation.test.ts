@@ -23,6 +23,7 @@ const reset: NativeAuthOneTimeOperationV1 = {
     purpose: 'reset_plain_password',
     accountId: 'acc_1',
     credentialRevision: 3,
+    nativeIdentityId: 'identity_1',
     expectedNativeIdentity: 'alice@example.com',
 };
 
@@ -33,7 +34,7 @@ describe('native auth one-time operation codec', () => {
         expect(decodeNativeAuthOneTimeOperationV1(encodeNativeAuthOneTimeOperationV1(verify))).toEqual(verify);
         for (const consumer of [
             { kind: 'password_enrollment', accountId: 'acc_1' },
-            { kind: 'sign_in_email_change', accountId: 'acc_1', expectedNativeIdentity: 'old@example.com' },
+            { kind: 'sign_in_email_change', accountId: 'acc_1', nativeIdentityId: 'identity_1', expectedNativeIdentity: 'old@example.com' },
             { kind: 'team_invitation', invitationId: 'invite_1', tokenHash: 'a'.repeat(64), teamId: 'team_1' },
         ] as const) {
             const operation: NativeAuthOneTimeOperationV1 = {
@@ -50,6 +51,11 @@ describe('native auth one-time operation codec', () => {
         expect(decodeNativeAuthOneTimeOperationV1(JSON.stringify({ ...verify, normalizedEmail: 'Alice@Example.com' }))).toBeNull();
         expect(decodeNativeAuthOneTimeOperationV1(JSON.stringify({ ...reset, credentialRevision: 0 }))).toBeNull();
         expect(decodeNativeAuthOneTimeOperationV1('not json')).toBeNull();
+    });
+
+    it('rejects password reset authority without the native identity lifetime', () => {
+        const { nativeIdentityId: _nativeIdentityId, ...incomplete } = reset;
+        expect(decodeNativeAuthOneTimeOperationV1(JSON.stringify(incomplete))).toBeNull();
     });
 
     it('never lets one purpose read another purpose bearer address', () => {

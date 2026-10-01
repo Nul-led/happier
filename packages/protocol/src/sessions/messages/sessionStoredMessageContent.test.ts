@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { SessionStoredMessageContentSchema } from './sessionStoredMessageContent.js';
+import { SessionStoredMessageContentSchema, StrictSessionStoredMessageContentEnvelopeSchema } from './sessionStoredMessageContent.js';
 
 describe('SessionStoredMessageContentSchema', () => {
   it('accepts encrypted envelope', () => {
@@ -32,5 +32,10 @@ describe('SessionStoredMessageContentSchema', () => {
   it('rejects unknown envelope', () => {
     const parsed = SessionStoredMessageContentSchema.safeParse({ t: 'nope', c: 'x' });
     expect(parsed.success).toBe(false);
+  });
+  it('requires an explicit plain value at the strict envelope boundary', () => {
+    expect(StrictSessionStoredMessageContentEnvelopeSchema.safeParse({ t: 'plain' }).success).toBe(false);
+    expect(StrictSessionStoredMessageContentEnvelopeSchema.safeParse({ t: 'plain', v: undefined }).success).toBe(false);
+    expect(StrictSessionStoredMessageContentEnvelopeSchema.safeParse({ t: 'plain', v: null }).success).toBe(true);
   });
 });

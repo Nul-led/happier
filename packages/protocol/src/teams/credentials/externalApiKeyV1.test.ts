@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   TEAM_CREDENTIAL_EXTERNAL_API_KEY_PREFIX_V1,
   TeamCredentialExternalApiKeyCreateInputV1Schema,
+  TeamCredentialExternalApiKeyAuthorizeInputV1Schema,
+  TeamCredentialExternalApiKeyAuthorizeOutputV1Schema,
   TeamCredentialExternalApiKeyCreateOutputV1Schema,
   TeamCredentialExternalApiKeyListOutputV1Schema,
   TeamCredentialExternalApiKeyRevokeAllInputV1Schema,
@@ -26,6 +28,8 @@ const summary = {
   createdAt: '2026-09-07T10:00:00.000Z',
   lastUsedAt: null,
   expiresAt: null,
+  authenticationStatus: 'satisfied',
+  canAuthorize: true,
 };
 
 describe('Team credential external API key v1', () => {
@@ -61,6 +65,12 @@ describe('Team credential external API key v1', () => {
   });
 
   it('rejects secret material and unknown fields in public projections', () => {
+    expect(TeamCredentialExternalApiKeyAuthorizeInputV1Schema.parse({ resourceId: 'resource-1', keyId }))
+      .toEqual({ resourceId: 'resource-1', keyId });
+    expect(TeamCredentialExternalApiKeyAuthorizeInputV1Schema.safeParse({
+      resourceId: 'resource-1', keyId, authenticationEvidence: [{ kind: 'home_method', methodId: 'key_challenge' }],
+    }).success).toBe(false);
+    expect(TeamCredentialExternalApiKeyAuthorizeOutputV1Schema.safeParse({ key: summary, token: bearer }).success).toBe(false);
     expect(TeamCredentialExternalApiKeySummaryV1Schema.safeParse({ ...summary, secretDigest: 'digest' }).success).toBe(false);
     expect(TeamCredentialExternalApiKeySummaryV1Schema.safeParse({ ...summary, token: bearer }).success).toBe(false);
     expect(TeamCredentialExternalApiKeyCreateInputV1Schema.safeParse({

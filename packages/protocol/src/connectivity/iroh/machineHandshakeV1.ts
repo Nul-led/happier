@@ -28,6 +28,7 @@ export const IROH_MACHINE_HANDSHAKE_VERSION_V1 = 1 as const;
 export const IROH_MACHINE_CARRIER_FLOWS_V1 = [
   'finite_transfer',
   'workspace_sync',
+  'tcp_tunnel',
 ] as const;
 
 export const IrohMachineCarrierFlowV1Schema = z.enum(IROH_MACHINE_CARRIER_FLOWS_V1);
@@ -51,6 +52,9 @@ export const IrohMachineHandshakeV1Schema = z
   .discriminatedUnion('flow', [
     IrohMachineHandshakeCommonV1Schema.extend({
       flow: z.literal('finite_transfer'),
+    }).strict(),
+    IrohMachineHandshakeCommonV1Schema.extend({
+      flow: z.literal('tcp_tunnel'),
     }).strict(),
     IrohMachineHandshakeCommonV1Schema.extend({
       flow: z.literal('workspace_sync'),

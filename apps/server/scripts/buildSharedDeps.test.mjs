@@ -41,15 +41,12 @@ test('server source tests verify generated schemas without rebuilding shared run
   );
 });
 
-test('server ordinary typecheck checks source without entering the build lifecycle', () => {
+test('server ordinary typecheck prepares stale ignored Prisma clients before checking source', () => {
   assert.match(
     packageJson.scripts['typecheck:local'],
-    /scripts\/runTypeScriptCli\.mjs --noEmit$/,
+    /^yarn -s generate:providers && node \.\/scripts\/runTypeScriptCli\.mjs --noEmit$/,
   );
-  assert.doesNotMatch(
-    packageJson.scripts['typecheck:local'],
-    /\b(?:yarn|build|build:shared|generate:providers)\b/,
-  );
+  assert.doesNotMatch(packageJson.scripts['typecheck:local'], /\b(?:build|build:shared)\b/);
 });
 
 test('server ordinary integration entries route through hstack without runtime preparation', () => {

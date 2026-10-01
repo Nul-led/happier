@@ -14,6 +14,7 @@ import {
   PeerApplicationEncryptionAuthorityBindingV1Schema,
   PeerApplicationEncryptionStartResponseV1Schema,
 } from '../machines/peer/mediation/peerApplicationEncryptionV1.js';
+import { DevelopmentPluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
 export const LocalNeuralExecutionSchema = z.enum(['auto', 'device', 'daemon']);
 export type LocalNeuralExecution = z.infer<typeof LocalNeuralExecutionSchema>;
@@ -100,7 +101,7 @@ export const DaemonVoiceModelPackArtifactBindingV1Schema = z.discriminatedUnion(
   }).strict(),
   z.object({
     kind: z.literal('materialization'),
-    immutableGenerationId: z.string().min(1).max(512).refine((value) => value.trim() === value),
+    sourceCustody: DevelopmentPluginSourceCustodyV1Schema,
   }).strict(),
 ]);
 export type DaemonVoiceModelPackArtifactBindingV1 = z.infer<typeof DaemonVoiceModelPackArtifactBindingV1Schema>;

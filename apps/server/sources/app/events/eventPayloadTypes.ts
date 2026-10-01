@@ -1,4 +1,5 @@
 import { Socket } from "socket.io";
+import type { SessionPersonalEventEphemeralV1 } from "@happier-dev/protocol/updates";
 import type { LinkedProvider } from "@/app/auth/providers/linkedProviders";
 import type {
     MachineKind,
@@ -133,6 +134,7 @@ export type UpdateEvent = {
     pendingRequestObservedAt?: number | null | undefined;
     latestReadyEventSeq?: number | null | undefined;
     latestReadyEventAt?: number | null | undefined;
+    latestReadyEventLocalId?: string | undefined;
     latestTurnId?: string | null | undefined;
     latestTurnStatus?: PrimaryTurnStatusV1 | null | undefined;
     latestTurnStatusObservedAt?: number | null | undefined;
@@ -340,7 +342,7 @@ export type UpdateEvent = {
 
 // === EPHEMERAL EVENT TYPES (Transient) ===
 
-export type EphemeralEvent = {
+export type EphemeralEvent = SessionPersonalEventEphemeralV1 | {
     type: 'activity';
     id: string;
     active: boolean;

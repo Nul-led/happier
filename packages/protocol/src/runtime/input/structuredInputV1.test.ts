@@ -7,6 +7,7 @@ import {
   HappierStructuredInputV1Schema,
   readSessionAttachmentEnvelopeRecordsV1,
   sanitizeHappierStructuredInputV1,
+  sanitizeSessionStructuredInputMeta,
 } from './structuredInputV1.js';
 import { MAX_COMPOSER_ATTACHMENT_INSTANCES_V1 } from './composerAttachmentV1.js';
 
@@ -18,6 +19,48 @@ const validComposerAttachment = {
   value: { issueId: '42' },
   presentation: { label: 'Issue 42', typeLabel: 'Issue' },
 } as const;
+
+describe('browser context Message admission', () => {
+  const context = {
+    v: 1, kind: 'browserPageReference', contextId: 'page-1', sourceViewId: 'view-1',
+    sourceAdapterKind: 'localPreview', fidelity: 'previewProxy', capturedAtMs: 100,
+    navigationGeneration: 2, lifecycleState: 'available', redactionLevel: 'metadataOnly',
+    url: 'https://example.test/page', title: 'Page',
+  } as const;
+  const attachment = {
+    v: 1, attachmentId: 'attachment-1', contextId: context.contextId, sourceViewId: context.sourceViewId,
+    capturedNavigationGeneration: 2, currentNavigationGeneration: 2, state: 'available',
+    requiresReconfirmBeforeSend: false,
+  } as const;
+  const payload = { contexts: [context], attachments: [attachment] };
+
+  it('consumes UI browser metadata once into the canonical structured envelope', () => {
+    const admitted = sanitizeSessionStructuredInputMeta({
+      happierBrowserContext: { kind: 'browser_context.v1', payload },
+    });
+    expect(admitted).toEqual({ happierStructuredInputV1: { v: 1, browserContext: payload } });
+    expect(sanitizeSessionStructuredInputMeta(admitted)).toEqual(admitted);
+  });
+
+  it('refuses stale, uncorrelated, blocked or inline-byte browser data instead of silently losing it', () => {
+    for (const invalidPayload of [
+      { ...payload, attachments: [{ ...attachment, currentNavigationGeneration: 3 }] },
+      { ...payload, attachments: [{ ...attachment, contextId: 'another-page' }] },
+      { ...payload, contexts: [{ ...context, redactionLevel: 'blocked' }] },
+      { ...payload, contexts: [{ ...context, redactionLevel: 'none' }] },
+      { contexts: [{ ...context, redactionLevel: 'none' }, { ...context, contextId: 'group-member' }],
+        attachments: [{ ...attachment, structuredBlock: { v: 1, kind: 'browser.annotation.v1',
+          annotationId: 'annotation-1', sourceViewId: context.sourceViewId, contextIds: ['group-member'],
+          elements: [], regions: [], strokes: [], screenshot: { media: [{ mediaId: 'shot', mediaKind: 'image', width: 1, height: 1, sizeBytes: 1 }] },
+        } }] },
+      { ...payload, contexts: [{ ...context, screenshotDataUri: 'data:image/png;base64,secret' }] },
+    ]) {
+      expect(() => sanitizeSessionStructuredInputMeta({
+        happierBrowserContext: { kind: 'browser_context.v1', payload: invalidPayload },
+      })).toThrow();
+    }
+  });
+});
 
 function canonicalJsonByteLength(value: unknown): number {
   return new TextEncoder().encode(createCanonicalJsonSigningInput(value)).byteLength;

@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { ScmRemotePolicyFields, validateScmRemoteLeaseAuthority, type ScmRemotePolicy } from './remotePolicy.js';
 
 export type ScmRemoteRequestNormalizationResult =
-  | { ok: true; request: { remote: string | undefined; branch: string | undefined } }
+  | { ok: true; request: ScmRemotePolicy & { remote: string | undefined; branch: string | undefined } }
   | { ok: false; error: string };
 
 export type ScmRemoteNameNormalizationResult =
@@ -201,7 +202,7 @@ export const ScmOptionalBranchSourceRefSchema = z.preprocess((value) => {
 export type ScmOptionalBranchSourceRef = z.infer<typeof ScmOptionalBranchSourceRefSchema>;
 
 export function normalizeScmRemoteRequest(
-  request: Readonly<{ remote?: string; branch?: string }>
+  request: Readonly<ScmRemotePolicy & { remote?: string; branch?: string }>
 ): ScmRemoteRequestNormalizationResult {
   const remote = normalizeRemoteRefValue(request.remote, 'Remote name', {
     allowRemoteNameSlash: true,
@@ -213,11 +214,13 @@ export function normalizeScmRemoteRequest(
   if (!branch.ok) {
     return branch;
   }
+  const policy = z.object(ScmRemotePolicyFields).safeParse(request);
+  if (!policy.success) return { ok: false, error: 'Invalid remote policy' };
+  const normalized = { ...policy.data, remote: remote.value, branch: branch.value };
+  const leaseError = validateScmRemoteLeaseAuthority(normalized);
+  if (leaseError) return { ok: false, error: leaseError };
   return {
     ok: true,
-    request: {
-      remote: remote.value,
-      branch: branch.value,
-    },
+    request: normalized,
   };
 }

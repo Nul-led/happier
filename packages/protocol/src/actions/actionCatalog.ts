@@ -321,7 +321,7 @@ export function searchSerializedActionSpecs(
   return ranked;
 }
 
-function actionDefinitionToSummary(definition: ActionDefinitionV1): ActionDefinitionSummaryV1 {
+function actionDefinitionToSummary(definition: ActionDefinitionSummaryV1): ActionDefinitionSummaryV1 {
   return {
     id: definition.id,
     title: definition.title,
@@ -424,7 +424,7 @@ export function searchSerializedActionSpecsForSurface(params: Readonly<{
   query?: string | null;
   limit?: number | null;
   isActionEnabled?: (id: ActionId) => boolean;
-  additionalDefinitions?: readonly ActionDefinitionV1[];
+  additionalDefinitions?: readonly ActionDefinitionSummaryV1[];
 }>): readonly SerializedActionSpec[] {
   const hostDefinitions = listActionSpecsForCatalogSurface(params)
     .map((spec) => getHostActionSearchSummary(spec, params));

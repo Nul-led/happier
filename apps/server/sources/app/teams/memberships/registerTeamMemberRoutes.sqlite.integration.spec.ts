@@ -25,7 +25,6 @@ describe("Team member and Group routes (SQLite integration)", () => {
             tempDirPrefix: "happier-team-member-routes-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },

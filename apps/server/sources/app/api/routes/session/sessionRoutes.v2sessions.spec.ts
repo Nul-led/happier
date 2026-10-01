@@ -73,7 +73,7 @@ describe("session listing response contracts", () => {
         const config = getRouteEntry(route.app, "GET", "/v1/sessions").opts.config;
 
         expect(config?.allowApiToken).toBeUndefined();
-        expect(config?.ephemeralSessionRunnerBinding).toBeUndefined();
+        expect(config?.restrictedCredentialBinding).toBeUndefined();
     });
 
     it.each([

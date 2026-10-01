@@ -65,7 +65,12 @@ vi.mock("@/storage/db", async () => {
     // Real field references are query descriptors; reading them opens no database connection.
     const client = new PrismaClient();
     return {
-        db: { session: { findUnique: testState.readAccessSession, fields: client.session.fields } },
+        db: {
+            session: { findUnique: testState.readAccessSession, fields: client.session.fields },
+            // No stored Home rows: feature bits come from the (stubbed) deployment env.
+            homeSettings: { findUnique: async () => null },
+            homeGovernancePolicy: { findUnique: async () => null },
+        },
     };
 });
 

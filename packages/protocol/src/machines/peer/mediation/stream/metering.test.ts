@@ -4,7 +4,7 @@ import {
   applyMachineLiveStreamDropPolicy,
   createMachineLiveStreamMeter,
 } from './metering';
-import type { MachineLiveStreamFrameV1 } from './v1';
+import type { MachineLiveStreamFrameV1, MachineLiveStreamWireFrameV1 } from './v1';
 
 function frame(
   sequence: number,
@@ -25,6 +25,24 @@ function frame(
 }
 
 describe('machine live-stream metering', () => {
+  it('bounds plain and encrypted relay payload bytes without reading decoded content', () => {
+    for (const payload of [{ t: 'plain', v: 'AQID' }, { t: 'encrypted', c: 'AQID' }] as const) {
+      const { payloadBase64: _decoded, ...header } = frame(1, 'image_keyframe', 3);
+      const wireFrame: MachineLiveStreamWireFrameV1 = { ...header, payload };
+      const result = applyMachineLiveStreamDropPolicy({ frames: [wireFrame], maxWindowFrames: 1, maxWindowBytes: 2 });
+      expect(result.frames).toEqual([]);
+      expect(result.bytesDropped).toBe(3);
+      expect(result.requiresKeyframeResync).toBe(true);
+    }
+  });
+
+  it('meters source-driven capture without imposing implicit caps', () => {
+    const meter = createMachineLiveStreamMeter({ caps: {}, startedAtMs: 0 });
+    expect(meter.recordFrame(frame(1, 'image_keyframe', 3_000_000), 2_000_000)).toMatchObject({ ok: true });
+    for (let sequence = 2; sequence <= 40; sequence += 1) {
+      expect(meter.recordFrame(frame(sequence, 'image_keyframe', 10), 2_000_000)).toMatchObject({ ok: true });
+    }
+  });
   it('enforces frame size, FPS, duration, and total byte caps', () => {
     const meter = createMachineLiveStreamMeter({
       caps: {
@@ -97,6 +115,17 @@ describe('machine live-stream metering', () => {
     expect(result.requiresKeyframeResync).toBe(false);
   });
 
+  it('discards an incomplete delta chain and requires a fresh keyframe', () => {
+    const result = applyMachineLiveStreamDropPolicy({
+      frames: [frame(1, 'image_keyframe', 3), frame(2, 'image_delta', 3), frame(3, 'image_delta', 3)],
+      maxWindowFrames: 2,
+      maxWindowBytes: 6,
+    });
+    expect(result.frames).toEqual([]);
+    expect(result.bytesDropped).toBe(9);
+    expect(result.requiresKeyframeResync).toBe(true);
+  });
+
   it('requires keyframe resync when pressure leaves no keyframe', () => {
     const result = applyMachineLiveStreamDropPolicy({
       frames: [
@@ -107,7 +136,7 @@ describe('machine live-stream metering', () => {
       maxWindowBytes: 4,
     });
 
-    expect(result.frames).toEqual([frame(3, 'image_delta', 4)]);
+    expect(result.frames).toEqual([]);
     expect(result.requiresKeyframeResync).toBe(true);
   });
 });

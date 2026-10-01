@@ -47,7 +47,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'happier.channels',
         contributionLocalId: 'binding/create-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -68,7 +70,7 @@ describe('Automation conversation admission HTTP contract', () => {
 
     expect(paths[actionId]).toBe('/v1/automations/conversation/targets/list');
     expect(requests[actionId]!.parse(request)).toEqual(request);
-    const { immutableGenerationId: _immutableGenerationId, ...unstampedCaller } = request.caller;
+    const { occurrenceId: _occurrenceId, ...unstampedCaller } = request.caller;
     expect(requests[actionId]!.safeParse({
       ...request,
       caller: unstampedCaller,
@@ -90,6 +92,13 @@ describe('Automation conversation admission HTTP contract', () => {
       items: [listedItem],
       nextCursor: null,
     })).toEqual({ items: [listedItem], nextCursor: null });
+    const workflowItem = {
+      ...listedItem,
+      execution: { targetType: null, enabled: true },
+    };
+    expect(outputs[actionId]!.parse({ items: [workflowItem], nextCursor: null })).toEqual({
+      items: [workflowItem], nextCursor: null,
+    });
     expect(outputs[actionId]!.safeParse({
       items: [{ ...listedItem, targetType: 'execution_run' }],
       nextCursor: null,
@@ -114,7 +123,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'happier.channels',
         contributionLocalId: 'binding/create-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -188,7 +199,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'happier.channels',
         contributionLocalId: 'provider/observation-ingest-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -230,7 +243,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'happier.channels',
         contributionLocalId: 'provider/observation-ingest-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -268,7 +283,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'happier.channels',
         contributionLocalId: 'provider/observation-ingest-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -344,7 +361,9 @@ describe('Automation conversation admission HTTP contract', () => {
       caller: {
         pluginId: 'acme.slack-bridge',
         contributionLocalId: 'slack/observation-ingest-v1',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'generation-1',
+
+        sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -380,7 +399,9 @@ describe('Automation conversation admission HTTP contract', () => {
     const thirdPartyCaller = {
       pluginId: 'acme.slack-bridge',
       contributionLocalId: 'slack/observation-ingest-v1',
-      immutableGenerationId: 'generation-1',
+      occurrenceId: 'generation-1',
+
+      sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
       materialization: {
         machineId: 'machine-1',
         materializationId: 'materialization-1',
@@ -422,7 +443,9 @@ describe('Automation conversation admission HTTP contract', () => {
     const caller = {
       pluginId: 'happier.channels',
       contributionLocalId: 'provider/observation-ingest-v1',
-      immutableGenerationId: 'generation-1',
+      occurrenceId: 'generation-1',
+
+      sourceCustody: { kind: 'development', registeredRootId: 'channels-root' },
       materialization: {
         machineId: 'machine-1',
         materializationId: 'materialization-1',

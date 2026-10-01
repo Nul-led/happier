@@ -27,7 +27,7 @@ describe('declarative document normalizer v1', () => {
       const root = { kind: 'markdown', text };
       expect(PluginDeclarativeNodeV2Schema.parse(root)).toEqual({ ...root, text: expectedText });
       const normalized = normalizePluginDeclarativeDocumentV1({
-        pluginId: 'com.acme.dashboard', generation: 'generation-4', actions: [],
+        pluginId: 'com.acme.dashboard', occurrenceId: 'occurrenceId-4', actions: [],
         document: { version: 1, root },
       });
       expect(normalized.root).toEqual({ kind: 'markdown', text: expectedText, path: 'root', order: 0 });
@@ -41,7 +41,7 @@ describe('declarative document normalizer v1', () => {
   it('preserves a canonical host Action request without manufacturing contribution authority', () => {
     const root = { kind: 'action', hostAction: 'session.message.send', label: 'Send', input: { text: 'Hello' } };
     const normalized = normalizePluginDeclarativeDocumentV1({
-      pluginId: 'com.acme.dashboard', generation: 'generation-4', actions: [],
+      pluginId: 'com.acme.dashboard', occurrenceId: 'occurrenceId-4', actions: [],
       document: { version: 1, root },
     });
     expect(normalized.root).toEqual({ ...root, path: 'root', order: 0 });
@@ -79,7 +79,7 @@ describe('declarative document normalizer v1', () => {
   it('strictly normalizes one complete document with qualified Actions and deterministic preorder', () => {
     const normalized = normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [action],
       document: {
         version: 1,
@@ -105,7 +105,7 @@ describe('declarative document normalizer v1', () => {
       action: {
         identity: action,
         qualifiedId: 'com.acme.dashboard/refresh',
-        generation: 'generation-4',
+        occurrenceId: 'occurrenceId-4',
       },
     });
     expect(normalized.nodes[3]).toMatchObject({
@@ -118,7 +118,7 @@ describe('declarative document normalizer v1', () => {
   it('normalizes the closed composerApply effect without accepting an author-supplied Composer target', () => {
     const normalized = normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: {
         version: 1,
@@ -149,7 +149,7 @@ describe('declarative document normalizer v1', () => {
 
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: {
         version: 1,
@@ -170,7 +170,7 @@ describe('declarative document normalizer v1', () => {
   it('qualifies a field through the supplied immutable Settings inventory', () => {
     const normalized = normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       settings: [{
         pluginId: 'com.acme.dashboard',
@@ -228,7 +228,7 @@ describe('declarative document normalizer v1', () => {
     } as const;
     const collectionDocument = {
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [collectionAction],
       destinations: [collectionDestination],
       uiQueries: [uiQuery],
@@ -272,7 +272,7 @@ describe('declarative document normalizer v1', () => {
         action: {
           identity: collectionAction,
           qualifiedId: 'com.acme.dashboard/open-task',
-          generation: 'generation-4',
+          occurrenceId: 'occurrenceId-4',
         },
       },
       secondaryCommands: [{
@@ -280,7 +280,7 @@ describe('declarative document normalizer v1', () => {
         destination: {
           identity: collectionDestination,
           qualifiedId: 'com.acme.dashboard/task-details',
-          generation: 'generation-4',
+          occurrenceId: 'occurrenceId-4',
         },
       }],
     });
@@ -359,7 +359,7 @@ describe('declarative document normalizer v1', () => {
         destination: {
           identity: crossPluginDestination,
           qualifiedId: 'com.acme.provider/task-details',
-          generation: 'generation-4',
+          occurrenceId: 'occurrenceId-4',
         },
       }],
     });
@@ -383,7 +383,7 @@ describe('declarative document normalizer v1', () => {
   it('rejects outer authority fields and cross-plugin action references before any document is admitted', () => {
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [action, { pluginId: 'com.acme.other', localId: 'mutate' }],
       document: {
         version: 1,
@@ -394,7 +394,7 @@ describe('declarative document normalizer v1', () => {
 
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [action, { pluginId: 'com.acme.other', localId: 'mutate' }],
       document: {
         version: 1,
@@ -432,7 +432,7 @@ describe('declarative document normalizer v1', () => {
 
     const mismatchedDynamicCandidate = {
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [action],
       document: {
         version: 1,
@@ -466,7 +466,7 @@ describe('declarative document normalizer v1', () => {
     };
     const normalized = normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document,
       preparedTargetedSurfaces: [prepareTargetedSurface({
@@ -476,7 +476,8 @@ describe('declarative document normalizer v1', () => {
           contributor: {
             pluginId: 'com.acme.review',
             contributionId: 'detail',
-            immutableGenerationId: 'review-generation-a',
+            occurrenceId: 'review-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
           },
           role: 'detail',
           presentation: 'content',
@@ -496,7 +497,8 @@ describe('declarative document normalizer v1', () => {
         contributor: {
           pluginId: 'com.acme.review',
           contributionId: 'detail',
-          immutableGenerationId: 'review-generation-a',
+          occurrenceId: 'review-occurrence-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
         },
         role: 'detail',
         presentation: 'content',
@@ -537,7 +539,8 @@ describe('declarative document normalizer v1', () => {
       contributor: {
         pluginId: 'com.acme.review',
         contributionId: 'detail',
-        immutableGenerationId: 'review-generation-a',
+        occurrenceId: 'review-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
       },
       role: 'detail',
       presentation: 'content',
@@ -570,7 +573,7 @@ describe('declarative document normalizer v1', () => {
       if (!inputNormalizer) throw new Error('Expected canonical Surface schema to rehydrate');
       return normalizePluginDeclarativeDocumentV1({
         pluginId: 'com.acme.dashboard',
-        generation: 'generation-4',
+        occurrenceId: 'occurrenceId-4',
         actions: [],
         document: documentFor(input),
         preparedTargetedSurfaces: [{
@@ -616,7 +619,8 @@ describe('declarative document normalizer v1', () => {
       contributor: {
         pluginId: 'com.acme.review',
         contributionId: 'detail',
-        immutableGenerationId: 'review-generation-a',
+        occurrenceId: 'review-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
       },
       role: 'detail',
       presentation: 'content',
@@ -624,7 +628,7 @@ describe('declarative document normalizer v1', () => {
 
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: {
         version: 1,
@@ -644,7 +648,7 @@ describe('declarative document normalizer v1', () => {
       },
       // Deliberately retain the predecessor field in this test-only untyped
       // input: its old local compiler would accept the value. The canonical
-      // prepared inventory must instead invoke the generation-retained pair.
+      // prepared inventory must instead invoke the occurrenceId-retained pair.
       targetedSurfaces: [{
         targetPluginId: 'com.acme.dashboard',
         handle,
@@ -664,7 +668,7 @@ describe('declarative document normalizer v1', () => {
   it('fails closed when a targeted Surface has no mounted target inventory', () => {
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: {
         version: 1,
@@ -682,10 +686,10 @@ describe('declarative document normalizer v1', () => {
     } as unknown as Parameters<typeof normalizePluginDeclarativeDocumentV1>[0]), 'plugin_declarative_targeted_surface_inventory_missing');
   });
 
-  it('rejects cross-target, ambiguous-generation, and invalid-input targeted Surface candidates', () => {
+  it('rejects cross-target, ambiguous-occurrenceId, and invalid-input targeted Surface candidates', () => {
     const base = {
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: {
         version: 1,
@@ -706,7 +710,8 @@ describe('declarative document normalizer v1', () => {
       contributor: {
         pluginId: 'com.acme.review',
         contributionId: 'detail',
-        immutableGenerationId: 'review-generation-a',
+        occurrenceId: 'review-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
       },
       role: 'detail',
       presentation: 'content',
@@ -728,7 +733,7 @@ describe('declarative document normalizer v1', () => {
           targetPluginId: 'com.acme.dashboard',
           handle: {
             ...handle,
-            contributor: { ...handle.contributor, immutableGenerationId: 'review-generation-b' },
+            contributor: { ...handle.contributor, occurrenceId: 'review-occurrence-b' },
           },
           inputSchema,
         }),
@@ -755,14 +760,18 @@ describe('declarative document normalizer v1', () => {
       targetPluginId: 'com.acme.dashboard',
       handle: {
         ...surface,
-        contributor: { ...surface.contributor, immutableGenerationId: 'review-generation-a' },
+        contributor: {
+          ...surface.contributor,
+          occurrenceId: 'review-occurrence-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
+        },
         presentation: 'fill',
       },
       inputSchema: defineProtocolObject({}, { policy: 'additive-open/preserve' }).jsonSchema,
     })];
     const base = {
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       preparedTargetedSurfaces,
     };
@@ -798,13 +807,17 @@ describe('declarative document normalizer v1', () => {
     } as const;
     const base = {
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       preparedTargetedSurfaces: [prepareTargetedSurface({
         targetPluginId: 'com.acme.dashboard',
         handle: {
           ...surface,
-          contributor: { ...surface.contributor, immutableGenerationId: 'review-generation-a' },
+          contributor: {
+            ...surface.contributor,
+            occurrenceId: 'review-occurrence-a',
+            sourceCustody: { kind: 'development', registeredRootId: 'review-root' },
+          },
           presentation: 'content',
         },
         inputSchema: defineProtocolObject({}, { policy: 'additive-open/preserve' }).jsonSchema,
@@ -905,7 +918,7 @@ describe('declarative document normalizer v1', () => {
 
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: { version: 1, root: tooManySemanticNodes },
     }), 'plugin_declarative_nodes_exceeded');
@@ -921,7 +934,7 @@ describe('declarative document normalizer v1', () => {
       .toBeGreaterThan(MAX_PLUGIN_DECLARATIVE_DOCUMENT_RESOURCE_BYTES_V1);
     expectNormalizationFailure(() => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [],
       document: oversizedDocument,
     }), 'plugin_declarative_document_bytes_exceeded');
@@ -933,7 +946,7 @@ describe('declarative document normalizer v1', () => {
     };
     const normalizeAtDepth = (depth: number) => normalizePluginDeclarativeDocumentV1({
       pluginId: 'com.acme.dashboard',
-      generation: 'generation-4',
+      occurrenceId: 'occurrenceId-4',
       actions: [action],
       document: {
         version: 1,

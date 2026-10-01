@@ -250,8 +250,6 @@ export function pluginPermissionGrantActiveIdentityKey(params: Readonly<{
             subject.accessDeclarationDigest,
             subject.selectedAuthorityDigest,
             subject.selectedRawAccessDigest,
-            subject.installedGenerationId,
-            subject.installReviewPrincipalDigest,
         ];
     return computeCanonicalDomainSeparatedDigest(
         "happier.pluginPermissionGrant.activeIdentity.v1",

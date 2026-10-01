@@ -47,6 +47,22 @@ import { storeRunnerEndpointFacts } from './activationFacts';
 import { createRunnerArtifactPublicationSnapshotStore, runnerArtifactPublicationSnapshots } from './runnerArtifactAvailability';
 import { resolveAuthPolicyFromEnv } from '@/app/auth/authPolicy';
 import { resolveJoinScreenHomeDisplayName } from '@/app/teams/invitations/joinScreenHome';
+import { revokeMaterializedEphemeralRunnerBindingInTx } from './materializedTeardown';
+
+type RunnerControlClientFixtureModule = Readonly<{
+    createEphemeralRunnerHttpControlConnection: (input: Readonly<{
+        activationId: string;
+        pollIntervalMs: number;
+        createProjectionProof: () => unknown;
+        request: (path: string, init: Readonly<RequestInit>, signal: AbortSignal) => Promise<unknown>;
+    }>) => Readonly<{
+        submitReadiness: (args: Readonly<{ readiness: ReturnType<typeof signRunnerReadinessV1>; signal: AbortSignal }>) => Promise<unknown>;
+        waitForMaterialization: (args: Readonly<{ launchManifestCommitment: string; signal: AbortSignal }>) => Promise<unknown>;
+        decline: (args: Readonly<{ claim: ReturnType<typeof signRunnerClaimV1>; signal: AbortSignal }>) => Promise<unknown>;
+        close: () => Promise<void>;
+    }>;
+    EphemeralRunnerControlHttpError: new (status: number) => Error;
+}>;
 
 function expectedRunnerHomeName(): string {
     return resolveAuthPolicyFromEnv(process.env).accountServicePresentation?.displayName
@@ -474,7 +490,7 @@ async function materializationFixture(
             launchManifestCommitment: review.launchManifestCommitment,
             credentialSelectionBinding: review.credentialSelectionBinding,
             installation: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-                managedInstallationId: 'managed-materialize', executablePath: '/managed/codex', authoritativeVersion: '1.0.0' },
+                agentRuntimeId: 'codex', executablePath: '/managed/codex', authoritativeVersion: '1.0.0' },
             brokerReadinessRequest: signRunnerBrokerReadinessRequestV1({
                 facts: {
                     v: 1,
@@ -1261,6 +1277,103 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
         await expect(db.machine.findUnique({ where: { id: binding.machineId } }))
             .resolves.toMatchObject({ id: binding.machineId, active: false, revokedAt: expect.any(Date) });
         await expect(db.accessKey.count({ where: binding })).resolves.toBe(0);
+    });
+
+    it('acknowledges exact readiness after its lost response races materialization through the real endpoint client', async () => {
+        // Load the real CLI client at runtime without pulling CLI source and its
+        // private path aliases into the server TypeScript program.
+        const controlClientPath = '../../../../cli/src/ephemeralRunner/controlClient';
+        const { createEphemeralRunnerHttpControlConnection, EphemeralRunnerControlHttpError } =
+            await import(controlClientPath) as RunnerControlClientFixtureModule;
+        const fixture = await materializationFixture();
+        const activationId = fixture.activationRequest.activationId;
+        const app = await activationRouteApp();
+        const readinessStatuses: number[] = [];
+        const connection = createEphemeralRunnerHttpControlConnection({
+            activationId,
+            pollIntervalMs: 0,
+            createProjectionProof: () => signRunnerEndpointProjectionProofV1({
+                payload: {
+                    v: 1, purpose: 'happier.ephemeral-session-runner.endpoint-projection',
+                    activationId, sessionId: fixture.created.activation.sessionId,
+                    machineId: fixture.created.activation.machineId,
+                    creatorTokenEpoch: fixture.account.tokenEpoch,
+                    launchManifestCommitment: fixture.review.launchManifestCommitment,
+                },
+                activationSecretKey: fixture.activationKey.secretKey,
+                installationSecretKey: fixture.installationKey.secretKey,
+            }),
+            // HTTP delivery is the boundary: all schemas, signatures, routes,
+            // row owners and the endpoint's retry logic remain real.
+            request: async (path, init) => {
+                const method = init.method;
+                if (method !== 'PUT' && method !== 'POST' && method !== 'DELETE') throw new Error('Unexpected endpoint method');
+                if (typeof init.body !== 'string') throw new Error('Expected endpoint JSON body');
+                const response = await app.inject({
+                    method, url: path, headers: { 'content-type': 'application/json' }, payload: init.body,
+                });
+                if (path.endsWith('/readiness')) {
+                    readinessStatuses.push(response.statusCode);
+                    if (readinessStatuses.length === 1) {
+                        expect(response.statusCode).toBe(200);
+                        expect(await materializeEphemeralRunner({
+                            creatorAccountId: fixture.account.id, request: materializationRequest(fixture),
+                            authentication: presentUserAuthentication, env: process.env,
+                        })).toMatchObject({ status: 'materialized' });
+                        throw new Error('Response lost after the readiness commit');
+                    }
+                }
+                if (response.statusCode >= 400) throw new EphemeralRunnerControlHttpError(response.statusCode);
+                return response.json();
+            },
+        });
+        try {
+            await expect(connection.submitReadiness({ readiness: fixture.readiness, signal: new AbortController().signal }))
+                .resolves.toBeUndefined();
+            expect(readinessStatuses).toEqual([200, 200]);
+            await expect(connection.waitForMaterialization({
+                launchManifestCommitment: fixture.review.launchManifestCommitment,
+                signal: new AbortController().signal,
+            })).resolves.toMatchObject({ status: 'materialized', sealedBootstrap: 'sealed-bootstrap-materialize' });
+            const differentReadiness = signRunnerReadinessV1({
+                payload: {
+                    ...fixture.readiness.payload,
+                    installation: { ...fixture.readiness.payload.installation, agentRuntimeId: 'different-runtime' },
+                },
+                activationSecretKey: fixture.activationKey.secretKey,
+                installationSecretKey: fixture.installationKey.secretKey,
+            });
+            await expect(storeRunnerActivationReadiness({ activationId, readiness: differentReadiness }))
+                .resolves.toEqual({ status: 'conflict' });
+            await expect(connection.decline({ claim: fixture.claim, signal: new AbortController().signal }))
+                .resolves.toEqual({ status: 'unavailable', reason: 'already_materialized' });
+
+            await inTx(tx => revokeMaterializedEphemeralRunnerBindingInTx(tx, {
+                accountId: fixture.account.id, sessionId: fixture.created.activation.sessionId,
+                machineId: fixture.created.activation.machineId,
+            }));
+            await expect(storeRunnerActivationReadiness({ activationId, readiness: fixture.readiness }))
+                .resolves.toEqual({ status: 'unavailable' });
+            await expect(connection.waitForMaterialization({
+                launchManifestCommitment: fixture.review.launchManifestCommitment,
+                signal: new AbortController().signal,
+            })).rejects.toThrow('runner_projection_unavailable:not_materialized');
+        } finally {
+            await connection.close();
+            await app.close();
+        }
+    });
+
+    it('does not acknowledge materialized readiness after creator credential revocation', async () => {
+        const fixture = await materializationFixture();
+        expect(await materializeEphemeralRunner({
+            creatorAccountId: fixture.account.id, request: materializationRequest(fixture),
+            authentication: presentUserAuthentication, env: process.env,
+        })).toMatchObject({ status: 'materialized' });
+        await db.account.update({ where: { id: fixture.account.id }, data: { tokenEpoch: { increment: 1 } } });
+        await expect(storeRunnerActivationReadiness({
+            activationId: fixture.activationRequest.activationId, readiness: fixture.readiness,
+        })).resolves.toEqual({ status: 'unavailable' });
     });
 
     it('serializes creator cancellation against materialization without partial resources', async () => {
@@ -2136,7 +2249,7 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                 claim: claim.payload, launchManifestCommitment: review.launchManifestCommitment,
                 credentialSelectionBinding: review.credentialSelectionBinding,
                 installation: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
-                    managedInstallationId: 'managed-installation-13', executablePath: '/managed/codex', authoritativeVersion: '1.0.0' },
+                    agentRuntimeId: 'codex', executablePath: '/managed/codex', authoritativeVersion: '1.0.0' },
                 brokerReadinessRequest: signRunnerBrokerReadinessRequestV1({
                     facts: {
                         v: 1,

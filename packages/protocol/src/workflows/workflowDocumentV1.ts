@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
-import { WorkflowDefinitionV1Schema } from './workflowV1.js';
+import {
+  WorkflowDefinitionV1Schema,
+  type WorkflowDefinitionV1,
+  type WorkflowIngressContextV1,
+  type WorkflowValidationIssue,
+} from './workflowV1.js';
+import { validateWorkflowDefinition } from './workflowValidationV1.js';
 
 export const WorkflowDocumentV1Schema = z.object({
   kind: z.literal('happier.workflow'),
@@ -13,7 +19,18 @@ export type WorkflowDocumentV1 = z.infer<typeof WorkflowDocumentV1Schema>;
 export type WorkflowDocumentParseErrorCodeV1 =
   | 'workflow_document_invalid_json'
   | 'workflow_document_unsupported_version'
-  | 'workflow_document_invalid';
+  | 'workflow_document_invalid'
+  | 'workflow_document_invalid_definition';
+
+export type WorkflowDocumentParseResultV1 =
+  | Readonly<{ ok: true; document: WorkflowDocumentV1 }>
+  | Readonly<{
+    ok: false;
+    code: WorkflowDocumentParseErrorCodeV1;
+    issues: readonly WorkflowValidationIssue[];
+    normalizedDefinition?: WorkflowDefinitionV1;
+    version?: unknown;
+  }>;
 
 export class WorkflowDocumentParseErrorV1 extends TypeError {
   readonly code: WorkflowDocumentParseErrorCodeV1;
@@ -29,40 +46,105 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function parseWorkflowDocumentV1(value: unknown): WorkflowDocumentV1 {
-  const result = WorkflowDocumentV1Schema.safeParse(value);
-  if (result.success) return result.data;
-  if (
-    isRecord(value)
-    && value.kind === 'happier.workflow'
-    && Object.hasOwn(value, 'version')
-    && value.version !== 1
-  ) {
-    throw new WorkflowDocumentParseErrorV1(
-      'workflow_document_unsupported_version',
-      `Unsupported Workflow document version: ${String(value.version)}`,
-      { cause: result.error },
-    );
+const WorkflowDocumentIngressEnvelopeV1Schema = z.object({
+  kind: z.literal('happier.workflow'),
+  version: z.literal(1),
+  definition: z.unknown(),
+}).strict();
+
+/**
+ * Canonical ingress-aware document owner. It classifies the wrapper, delegates
+ * definition normalization to the one workflow validator, and never exposes a
+ * recursive schema exception to a UI or CLI boundary.
+ */
+export function parseWorkflowDocumentIngressV1(
+  value: unknown,
+  context?: WorkflowIngressContextV1,
+): WorkflowDocumentParseResultV1 {
+  const envelope = WorkflowDocumentIngressEnvelopeV1Schema.safeParse(value);
+  if (!envelope.success) {
+    if (
+      isRecord(value)
+      && value.kind === 'happier.workflow'
+      && Object.hasOwn(value, 'version')
+      && value.version !== 1
+    ) {
+      return {
+        ok: false,
+        code: 'workflow_document_unsupported_version',
+        issues: [],
+        version: value.version,
+      };
+    }
+    return { ok: false, code: 'workflow_document_invalid', issues: [] };
   }
-  throw new WorkflowDocumentParseErrorV1(
-    'workflow_document_invalid',
-    'Workflow document does not match the version 1 schema',
-    { cause: result.error },
+
+  const validation = validateWorkflowDefinition(
+    envelope.data.definition,
+    context === undefined ? {} : { context },
   );
+  if (!validation.valid || validation.normalizedDefinition === undefined) {
+    return {
+      ok: false,
+      code: 'workflow_document_invalid_definition',
+      issues: validation.issues,
+      ...(validation.normalizedDefinition === undefined
+        ? {}
+        : { normalizedDefinition: validation.normalizedDefinition }),
+    };
+  }
+  return {
+    ok: true,
+    document: {
+      kind: 'happier.workflow',
+      version: 1,
+      definition: validation.normalizedDefinition,
+    },
+  };
 }
 
-export function parseWorkflowDocumentJsonV1(json: string): WorkflowDocumentV1 {
+export function parseWorkflowDocumentJsonIngressV1(
+  json: string,
+  context?: WorkflowIngressContextV1,
+): WorkflowDocumentParseResultV1 {
   let value: unknown;
   try {
     value = JSON.parse(json) as unknown;
-  } catch (error) {
+  } catch {
+    return { ok: false, code: 'workflow_document_invalid_json', issues: [] };
+  }
+  return parseWorkflowDocumentIngressV1(value, context);
+}
+
+function throwWorkflowDocumentParseFailure(
+  result: Exclude<WorkflowDocumentParseResultV1, Readonly<{ ok: true }>>,
+): never {
+  if (result.code === 'workflow_document_unsupported_version') {
     throw new WorkflowDocumentParseErrorV1(
-      'workflow_document_invalid_json',
-      'Workflow document is not valid JSON',
-      { cause: error },
+      result.code,
+      `Unsupported Workflow document version: ${String(result.version)}`,
     );
   }
-  return parseWorkflowDocumentV1(value);
+  throw new WorkflowDocumentParseErrorV1(
+    result.code === 'workflow_document_invalid_definition'
+      ? 'workflow_document_invalid'
+      : result.code,
+    result.code === 'workflow_document_invalid_json'
+      ? 'Workflow document is not valid JSON'
+      : 'Workflow document does not match the version 1 schema',
+  );
+}
+
+export function parseWorkflowDocumentV1(value: unknown): WorkflowDocumentV1 {
+  const result = parseWorkflowDocumentIngressV1(value);
+  if (result.ok) return result.document;
+  return throwWorkflowDocumentParseFailure(result);
+}
+
+export function parseWorkflowDocumentJsonV1(json: string): WorkflowDocumentV1 {
+  const result = parseWorkflowDocumentJsonIngressV1(json);
+  if (result.ok) return result.document;
+  return throwWorkflowDocumentParseFailure(result);
 }
 
 /** Stable JSON interchange projection derived from the one executable document schema. */

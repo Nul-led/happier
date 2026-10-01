@@ -1,10 +1,10 @@
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { invalidateSessionReviewProjectionsForAutomationInTx } from './sessionReviewProjectionInvalidation';
 import {
     AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
     AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
     AutomationRunResultStoredV1Schema,
-    AutomationRunStateV2Schema,
     deriveSessionCreationTagV1,
     parseAutomationRunExecutionRecipeV1,
     sameAutomationAccountContentIdentityV1,
@@ -29,12 +29,11 @@ import {
     retainedV2OriginKindForRun,
 } from "./automationRunCauseCodec";
 import { advanceAutomationScheduleCursorAfterTerminalRunTx } from "./automationRunQueueService";
-import { applyAutomationRunSucceededTx } from "./automationRunSucceeded";
+import { applyAutomationRunSucceededTx, applyAutomationRunTerminalEffectsTx } from "./automationRunSucceeded";
 import { sanitizeAutomationErrorMessage } from "./automationSummaryService";
 import {
     assertAutomationRunFailureDetailEnvelopeOuterForMode,
     readRetainedAutomationRunExecutionTargetV2,
-    validateRetainedAutomationRunExecutionInputV2OuterForMode,
 } from "./automationStoredContentRead";
 import {
     AUTOMATION_EXECUTION_DISPATCH_MAX_ATTEMPTS,
@@ -72,19 +71,6 @@ async function hasExpectedAutomationAccountCurrentnessTx(params: Readonly<{
     return observed !== null && sameAutomationAccountCurrentnessWitnessV1(observed, params.expected);
 }
 
-async function hasRequiredCurrentV2MachineTx(params: Readonly<{
-    tx: Tx;
-    accountId: string;
-    machineId: string;
-    requireV2RunRepresentability: boolean | undefined;
-}>): Promise<boolean> {
-    return !params.requireV2RunRepresentability
-        || await readMachineAvailabilityStateInTx({
-            tx: params.tx,
-            accountId: params.accountId,
-            machineId: params.machineId,
-        }) === "available";
-}
 
 /**
  * Content-identity currentness for a decision taken *after* an external effect
@@ -158,6 +144,7 @@ async function fetchRunForAccount(params: {
 }
 
 async function markRunAutomationChanged(params: { tx: any; accountId: string; automationId: string }) {
+    await invalidateSessionReviewProjectionsForAutomationInTx(params.tx, params.automationId);
     return await markAccountChanged(params.tx, {
         accountId: params.accountId,
         kind: "automation",
@@ -517,7 +504,6 @@ type ParsedAutomationRunResultEnvelope = Readonly<{
 
 function parseAutomationRunResultEnvelope(
     raw: string | null | undefined,
-    params: { allowLegacy: boolean },
 ): ParsedAutomationRunResultEnvelope | null {
     if (raw === null || raw === undefined) {
         return null;
@@ -531,7 +517,7 @@ function parseAutomationRunResultEnvelope(
     const parsed = AutomationRunResultStoredV1Schema.safeParse(value);
     if (
         !parsed.success
-        || (!params.allowLegacy && parsed.data.t === "legacySummaryCiphertext")
+        || parsed.data.t === "legacySummaryCiphertext"
     ) {
         throw new Error("Automation Run result envelope is invalid");
     }
@@ -566,22 +552,15 @@ async function settleSucceededAutomationRun(params: {
     accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
     producedSessionId?: string | null;
     resultEnvelope?: string | null;
-    allowLegacyResultEnvelope: boolean;
-    requireV2RunRepresentability?: boolean;
+
 }): Promise<AutomationRunItem | null> {
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return null;
-        if (!await hasRequiredCurrentV2MachineTx({
-            tx,
-            accountId: params.accountId,
-            machineId: params.machineId,
-            requireV2RunRepresentability: params.requireV2RunRepresentability,
-        })) return null;
+
         const now = new Date();
         const parsedResultEnvelope = parseAutomationRunResultEnvelope(
             params.resultEnvelope,
-            { allowLegacy: params.allowLegacyResultEnvelope },
         );
         const resultEnvelope = parsedResultEnvelope?.raw ?? null;
         const preflightRow = await tx.automationRun.findFirst({
@@ -596,13 +575,7 @@ async function settleSucceededAutomationRun(params: {
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
                 // A current success reports an effect the server authorized at
                 // the start CAS, so it can only settle a Run that is running.
-                // The released-V2 adapter keeps its wider predecessor
-                // acceptance: the observed predecessor worker always starts
-                // before settling, but that seam is not ours to narrow without
-                // evidence that no supported writer relies on it.
-                state: params.requireV2RunRepresentability
-                    ? { in: ["claimed", "running"] }
-                    : "running",
+                state: "running",
                 // A permitted dispatch is settled only by the execution
                 // dispatch owner; a generic success claim cannot know the
                 // external outcome it would be asserting. Retained rows that
@@ -626,23 +599,10 @@ async function settleSucceededAutomationRun(params: {
         // target the canonical Session creation it reports is itself an
         // Account write that advanced `Account.seq` past S, as does any
         // unrelated Account mutation, so that post-effect report compares
-        // Account encryption identity instead of the stale sequence. Only the
-        // released-V2 adapter can still reach a `claimed` settlement, and it
-        // supplies no witness, so that arm keeps the exact claim comparison
-        // and stays outside this choice in practice.
-        if (!await (preflight.state === "running"
-            ? hasCompatibleAutomationAccountEncryptionTx({
-                tx,
-                accountId: params.accountId,
-                expected: params.accountCurrentness,
-            })
-            : hasExpectedAutomationAccountCurrentnessTx({
-                tx,
-                accountId: params.accountId,
-                expected: params.accountCurrentness,
-            }))) {
-            return null;
-        }
+        // Account encryption identity instead of the stale sequence.
+        if (!await hasCompatibleAutomationAccountEncryptionTx({
+            tx, accountId: params.accountId, expected: params.accountCurrentness,
+        })) return null;
         const strictNewSession = deriveStrictNewSessionCreationTag({
             originKind: preflight.originKind,
             automationId: preflight.automationId,
@@ -664,17 +624,7 @@ async function settleSucceededAutomationRun(params: {
         // canonical Session or settle without one. A concurrent retention wins
         // the CAS below and the worker may retry settlement against that fact.
         if (strictNewSession && producedSessionId === null) return null;
-        if (
-            params.requireV2RunRepresentability
-            && (
-                !preflight.executionInputEnvelope
-                || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                    raw: preflight.executionInputEnvelope,
-                    mode: accountFence.account.currentness.encryptionMode,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(preflight),
-                })?.kind !== "available"
-            )
-        ) return null;
+
 
         const isConversation = isConversationRun(preflight);
         const isConversationHandoff = isConversation
@@ -753,9 +703,6 @@ async function settleSucceededAutomationRun(params: {
                 state: preflight.state,
                 revision: preflight.revision,
                 workflowCustodyState: null,
-                ...(params.requireV2RunRepresentability
-                    ? { executionInputEnvelope: preflight.executionInputEnvelope }
-                    : {}),
                 ...(strictNewSession
                     ? { producedSessionId: preflight.producedSessionId }
                     : {}),
@@ -824,17 +771,12 @@ async function startAutomationRunInternal(params: {
     machineId: string;
     attempt?: number;
     accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
-    requireV2RunRepresentability?: boolean;
+
 }): Promise<AutomationRunStartResult | null> {
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return null;
-        if (!await hasRequiredCurrentV2MachineTx({
-            tx,
-            accountId: params.accountId,
-            machineId: params.machineId,
-            requireV2RunRepresentability: params.requireV2RunRepresentability,
-        })) return null;
+
         if (!await hasExpectedAutomationAccountCurrentnessTx({
             tx,
             accountId: params.accountId,
@@ -860,17 +802,7 @@ async function startAutomationRunInternal(params: {
         });
         const candidate = candidateRow ? projectAutomationOriginRun(candidateRow) : null;
         if (!candidate) return null;
-        if (
-            params.requireV2RunRepresentability
-            && (
-                !candidate.executionInputEnvelope
-                || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                    raw: candidate.executionInputEnvelope,
-                    mode: accountFence.account.currentness.encryptionMode,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(candidate),
-                })?.kind !== "available"
-            )
-        ) return null;
+
 
         const parsedRecipe = parseAutomationRunExecutionRecipeV1(candidate.executionInputEnvelope);
         const isExecutionRun = parsedRecipe.kind === "available"
@@ -1021,18 +953,6 @@ export async function startAutomationRun(params: {
     return await startAutomationRunInternal(params);
 }
 
-/** Strict released-V2 adapter. Current V3 workers must call startAutomationRun. */
-export async function startAutomationRunFromV2(params: {
-    accountId: string;
-    runId: string;
-    machineId: string;
-    attempt?: number;
-}): Promise<AutomationRunItem | null> {
-    return (await startAutomationRunInternal({
-        ...params,
-        requireV2RunRepresentability: true,
-    }))?.run ?? null;
-}
 
 function normalizeExecutionDispatchErrorCode(value: string): string {
     const trimmed = value.trim();
@@ -1458,38 +1378,14 @@ export async function succeedAutomationRun(params: {
 }): Promise<AutomationRunItem | null> {
     return await settleSucceededAutomationRun({
         ...params,
-        allowLegacyResultEnvelope: false,
     });
 }
 
 /** Strict predecessor adapter. New/current callers cannot write legacy summaries. */
-export async function succeedAutomationRunFromV2(params: {
-    accountId: string;
-    runId: string;
-    machineId: string;
-    attempt?: number;
-    producedSessionId?: string | null;
-    summaryCiphertext?: string | null;
-}): Promise<AutomationRunItem | null> {
-    const summaryCiphertext = typeof params.summaryCiphertext === "string"
-        ? params.summaryCiphertext
-        : null;
-    return await settleSucceededAutomationRun({
-        accountId: params.accountId,
-        runId: params.runId,
-        machineId: params.machineId,
-        ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
-        producedSessionId: params.producedSessionId,
-        resultEnvelope: summaryCiphertext === null
-            ? null
-            : JSON.stringify({ t: "legacySummaryCiphertext", c: summaryCiphertext }),
-        allowLegacyResultEnvelope: true,
-        requireV2RunRepresentability: true,
-    });
-}
+
 
 /**
- * The incumbent Run terminality owner for a recipe that is durably invalid
+ * The incumbent Run terminality owner for a recipe or source that is unavailable
  * before a worker may receive it. The caller supplies the preflight snapshot,
  * so this update is one CAS over the Account witness, Run revision, and exact
  * frozen bytes; a concurrent Account transition or Run rewrite wins instead.
@@ -1502,9 +1398,16 @@ export async function failInvalidAutomationRunBeforeClaimTx(params: {
     state: "queued" | "claimed" | "running";
     runRevision: number;
     executionInputEnvelope: string | null;
+    workflowCustodyState?: "pending" | null;
+    errorCode?: "invalid_template" | "source_unavailable";
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     now: Date;
 }): Promise<AutomationRunItem | null> {
+    const workflowCustodyState = params.workflowCustodyState ?? null;
+    const errorCode = params.errorCode ?? "invalid_template";
+    // A missing source disposes queued, pre-effect work only; existing effects
+    // and accepted Workflow snapshots remain with their runtime settlement owner.
+    if ((errorCode === "source_unavailable" || workflowCustodyState !== null) && params.state !== "queued") return null;
     const updated = await params.tx.automationRun.updateMany({
         where: {
             id: params.runId,
@@ -1513,7 +1416,15 @@ export async function failInvalidAutomationRunBeforeClaimTx(params: {
             state: params.state,
             revision: params.runRevision,
             executionInputEnvelope: params.executionInputEnvelope,
-            workflowCustodyState: null,
+            workflowCustodyState,
+            ...(errorCode === "source_unavailable" || workflowCustodyState !== null ? {
+                startedAt: null, producedSessionId: null, workflowAcceptedSnapshotEnvelope: null,
+                OR: [
+                    { executionDispatchState: null },
+                    { executionDispatchState: "notStarted" },
+                    { executionDispatchState: "retryWaiting" },
+                ],
+            } : {}),
             account: {
                 is: { seq: params.accountCurrentness.version },
             },
@@ -1521,7 +1432,8 @@ export async function failInvalidAutomationRunBeforeClaimTx(params: {
         data: {
             state: "failed",
             finishedAt: params.now,
-            errorCode: "invalid_template",
+            errorCode,
+            ...(workflowCustodyState !== null ? { workflowCustodyState: "settled" } : {}),
             // This server-only preflight has no Account private-content
             // material. Its structural code remains observable; V3 never
             // stores a raw detail as a substitute for a worker-sealed envelope.
@@ -1532,6 +1444,13 @@ export async function failInvalidAutomationRunBeforeClaimTx(params: {
     });
     if (updated.count !== 1) return null;
 
+    if (errorCode === "source_unavailable") {
+        await invalidateSessionReviewProjectionsForAutomationInTx(params.tx, params.automationId);
+        return await applyAutomationRunTerminalEffectsTx({
+            tx: params.tx, accountId: params.accountId, runId: params.runId,
+            previousState: params.state, state: "failed", now: params.now, eventPayload: { errorCode },
+        });
+    }
     return await publishFailedAutomationRunTx({
         tx: params.tx,
         accountId: params.accountId,
@@ -1549,21 +1468,15 @@ async function failAutomationRunInternal(params: {
     accountCurrentness?: AutomationAccountCurrentnessWitnessV1;
     producedSessionId?: string | null;
     errorCode?: string | null;
+    terminalState?: "skipped";
     /** V3 Account-mode-correct private failure detail. */
     errorDetailEnvelope?: string | null;
-    /** Released-V2 raw error detail retained only by the predecessor adapter. */
-    errorMessage?: string | null;
-    requireV2RunRepresentability?: boolean;
+
 }): Promise<AutomationRunItem | null> {
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return null;
-        if (!await hasRequiredCurrentV2MachineTx({
-            tx,
-            accountId: params.accountId,
-            machineId: params.machineId,
-            requireV2RunRepresentability: params.requireV2RunRepresentability,
-        })) return null;
+
         const now = new Date();
         const previousRunRow = await tx.automationRun.findFirst({
             where: {
@@ -1572,10 +1485,14 @@ async function failAutomationRunInternal(params: {
                 originKind: "automation",
                 automationId: { not: null },
                 causeKind: { not: null },
-                workflowCustodyState: null,
+                AND: [{ OR: [
+                    { workflowCustodyState: null },
+                    { workflowCustodyState: "pending", state: "claimed", startedAt: null,
+                        workflowAcceptedSnapshotEnvelope: null },
+                ] }],
                 claimedByMachineId: params.machineId,
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
-                state: { in: ["claimed", "running"] },
+                state: { in: params.terminalState === "skipped" ? ["claimed"] : ["claimed", "running"] },
                 // See settleSucceededAutomationRun: a permitted dispatch keeps
                 // its outcome with the execution dispatch settlement owner, and
                 // a retained NULL dispatch state means the same as `notStarted`.
@@ -1588,6 +1505,9 @@ async function failAutomationRunInternal(params: {
             select: automationRunItemSelect,
         });
         const previousRun = previousRunRow ? projectAutomationOriginRun(previousRunRow) : null;
+        if (params.terminalState === "skipped" && (!previousRun || params.errorCode !== "diff_unchanged"
+            || previousRun.startedAt !== null || previousRunRow?.workflowAcceptedSnapshotEnvelope !== null
+            || previousRun.producedSessionId !== null || params.producedSessionId != null)) return null;
         if (!previousRun) {
             // Cancellation may race a completed canonical Session create. The
             // incumbent fail/cancel owner retains only that known new-Session
@@ -1618,17 +1538,7 @@ async function failAutomationRunInternal(params: {
             })) {
                 return null;
             }
-            if (
-                params.requireV2RunRepresentability
-                && (
-                    !cancelledRun.executionInputEnvelope
-                    || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                        raw: cancelledRun.executionInputEnvelope,
-                        mode: accountFence.account.currentness.encryptionMode,
-                        retainedV2OriginKind: retainedV2OriginKindForRun(cancelledRun),
-                    })?.kind !== "available"
-                )
-            ) return null;
+
             const producedSessionId = await resolveProducedSessionIdForRunTx({
                 tx,
                 accountId: params.accountId,
@@ -1707,26 +1617,12 @@ async function failAutomationRunInternal(params: {
             }))) {
             return null;
         }
-        if (
-            params.requireV2RunRepresentability
-            && (
-                !previousRun.executionInputEnvelope
-                || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                    raw: previousRun.executionInputEnvelope,
-                    mode: accountFence.account.currentness.encryptionMode,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(previousRun),
-                })?.kind !== "available"
-            )
-        ) return null;
-        const errorMessage = params.requireV2RunRepresentability
-            ? sanitizeAutomationErrorMessage(params.errorMessage)
-            : params.errorDetailEnvelope ?? null;
-        if (!params.requireV2RunRepresentability) {
-            assertAutomationRunFailureDetailEnvelopeOuterForMode({
+
+        const errorMessage = params.errorDetailEnvelope ?? null;
+        assertAutomationRunFailureDetailEnvelopeOuterForMode({
                 raw: errorMessage,
                 mode: accountFence.account.currentness.encryptionMode,
             });
-        }
         const retainedStrictSessionId = deriveStrictNewSessionCreationTag({
             originKind: previousRun.originKind,
             automationId: previousRun.automationId,
@@ -1755,16 +1651,12 @@ async function failAutomationRunInternal(params: {
                 attempt: previousRun.attempt,
                 state: previousRun.state,
                 revision: previousRun.revision,
-                workflowCustodyState: null,
-                ...(params.requireV2RunRepresentability
-                    ? {
-                        executionInputEnvelope: previousRun.executionInputEnvelope,
-                    }
-                    : {}),
+                workflowCustodyState: previousRun.workflowCustodyState,
                 leaseExpiresAt: { gt: now },
             },
             data: {
-                state: "failed",
+                state: params.terminalState ?? "failed",
+                ...(previousRun.workflowCustodyState !== null ? { workflowCustodyState: "settled" } : {}),
                 finishedAt: now,
                 errorCode: typeof params.errorCode === "string" && params.errorCode.trim().length > 0
                     ? params.errorCode.trim().slice(0, 128)
@@ -1777,6 +1669,12 @@ async function failAutomationRunInternal(params: {
         });
         if (updated.count !== 1) {
             return null;
+        }
+        if (params.terminalState === "skipped" || previousRun.workflowCustodyState !== null) {
+            return await applyAutomationRunTerminalEffectsTx({ tx, accountId: params.accountId,
+                runId: params.runId, previousState: previousRun.state, state: params.terminalState ?? "failed",
+                now, eventPayload: { machineId: params.machineId, errorCode: params.errorCode ?? null },
+            });
         }
         return await publishFailedAutomationRunTx({
             tx,
@@ -1804,26 +1702,12 @@ export async function failAutomationRun(params: {
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     producedSessionId?: string | null;
     errorCode?: string | null;
+    terminalState?: "skipped";
     errorDetailEnvelope?: string | null;
 }): Promise<AutomationRunItem | null> {
     return await failAutomationRunInternal(params);
 }
 
-/** Strict released-V2 adapter. Current V3 workers must call failAutomationRun. */
-export async function failAutomationRunFromV2(params: {
-    accountId: string;
-    runId: string;
-    machineId: string;
-    attempt?: number;
-    producedSessionId?: string | null;
-    errorCode?: string | null;
-    errorMessage?: string | null;
-}): Promise<AutomationRunItem | null> {
-    return await failAutomationRunInternal({
-        ...params,
-        requireV2RunRepresentability: true,
-    });
-}
 
 /** One settled canonical-cancellation row, consumed by the publication seam. */
 export type CancelledAutomationRunTxResult = Readonly<{
@@ -1847,7 +1731,7 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
     accountId: string;
     previousRun: AutomationRunItem;
     accountEncryptionMode: "plain" | "e2ee";
-    requireV2RunRepresentability?: boolean;
+
     /**
      * The caller is the present user's explicit per-Run cancellation rather
      * than an Automation-owned settlement such as machine-assignment removal.
@@ -1862,17 +1746,7 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
         && previousRun.state !== "claimed"
         && previousRun.state !== "running"
     ) return null;
-    if (
-        params.requireV2RunRepresentability
-        && (
-            !previousRun.executionInputEnvelope
-            || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                raw: previousRun.executionInputEnvelope,
-                mode: params.accountEncryptionMode,
-                retainedV2OriginKind: retainedV2OriginKindForRun(previousRun),
-            })?.kind !== "available"
-        )
-    ) return null;
+
 
     const now = new Date();
     // Dispatch permission is the boundary after which one external execution
@@ -1891,7 +1765,7 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
     // before any mutation: the Run stays invisible/not-found to that caller
     // exactly as an unrepresentable Run already does at every other V2
     // boundary, while queued and claimed Runs still settle cleanly cancelled.
-    if (params.requireV2RunRepresentability && outcomeUncertain) return null;
+
     // A Session target keeps no dispatch vocabulary at all, so its running
     // cancellation carries no dispatch fact to name. The claiming machine
     // still needs the user's authoritative intent to discard the exact
@@ -1907,9 +1781,6 @@ export async function cancelAutomationRunRowTx(params: Readonly<{
             state: previousRun.state,
             revision: previousRun.revision,
             executionDispatchState: previousRun.executionDispatchState,
-            ...(params.requireV2RunRepresentability
-                ? { executionInputEnvelope: previousRun.executionInputEnvelope }
-                : {}),
         },
         data: {
             state: terminalState,
@@ -2034,7 +1905,7 @@ export async function publishCancelledAutomationRunsTx(params: Readonly<{
 export async function cancelAutomationRun(params: {
     accountId: string;
     runId: string;
-    requireV2RunRepresentability?: boolean;
+
 }): Promise<AutomationRunItem | null> {
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
@@ -2046,10 +1917,7 @@ export async function cancelAutomationRun(params: {
         });
         if (!previousRun) return null;
         if (previousRun.workflowCustodyState !== null) {
-            if (
-                params.requireV2RunRepresentability
-                && !AutomationRunStateV2Schema.safeParse(previousRun.state).success
-            ) return null;
+
             try {
                 await cancelWorkflowRunTx(tx, {
                     accountId: params.accountId,
@@ -2071,7 +1939,6 @@ export async function cancelAutomationRun(params: {
             accountId: params.accountId,
             previousRun: previousRun as AutomationRunItem,
             accountEncryptionMode: accountFence.account.currentness.encryptionMode,
-            requireV2RunRepresentability: params.requireV2RunRepresentability,
             presentUserCancellation: true,
         });
         if (!result) return null;

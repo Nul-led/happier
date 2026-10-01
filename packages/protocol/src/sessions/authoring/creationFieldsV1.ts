@@ -29,11 +29,14 @@ const SessionAuthoringWindowsTerminalV1Schema = z.object({
 }).strict();
 
 export const SessionAuthoringTerminalV1Schema = z.object({
-  mode: z.enum(['integrated', 'plain', 'tmux', 'windows_terminal', 'windows_console']).optional(),
+  mode: z.enum(['integrated', 'plain', 'tmux', 'zellij', 'herdr', 'windows_terminal', 'windows_console']).optional(),
   tmux: z.object({
     sessionName: z.string().optional(),
     isolated: z.boolean().optional(),
     tmpDir: z.union([z.string(), z.null()]).optional(),
+  }).strict().optional(),
+  herdr: z.object({
+    sessionName: z.string().optional(),
   }).strict().optional(),
   windows: SessionAuthoringWindowsTerminalV1Schema.optional(),
 }).strict();

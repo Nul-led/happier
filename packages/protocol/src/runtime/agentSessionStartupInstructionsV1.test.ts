@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES,
   AgentSessionStartupInstructionsMarkerV1Schema,
   AgentSessionStartupInstructionsV1Schema,
 } from './agentSessionStartupInstructionsV1.js';
@@ -13,10 +12,10 @@ describe('AgentSessionStartupInstructionsV1Schema', () => {
     revision: 1,
   };
 
-  it('accepts the canonical identity and exactly-at-limit UTF-8 instructions', () => {
-    const instructions = 'x'.repeat(
-      AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES,
-    );
+  it('accepts the full session plan beyond the former Voice sample allowance', () => {
+    // Native channels admit against their own context boundary; file transport
+    // removes Windows argv as a prompt-text boundary (U0b).
+    const instructions = '雪'.repeat(20_000);
 
     const parsed = AgentSessionStartupInstructionsV1Schema.parse({
       ...canonical,
@@ -46,12 +45,6 @@ describe('AgentSessionStartupInstructionsV1Schema', () => {
   it.each([
     ['empty instructions', { ...canonical, instructions: '' }],
     ['blank instructions', { ...canonical, instructions: '   ' }],
-    ['oversized instructions', {
-      ...canonical,
-      instructions: 'x'.repeat(
-        AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES + 1,
-      ),
-    }],
     ['invalid Unicode', { ...canonical, instructions: '\uD800' }],
     ['non-normalized Unicode', { ...canonical, instructions: 'e\u0301' }],
     ['malformed id', { ...canonical, id: 'Happier Voice', instructions: 'ok' }],

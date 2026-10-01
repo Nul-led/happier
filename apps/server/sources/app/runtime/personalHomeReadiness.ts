@@ -7,6 +7,7 @@ import { auth } from '@/app/auth/auth';
 import { bootstrapPersonalHomeTeams } from '@/app/home/governance/personalHomeTeamsBootstrap';
 import { getOrCreateServerIdentityId } from '@/app/serverIdentity/serverIdentity';
 import { db } from '@/storage/db';
+import { isPersonalHomeRuntimePurpose, PERSONAL_HOME_RUNTIME_PURPOSE } from '@/app/runtime/personalHomeRuntimePurpose';
 
 /** Composes the AuthModule-owned token round-trip with canonical Home identity
  * and database counts after the server has opened the restored Home. A fresh
@@ -14,14 +15,14 @@ import { db } from '@/storage/db';
 export async function createPersonalHomeAuthenticatedReadiness(
   env: NodeJS.ProcessEnv,
 ): Promise<PersonalHomeAuthenticatedReadiness | null> {
-  if (env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') {
+  if (!isPersonalHomeRuntimePurpose(env.HAPPIER_MANAGED_RELAY_PURPOSE)) {
     throw new Error('Personal Home authenticated readiness requires the personal-home runtime purpose');
   }
   const accountCount = await db.account.count();
   if (accountCount === 0) return null;
 
   const teamsBootstrap = await bootstrapPersonalHomeTeams({
-    runtimePurpose: 'personal-home',
+    runtimePurpose: PERSONAL_HOME_RUNTIME_PURPOSE,
     defaultTeamName: DEFAULT_PERSONAL_HOME_TEAM_NAME,
     env,
   });

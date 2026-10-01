@@ -317,6 +317,58 @@ export function directoryGroupContributorIdentityWhere() {
     };
 }
 
+/**
+ * A management handoff can end a suspended identity's dormant-contribution
+ * eligibility without a new directory observation. Reconcile that exact source
+ * now, through the same contribution owner, instead of waiting for its next sync.
+ * Active identities still contribute independently of who owns the Team lifetime.
+ */
+export async function withdrawIneligibleDirectoryGroupContributionsInTx(
+    tx: Tx,
+    input: Readonly<{
+        teamId: string;
+        teamMembershipId: string;
+        accountId: string;
+        directorySourceId: string;
+        releasedIdentityState: "active" | "suspended" | "deleted";
+        sessionAccessImpacts: TeamSessionAccessImpacts;
+    }>,
+): Promise<void> {
+    // Only suspension eligibility depends on owning the Team lifetime. Active
+    // people still contribute; partial roster evidence cannot revoke them here.
+    if (input.releasedIdentityState !== "suspended") return;
+    const [projectedMembers, contributions] = await Promise.all([
+        tx.teamDirectoryGroupMember.findMany({
+            where: {
+                directorySourceId: input.directorySourceId,
+                identity: { ...directoryGroupContributorIdentityWhere(), boundAccountId: input.accountId },
+            },
+            select: { externalGroupId: true },
+        }),
+        tx.teamGroupMembershipExternalContribution.findMany({
+            where: {
+                teamMembershipId: input.teamMembershipId,
+                binding: { teamId: input.teamId, directorySourceId: input.directorySourceId },
+            },
+            select: { teamGroupId: true, externalGroupBindingId: true, binding: { select: { externalGroupId: true } } },
+        }),
+    ]);
+    const eligibleGroupIds = new Set(projectedMembers.map((member) => member.externalGroupId));
+    for (const contribution of contributions) {
+        if (eligibleGroupIds.has(contribution.binding.externalGroupId)) continue;
+        await applyTeamGroupContributionInTx(tx, {
+            teamId: input.teamId,
+            teamGroupId: contribution.teamGroupId,
+            teamMembershipId: input.teamMembershipId,
+            contribution: { kind: "external", externalGroupBindingId: contribution.externalGroupBindingId },
+            desired: "absent",
+            // Removal never mints a horizon; retained union members keep theirs.
+            historyAccess: "from_membership",
+            sessionAccessImpacts: input.sessionAccessImpacts,
+        });
+    }
+}
+
 export type ExternalGroupContributionResult =
     | Readonly<{ status: "ok"; outcome: TeamGroupContributionOutcome }>
     | Readonly<{ status: "binding_not_found" }>

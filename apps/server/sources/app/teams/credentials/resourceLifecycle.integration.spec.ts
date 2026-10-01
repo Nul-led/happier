@@ -7,7 +7,8 @@ import { createTeamCredentialResourceInTx } from "./resourceCreate";
 import { deleteTeamCredentialResourceInTx } from "./resourceDelete";
 import { updateTeamCredentialResourceInTx } from "./resourceUpdate";
 import { readTeamCredentialSourceResourceAdministrationInTx } from "./resourceRead";
-import { TeamCredentialSourceBindingV1Schema, TeamCredentialSourceLocatorV1Schema } from "@happier-dev/protocol/teams";
+import { deleteMachinePool } from "@/app/machines/pools/machinePoolService";
+import { TeamCredentialSourceBindingV1Schema, TeamCredentialSourceLocatorV1Schema, type TeamCredentialBrokerPlacementV1 } from "@happier-dev/protocol/teams";
 
 const TEST_AUTHENTICATION = {
     authenticationAuthority: "present_user",
@@ -27,6 +28,136 @@ describe("Team credential resource lifecycle", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => { harness = await createLightSqliteHarness({ tempDirPrefix: "team-resource-lifecycle-" }); }, 120_000);
     afterAll(async () => { await harness?.close(); });
+
+    it.each(["create", "replacement", "patch"] as const)("validates selected broker locations independently from the audience on %s", async (operation) => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const foreign = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const team = await db.team.create({ data: { name: "Placement selection authority" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "owner" } });
+        const ownedPool = await db.machinePool.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, name: "Empty repairable Pool",
+        } });
+        const foreignPool = await db.machinePool.create({ data: {
+            id: crypto.randomUUID(), accountId: foreign.id, name: "Foreign Pool",
+        } });
+        const machine = await db.machine.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, metadata: "{}", active: false,
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        const foreignMachine = await db.machine.create({ data: {
+            id: crypto.randomUUID(), accountId: foreign.id, metadata: "{}",
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        const source = TeamCredentialSourceBindingV1Schema.parse({
+            v: 1, kind: "provider_connection", connectionId: "placement-selection-source",
+            connectionSecurityFingerprint: "connection-security:v1:placement-selection", credentialSlotId: "apiKey",
+        });
+
+        for (const deliveryMode of [null, "direct"] as const) {
+            const save = async (brokerPlacement: TeamCredentialBrokerPlacementV1, expected: "accepted" | "refused") => {
+                const resourceId = crypto.randomUUID();
+                const draft = {
+                    ...EMPTY_CREATE_CONFIGURATION,
+                    actorAccountId: custodian.id, authentication: TEST_AUTHENTICATION,
+                    teamId: team.id, resourceId, displayName: "Selected placement",
+                    disclosureCeiling: "direct_allowed" as const, source,
+                    allMembersDeliveryMode: deliveryMode,
+                };
+                if (operation !== "create") {
+                    await expect(inTx(tx => createTeamCredentialResourceInTx(tx, draft)))
+                        .resolves.toEqual({ ok: true, resourceId, revision: 0 });
+                }
+                const result = operation === "create"
+                    ? await inTx(tx => createTeamCredentialResourceInTx(tx, { ...draft, brokerPlacement }))
+                    : await inTx(tx => updateTeamCredentialResourceInTx(tx, {
+                        actorAccountId: custodian.id, authentication: TEST_AUTHENTICATION,
+                        patch: {
+                            resourceId, expectedRevision: 0,
+                            ...(operation === "patch" ? { brokerPlacement } : {
+                                replacement: {
+                                    enabled: true, displayName: draft.displayName,
+                                    sessionUsePolicy: draft.sessionUsePolicy, requestPolicy: null,
+                                    allMembersDeliveryMode: deliveryMode, groupGrants: [], memberGrants: [],
+                                    usageLimitDelta: { upserts: [], deleteIds: [] },
+                                    custodian: { source, disclosureCeiling: draft.disclosureCeiling, brokerPlacement },
+                                },
+                            }),
+                        },
+                    }));
+                if (expected === "refused") {
+                    expect(result).toEqual({ ok: false, error: "broker_unavailable" });
+                    const stored = await db.teamCredentialResource.findUnique({ where: { id: resourceId } });
+                    if (operation === "create") expect(stored).toBeNull();
+                    else expect(stored).toMatchObject({ revision: 0, brokerMachineId: null, brokerPoolId: null });
+                } else {
+                    expect(result).toEqual({ ok: true, resourceId, revision: operation === "create" ? 0 : 1 });
+                    expect(await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resourceId } })).toMatchObject({
+                        brokerMachineId: brokerPlacement.kind === "machine" ? brokerPlacement.machineId : null,
+                        brokerPoolId: brokerPlacement.kind === "machine_pool" ? brokerPlacement.poolId : null,
+                    });
+                }
+            };
+            await save({ kind: "machine_pool", poolId: foreignPool.id }, "refused");
+            await save({ kind: "machine", machineId: foreignMachine.id }, "refused");
+            await save({ kind: "machine_pool", poolId: ownedPool.id }, "accepted");
+            await save({ kind: "machine", machineId: machine.id }, "accepted");
+            const previous = process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED;
+            process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED = "false";
+            try {
+                await save({ kind: "machine_pool", poolId: ownedPool.id }, "refused");
+            } finally {
+                if (previous === undefined) delete process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED;
+                else process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED = previous;
+            }
+        }
+    });
+
+    it("preserves omitted placement but clears an explicit null while repairing an unavailable Pool", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const team = await db.team.create({ data: { name: "Placement repair" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "owner" } });
+        const pool = await db.machinePool.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, name: "Retained Pool",
+        } });
+        const source = TeamCredentialSourceBindingV1Schema.parse({
+            v: 1, kind: "provider_connection", connectionId: "placement-repair",
+            connectionSecurityFingerprint: "connection-security:v1:placement-repair", credentialSlotId: "apiKey",
+        });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: custodian.id, displayName: "Repair source",
+            disclosureCeiling: "direct_allowed", sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify(source), brokerPoolId: pool.id,
+        } });
+        const replacement = {
+            enabled: true, displayName: "Renamed repair source", sessionUsePolicy: "personal_allowed" as const,
+            requestPolicy: null, allMembersDeliveryMode: null, groupGrants: [], memberGrants: [],
+            usageLimitDelta: { upserts: [], deleteIds: [] },
+        };
+        const previous = process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED;
+        process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED = "false";
+        try {
+            await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+                actorAccountId: custodian.id, authentication: TEST_AUTHENTICATION,
+                patch: { resourceId: resource.id, expectedRevision: 0, replacement },
+            }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 0 });
+            expect(await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } }))
+                .toMatchObject({ brokerPoolId: pool.id, brokerMachineId: null });
+            await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+                actorAccountId: custodian.id, authentication: TEST_AUTHENTICATION,
+                patch: {
+                    resourceId: resource.id, expectedRevision: 0,
+                    replacement: { ...replacement, custodian: { source, disclosureCeiling: "direct_allowed", brokerPlacement: null } },
+                },
+            }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 1 });
+            expect(await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } }))
+                .toMatchObject({ brokerPoolId: null, brokerMachineId: null });
+        } finally {
+            if (previous === undefined) delete process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED;
+            else process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED = previous;
+        }
+    });
 
     it("keeps credential-resource mutations fail closed for malformed Team authentication policy", async () => {
         const actor = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
@@ -389,7 +520,7 @@ describe("Team credential resource lifecycle", () => {
         }))).resolves.toEqual({ ok: false, error: "resource_forbidden" });
     });
 
-    it("lets a source custodian withdraw through a broker Machine that is no longer usable", async () => {
+    it.each(["revoked_machine", "deleted_machine", "deleted_pool"] as const)("lets a source custodian withdraw through a %s broker placement", async (placementState) => {
         const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
         const team = await db.team.create({ data: { name: "Broken broker withdrawal" } });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "member" } });
@@ -399,28 +530,48 @@ describe("Team credential resource lifecycle", () => {
             operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
             operationProtocolCapabilitiesRevision: 1,
         } });
+        const pool = placementState === "deleted_pool" ? await db.machinePool.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, name: "Withdrawn broker Pool",
+            members: { create: { machineId: broker.id, priorityTier: 0, enabled: true } },
+        } }) : null;
         const resource = await db.teamCredentialResource.create({ data: {
             teamId: team.id, custodianAccountId: custodian.id, displayName: "Brokered source",
             disclosureCeiling: "direct_allowed", sessionUsePolicy: "personal_allowed",
             allMembersDeliveryMode: "both",
-            brokerMachineId: broker.id,
+            brokerMachineId: pool ? null : broker.id,
+            brokerPoolId: pool?.id ?? null,
             sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection",
                 connectionSecurityFingerprint: "connection-security:v1:test:broken-broker", credentialSlotId: "apiKey" }),
         } });
-        await db.machine.update({ where: { id: broker.id }, data: { revokedAt: new Date() } });
+        if (pool) await expect(deleteMachinePool({
+            accountId: custodian.id,
+            input: { poolId: pool.id, expectedRevision: pool.revision },
+            io: { in: () => ({ fetchSockets: async () => [] }) },
+        })).resolves.toMatchObject({ ok: true, value: { deleted: true } });
+        else if (placementState === "deleted_machine") await db.machine.delete({ where: { id: broker.id } });
+        else await db.machine.update({ where: { id: broker.id }, data: { revokedAt: new Date() } });
+        const { revision } = await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } });
 
         // Disabling and narrowing take authority away from exactly the Machine
         // that is gone, so its unusability must not block the withdrawal.
         await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
             actorAccountId: custodian.id,
             authentication: TEST_AUTHENTICATION,
-            patch: { resourceId: resource.id, expectedRevision: 0, enabled: false },
-        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 1 });
+            patch: { resourceId: resource.id, expectedRevision: revision, enabled: false },
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: revision + 1 });
+        // A manager cannot combine narrowing with re-enabling a broken broker.
+        await db.teamMembership.updateMany({ where: { teamId: team.id, accountId: custodian.id }, data: { role: "owner" } });
         await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
             actorAccountId: custodian.id,
             authentication: TEST_AUTHENTICATION,
-            patch: { resourceId: resource.id, expectedRevision: 1, disclosureCeiling: "brokered_only" },
-        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 2 });
+            patch: { resourceId: resource.id, expectedRevision: revision + 1, enabled: true, disclosureCeiling: "brokered_only" },
+        }))).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+        await db.teamMembership.updateMany({ where: { teamId: team.id, accountId: custodian.id }, data: { role: "member" } });
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: resource.id, expectedRevision: revision + 1, disclosureCeiling: "brokered_only" },
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: revision + 2 });
 
         // Selecting a new placement is still a selection and is validated.
         const replacement = await db.machine.create({ data: {
@@ -432,7 +583,7 @@ describe("Team credential resource lifecycle", () => {
             actorAccountId: custodian.id,
             authentication: TEST_AUTHENTICATION,
             patch: {
-                resourceId: resource.id, expectedRevision: 2,
+                resourceId: resource.id, expectedRevision: revision + 2,
                 brokerPlacement: { kind: "machine", machineId: replacement.id },
             },
         }))).resolves.toMatchObject({ ok: false });

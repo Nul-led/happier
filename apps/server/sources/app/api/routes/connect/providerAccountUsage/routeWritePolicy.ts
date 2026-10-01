@@ -219,7 +219,16 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
         const previousSubscription = existing.snapshot?.subscription;
         const incomingSubscription = params.snapshot?.subscription;
         const mergedSubscription = mergeProviderAccountSubscription(previousSubscription, incomingSubscription);
-        const subscriptionAdvanced = JSON.stringify(mergedSubscription) !== JSON.stringify(previousSubscription);
+        const previousSealedSubscription = existing.sealedPayload?.subscription;
+        const incomingSealedSubscription = params.sealedPayload?.subscription;
+        const mergedSealedSubscription = incomingSealedSubscription
+            && (!previousSealedSubscription
+                || incomingSealedSubscription.observedAtMs > previousSealedSubscription.observedAtMs)
+            ? incomingSealedSubscription
+            : previousSealedSubscription;
+        const subscriptionAdvanced =
+            mergedSealedSubscription !== previousSealedSubscription
+            || JSON.stringify(mergedSubscription) !== JSON.stringify(previousSubscription);
         const existingLegacyQuotaProjections =
             existing.metadata?.legacyQuotaCompatibilityProjections ?? [];
         const nextLegacyQuotaProjections =
@@ -283,11 +292,25 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
             result = "written";
         }
 
-        if (subscriptionAdvanced && mergedSubscription) {
+        if (params.payloadMode === "plain_json_v1" && mergedSubscription) {
             const baseSnapshot = isNewer ? params.snapshot : existing.snapshot;
             nextWrite = {
                 ...nextWrite,
                 snapshot: baseSnapshot ? { ...baseSnapshot, subscription: mergedSubscription } : undefined,
+                ...(!isNewer ? {
+                    fetchedAt: existing.fetchedAt ?? params.fetchedAt,
+                    staleAfterMs: existing.staleAfterMs ?? params.staleAfterMs,
+                    status: existing.status === "refresh_requested" ? params.status : existing.status,
+                } : {}),
+            };
+        }
+        if (params.payloadMode === "sealed_account_scoped_v1" && mergedSealedSubscription) {
+            const basePayload = isNewer ? params.sealedPayload : existing.sealedPayload;
+            nextWrite = {
+                ...nextWrite,
+                sealedPayload: basePayload
+                    ? { ...basePayload, subscription: mergedSealedSubscription }
+                    : undefined,
                 ...(!isNewer ? {
                     fetchedAt: existing.fetchedAt ?? params.fetchedAt,
                     staleAfterMs: existing.staleAfterMs ?? params.staleAfterMs,

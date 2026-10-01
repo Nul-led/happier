@@ -1,0 +1,429 @@
+import { z } from 'zod';
+
+import { SessionListFilterV1Schema, type SessionListFilterV1 } from '../sessions/listFilter/sessionListFilterV1.js';
+
+/**
+ * Boards (INT §5.1): a user's own arrangement of live work — sessions, workflow runs, workflows and
+ * machines — kept in a dedicated Account KV record of the Home the board was created in.
+ *
+ * This module is the one owner of the board document: its schema, its normalization (references
+ * deduplicated by qualified identity) and every edit (`applyWorkBoardIntentV1`). Writers replay an
+ * intent against the current KV winner. Cards and status are projections
+ * of their kinds' own owners and are never stored here.
+ *
+ * Named `WorkBoard` to stay apart from the per-session widget Board (`sessions/board/**`).
+ */
+
+export const WORK_BOARD_ITEM_KINDS_V1 = ['session', 'workflow_run', 'workflow', 'machine'] as const;
+export type WorkBoardItemKindV1 = typeof WORK_BOARD_ITEM_KINDS_V1[number];
+
+/** Smart sections: mixed-kind memberships read from existing owners (Inbox, active runs, machines). */
+export const WORK_BOARD_SECTIONS_V1 = ['needs_you', 'running', 'my_machines'] as const;
+export type WorkBoardSectionV1 = typeof WORK_BOARD_SECTIONS_V1[number];
+
+export const WORK_BOARD_MODES_V1 = ['canvas', 'by_status'] as const;
+export type WorkBoardModeV1 = typeof WORK_BOARD_MODES_V1[number];
+
+const IdentifierSchema = z.string().trim().min(1);
+
+/** A typed reference to one item on a Home. The same id on two Homes is two items. */
+export const BoardItemRefV1Schema = z.object({
+    kind: z.enum(WORK_BOARD_ITEM_KINDS_V1),
+    qualifiedId: z.object({
+        /** The Home's portable identity (its server identity id, or its profile id when it has none). */
+        serverId: IdentifierSchema,
+        id: IdentifierSchema,
+    }).strict(),
+}).strict();
+export type BoardItemRefV1 = Readonly<{
+    kind: WorkBoardItemKindV1;
+    qualifiedId: Readonly<{ serverId: string; id: string }>;
+}>;
+
+/** The one identity of a board item: dedupe key and `positionsByItemRef` key. */
+export function buildWorkBoardItemKeyV1(ref: BoardItemRefV1): string {
+    return JSON.stringify([ref.kind, ref.qualifiedId.serverId.trim(), ref.qualifiedId.id.trim()]);
+}
+
+export function readWorkBoardItemKeyV1(key: string): BoardItemRefV1 | null {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(key);
+    } catch {
+        return null;
+    }
+    if (!Array.isArray(parsed) || parsed.length !== 3) return null;
+    const ref = BoardItemRefV1Schema.safeParse({
+        kind: parsed[0],
+        qualifiedId: { serverId: parsed[1], id: parsed[2] },
+    });
+    return ref.success ? ref.data : null;
+}
+
+export const WorkBoardPositionV1Schema = z.object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+}).strict();
+export type WorkBoardPositionV1 = Readonly<{ x: number; y: number }>;
+
+export const WorkBoardSourceV1Schema = z.object({
+    sections: z.array(z.enum(WORK_BOARD_SECTIONS_V1)).optional(),
+    /** An inline Sessions filter (there is no separate saved-filter entity). */
+    filter: SessionListFilterV1Schema.optional(),
+    picked: z.array(BoardItemRefV1Schema).default([]),
+}).strict();
+export type WorkBoardSourceV1 = Readonly<{
+    sections?: readonly WorkBoardSectionV1[];
+    filter?: SessionListFilterV1;
+    picked: readonly BoardItemRefV1[];
+    /**
+     * Sections and picked items this version does not know (a newer app's), never shown and written back
+     * as they were so the newer app finds them again.
+     */
+    unknown?: WorkBoardUnknownSourceV1;
+}>;
+
+export type WorkBoardUnknownSourceV1 = Readonly<{ sections?: readonly string[]; picked?: readonly unknown[] }>;
+
+/**
+ * A stored board's source, read per value: a section or picked item this version does not know is set
+ * aside in `unknown` (and re-tried there on every read), so a newer app's board still shows what this
+ * version can draw.
+ */
+const StoredWorkBoardSourceV1Schema = z.object({
+    sections: z.array(z.string()).optional(),
+    filter: SessionListFilterV1Schema.optional(),
+    picked: z.array(z.unknown()).default([]),
+    unknown: z.object({
+        sections: z.array(z.string()).optional(),
+        picked: z.array(z.unknown()).optional(),
+    }).strict().optional(),
+}).strict().transform((source): WorkBoardSourceV1 => {
+    const known = new Set<string>(WORK_BOARD_SECTIONS_V1);
+    const sections: WorkBoardSectionV1[] = [];
+    const unknownSections: string[] = [];
+    if (source.sections !== undefined || source.unknown?.sections !== undefined) {
+        for (const section of [...(source.sections ?? []), ...(source.unknown?.sections ?? [])]) {
+            if (known.has(section)) sections.push(section as WorkBoardSectionV1);
+            else unknownSections.push(section);
+        }
+    }
+    const picked: BoardItemRefV1[] = [];
+    const unknownPicked: unknown[] = [];
+    for (const candidate of [...source.picked, ...(source.unknown?.picked ?? [])]) {
+        const ref = BoardItemRefV1Schema.safeParse(candidate);
+        if (ref.success) picked.push(ref.data);
+        else unknownPicked.push(candidate);
+    }
+    const unknown = {
+        ...(unknownSections.length > 0 ? { sections: unknownSections } : {}),
+        ...(unknownPicked.length > 0 ? { picked: unknownPicked } : {}),
+    };
+    return {
+        ...(source.sections !== undefined || source.unknown?.sections !== undefined ? { sections } : {}),
+        ...(source.filter ? { filter: source.filter } : {}),
+        picked,
+        ...(Object.keys(unknown).length > 0 ? { unknown } : {}),
+    };
+});
+
+export type WorkBoardV1 = Readonly<{
+    id: string;
+    name: string;
+    source: WorkBoardSourceV1;
+    mode: WorkBoardModeV1;
+    snap: boolean;
+    /** Canvas positions, kept while By status is shown; pruned when an item leaves the board. */
+    positionsByItemRef: Readonly<Record<string, WorkBoardPositionV1>>;
+    /** Shows the board at the top of the Sessions column. */
+    pinnedInSessions: boolean;
+}>;
+
+function dedupeBy<T>(values: readonly T[], keyOf: (value: T) => string): T[] {
+    const seen = new Set<string>();
+    const next: T[] = [];
+    for (const value of values) {
+        const key = keyOf(value);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(value);
+    }
+    return next;
+}
+
+function normalizePosition(position: WorkBoardPositionV1): WorkBoardPositionV1 {
+    return { x: Math.round(position.x), y: Math.round(position.y) };
+}
+
+function normalizeSource(source: WorkBoardSourceV1): WorkBoardSourceV1 {
+    return {
+        ...(source.sections ? { sections: dedupeBy(source.sections, (section) => section) } : {}),
+        ...(source.filter ? { filter: source.filter } : {}),
+        picked: dedupeBy(
+            source.picked.map((ref) => ({
+                kind: ref.kind,
+                qualifiedId: { serverId: ref.qualifiedId.serverId.trim(), id: ref.qualifiedId.id.trim() },
+            })),
+            buildWorkBoardItemKeyV1,
+        ),
+        ...(source.unknown ? { unknown: source.unknown } : {}),
+    };
+}
+
+function normalizePositions(
+    positions: Readonly<Record<string, WorkBoardPositionV1>>,
+): Record<string, WorkBoardPositionV1> {
+    const next: Record<string, WorkBoardPositionV1> = {};
+    for (const [key, position] of Object.entries(positions)) {
+        const ref = readWorkBoardItemKeyV1(key);
+        if (!ref) continue;
+        next[buildWorkBoardItemKeyV1(ref)] = normalizePosition(position);
+    }
+    return next;
+}
+
+function normalizeWorkBoardV1(board: WorkBoardV1): WorkBoardV1 {
+    return {
+        id: board.id,
+        name: board.name,
+        source: normalizeSource(board.source),
+        mode: board.mode,
+        snap: board.snap,
+        positionsByItemRef: normalizePositions(board.positionsByItemRef),
+        pinnedInSessions: board.pinnedInSessions,
+    };
+}
+
+export const WorkBoardV1Schema = z.object({
+    id: IdentifierSchema,
+    name: z.string().trim().min(1),
+    source: StoredWorkBoardSourceV1Schema,
+    mode: z.enum(WORK_BOARD_MODES_V1).default('canvas'),
+    snap: z.boolean().default(true),
+    positionsByItemRef: z.record(z.string(), WorkBoardPositionV1Schema).default({}),
+    pinnedInSessions: z.boolean().default(false),
+}).strict().transform((board): WorkBoardV1 => normalizeWorkBoardV1(board));
+
+/**
+ * The dedicated Account KV record: the boards created in this Home, in the user's order.
+ *
+ * Read per board: one this version cannot read (a newer app's shape, or a damaged one) never breaks
+ * the collection. It is kept in `unreadable` exactly as stored — not shown, written back
+ * untouched, and re-tried on every read — and is never reinterpreted as "no boards".
+ */
+export const WorkBoardsV1Schema = z.object({
+    v: z.literal(1).default(1),
+    boards: z.array(z.unknown()).default([]),
+    unreadable: z.array(z.unknown()).optional(),
+}).strict().transform((value): WorkBoardsV1 => {
+    const boards: WorkBoardV1[] = [];
+    const unreadable: unknown[] = [];
+    for (const candidate of [...value.boards, ...(value.unreadable ?? [])]) {
+        const board = WorkBoardV1Schema.safeParse(candidate);
+        if (board.success) boards.push(board.data);
+        else unreadable.push(candidate);
+    }
+    return {
+        v: 1,
+        boards: dedupeBy(boards, (board) => board.id),
+        ...(unreadable.length > 0 ? { unreadable } : {}),
+    };
+});
+export type WorkBoardsV1 = Readonly<{
+    v: 1;
+    boards: readonly WorkBoardV1[];
+    /** Boards this version cannot read, as stored; never shown, always written back. */
+    unreadable?: readonly unknown[];
+}>;
+
+/** Fresh schema input; parsed Board documents remain readonly. */
+export function createDefaultWorkBoardsV1(): z.input<typeof WorkBoardsV1Schema> {
+    return { v: 1, boards: [] };
+}
+
+const defaultWorkBoardsV1 = WorkBoardsV1Schema.parse(createDefaultWorkBoardsV1());
+export const DEFAULT_WORK_BOARDS_V1: WorkBoardsV1 = Object.freeze({
+    ...defaultWorkBoardsV1,
+    boards: Object.freeze(defaultWorkBoardsV1.boards),
+});
+
+/** A new board: hand-picked and empty, on Canvas with snapping on, not pinned in Sessions. */
+export function createWorkBoardV1(input: Readonly<{ id: string; name: string }>): WorkBoardV1 {
+    return {
+        id: input.id.trim(),
+        name: input.name.trim(),
+        source: { picked: [] },
+        mode: 'canvas',
+        snap: true,
+        positionsByItemRef: {},
+        pinnedInSessions: false,
+    };
+}
+
+/**
+ * What is on a board right now, as its writer last saw it. A position survives when its item is
+ * picked, is a live member of a section or filter, or belongs to a Home that is not mounted (an
+ * unavailable Home's items are never deleted).
+ */
+export type WorkBoardMembershipV1 = Readonly<{
+    liveItemKeys: readonly string[];
+    unavailableServerIds: readonly string[];
+}>;
+
+export function pruneWorkBoardPositionsV1(board: WorkBoardV1, membership: WorkBoardMembershipV1): WorkBoardV1 {
+    const kept = new Set([...board.source.picked.map(buildWorkBoardItemKeyV1), ...membership.liveItemKeys]);
+    const unavailable = new Set(membership.unavailableServerIds.map((serverId) => serverId.trim()));
+    const positionsByItemRef: Record<string, WorkBoardPositionV1> = {};
+    let changed = false;
+    for (const [key, position] of Object.entries(board.positionsByItemRef)) {
+        const ref = readWorkBoardItemKeyV1(key);
+        if (kept.has(key) || (ref && unavailable.has(ref.qualifiedId.serverId))) {
+            positionsByItemRef[key] = position;
+        } else {
+            changed = true;
+        }
+    }
+    return changed ? { ...board, positionsByItemRef } : board;
+}
+
+export type WorkBoardSettingsPatchV1 = Partial<Pick<WorkBoardV1, 'name' | 'mode' | 'snap' | 'pinnedInSessions'>> & Readonly<{
+    source?: Partial<WorkBoardSourceV1>;
+}>;
+
+/** Every edit a board can receive. Writers replay one intent against the current settings winner. */
+export type WorkBoardIntentV1 =
+    | Readonly<{ kind: 'create'; board: Readonly<{ id: string; name: string }> }>
+    | Readonly<{ kind: 'delete'; boardId: string }>
+    | Readonly<{ kind: 'update'; boardId: string; patch: WorkBoardSettingsPatchV1 }>
+    | Readonly<{
+        kind: 'add_items';
+        boardId: string;
+        refs: readonly BoardItemRefV1[];
+        /** Places the added items (⌘↵ "Add and place"); absent items take the first free slot. */
+        positionsByItemRef?: Readonly<Record<string, WorkBoardPositionV1>>;
+    }>
+    | Readonly<{
+        kind: 'remove_item';
+        boardId: string;
+        ref: BoardItemRefV1;
+        /**
+         * The board's live membership, from a writer that has it (the UI). The removed pick's place survives
+         * while a section or the filter still holds the item; without it (an agent), a board with a section or
+         * filter keeps the place and a hand-picked board drops it.
+         */
+        membership?: WorkBoardMembershipV1;
+    }>
+    | Readonly<{
+        kind: 'set_positions';
+        boardId: string;
+        positionsByItemRef: Readonly<Record<string, WorkBoardPositionV1>>;
+        /** UI writers can prune with live membership; agents omit it and only move positions. */
+        membership?: WorkBoardMembershipV1;
+    }>;
+
+const WorkBoardMembershipV1Schema = z.object({
+    liveItemKeys: z.array(z.string()),
+    unavailableServerIds: z.array(IdentifierSchema),
+}).strict();
+
+/** Wire validation shares the UI owner's intent vocabulary, rather than a second edit model. */
+export const WorkBoardIntentV1Schema = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('create'), board: z.object({
+        id: IdentifierSchema, name: z.string().trim().min(1),
+    }).strict() }).strict(),
+    z.object({ kind: z.literal('delete'), boardId: IdentifierSchema }).strict(),
+    z.object({ kind: z.literal('update'), boardId: IdentifierSchema, patch: z.object({
+        name: z.string().trim().min(1).optional(), mode: z.enum(WORK_BOARD_MODES_V1).optional(),
+        snap: z.boolean().optional(), pinnedInSessions: z.boolean().optional(),
+        // Do not apply the persisted source's picked default to a partial edit.
+        source: z.object({
+            sections: WorkBoardSourceV1Schema.shape.sections,
+            filter: WorkBoardSourceV1Schema.shape.filter,
+            picked: z.array(BoardItemRefV1Schema).optional(),
+        }).strict().optional(),
+    }).strict() }).strict(),
+    z.object({ kind: z.literal('add_items'), boardId: IdentifierSchema, refs: z.array(BoardItemRefV1Schema),
+        positionsByItemRef: z.record(z.string(), WorkBoardPositionV1Schema).optional(),
+    }).strict(),
+    z.object({ kind: z.literal('remove_item'), boardId: IdentifierSchema, ref: BoardItemRefV1Schema,
+        membership: WorkBoardMembershipV1Schema.optional(),
+    }).strict(),
+    z.object({ kind: z.literal('set_positions'), boardId: IdentifierSchema,
+        positionsByItemRef: z.record(z.string(), WorkBoardPositionV1Schema),
+        membership: WorkBoardMembershipV1Schema.optional(),
+    }).strict(),
+]);
+
+export type WorkBoardIntentResultV1 =
+    | Readonly<{ status: 'applied'; boards: WorkBoardsV1 }>
+    | Readonly<{ status: 'not_found' }>;
+
+function replaceBoard(
+    boards: WorkBoardsV1,
+    boardId: string,
+    edit: (board: WorkBoardV1) => WorkBoardV1,
+): WorkBoardIntentResultV1 {
+    const index = boards.boards.findIndex((board) => board.id === boardId);
+    if (index < 0) return { status: 'not_found' };
+    const next = [...boards.boards];
+    next[index] = WorkBoardV1Schema.parse(edit(boards.boards[index]!));
+    return { status: 'applied', boards: { ...boards, boards: next } };
+}
+
+export function applyWorkBoardIntentV1(boards: WorkBoardsV1, intent: WorkBoardIntentV1): WorkBoardIntentResultV1 {
+    switch (intent.kind) {
+        case 'create':
+            return {
+                status: 'applied',
+                boards: WorkBoardsV1Schema.parse({ ...boards, boards: [...boards.boards, createWorkBoardV1(intent.board)] }),
+            };
+        case 'delete': {
+            if (!boards.boards.some((board) => board.id === intent.boardId)) return { status: 'not_found' };
+            return { status: 'applied', boards: { ...boards, boards: boards.boards.filter((board) => board.id !== intent.boardId) } };
+        }
+        case 'update':
+            return replaceBoard(boards, intent.boardId, (board) => {
+                const { source, ...rest } = intent.patch;
+                return {
+                    ...board,
+                    ...rest,
+                    ...(source ? {
+                        source: {
+                            ...source,
+                            picked: source.picked ?? board.source.picked,
+                            ...(board.source.unknown ? { unknown: board.source.unknown } : {}),
+                        },
+                    } : {}),
+                };
+            });
+        case 'add_items':
+            return replaceBoard(boards, intent.boardId, (board) => ({
+                ...board,
+                source: { ...board.source, picked: [...board.source.picked, ...intent.refs] },
+                positionsByItemRef: { ...board.positionsByItemRef, ...intent.positionsByItemRef },
+            }));
+        case 'remove_item': {
+            const removedKey = buildWorkBoardItemKeyV1(intent.ref);
+            return replaceBoard(boards, intent.boardId, (board) => {
+                const unpicked: WorkBoardV1 = {
+                    ...board,
+                    source: {
+                        ...board.source,
+                        picked: board.source.picked.filter((ref) => buildWorkBoardItemKeyV1(ref) !== removedKey),
+                    },
+                };
+                if (intent.membership) return pruneWorkBoardPositionsV1(unpicked, intent.membership);
+                const sourced = (board.source.sections?.length ?? 0) > 0 || board.source.filter !== undefined;
+                if (sourced) return unpicked;
+                const positionsByItemRef = { ...board.positionsByItemRef };
+                delete positionsByItemRef[removedKey];
+                return { ...unpicked, positionsByItemRef };
+            });
+        }
+        case 'set_positions':
+            return replaceBoard(boards, intent.boardId, (board) => {
+                const moved = { ...board, positionsByItemRef: { ...board.positionsByItemRef, ...intent.positionsByItemRef } };
+                return intent.membership ? pruneWorkBoardPositionsV1(moved, intent.membership) : moved;
+            });
+    }
+}

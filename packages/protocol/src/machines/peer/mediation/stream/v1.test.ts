@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { MachineLiveStreamCaptureSourceV1Schema } from './captureV1';
 
 import {
   MACHINE_LIVE_STREAM_SOCKET_EVENT,
   MachineLiveStreamControlV1Schema,
   MachineLiveStreamFrameV1Schema,
+  MachineLiveStreamWireFrameV1Schema,
   MachineLiveStreamRelayAuthorizationPayloadV1Schema,
   MachineLiveStreamRelayEnvelopeV1Schema,
   MachineLiveStreamStartRequestV1Schema,
@@ -72,6 +74,43 @@ const LIVE_STREAM_LARGE_BASE64_LENGTH = 16 * 1024 * 1024;
 const LIVE_STREAM_LARGE_DECODED_LENGTH = (LIVE_STREAM_LARGE_BASE64_LENGTH / 4) * 3;
 
 describe('MachineLiveStreamV1 schemas', () => {
+  it('describes a browser source without inventing a maximum frame rate', () => {
+    expect(MachineLiveStreamCaptureSourceV1Schema.safeParse({
+      v: 1, sourceId: 'browser-view', sourceKind: 'browser', supportedCodecs: ['image.mjpeg'],
+      inputMode: 'shared', health: { status: 'available' },
+    }).success).toBe(true);
+  });
+  it('admits source-driven capture without guessed quality or lifetime caps', () => {
+    const request = { ...baseStartRequest, authorization: { ...baseStartRequest.authorization, payload: { ...baseStartRequest.authorization.payload } } };
+    for (const key of ['maxBitrateBps', 'maxFramesPerSecond', 'maxFrameBytes', 'maxDurationMs', 'maxTotalBytes'] as const) {
+      Reflect.deleteProperty(request, key);
+      Reflect.deleteProperty(request.authorization.payload, key);
+    }
+    expect(MachineLiveStreamStartRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(MachineLiveStreamRelayEnvelopeV1Schema.safeParse({
+      v: 1, sourceMachineId: request.sourceMachineId, targetMachineId: request.targetMachineId,
+      message: { kind: 'renew', startRequest: request },
+    }).success).toBe(true);
+  });
+  it('rejects unknown viewer codecs instead of silently selecting a source codec', () => {
+    expect(MachineLiveStreamStartRequestV1Schema.safeParse({ ...baseStartRequest, viewerCodecs: ['made.up'] }).success).toBe(false);
+  });
+  it('binds the exact browser capture source to the signed start', () => {
+    const request = {
+      ...baseStartRequest,
+      streamFamily: 'browser.streamed',
+      sourceId: 'view-a',
+      authorization: {
+        ...baseStartRequest.authorization,
+        payload: { ...baseStartRequest.authorization.payload, streamFamily: 'browser.streamed', sourceId: 'view-a' },
+      },
+    };
+    expect(MachineLiveStreamStartRequestV1Schema.safeParse(request).success).toBe(true);
+    expect(MachineLiveStreamStartRequestV1Schema.safeParse({ ...request, sourceId: 'view-b' }).success).toBe(false);
+    expect(MachineLiveStreamStartRequestV1Schema.safeParse({ ...request, sourceId: undefined,
+      authorization: { ...request.authorization, payload: { ...request.authorization.payload, sourceId: undefined } },
+    }).success).toBe(false);
+  });
   it('requires positive live-stream caps on start requests', () => {
     const parsed = MachineLiveStreamStartRequestV1Schema.parse(baseStartRequest);
 
@@ -184,7 +223,7 @@ describe('MachineLiveStreamV1 schemas', () => {
           timestampMs: 1_000,
           payloadKind: 'metadata',
           payloadEncoding: 'binary_base64',
-          payloadBase64: 'e30=',
+          payload: { t: 'plain', v: 'e30=' },
           payloadSizeBytes: 2,
         },
       },
@@ -257,7 +296,7 @@ describe('MachineLiveStreamV1 schemas', () => {
     expect(parsed?.success).toBe(true);
   });
 
-  it('requires canonical padded base64 for live-stream frame payload and AAD fields', () => {
+  it('requires canonical padded base64 for decoded and wire payloads', () => {
     const frame = {
       v: 1,
       streamId: 'stream_1',
@@ -269,23 +308,17 @@ describe('MachineLiveStreamV1 schemas', () => {
       payloadSizeBytes: 3,
     } as const;
 
-    expect(MachineLiveStreamFrameV1Schema.safeParse({
-      ...frame,
-      encryption: {
-        alg: 'xchacha20poly1305',
-        aadBase64: 'AA==',
-      },
-    }).success).toBe(true);
+    expect(MachineLiveStreamFrameV1Schema.safeParse(frame).success).toBe(true);
     expect(MachineLiveStreamFrameV1Schema.safeParse({
       ...frame,
       payloadBase64: 'AQI',
     }).success).toBe(false);
-    expect(MachineLiveStreamFrameV1Schema.safeParse({
-      ...frame,
-      encryption: {
-        alg: 'xchacha20poly1305',
-        aadBase64: 'AA=A',
-      },
+    const { payloadBase64, ...header } = frame;
+    expect(MachineLiveStreamWireFrameV1Schema.safeParse({
+      ...header, payload: { t: 'encrypted', c: payloadBase64 },
+    }).success).toBe(true);
+    expect(MachineLiveStreamWireFrameV1Schema.safeParse({
+      ...header, payload: { t: 'encrypted', c: 'AA=A' },
     }).success).toBe(false);
   });
 
@@ -305,7 +338,7 @@ describe('MachineLiveStreamV1 schemas', () => {
           timestampMs: 1_000,
           payloadKind: 'metadata',
           payloadEncoding: 'binary_base64',
-          payloadBase64: 'e30=',
+          payload: { t: 'plain', v: 'e30=' },
           payloadSizeBytes: 2,
         },
       },
@@ -324,12 +357,16 @@ describe('MachineLiveStreamV1 schemas', () => {
         control: {
           v: 1,
           streamId: 'stream_1',
-          sourceId: 'source_1',
-          eventId: 'event_1',
-          leaseId: 'lease_1',
-          kind: 'tap',
-          x: 0.5,
-          y: 0.25,
+          payload: { t: 'plain', v: {
+            v: 1,
+            streamId: 'stream_1',
+            sourceId: 'source_1',
+            eventId: 'event_1',
+            leaseId: 'lease_1',
+            kind: 'tap',
+            x: 0.5,
+            y: 0.25,
+          } },
         },
       },
     });
@@ -344,11 +381,15 @@ describe('MachineLiveStreamV1 schemas', () => {
         control: {
           v: 1,
           streamId: 'stream_1',
-          sourceId: 'source_1',
-          eventId: 'event_1',
-          kind: 'tap',
-          x: 1.5,
-          y: 0.25,
+          payload: { t: 'plain', v: {
+            v: 1,
+            streamId: 'stream_1',
+            sourceId: 'source_1',
+            eventId: 'event_1',
+            kind: 'tap',
+            x: 1.5,
+            y: 0.25,
+          } },
         },
       },
     }).success).toBe(false);
@@ -362,7 +403,7 @@ describe('MachineLiveStreamV1 schemas', () => {
       message: {
         kind: 'sideband_control',
         payload: { arbitrary: true },
-        control: {
+        control: {v:1,streamId:'stream_1',payload:{t:"plain",v:{
           v: 1,
           streamId: 'stream_1',
           sourceId: 'source_1',
@@ -371,7 +412,7 @@ describe('MachineLiveStreamV1 schemas', () => {
           kind: 'tap',
           x: 0.5,
           y: 0.25,
-        },
+        }}},
       },
     }).success).toBe(false);
   });

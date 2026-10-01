@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { IrohEndpointIdV1Schema } from '../connectivity/iroh/endpointDescriptorV1.js';
+import { IrohEndpointDescriptorV1Schema } from '../connectivity/iroh/endpointDescriptorV1.js';
 
 export const MachineOperationProtocolVersionsV1Schema = z
   .tuple([z.literal(1)])
@@ -23,12 +23,12 @@ const MachineOperationProtocolCapabilityThroughV2Schema = z.object({
 /**
  * Current transport identity published by the authenticated daemon through the
  * existing complete Machine projection. The projection's server-assigned
- * revision supplies currentness; this leaf supplies only the endpoint identity.
+ * revision supplies currentness; optional connection hints use the same bounded
+ * descriptor validation as every other Iroh endpoint projection.
  */
-export const MachineIrohEndpointCapabilityV1Schema = z
-  .object({
+export const MachineIrohEndpointCapabilityV1Schema = IrohEndpointDescriptorV1Schema
+  .extend({
     protocolVersions: MachineOperationProtocolVersionsV1Schema,
-    endpointId: IrohEndpointIdV1Schema,
   })
   .strict()
   .readonly();
@@ -42,6 +42,7 @@ export const MachineOperationProtocolCapabilitiesV1Schema = z
     /** Exact parent-PAT plus installation-signed downstream request support. */
     externalActionExecutionAuthorization: MachineOperationProtocolCapabilityV1Schema.optional(),
     irohMachineEndpoint: MachineIrohEndpointCapabilityV1Schema.optional(),
+    localServicePreviewNativeAccess: MachineOperationProtocolCapabilityV1Schema.optional(),
     // This declares the broker application ingress, not source/resource readiness.
     // Daemons publish it only after handler registration and Home support negotiation.
     providerBrokerIngress: MachineOperationProtocolCapabilityV1Schema.optional(),
@@ -69,10 +70,12 @@ export type MachineOperationProtocolCapabilitiesV1 = z.infer<
 export type MachineOperationProtocolCapabilityNameV1 = keyof MachineOperationProtocolCapabilitiesV1;
 export type MachineIrohEndpointAuthorityV1 = Readonly<{
   endpointId: string;
+  relayUrls?: readonly string[];
+  directAddresses?: readonly string[];
   revision: number;
 }>;
 
-/** Fail-closed reader for the endpoint identity plus its accepted projection revision. */
+/** Fail-closed reader for endpoint facts plus their accepted projection revision. */
 export function readMachineIrohEndpointAuthorityV1(input: Readonly<{
   capabilities: unknown;
   revision: unknown;
@@ -86,6 +89,12 @@ export function readMachineIrohEndpointAuthorityV1(input: Readonly<{
   ) return null;
   return {
     endpointId: capabilities.data.irohMachineEndpoint.endpointId,
+    ...(capabilities.data.irohMachineEndpoint.relayUrls
+      ? { relayUrls: capabilities.data.irohMachineEndpoint.relayUrls }
+      : {}),
+    ...(capabilities.data.irohMachineEndpoint.directAddresses
+      ? { directAddresses: capabilities.data.irohMachineEndpoint.directAddresses }
+      : {}),
     revision: input.revision as number,
   };
 }

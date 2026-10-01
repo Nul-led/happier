@@ -65,6 +65,11 @@ function runtimeFixture() {
                 return { count: 1 };
             }),
         },
+        sessionReportsTo: {
+            findMany: vi.fn(async () => [] as object[]),
+            findUnique: vi.fn(async () => null as object | null),
+            updateMany: vi.fn(async () => ({ count: 0 })),
+        },
     };
     // Database boundary only; the real access, audience, admission and frontier owners run below.
     const tx = storage as unknown as Tx;
@@ -98,6 +103,24 @@ function runtimeFixture() {
 }
 
 describe("ordinary Account Follow runtime admission", () => {
+    it("observes reportsTo through the same pairwise admission and fences reattachment at ACK", async () => {
+        const f = runtimeFixture();
+        const relation = { sessionId: 'source', leadSessionId: 'destination', attachedAt: new Date(100),
+            deliveredTranscriptSeq: 1, deliveredReadyEventSeq: 0, deliveredAgentStateVersion: 0,
+            deliveredTurnId: null, deliveredTurnStatus: null };
+        f.storage.sessionFollowEdge.findMany.mockResolvedValue([]);
+        f.storage.sessionReportsTo.findMany.mockResolvedValue([relation]);
+        f.storage.sessionReportsTo.findUnique.mockResolvedValue(relation);
+        const observed = await observePendingSessionFollowForDestinationInTx(f.tx, { ...f.observeInput, includeReportsTo: true });
+        expect(observed.observations).toEqual([expect.objectContaining({ edgeKind: 'reports_to', attachedAt: 100 })]);
+        relation.attachedAt = new Date(101);
+        expect(await acknowledgeSessionFollowFrontierInTx(f.tx, { ...f.ackInput, edgeKind: 'reports_to', attachedAt: 100 }))
+            .toEqual({ ok: false, rejection: 'stale_expected_frontier' });
+        expect(f.storage.sessionReportsTo.updateMany).not.toHaveBeenCalled();
+        f.source.shares = [];
+        expect(await observePendingSessionFollowForDestinationInTx(f.tx, { ...f.observeInput, includeReportsTo: true }))
+            .toEqual({ currentSourceSessionIds: [], observations: [] });
+    });
     it("returns authoritative current membership even when no delivery delta is pending", async () => {
         const f = runtimeFixture();
         f.edge.deliveredTranscriptSeq = 2;

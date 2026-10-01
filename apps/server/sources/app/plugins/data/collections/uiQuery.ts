@@ -562,7 +562,7 @@ async function resolveCurrentContract(input: Readonly<{
         writableCollections: intent.writableCollections,
         revision: intent.revision.toString(),
     });
-    if (!parsedIntent.success || !parsedIntent.data.enabled || parsedIntent.data.desiredVersion === null) {
+    if (!parsedIntent.success || !parsedIntent.data.enabled) {
         throw new PluginCollectionUiQueryOperationError("collection_unavailable");
     }
     const writer = parsedIntent.data.writableCollections.find((candidate) => (
@@ -599,18 +599,23 @@ async function resolveCurrentContract(input: Readonly<{
         ) {
             throw new PluginCollectionReadOperationError("collection_unavailable");
         }
-        const retainedReleases = await database.accountPluginRelease.findMany({
-            where: {
-                accountId: input.accountId,
-                pluginId: input.request.pluginId,
-            },
-            select: { collectionContracts: true },
-        });
-        const retained = retainedReleases.some((release) => {
-            const refs = z.array(PluginCollectionContractRefV1Schema).safeParse(release.collectionContracts);
-            return refs.success && refs.data.some((candidate) => refsMatch(candidate, requestedRef));
-        });
-        if (!retained) throw new PluginCollectionReadOperationError("collection_unavailable");
+        // A retained portable release admits its older reader ref. A
+        // release-less claim has no retained releases: the current writer
+        // plus the contract access resolver alone decide the reader.
+        if (parsedIntent.data.desiredVersion !== null) {
+            const retainedReleases = await database.accountPluginRelease.findMany({
+                where: {
+                    accountId: input.accountId,
+                    pluginId: input.request.pluginId,
+                },
+                select: { collectionContracts: true },
+            });
+            const retained = retainedReleases.some((release) => {
+                const refs = z.array(PluginCollectionContractRefV1Schema).safeParse(release.collectionContracts);
+                return refs.success && refs.data.some((candidate) => refsMatch(candidate, requestedRef));
+            });
+            if (!retained) throw new PluginCollectionReadOperationError("collection_unavailable");
+        }
         const requestedRow = refsMatch(currentWriter, requestedRef)
             ? persisted
             : await database.pluginCollectionContract.findFirst({

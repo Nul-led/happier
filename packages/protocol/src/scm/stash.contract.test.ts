@@ -2,12 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import { SCM_OPERATION_ERROR_CODES } from './index.js';
 import {
+  ScmStashCreateRequestSchema,
+  ScmStashCreateResponseSchema,
   ScmStashDropRequestSchema,
   ScmStashListResponseSchema,
   ScmStashShowResponseSchema,
 } from './stash.js';
 
 describe('scmStash protocol contracts', () => {
+  it('parses a named stash creation result and preserves the no-changes outcome', () => {
+    expect(ScmStashCreateRequestSchema.parse({ cwd: '.', message: 'Keep changes' }).message).toBe('Keep changes');
+    expect(ScmStashCreateResponseSchema.parse({ success: true, stashCreated: true, stashRef: 'stash@{0}' })).toMatchObject({
+      success: true, stashCreated: true, stashRef: 'stash@{0}',
+    });
+    expect(ScmStashCreateResponseSchema.parse({ success: true, stashCreated: false, stashRef: null })).toMatchObject({
+      success: true, stashCreated: false, stashRef: null,
+    });
+  });
   it('parses stash list responses including unmanaged stashes', () => {
     const parsed = ScmStashListResponseSchema.parse({
       success: true,

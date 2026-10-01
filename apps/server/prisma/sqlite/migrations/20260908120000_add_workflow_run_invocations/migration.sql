@@ -80,7 +80,9 @@ CREATE TABLE "new_AutomationRun" (
     "workflowAcceptedSnapshotEnvelope" TEXT,
     "workflowCheckpointEnvelope" TEXT,
     "workflowCustodyState" TEXT,
-    "workflowResultDeliveryState" TEXT,
+    "workflowResumeRequestedRevision" INTEGER,
+    "originDeliveryAckRevision" INTEGER,
+    "visibleTeamId" TEXT,
     "accountId" TEXT NOT NULL,
     "state" TEXT NOT NULL DEFAULT 'queued',
     "triggerId" TEXT,
@@ -142,9 +144,9 @@ CREATE TABLE "new_AutomationRun" (
     CONSTRAINT "AutomationRun_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "AutomationRun_claimedByMachineId_fkey" FOREIGN KEY ("claimedByMachineId") REFERENCES "Machine"("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "AutomationRun_producedSessionId_fkey" FOREIGN KEY ("producedSessionId") REFERENCES "Session"("id") ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT "AutomationRun_state_check" CHECK ("state" IN ('queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'expired', 'dispatch_failed', 'skipped', 'missed', 'outcome_uncertain', 'pause_requested', 'paused', 'interrupted')),
+    CONSTRAINT "AutomationRun_state_check" CHECK ("state" IN ('queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'expired', 'dispatch_failed', 'skipped', 'missed', 'outcome_uncertain', 'pause_requested', 'paused', 'interrupted', 'waiting_for_review')),
     CONSTRAINT "AutomationRun_origin_kind_check" CHECK (
-        ("originKind" = 'automation' AND "automationId" IS NOT NULL AND "originSessionId" IS NULL AND "causeKind" IS NOT NULL)
+        ("originKind" = 'automation' AND "automationId" IS NOT NULL AND "causeKind" IS NOT NULL)
         OR ("originKind" = 'direct'
             AND "automationId" IS NULL
             AND "triggerId" IS NULL
@@ -202,9 +204,11 @@ CREATE TABLE "new_AutomationRun" (
                             AND "occurrenceEvidenceEqualityTag" NOT GLOB '*[^A-Za-z0-9_-]*')))
                 OR ("causeTriggerKind" = 'sessionLifecycle' AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
                     AND "causeScheduledFor" IS NULL
-                    AND "causeSessionLifecycleEvent" IN ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired')
+                    AND "causeSessionLifecycleEvent" IN ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired', 'sessionStarted', 'sessionArchived')
                     AND "causeSourceSessionId" IS NOT NULL
-                    AND "causeSourceTurnId" IS NOT NULL AND "causeSourceSelectorId" IS NULL
+                    AND (("causeSessionLifecycleEvent" IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NULL)
+                        OR ("causeSessionLifecycleEvent" NOT IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NOT NULL))
+                    AND "causeSourceSelectorId" IS NULL
                     AND "causeSessionLifecyclePolicyKind" IN ('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch')
                     AND (("causeSessionLifecycleEvent" = 'userActionRequired'
                             AND "causeSessionLifecycleRequestId" IS NOT NULL
@@ -267,6 +271,7 @@ CREATE INDEX "AutomationRun_state_dueAt_idx" ON "AutomationRun"("state", "dueAt"
 CREATE INDEX "AutomationRun_state_finishedAt_idx" ON "AutomationRun"("state", "finishedAt");
 CREATE INDEX "AutomationRun_triggerId_state_idx" ON "AutomationRun"("triggerId", "state");
 CREATE INDEX "AutomationRun_account_origin_created_id_idx" ON "AutomationRun"("accountId", "originKind", "createdAt" DESC, "id" DESC);
+CREATE INDEX "AutomationRun_account_created_id_idx" ON "AutomationRun"("accountId", "createdAt" DESC, "id" DESC);
 CREATE INDEX "AutomationRun_originSession_created_id_idx" ON "AutomationRun"("originSessionId", "createdAt" DESC, "id" DESC);
 
 CREATE TABLE "WorkflowRunInvocation" (
@@ -276,17 +281,29 @@ CREATE TABLE "WorkflowRunInvocation" (
     "parentRecordId" TEXT,
     "memberOrdinal" BIGINT NOT NULL,
     "attempt" BIGINT NOT NULL DEFAULT 0,
+    "contentRevision" BIGINT NOT NULL DEFAULT 0,
     "lifecycle" TEXT NOT NULL DEFAULT 'pending',
     "contentEnvelope" TEXT NOT NULL,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "WorkflowRunInvocation_runId_fkey" FOREIGN KEY ("runId") REFERENCES "AutomationRun"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "WorkflowRunInvocation_counter_check" CHECK ("sequence" >= 0 AND "memberOrdinal" >= 0 AND "attempt" >= 0),
-    CONSTRAINT "WorkflowRunInvocation_lifecycle_check" CHECK ("lifecycle" IN ('pending','waiting_for_capacity','admitting','running','waiting_for_approval','needs_attention','completed','failed','skipped','cancel_requested','cancelled','outcome_uncertain','superseded'))
+    CONSTRAINT "WorkflowRunInvocation_counter_check" CHECK ("sequence" >= 0 AND "memberOrdinal" >= 0 AND "attempt" >= 0 AND "contentRevision" >= 0),
+    CONSTRAINT "WorkflowRunInvocation_lifecycle_check" CHECK ("lifecycle" IN ('pending','waiting_for_capacity','admitting','running','waiting_for_approval','waiting_for_review','needs_attention','completed','failed','skipped','cancel_requested','cancelled','outcome_uncertain','superseded'))
 );
 CREATE UNIQUE INDEX "WorkflowRunInvocation_run_sequence_key" ON "WorkflowRunInvocation"("runId", "sequence");
 CREATE UNIQUE INDEX "WorkflowRunInvocation_slot_attempt_key" ON "WorkflowRunInvocation"("runId", "parentRecordId", "memberOrdinal", "attempt");
 CREATE INDEX "WorkflowRunInvocation_lifecycle_idx" ON "WorkflowRunInvocation"("runId", "lifecycle", "sequence");
+
+CREATE TABLE "WorkflowRunDataKeyEnvelope" (
+    "runId" TEXT NOT NULL,
+    "recipientAccountId" TEXT NOT NULL,
+    "encryptedDataKey" BLOB NOT NULL,
+    "recipientContentPublicKeyFingerprint" TEXT NOT NULL,
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_pkey" PRIMARY KEY ("runId", "recipientAccountId"),
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_runId_fkey" FOREIGN KEY ("runId") REFERENCES "AutomationRun"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_recipientAccountId_fkey" FOREIGN KEY ("recipientAccountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+CREATE INDEX "WorkflowRunDataKeyEnvelope_recipientAccountId_idx" ON "WorkflowRunDataKeyEnvelope"("recipientAccountId");
 
 PRAGMA foreign_keys=ON;
 PRAGMA defer_foreign_keys=OFF;

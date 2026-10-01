@@ -8,6 +8,12 @@ const timestamp = 1_786_257_600_000;
 const occurrenceKey = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const templateCiphertext = '{"kind":"happier_automation_template_plain_v1"}';
 
+it('admits the closed session-scoped claim selector without accepting arbitrary capacity bypasses', () => {
+  expect(Api.AutomationV3WorkerClaimRequestSchema.parse({ machineId: 'machine-1', scope: 'session_scoped' }))
+    .toEqual({ machineId: 'machine-1', scope: 'session_scoped' });
+  expect(Api.AutomationV3WorkerClaimRequestSchema.safeParse({ machineId: 'machine-1', scope: 'all' }).success).toBe(false);
+});
+
 const recipe = {
   v: 1 as const,
   templateVersion: 3,
@@ -468,7 +474,7 @@ describe('Automation versioned API schemas', () => {
       reporterMaterializationRef: {
         machineId: 'machine-1', materializationId: 'materialization-1', pluginId: event.eventRef.pluginId,
       },
-      reporterImmutableGenerationId: 'generation-1',
+      reporterSourceCustody: { kind: "development", registeredRootId: 'generation-1' },
       state: 'attention' as const,
       code: 'historyGap' as const,
       lastObservedAt: timestamp,
@@ -613,6 +619,19 @@ describe('Automation versioned API schemas', () => {
     expect(Api.AutomationRunExecutionInputV1Schema.safeParse({ ...input, cause }).success)
       .toBe(false);
     expect(Api.AutomationV3WorkerClaimResponseSchema.parse(claim)).toEqual(claim);
+    const previousRun = { runId: 'previous-run', checkpointEnvelope: '{"t":"plain","v":{}}' };
+    expect(Api.AutomationV3WorkerClaimResponseSchema.parse({
+      ...claim, run: { ...claim.run, lastSucceededRun: previousRun },
+    })).toMatchObject({ run: { lastSucceededRun: previousRun } });
+    const receiptRun = { ...claim.run, lastSucceededRun: { ...previousRun, checkpointEnvelope: null } };
+    expect(Api.AutomationV3WorkerClaimReceiptRunSchema.parse(receiptRun)).toEqual(receiptRun);
+    expect(Api.AutomationV3WorkerClaimReceiptRunSchema.safeParse({
+      ...claim.run, lastSucceededRun: previousRun,
+    }).success).toBe(false);
+    const workflowReceiptRun = { ...receiptRun, recipeKind: 'workflow-v2', executionInputEnvelope: null };
+    expect(Api.AutomationV3WorkerClaimReceiptRunSchema.safeParse(workflowReceiptRun).success).toBe(true);
+    expect(Api.AutomationV3WorkerClaimResponseSchema.safeParse({ ...claim, run: workflowReceiptRun }).success).toBe(false);
+    expect(Api.AutomationV3WorkerClaimResponseSchema.safeParse({ ...claim, run: receiptRun }).success).toBe(false);
     expect(Api.AutomationV3WorkerClaimResponseSchema.safeParse({
       ...claim,
       run: { ...claim.run, triggerId: 'trigger-for-manual-cause' },

@@ -5,7 +5,7 @@ import {
     scheduleAccountActivityBadgeRefresh,
 } from "@/app/activity/refreshAccountActivityBadgePushes";
 import { markAccountChangesForSessionAccounts } from "@/app/session/changeTracking/markAccountChangesForSessionAccounts";
-import { markCurrentSessionReadersChanged } from "@/app/session/changeTracking/markCurrentSessionReadersChanged";
+import { markCurrentSessionReadersChanged, type CurrentSessionReaderCursor } from "@/app/session/changeTracking/markCurrentSessionReadersChanged";
 import { afterTx, type Tx } from "@/storage/inTx";
 import { log } from "@/utils/logging/log";
 
@@ -21,8 +21,8 @@ import { log } from "@/utils/logging/log";
 export async function markSessionDiscussionReadersChangedInTx(params: Readonly<{
     tx: Tx;
     sessionId: string;
-}>): Promise<void> {
-    await markCurrentSessionReadersChanged({
+}>): Promise<CurrentSessionReaderCursor[]> {
+    return await markCurrentSessionReadersChanged({
         tx: params.tx,
         sessionId: params.sessionId,
         hint: SESSION_DISCUSSION_CHANGE_HINT_V1,

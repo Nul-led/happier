@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
 import {
@@ -13,11 +13,10 @@ import {
 } from "@happier-dev/protocol";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
-import { emailPasswordAuthMethodModule } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
 import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
-import { registerKeyChallengeAuthRoute } from "./registerKeyChallengeAuthRoute";
+import { authRoutes } from "./authRoutes";
 
 /**
  * Deciding checks for 02.05 §5 "verified native-method evidence through
@@ -44,14 +43,14 @@ describe("native password credential provenance through Key Challenge finalizati
         });
     }, 120_000);
     afterAll(async () => { await harness.close(); });
+    afterEach(() => { harness.resetEnv(); });
 
     function createApp() {
         const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
         app.setValidatorCompiler(validatorCompiler);
         app.setSerializerCompiler(serializerCompiler);
         enableAuthentication(app);
-        emailPasswordAuthMethodModule.registerRoutes(app);
-        registerKeyChallengeAuthRoute(app as never);
+        authRoutes(app);
         return app;
     }
 
@@ -128,11 +127,12 @@ describe("native password credential provenance through Key Challenge finalizati
             expect(unlocked.expectedAccountId).toBe(enrolled.account.id);
 
             const redeemed = await app.inject({ method: "POST", url: "/v1/auth",
-                payload: redeemPayload(enrolled, unlocked.challenge) });
+                payload: { ...redeemPayload(enrolled, unlocked.challenge), credentialKind: "terminal" } });
             expect(redeemed.statusCode, redeemed.body).toBe(200);
             const verified = await auth.verifyToken(redeemed.json().token);
             expect(verified).toMatchObject({
                 userId: enrolled.account.id,
+                authTokenKind: "terminal",
                 authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
             });
 
@@ -141,6 +141,60 @@ describe("native password credential provenance through Key Challenge finalizati
             const replayed = await app.inject({ method: "POST", url: "/v1/auth",
                 payload: redeemPayload(enrolled, unlocked.challenge) });
             expect(replayed.statusCode).toBe(401);
+        } finally { await app.close(); }
+    });
+
+    it("does not stamp password provenance from a replaced native identity with the same email and revision", async () => {
+        const email = "replaced-provenance@example.test";
+        const enrolled = await createEnrolledAccount(email);
+        const app = createApp();
+        try {
+            const response = await app.inject({ method: "POST", url: "/v1/auth/email/unlock", payload: {
+                v: 1, email, authKey: encodePasswordCredentialFieldV1(authKey),
+            } });
+            expect(response.statusCode, response.body).toBe(200);
+            const unlocked = NativeEmailPasswordUnlockResponseV1Schema.parse(response.json());
+            await db.accountIdentity.delete({ where: { accountId_provider: { accountId: enrolled.account.id, provider: "email" } } });
+            await db.accountIdentity.create({ data: { accountId: enrolled.account.id, provider: "email", providerUserId: email, profile: {} } });
+            const redeemed = await app.inject({ method: "POST", url: "/v1/auth", payload: redeemPayload(enrolled, unlocked.challenge) });
+            expect(redeemed.statusCode, redeemed.body).toBe(200);
+            // The Account key still proves ordinary recovery-key login, but
+            // the removed native factor cannot qualify this credential.
+            expect(await auth.verifyToken(redeemed.json().token)).toMatchObject({
+                userId: enrolled.account.id,
+                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            });
+        } finally { await app.close(); }
+    });
+
+    it("keeps native E2EE login reachable but refuses ordinary key login when that deployment method is disabled", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" });
+        const enrolled = await createEnrolledAccount("native-without-key-login@example.test");
+        const app = createApp();
+        try {
+            const response = await app.inject({ method: "POST", url: "/v1/auth/email/unlock", payload: {
+                v: 1, email: "native-without-key-login@example.test", authKey: encodePasswordCredentialFieldV1(authKey),
+            } });
+            expect(response.statusCode, response.body).toBe(200);
+            const unlocked = NativeEmailPasswordUnlockResponseV1Schema.parse(response.json());
+            const redeemed = await app.inject({ method: "POST", url: "/v1/auth", payload: redeemPayload(enrolled, unlocked.challenge) });
+            expect(redeemed.statusCode, redeemed.body).toBe(200);
+            expect(await auth.verifyToken(redeemed.json().token)).toMatchObject({
+                userId: enrolled.account.id,
+                authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
+            });
+            const ordinaryChallenge = await app.inject({ method: "POST", url: "/v1/auth/challenge",
+                payload: { expectedAccountId: enrolled.account.id } });
+            expect(ordinaryChallenge.statusCode, ordinaryChallenge.body).toBe(200);
+            const refused = await app.inject({ method: "POST", url: "/v1/auth", payload: redeemPayload(
+                enrolled, KeyChallengeV2IssueResponseSchema.parse(ordinaryChallenge.json()),
+            ) });
+            expect(refused.statusCode, refused.body).toBe(403);
+            // Directory recovery-key routes previously shared the deployment
+            // switch; exposing native Home completion must not open that path.
+            for (const url of ["/v1/auth/account-directory/challenge", "/v1/auth/account-directory"]) {
+                expect((await app.inject({ method: "POST", url, payload: {} })).statusCode).toBe(404);
+            }
         } finally { await app.close(); }
     });
 
@@ -196,18 +250,27 @@ describe("native password credential provenance through Key Challenge finalizati
         } finally { await app.close(); }
     });
 
-    it("does not stamp stale password evidence after the credential revision changes", async () => {
-        const enrolled = await createEnrolledAccount("stale-proof@example.test");
+    it.each(["revision_changed", "revision_only_evidence", "incomplete_evidence"])("does not stamp stale password evidence: %s", async (reason) => {
+        const email = `stale-proof-${reason}@example.test`;
+        const enrolled = await createEnrolledAccount(email);
         const app = createApp();
         await app.ready();
         try {
             const unlocked = NativeEmailPasswordUnlockResponseV1Schema.parse((await app.inject({
                 method: "POST", url: "/v1/auth/email/unlock",
-                payload: { v: 1, email: "stale-proof@example.test", authKey: encodePasswordCredentialFieldV1(authKey) },
+                payload: { v: 1, email, authKey: encodePasswordCredentialFieldV1(authKey) },
             })).json());
-            await db.accountPasswordCredential.update({
-                where: { accountId: enrolled.account.id }, data: { revision: { increment: 1 } },
-            });
+            if (reason === "revision_changed") {
+                await db.accountPasswordCredential.update({
+                    where: { accountId: enrolled.account.id }, data: { revision: { increment: 1 } },
+                });
+            } else {
+                await db.keyChallengeV2.update({ where: { id: unlocked.challenge.challengeId }, data: {
+                    verifiedNativeMethodId: reason === "revision_only_evidence"
+                        ? "email_password:v1:1"
+                        : 'email_password:v1:{"credentialRevision":1}',
+                } });
+            }
             const redeemed = await app.inject({ method: "POST", url: "/v1/auth",
                 payload: redeemPayload(enrolled, unlocked.challenge) });
             expect(redeemed.statusCode, redeemed.body).toBe(200);

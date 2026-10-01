@@ -1,4 +1,5 @@
 import { verifySparseSessionListing } from "./sparseListing.test-support";
+import { verifyFolderSessionListing } from "./folderListing.test-support";
 import { randomUUID } from "node:crypto";
 import { cpus } from "node:os";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -52,6 +53,10 @@ describe("Session listing predicate composition (SQLite)", () => {
     }, 180_000);
     afterAll(async () => { await harness?.close(); });
     afterEach(() => vi.unstubAllEnvs());
+
+    it("filters exact folder ANY and tag ANY together before stable cursor paging", async () => {
+        await verifyFolderSessionListing();
+    });
 
     async function fixture() {
         const viewer = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });

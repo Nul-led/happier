@@ -42,6 +42,7 @@ import { ExecutionRunResultContractV1Schema } from './resultContractV1.js';
 import { TeamCredentialProviderModelSelectionV1Schema } from '../../teams/credentials/resourceV1.js';
 import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
 import { HappierStructuredInputV1Schema } from '../../runtime/input/structuredInputV1.js';
+import { PluginSourceCustodyV1Schema } from '../../plugins/runtime/sourceCustody.js';
 
 export const ExecutionRunTeamCredentialSessionBindingConsentV1Schema = z.object({
   v: z.literal(1),
@@ -361,6 +362,9 @@ export function normalizeExecutionRunStartBackendTargetInput(input: unknown): un
 
 export const ExecutionRunStartRequestBaseSchema = z.object({
   kind: ExecutionRunKindSchema.optional(),
+  roleId: z.string().trim().min(1).optional(),
+  /** Launch Profile selection; profileId remains the plugin execution Profile. */
+  launchProfileId: z.string().trim().min(1).optional(),
   intent: ExecutionRunIntentSchema,
   backendTarget: z.preprocess(
     normalizeExecutionRunStartBackendTargetInput,
@@ -375,7 +379,7 @@ export const ExecutionRunStartRequestBaseSchema = z.object({
   runClass: ExecutionRunClassSchema,
   ioMode: ExecutionRunIoModeSchema,
   profileId: z.string().trim().min(1).optional(),
-  profileGenerationId: z.string().trim().min(1).optional(),
+  profileSourceCustody: PluginSourceCustodyV1Schema.optional(),
   /** Value-free Saved Secret binding overrides for this launch only. */
   secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
   initialContext: z.string().optional(),
@@ -469,7 +473,7 @@ type ExecutionRunStartRequestRefinementValue = Pick<
   | 'teamCredentialModel'
   | 'teamCredentialSessionBindingConsent'
   | 'permissionMode'
-  | 'profileGenerationId'
+  | 'profileSourceCustody'
   | 'profileId'
   | 'retentionPolicy'
   | 'runClass'
@@ -725,11 +729,11 @@ export function refineExecutionRunStartRequest(
       path: ['agentSessionStartupInstructionsV1'],
     });
   }
-  if (Boolean(value.profileId) !== Boolean(value.profileGenerationId)) {
+  if (Boolean(value.profileId) !== Boolean(value.profileSourceCustody)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'profileId and profileGenerationId must be provided together',
-      path: value.profileId ? ['profileGenerationId'] : ['profileId'],
+      message: 'profileId and profileSourceCustody must be provided together',
+      path: value.profileId ? ['profileSourceCustody'] : ['profileId'],
     });
   }
   if (

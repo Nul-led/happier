@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TerminalPresentUserPolicySchema } from '../actions/invocationAuthority.js';
 
 import { AccountExternalAuthProofV1Schema } from './accountExternalAuthProof.js';
 import { normalizeVerifiedEmail, VERIFIED_EMAIL_MAX_SCALARS } from './verifiedEmail.js';
@@ -18,6 +19,11 @@ import { NativeAuthOneTimeBearerV1Schema } from './nativeAuthOneTimeOperation.js
 export const ACCOUNT_PASSWORD_MUTATION_CHALLENGE_PATH_V1 = '/v1/auth/password/mutation/challenge' as const;
 export const NATIVE_AUTH_PASSWORD_RESET_SUBMIT_PATH_V1 = '/v1/auth/password/reset/submit' as const;
 export const ACCOUNT_SECURITY_PATH_V1 = '/v1/account/security' as const;
+export const ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1 = '/v1/account/security/terminal-present-user' as const;
+export const AccountTerminalPresentUserPolicySetRequestV1Schema = z.object({ policy: TerminalPresentUserPolicySchema }).strict();
+export type AccountTerminalPresentUserPolicySetRequestV1 = z.infer<typeof AccountTerminalPresentUserPolicySetRequestV1Schema>;
+export const AccountTerminalPresentUserPolicySetResponseV1Schema = z.object({ policy: TerminalPresentUserPolicySchema }).strict();
+export type AccountTerminalPresentUserPolicySetResponseV1 = z.infer<typeof AccountTerminalPresentUserPolicySetResponseV1Schema>;
 export const ACCOUNT_PASSWORD_ENROLL_PATH_V1 = '/v1/account/password/enroll' as const;
 export const ACCOUNT_PASSWORD_ENROLL_EMAIL_REQUEST_PATH_V1 = '/v1/account/password/enroll/email/request' as const;
 export const ACCOUNT_PASSWORD_CHANGE_PATH_V1 = '/v1/account/password/change' as const;
@@ -43,6 +49,7 @@ export const AccountSecurityGetRequestV1Schema = z.object({}).strict();
 export const AccountSecurityGetResponseV1Schema = z.object({
   v: z.literal(1),
   encryptionMode: z.enum(['plain', 'e2ee']),
+  terminalPresentUserPolicy: TerminalPresentUserPolicySchema,
   nativeEmail: z.string().nullable(),
   password: z.discriminatedUnion('status', [
     z.object({ status: z.literal('enrolled'), revision: CredentialRevisionV1Schema }).strict(),

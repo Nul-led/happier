@@ -26,7 +26,7 @@ ALTER TABLE `AutomationRun`
     ADD COLUMN `causeEventLocalId` VARCHAR(191) NULL,
     ADD COLUMN `causeOccurredAt` DATETIME(3) NULL,
     ADD COLUMN `causeScheduledFor` DATETIME(3) NULL,
-    ADD COLUMN `causeSessionLifecycleEvent` ENUM('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired') NULL,
+    ADD COLUMN `causeSessionLifecycleEvent` ENUM('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired', 'sessionStarted', 'sessionArchived') NULL,
     ADD COLUMN `causeSourceSessionId` VARCHAR(191) NULL,
     ADD COLUMN `causeSourceTurnId` VARCHAR(191) NULL,
     ADD COLUMN `causeSessionLifecycleRequestId` VARCHAR(191) NULL,
@@ -255,7 +255,9 @@ ALTER TABLE `AutomationRun`
                 OR (`causeTriggerKind` = 'sessionLifecycle' AND `causeEventPluginId` IS NULL AND `causeEventLocalId` IS NULL
                     AND `causeScheduledFor` IS NULL
                     AND `causeSessionLifecycleEvent` IS NOT NULL AND `causeSourceSessionId` IS NOT NULL
-                    AND `causeSourceTurnId` IS NOT NULL AND `causeSourceSelectorId` IS NULL
+                    AND ((`causeSessionLifecycleEvent` IN ('sessionStarted', 'sessionArchived') AND `causeSourceTurnId` IS NULL)
+                        OR (`causeSessionLifecycleEvent` NOT IN ('sessionStarted', 'sessionArchived') AND `causeSourceTurnId` IS NOT NULL))
+                    AND `causeSourceSelectorId` IS NULL
                     AND `causeSessionLifecyclePolicyKind` IS NOT NULL
                     AND ((`causeSessionLifecycleEvent` = 'userActionRequired'
                             AND `causeSessionLifecycleRequestId` IS NOT NULL
@@ -339,7 +341,7 @@ CREATE TABLE `AutomationEventSourceStatus` (
     `reporterMachineId` VARCHAR(191) NOT NULL,
     `reporterMachineInstallationId` VARCHAR(191) NOT NULL,
     `reporterMaterializationId` VARCHAR(191) NOT NULL,
-    `reporterImmutableGenerationId` VARCHAR(256) NOT NULL,
+    `reporterSourceCustody` JSON NOT NULL,
     `state` ENUM('uninitialized', 'baselined', 'observing', 'backingOff', 'attention') NOT NULL,
     `code` VARCHAR(191) NULL,
     `lastObservedAt` DATETIME(3) NULL,
@@ -363,7 +365,7 @@ CREATE TABLE `AutomationEventSourceCatalogStatus` (
     `reporterMachineId` VARCHAR(191) NOT NULL,
     `reporterMachineInstallationId` VARCHAR(191) NOT NULL,
     `reporterMaterializationId` VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-    `reporterImmutableGenerationId` VARCHAR(256) NOT NULL,
+    `reporterSourceCustody` JSON NOT NULL,
     `scopeKey` VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     `observedRevision` BIGINT NOT NULL,
     `adoptedRevision` BIGINT NULL,

@@ -14,6 +14,7 @@ import {
     QualifiedConnectedAccountServiceRefSchema,
     clearConnectedServiceAuthGroupMemberRuntimeBlockers,
     readConnectedServiceManualActiveProfileRuntimeBlocker,
+    type ConnectedServiceAuthGroupStateV1,
     type QualifiedConnectedAccountGroupV4,
     type QualifiedConnectedAccountServiceRef,
 } from "@happier-dev/protocol";
@@ -156,6 +157,13 @@ export function toQualifiedConnectedAccountGroup(
             "Qualified Connected Account group active account is not an enabled member",
         );
     }
+    const state = parseStoredJson(
+        ConnectedServiceAuthGroupStateV1Schema,
+        row.stateJson,
+    );
+    const activeSince = state.activeSince?.accountId === row.activeConnectedAccountId
+        ? state.activeSince
+        : null;
     return QualifiedConnectedAccountGroupV4Schema.parse({
         v: 1,
         ref: groupRef,
@@ -168,10 +176,11 @@ export function toQualifiedConnectedAccountGroup(
         activeConnectedAccountId: row.activeConnectedAccountId,
         generation: row.generation,
         runtimeStateRevision: row.runtimeStateRevision,
-        state: parseStoredJson(
-            ConnectedServiceAuthGroupStateV1Schema,
-            row.stateJson,
-        ),
+        state: {
+            ...state,
+            activeSince,
+            lastSwitchAt: activeSince?.atMs,
+        },
         createdAt: row.createdAt.getTime(),
         updatedAt: row.updatedAt.getTime(),
         members,
@@ -659,6 +668,34 @@ function encodeStoredState(
     return JSON.stringify(schema.parse(value));
 }
 
+/** The group row owns active-member identity and its clock in one write. */
+export function encodeQualifiedGroupStateForActiveAccount(input: Readonly<{
+    currentStateJson: string | null;
+    nextState?: unknown;
+    previousActiveAccountId: string | null;
+    nextActiveAccountId: string | null;
+    nowMs?: number;
+}>): string {
+    const previous = parseStoredJson(
+        ConnectedServiceAuthGroupStateV1Schema,
+        input.currentStateJson,
+    );
+    const next: ConnectedServiceAuthGroupStateV1 =
+        ConnectedServiceAuthGroupStateV1Schema.parse(input.nextState ?? previous);
+    const activeSince = input.nextActiveAccountId === null
+        ? null
+        : input.nextActiveAccountId !== input.previousActiveAccountId
+            ? { accountId: input.nextActiveAccountId, atMs: input.nowMs ?? Date.now() }
+            : previous.activeSince?.accountId === input.nextActiveAccountId
+                ? previous.activeSince
+                : null;
+    return encodeStoredState(ConnectedServiceAuthGroupStateV1Schema, {
+        ...next,
+        activeSince: activeSince ?? undefined,
+        lastSwitchAt: activeSince?.atMs,
+    });
+}
+
 async function finishQualifiedGroupMutation(
     tx: Tx,
     params: Readonly<{
@@ -792,10 +829,12 @@ export async function createQualifiedConnectedAccountGroup(
                     ConnectedServiceAuthGroupPolicyV1Schema,
                     parsed.group.policy ?? {},
                 ),
-                stateJson: encodeStoredState(
-                    ConnectedServiceAuthGroupStateV1Schema,
-                    parsed.group.state ?? {},
-                ),
+                stateJson: encodeQualifiedGroupStateForActiveAccount({
+                    currentStateJson: null,
+                    nextState: parsed.group.state ?? {},
+                    previousActiveAccountId: null,
+                    nextActiveAccountId: params.activeConnectedAccountId ?? null,
+                }),
                 activeConnectedAccountId:
                     params.activeConnectedAccountId ?? null,
                 activeProfileId: legacyServiceId === null
@@ -900,12 +939,19 @@ export async function patchQualifiedConnectedAccountGroup(
                     ...patch.policy,
                 },
             );
-        const nextStateJson = patch.state === undefined
+        const nextStateJson = patch.state === undefined && !(
+            params.activeConnectedAccountId !== undefined
+            && params.activeConnectedAccountId !== current.activeConnectedAccountId
+        )
             ? null
-            : encodeStoredState(
-                ConnectedServiceAuthGroupStateV1Schema,
-                patch.state,
-            );
+            : encodeQualifiedGroupStateForActiveAccount({
+                currentStateJson: current.stateJson,
+                nextState: patch.state,
+                previousActiveAccountId: current.activeConnectedAccountId,
+                nextActiveAccountId: params.activeConnectedAccountId === undefined
+                    ? current.activeConnectedAccountId
+                    : params.activeConnectedAccountId,
+            });
         const runtimeStateChanged = nextStateJson !== null
             && nextStateJson !== current.stateJson;
         const activeAccountChanged =
@@ -1171,10 +1217,12 @@ export async function patchQualifiedConnectedAccountGroupRuntimeState(
             data: {
                 ...(patch.runtimeState.state !== undefined
                     ? {
-                        stateJson: encodeStoredState(
-                            ConnectedServiceAuthGroupStateV1Schema,
-                            patch.runtimeState.state,
-                        ),
+                        stateJson: encodeQualifiedGroupStateForActiveAccount({
+                            currentStateJson: current.stateJson,
+                            nextState: patch.runtimeState.state,
+                            previousActiveAccountId: current.activeConnectedAccountId,
+                            nextActiveAccountId: current.activeConnectedAccountId,
+                        }),
                     }
                     : {}),
                 runtimeStateRevision: { increment: 1 },
@@ -1426,6 +1474,12 @@ async function mutateQualifiedGroupMember(
                                     ? null
                                     : fallbackActiveMember?.credential
                                         .profileId ?? null,
+                            stateJson: encodeQualifiedGroupStateForActiveAccount({
+                                currentStateJson: current.stateJson,
+                                previousActiveAccountId: current.activeConnectedAccountId,
+                                nextActiveAccountId: fallbackActiveMember?.credential
+                                    .connectedAccountId ?? null,
+                            }),
                         }
                         : {}),
                     ...(shouldSetInitialActiveAccount
@@ -1436,6 +1490,11 @@ async function mutateQualifiedGroupMember(
                                 current.vendor === null
                                     ? null
                                     : createdMemberLegacyProfileId,
+                            stateJson: encodeQualifiedGroupStateForActiveAccount({
+                                currentStateJson: current.stateJson,
+                                previousActiveAccountId: current.activeConnectedAccountId,
+                                nextActiveAccountId: mutation.connectedAccountId,
+                            }),
                         }
                         : {}),
                     ...(mutation.state !== undefined
@@ -1593,6 +1652,12 @@ export async function deleteQualifiedConnectedAccountGroupMember(
                                         ? null
                                         : fallback?.credential.profileId
                                             ?? null,
+                                stateJson: encodeQualifiedGroupStateForActiveAccount({
+                                    currentStateJson: current.stateJson,
+                                    previousActiveAccountId: current.activeConnectedAccountId,
+                                    nextActiveAccountId: fallback?.credential
+                                        .connectedAccountId ?? null,
+                                }),
                             }
                             : {}),
                     },
@@ -1718,6 +1783,11 @@ export async function setQualifiedConnectedAccountGroupActiveAccount(
             },
             data: {
                 activeConnectedAccountId: mutation.connectedAccountId,
+                stateJson: encodeQualifiedGroupStateForActiveAccount({
+                    currentStateJson: current.stateJson,
+                    previousActiveAccountId: current.activeConnectedAccountId,
+                    nextActiveAccountId: mutation.connectedAccountId,
+                }),
                 activeProfileId:
                     current.vendor === null
                         ? null

@@ -8,7 +8,7 @@
  * consumers that only construct or parse schemas import the DSL module directly
  * and keep AJV out of their module graph.
  */
-import Ajv from 'ajv';
+import Ajv, { type ErrorObject } from 'ajv';
 import addFormats, { type FormatName } from 'ajv-formats';
 import { z } from 'zod';
 
@@ -206,6 +206,25 @@ export function preparePluginJsonSchema(schema: object): PreparedPluginJsonSchem
 
 export function compilePluginJsonSchema(schema: object): PluginJsonSchemaValidator {
   return preparePluginJsonSchema(schema).validate;
+}
+
+export type PluginJsonSchemaValueIssue = Readonly<{ pointer: string; message: string }>;
+
+/** Projects the most recent AJV validation errors without exposing AJV in the public validator type. */
+export function describePluginJsonSchemaValueIssues(
+  validate: PluginJsonSchemaValidator,
+): readonly PluginJsonSchemaValueIssue[] {
+  // compilePluginJsonSchema returns an AJV callable; its error bag is an implementation boundary.
+  const errors = (validate as PluginJsonSchemaValidator & { errors?: readonly ErrorObject[] | null }).errors;
+  return (errors ?? []).map((error) => {
+    const property = error.keyword === 'required'
+      ? error.params.missingProperty
+      : error.keyword === 'additionalProperties'
+        ? error.params.additionalProperty
+        : undefined;
+    const suffix = typeof property === 'string' ? `/${property.replace(/~/g, '~0').replace(/\//g, '~1')}` : '';
+    return { pointer: `${error.instancePath}${suffix}`, message: error.message ?? error.keyword };
+  });
 }
 
 /**

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ManagedGitHubAppTeamConsumerV1 } from "@happier-dev/protocol";
+import type { HomeAdministrationEventDetailV1, ManagedGitHubAppTeamConsumerV1 } from "@happier-dev/protocol";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -45,6 +45,7 @@ import { createExternalAuthorizeAttempt } from "@/app/api/routes/connect/oauthEx
 import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { isManagedGitHubHostApprovedByHome } from "./githubAppInstallationEligibility";
 import { publishHomeGovernanceChangedInTx } from "@/app/home/governance/governanceChanges";
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import {
     publishGitHubAppRegistrationTeamsChangedInTx,
     publishTeamChangedInTx,
@@ -130,12 +131,30 @@ function ownerTeamId(owner: ProviderCatalogContext): string | null {
     return owner.kind === "home" ? null : owner.teamId;
 }
 
+type GitHubAppAuditDetail = Extract<HomeAdministrationEventDetailV1, { action: `github_app.${string}` }>;
+
+/** The name people know an App by: its slug, or its App id when GitHub gave it none. */
+function gitHubAppAuditName(row: Readonly<{ githubAppSlug: string | null; githubAppId: bigint }>): string {
+    return row.githubAppSlug ?? `App ${row.githubAppId.toString()}`;
+}
+
+/**
+ * Publishes a committed App change to its owner. A Home-owned change is Home administration, so
+ * it is also recorded in Activity in the same transaction; the summary names the App and, for a
+ * secret rotation, only that secrets were replaced.
+ */
 async function publishGitHubAppOwnerChangedInTx(
     tx: Tx,
     owner: ProviderCatalogContext,
     registrationId: string,
+    audit: Readonly<{ actorAccountId: string; detail: GitHubAppAuditDetail }>,
 ): Promise<void> {
     if (owner.kind === "home") {
+        await recordHomeAdministrationEventInTx(tx, {
+            actor: { kind: "account", accountId: audit.actorAccountId },
+            target: { kind: "github_app", id: registrationId },
+            detail: audit.detail,
+        });
         await publishHomeGovernanceChangedInTx(tx);
         await publishGitHubAppRegistrationTeamsChangedInTx(tx, { registrationId });
         return;
@@ -368,7 +387,10 @@ export async function createGitHubAppRegistration(params: GitHubAppManagementAut
             },
             select: registrationSelect,
         });
-        await publishGitHubAppOwnerChangedInTx(tx, params.owner, row.id);
+        await publishGitHubAppOwnerChangedInTx(tx, params.owner, row.id, {
+            actorAccountId: params.actorAccountId,
+            detail: { action: "github_app.create", summary: { name: gitHubAppAuditName(row) } },
+        });
         return { status: "created", registration: projectRegistration(row, secrets) };
     });
 }
@@ -423,6 +445,8 @@ export async function listGitHubAppRegistrations(
                         where: { ownerTeamId: ownerTeamId(params.owner) },
                         select: {
                             id: true,
+                            enabled: true,
+                            ownerTeamId: true,
                             connections: {
                                 select: {
                                     id: true,
@@ -461,7 +485,7 @@ export async function listGitHubAppRegistrations(
                     teamConsumers: params.owner.kind === "home"
                         ? projectGitHubAppTeamConsumers(installation)
                         : [],
-                    requirements: projectGitHubAppInstallationRequirements(installation),
+                    ...projectGitHubAppInstallationRequirements(installation),
                 };
             }),
         };
@@ -538,7 +562,13 @@ export async function updateGitHubAppRegistration(params: GitHubAppManagementAut
         });
         const latestSecrets = updated.count === 0 ? decryptRegistrationSecrets(latest) : nextSecrets;
         if (updated.count === 1) {
-            await publishGitHubAppOwnerChangedInTx(tx, params.owner, params.registrationId);
+            await publishGitHubAppOwnerChangedInTx(tx, params.owner, params.registrationId, {
+                actorAccountId: params.actorAccountId,
+                detail: {
+                    action: "github_app.update",
+                    summary: { name: gitHubAppAuditName(latest), secretsReplaced: params.patch.secrets !== undefined },
+                },
+            });
         }
         return updated.count === 0
             ? { status: "revision_conflict", registration: projectRegistration(latest, latestSecrets) }
@@ -602,42 +632,39 @@ export interface GitHubAppInstallationView {
 export interface GitHubAppInstallationAdministrationView extends GitHubAppInstallationView {
     teamConsumers: readonly ManagedGitHubAppTeamConsumerV1[];
     requirements: ReturnType<typeof projectGitHubAppInstallationRequirementsV1>;
+    prospectiveRequirements: ReturnType<typeof projectGitHubAppInstallationRequirementsV1>;
 }
 
 /**
- * The consumers an installation actually carries decide what it must be granted:
- * an identity provider instance bound to it always presents organization evidence — exactly
- * the purpose `githubManagedIdentityProvider` resolves readiness with, whether the
- * instance signs in through the Home or through Team connections — and a directory
- * source that the sync path can still claim always reads members. Both answers come from
- * the readiness owner's requirement table, never from a copy kept here.
- *
- * The instance, not its connections, is the identity consumer: a Home-owned managed-GitHub
- * sign-in provider carries no Team connection at all, and deriving the purpose per connection
- * reported an empty requirement set for exactly the installation an administrator is trying
- * to repair.
- *
- * Binding a consumer to the installation is what creates the requirement, not switching it
- * on: an instance cannot be enabled and a connection cannot be created until this exact
- * permission is already granted (`githubManagedIdentityProvider#resolveManagedGitHubIdentityProviderReadinessInTx`),
- * so a repair list that waited for `enabled` would hide the grant an administrator needs to
- * get there. A removed consumer stops contributing by being deleted, and a paused directory
- * source contributes nothing because `findNextDirectorySourceDueForSync` can no longer claim it.
+ * Current access comes from enabled sign-in consumers and claimable directory sources.
+ * Setup/repair also includes disabled providers and paused sources: their grants must exist
+ * before they can be enabled or resumed. Both projections use the readiness owner's union.
+ * A Home provider needs no Team connection; a Team provider serves enabled connections only.
  */
 function projectGitHubAppInstallationRequirements(input: Readonly<{
     verifiedPermissions: unknown;
     verifiedEvents: unknown;
-    identityProviderInstances: readonly unknown[];
+    identityProviderInstances: readonly Readonly<{
+        enabled: boolean;
+        ownerTeamId: string | null;
+        connections: readonly Readonly<{ enabled: boolean }>[];
+    }>[];
     directorySources: readonly Readonly<{ state: TeamDirectorySourceState }>[];
-}>): ReturnType<typeof projectGitHubAppInstallationRequirementsV1> {
-    const purposes: GitHubAppConsumerPurposeV1[] = [
-        ...input.identityProviderInstances.map(() => (
-            { kind: "identity" as const, requiresOrganizationEvidence: true }
-        )),
-        ...input.directorySources
-            .filter((source) => source.state !== "paused")
-            .map(() => ({ kind: "directorySync" as const })),
-    ];
+}>) {
+    const currentPurposes: GitHubAppConsumerPurposeV1[] = [];
+    const prospectivePurposes: GitHubAppConsumerPurposeV1[] = [];
+    for (const provider of input.identityProviderInstances) {
+        const purpose = { kind: "identity", requiresOrganizationEvidence: true } as const;
+        prospectivePurposes.push(purpose);
+        if (provider.enabled && (provider.ownerTeamId === null || provider.connections.some(connection => connection.enabled))) {
+            currentPurposes.push(purpose);
+        }
+    }
+    for (const source of input.directorySources) {
+        const purpose = { kind: "directorySync" } as const;
+        prospectivePurposes.push(purpose);
+        if (source.state !== "paused") currentPurposes.push(purpose);
+    }
     let permissions: Readonly<Record<string, "read" | "write">>;
     try {
         permissions = parseGitHubPermissionsV1(input.verifiedPermissions);
@@ -647,7 +674,10 @@ function projectGitHubAppInstallationRequirements(input: Readonly<{
     const events = Array.isArray(input.verifiedEvents)
         ? input.verifiedEvents.filter((event): event is string => typeof event === "string")
         : [];
-    return projectGitHubAppInstallationRequirementsV1({ purposes, permissions, events });
+    return {
+        requirements: projectGitHubAppInstallationRequirementsV1({ purposes: currentPurposes, permissions, events }),
+        prospectiveRequirements: projectGitHubAppInstallationRequirementsV1({ purposes: prospectivePurposes, permissions, events }),
+    };
 }
 
 function projectGitHubAppTeamConsumers(input: Readonly<{
@@ -1113,7 +1143,13 @@ async function verifyGitHubAppInstallationWithAdministrator(params: GitHubAppMan
             },
             select: registrationSelect,
         });
-        await publishGitHubAppOwnerChangedInTx(tx, params.owner, params.registrationId);
+        await publishGitHubAppOwnerChangedInTx(tx, params.owner, params.registrationId, {
+            actorAccountId: params.actorAccountId,
+            detail: {
+                action: "github_app.installation.verify",
+                summary: { name: gitHubAppAuditName(registration), organization: installation.githubOrganizationLogin },
+            },
+        });
         return {
             status: "verified",
             registration: projectRegistration(registration, prepared.secrets),
@@ -1183,7 +1219,7 @@ export async function removeGitHubAppInstallation(params: GitHubAppManagementAut
         const installation = await tx.gitHubAppInstallation.findUnique({
             where: { id: params.installationId },
             include: {
-                registration: { select: { ownerTeamId: true } },
+                registration: { select: { ownerTeamId: true, githubAppSlug: true, githubAppId: true } },
                 _count: { select: { identityProviderInstances: true, directorySources: true } },
             },
         });
@@ -1204,7 +1240,16 @@ export async function removeGitHubAppInstallation(params: GitHubAppManagementAut
             where: { id: params.installationId, revision: params.expectedRevision },
         });
         if (removed.count === 1) {
-            await publishGitHubAppOwnerChangedInTx(tx, params.owner, installation.registrationId);
+            await publishGitHubAppOwnerChangedInTx(tx, params.owner, installation.registrationId, {
+                actorAccountId: params.actorAccountId,
+                detail: {
+                    action: "github_app.installation.remove",
+                    summary: {
+                        name: gitHubAppAuditName(installation.registration),
+                        organization: installation.githubOrganizationLogin,
+                    },
+                },
+            });
         }
         return { status: removed.count === 1 ? "removed" : "revision_conflict" };
     });

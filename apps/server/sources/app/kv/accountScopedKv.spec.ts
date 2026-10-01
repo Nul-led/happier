@@ -10,6 +10,13 @@ import {
 } from "./accountScopedKv";
 
 describe("AccountScopedKv namespace classifier", () => {
+    it("excludes authoring-memory rows and overlapping prefixes from generic KV", async () => {
+        const { assertPublicGenericKvPrefix } = await import("./accountScopedKv");
+        const key = "@happier/account/authoring-memory/v1/lastUsedProfile";
+        expect(() => assertPublicGenericKvKey(key)).toThrow(AccountScopedKvReservedKeyError);
+        expect(() => assertPublicGenericKvPrefix("@happier/account/authoring-memory/v1/")).toThrow(AccountScopedKvReservedKeyError);
+        expect(() => assertPublicGenericKvPrefix("@happier")).toThrow(AccountScopedKvReservedKeyError);
+    });
     it("derives the two typed plugin rows without exposing either as public KV", () => {
         const accountStorageKey = buildPluginAccountStoragePhysicalKey(
             "example.tasks",

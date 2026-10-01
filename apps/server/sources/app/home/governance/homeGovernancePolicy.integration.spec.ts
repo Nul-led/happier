@@ -57,6 +57,7 @@ describe("Home governance policy singleton", () => {
         await expect(readHomeGovernancePolicy()).resolves.toEqual({
             revision: 0,
             teamCreationPolicy: "managed_only",
+            teamsVisibleToMembers: true,
             authentication: { status: "inherited" },
             teamProviders: { status: "inherited" },
             identityNetwork: { status: "inherited" },
@@ -76,6 +77,7 @@ describe("Home governance policy singleton", () => {
             policy: {
                 revision: 1,
                 teamCreationPolicy: "self_service",
+                teamsVisibleToMembers: true,
                 authentication: { status: "inherited" },
                 teamProviders: { status: "inherited" },
                 identityNetwork: { status: "inherited" },
@@ -92,6 +94,7 @@ describe("Home governance policy singleton", () => {
             policy: {
                 revision: 2,
                 teamCreationPolicy: "self_service",
+                teamsVisibleToMembers: true,
                 authentication: { status: "narrowed", policy: { v: 1, admission: "invitation_only" } },
                 teamProviders: { status: "inherited" },
                 identityNetwork: { status: "inherited" },
@@ -351,6 +354,7 @@ describe("Home governance policy singleton", () => {
             policy: {
                 revision: 1,
                 teamCreationPolicy: "self_service",
+                teamsVisibleToMembers: true,
                 authentication: { status: "inherited" },
                 teamProviders: { status: "inherited" },
                 identityNetwork: { status: "inherited" },
@@ -384,6 +388,7 @@ describe("Home governance policy singleton", () => {
             policy: {
                 revision: 1,
                 teamCreationPolicy: "self_service",
+                teamsVisibleToMembers: true,
                 authentication: { status: "inherited" },
                 teamProviders: { status: "inherited" },
                 identityNetwork: { status: "inherited" },
@@ -469,7 +474,8 @@ describe("Home governance policy singleton", () => {
         const cleared = await inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
             actorAccountId: owner,
             env: POLICY_ENV,
-            patch: { expectedRevision: 1, authenticationPolicy: null },
+            // Clearing a narrowing re-offers what it closed: a widening the owner confirms (§3.4).
+            patch: { expectedRevision: 1, confirmWidening: true, authenticationPolicy: null },
         }));
         expect(cleared).toMatchObject({
             status: "applied",
@@ -605,6 +611,8 @@ describe("Home governance policy singleton", () => {
             },
             patch: {
                 expectedRevision: 1,
+                // Repairing restores a sign-in route, which widens: the owner confirms it (§3.4).
+                confirmWidening: true,
                 authenticationPolicy: { v: 1, enabledMethodIds: ["email_password"] },
             },
         }));
@@ -634,6 +642,7 @@ describe("Home governance policy singleton", () => {
         await expect(readHomeGovernancePolicy()).resolves.toEqual({
             revision: 4,
             teamCreationPolicy: "managed_only",
+            teamsVisibleToMembers: true,
             authentication: { status: "unreadable" },
             teamProviders: { status: "inherited" },
             identityNetwork: { status: "inherited" },
@@ -645,7 +654,7 @@ describe("Zero-owner claim service", () => {
     it("assigns one explicit active Account as the first owner", async () => {
         const account = await createAccount("member");
 
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: account })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: account, via: "deployment_command" })))
             .resolves.toEqual({ status: "claimed", ownerAccountId: account });
         await expect(db.account.findUniqueOrThrow({ where: { id: account }, select: { homeRole: true } }))
             .resolves.toEqual({ homeRole: "owner" });
@@ -662,7 +671,7 @@ describe("Zero-owner claim service", () => {
                 select: { id: true },
             });
             rolledBackAccountId = account.id;
-            await expect(claimHomeOwnerInTx(tx, { targetAccountId: account.id }))
+            await expect(claimHomeOwnerInTx(tx, { targetAccountId: account.id, via: "deployment_command" }))
                 .resolves.toEqual({ status: "claimed", ownerAccountId: account.id });
             throw new Error("simulate provisioner failure after owner claim");
         }, { isolationLevel: "Serializable" })).rejects.toThrow("simulate provisioner failure");
@@ -678,7 +687,7 @@ describe("Zero-owner claim service", () => {
             });
             return {
                 accountId: account.id,
-                claim: await claimHomeOwnerInTx(tx, { targetAccountId: account.id }),
+                claim: await claimHomeOwnerInTx(tx, { targetAccountId: account.id, via: "deployment_command" }),
             };
         }, { isolationLevel: "Serializable" });
 
@@ -694,11 +703,11 @@ describe("Zero-owner claim service", () => {
         const suspended = await createAccount("member", "suspended");
         const retired = await createAccount("member", "disabled");
 
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: suspended })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: suspended, via: "deployment_command" })))
             .resolves.toEqual({ status: "target_inactive" });
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: retired })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: retired, via: "deployment_command" })))
             .resolves.toEqual({ status: "target_inactive" });
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: "missing" })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: "missing", via: "deployment_command" })))
             .resolves.toEqual({ status: "target_not_found" });
         await expect(db.account.count({ where: { homeRole: "owner" } })).resolves.toBe(0);
     });
@@ -707,7 +716,7 @@ describe("Zero-owner claim service", () => {
         await createAccount("owner");
         const other = await createAccount("member");
 
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: other })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: other, via: "deployment_command" })))
             .resolves.toEqual({ status: "already_owned", activeOwnerCount: 1 });
         await expect(db.account.findUniqueOrThrow({ where: { id: other }, select: { homeRole: true } }))
             .resolves.toEqual({ homeRole: "member" });
@@ -717,7 +726,7 @@ describe("Zero-owner claim service", () => {
         await createAccount("owner", "disabled");
         const candidate = await createAccount("member");
 
-        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: candidate })))
+        await expect(inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: candidate, via: "deployment_command" })))
             .resolves.toEqual({ status: "claimed", ownerAccountId: candidate });
     });
 
@@ -726,8 +735,8 @@ describe("Zero-owner claim service", () => {
         const second = await createAccount("member");
 
         const outcomes = await Promise.all([
-            inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: first }), { isolationLevel: "Serializable" }),
-            inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: second }), { isolationLevel: "Serializable" }),
+            inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: first, via: "deployment_command" }), { isolationLevel: "Serializable" }),
+            inTx(async (tx) => await claimHomeOwnerInTx(tx, { targetAccountId: second, via: "deployment_command" }), { isolationLevel: "Serializable" }),
         ]);
 
         expect(outcomes.filter((outcome) => outcome.status === "claimed")).toHaveLength(1);

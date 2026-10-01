@@ -11,9 +11,8 @@ import {
     type LocalServicePublicExposureV1,
     type LocalServicePublicPolicyV1,
     type LocalServicePublicPreviewSnapshotV1,
-    type LocalServicePreviewDiagnosticV1,
-    type LocalServicePreviewResourceV1,
-} from "@happier-dev/protocol";
+} from "@happier-dev/protocol/local/services/public/v1";
+import type { LocalServicePreviewDiagnosticV1, LocalServicePreviewResourceV1 } from '@happier-dev/protocol';
 
 import {
     isLocalServicePublicExposureAccessible,
@@ -107,6 +106,7 @@ export type LocalServicePublicRuntime = Readonly<{
         rateLimitProfileId: string;
     }>): LocalServicePublicRuntimeCreateResult;
     resolveExposure(exposureId: string): LocalServicePublicExposureV1 | null;
+    retainConnection(exposureId: string, close: () => void): () => void;
     validateAccess(input: LocalServicePublicRuntimeAccessInput): LocalServicePublicRuntimeAccessResult;
     exchangeAccessToken(input: Readonly<{
         exposureId: string;
@@ -147,6 +147,7 @@ type ExposureEntry = Readonly<{
     exposure: LocalServicePublicExposureV1;
     secretTokenHash: string | null;
     secretTokenPurpose: "url_exchange" | "access" | null;
+    connections: Set<() => void>;
 }>;
 
 type AppendAuditEventResult =
@@ -275,6 +276,10 @@ export function createLocalServicePublicRuntime(
     ): ExposureEntry {
         const updated = { ...entry, exposure };
         entries.set(exposure.exposureId, updated);
+        if (exposure.state !== "active") {
+            for (const close of entry.connections) close();
+            entry.connections.clear();
+        }
         return updated;
     }
 
@@ -350,7 +355,7 @@ export function createLocalServicePublicRuntime(
             return { ok: false, reasonCode: "public_origin_unavailable" };
         }
         const issuedAt = nowMs();
-        let exposure: LocalServicePublicExposureV1 = {
+        const parsed = LocalServicePublicExposureV1Schema.safeParse({
             exposureId,
             previewId: createInput.preview.previewId,
             sessionId: createInput.preview.sessionId,
@@ -366,7 +371,11 @@ export function createLocalServicePublicRuntime(
             expiresAt: decision.expiresAt,
             auditEventIds: [],
             rateLimitProfileId: decision.rateLimitProfileId,
-        };
+        });
+        if (!parsed.success) {
+            return { ok: false, reasonCode: "invalid_policy" };
+        }
+        let exposure = parsed.data;
         const auditResult = appendAuditEvent(exposure, {
             exposureId,
             action: "create",
@@ -377,18 +386,14 @@ export function createLocalServicePublicRuntime(
         }
         exposure = auditResult.exposure;
 
-        const parsed = LocalServicePublicExposureV1Schema.safeParse(exposure);
-        if (!parsed.success) {
-            return { ok: false, reasonCode: "invalid_policy" };
-        }
-
         entries.set(exposureId, {
             preview: createInput.preview,
-            exposure: parsed.data,
+            exposure,
             secretTokenHash: secretToken && tokenSecret ? hashToken(tokenSecret, secretToken) : null,
             secretTokenPurpose: secretToken ? "url_exchange" : null,
+            connections: new Set(),
         });
-        return { ok: true, exposure: parsed.data };
+        return { ok: true, exposure };
     }
 
     function resolveExposure(exposureId: string): LocalServicePublicExposureV1 | null {
@@ -608,8 +613,19 @@ export function createLocalServicePublicRuntime(
             actorId: revokeInput.actorId,
         });
         if (!auditResult.ok) return auditResult;
-        entries.set(exposureId, { ...entry, exposure: auditResult.exposure });
+        updateExposureEntry(entry, auditResult.exposure);
         return { ok: true };
+    }
+
+    function retainConnection(exposureId: string, close: () => void): () => void {
+        const entry = entries.get(exposureId);
+        // Admission may have raced an asynchronous authentication/tunnel boundary.
+        if (!entry || !isLocalServicePublicExposureAccessible({ exposure: entry.exposure, nowMs: nowMs() })) {
+            close();
+            return () => {};
+        }
+        entry.connections.add(close);
+        return () => { entry.connections.delete(close); };
     }
 
     function entryMatchesStatusRequest(
@@ -672,6 +688,7 @@ export function createLocalServicePublicRuntime(
     return {
         createExposure,
         resolveExposure,
+        retainConnection,
         validateAccess,
         exchangeAccessToken,
         revokeExposure,

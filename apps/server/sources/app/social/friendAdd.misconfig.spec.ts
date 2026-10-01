@@ -22,6 +22,8 @@ vi.mock("./type", () => ({
     buildUserProfile: (user: any, status: any) => ({ id: user.id, status }),
 }));
 installPrismaModuleMock({
+    // No stored Home settings or governance policy row: the friends policy decides from the deployment env.
+    db: { homeSettings: { findUnique: async () => null }, homeGovernancePolicy: { findUnique: async () => null } },
     RelationshipStatus: {
         none: "none",
         requested: "requested",

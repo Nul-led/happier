@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
     TeamCredentialBrokerPlacementV1Schema,
     type TeamCredentialBrokerPlacementV1,
@@ -5,13 +6,14 @@ import {
 import type { MachineIrohEndpointAuthorityV1 } from "@happier-dev/protocol";
 
 import type { Tx } from "@/storage/inTx";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
 import {
     getMachinePoolCandidateSnapshotInTx,
     type MachinePoolCandidateSnapshot,
 } from "@/app/machines/pools/machinePoolService";
 import { selectMachinePoolCandidate } from "@/app/machines/pools/machinePoolPlacementService";
+import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
 import {
     classifyTeamCredentialBrokerMachineEligibility,
     resolveTeamCredentialBrokerMachinePresentInTx,
@@ -49,6 +51,20 @@ export function readTeamCredentialBrokerPlacement(row: TeamCredentialBrokerPlace
     return parsed.success ? { ok: true, placement: parsed.data } : { ok: false, error: "resource_corrupt" };
 }
 
+/** Opaque original resource location; revisions, policy and Pool membership are not identity. */
+export function resolveTeamCredentialBrokerPlacementFingerprint(
+    resource: TeamCredentialBrokerPlacementRow & Readonly<{ id: string }>,
+): string | null {
+    const read = readTeamCredentialBrokerPlacement(resource);
+    if (!read.ok || read.placement === null) return null;
+    const placement = read.placement;
+    return createHash("sha256").update(JSON.stringify([
+        resource.id,
+        placement.kind,
+        placement.kind === "machine" ? placement.machineId : placement.poolId,
+    ])).digest("hex");
+}
+
 const BROKER_MACHINE_ELIGIBILITY_SELECT = {
     kind: true,
     revokedAt: true,
@@ -74,7 +90,7 @@ export async function resolveTeamCredentialBrokerPoolForSaveInTx(
     // locations at all, so a credential placement cannot be saved onto one
     // either. The Pool routes already refuse; this is the same decision at the
     // one credential placement write owner.
-    if (!isServerFeatureEnabledForRequest("machines.pools", process.env)) {
+    if (!await isServerFeatureEnabledForHome("machines.pools", { tx })) {
         return { ok: false, error: "broker_unavailable" };
     }
     const pool = await tx.machinePool.findFirst({
@@ -83,6 +99,30 @@ export async function resolveTeamCredentialBrokerPoolForSaveInTx(
     });
     if (!pool) return { ok: false, error: "broker_unavailable" };
     return { ok: true, poolId: pool.id };
+}
+
+/** Validates a selected location independently from whether its audience needs brokerage. */
+export async function validateTeamCredentialBrokerPlacementForSaveInTx(
+    tx: Tx,
+    input: Readonly<{ custodianAccountId: string; placement: TeamCredentialBrokerPlacementV1 | null }>,
+): Promise<Readonly<{ ok: true }> | TeamCredentialBrokerMachineEligibilityError> {
+    if (input.placement === null) return { ok: true };
+    if (input.placement.kind === "machine") {
+        return await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
+            custodianAccountId: input.custodianAccountId,
+            brokerMachineId: input.placement.machineId,
+        });
+    }
+    // Attachment and deletion share the Pool row's transaction lock so a
+    // selected reference cannot miss deletion's resource invalidation.
+    const exists = await acquireMachinePoolMutationFenceInTx({
+        tx, accountId: input.custodianAccountId, poolId: input.placement.poolId,
+    });
+    if (!exists) return { ok: false, error: "broker_unavailable" };
+    return await resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
+        custodianAccountId: input.custodianAccountId,
+        poolId: input.placement.poolId,
+    });
 }
 
 /**

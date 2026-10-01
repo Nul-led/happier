@@ -40,6 +40,50 @@ export type PluginCollectionMigrationDeclarationV1 = z.infer<
 >;
 
 /**
+ * Exact executable Artifact selected by an authored Account Collection that
+ * declares migrations. The reference grants authority only to this
+ * contribution family; a renderer or another executable family naming the
+ * same export does not become a Collection migration owner.
+ */
+export const PluginCollectionMigrationArtifactReferenceV1Schema = z.object({
+  artifactId: asProtocolZod(PluginContributionLocalIdSchema),
+  exportName: z.literal('collectionMigrations'),
+}).strict();
+export type PluginCollectionMigrationArtifactReferenceV1 = z.infer<
+  typeof PluginCollectionMigrationArtifactReferenceV1Schema
+>;
+
+export type PluginCollectionMigrationArtifactOwnerV1 = Readonly<{
+  contributionId: string;
+  reference: PluginCollectionMigrationArtifactReferenceV1;
+}>;
+
+/**
+ * Resolves the exact static migration declaration slice admitted by the
+ * target Collection contract. Executable callbacks remain host-owned and are
+ * selected by matching these declaration identities.
+ */
+export function resolvePluginCollectionMigrationChainV1(input: Readonly<{
+  targetSchemaVersion: PluginCollectionSchemaVersionV1;
+  readableSchemaVersions: readonly PluginCollectionSchemaVersionV1[];
+  migrations: readonly PluginCollectionMigrationDeclarationV1[];
+  sourceSchemaVersion: PluginCollectionSchemaVersionV1;
+}>): readonly PluginCollectionMigrationDeclarationV1[] | null {
+  if (input.sourceSchemaVersion > input.targetSchemaVersion) return null;
+  const sourcePosition = input.readableSchemaVersions.indexOf(input.sourceSchemaVersion);
+  if (sourcePosition < 0) return null;
+  const chain = input.migrations.slice(sourcePosition);
+  let currentVersion = input.sourceSchemaVersion;
+  for (const migration of chain) {
+    if (migration.fromSchemaVersion !== currentVersion) return null;
+    currentVersion = migration.toSchemaVersion;
+  }
+  return currentVersion === input.targetSchemaVersion
+    ? Object.freeze(chain)
+    : null;
+}
+
+/**
  * Collection field references are root-object members. Keep their grammar on
  * the schema owner so author input and persisted reconstruction cannot drift.
  */
@@ -244,6 +288,7 @@ export const PluginAccountCollectionContributionV1Schema = z.object({
   quota: PluginCollectionQuotaRequestV1Schema.optional(),
   readableSchemaVersions: z.array(PluginCollectionSchemaVersionV1Schema).max(32).optional(),
   migrations: z.array(PluginCollectionMigrationDeclarationV1Schema).max(32).default([]),
+  migrationArtifact: PluginCollectionMigrationArtifactReferenceV1Schema.optional(),
   /**
    * The declared fields whose stored value is a mode-derived identity tag, so
    * the value the plugin can re-derive depends on the Account's encryption
@@ -338,7 +383,31 @@ export const PluginAccountCollectionContributionV1Schema = z.object({
       message: 'Migrations must cover every ordered adjacent declared readable schema-version edge exactly once.',
     });
   }
+  if (value.migrations.length === 0 && value.migrationArtifact !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['migrationArtifact'],
+      message: 'A Collection without migrations must not declare a migration Artifact.',
+    });
+  }
 });
 export type PluginAccountCollectionContributionV1 = z.infer<
   typeof PluginAccountCollectionContributionV1Schema
 >;
+
+/**
+ * Resolves the one exact migration Artifact owner for a plugin release. The
+ * current candidate protocol carries one digest for the complete preparation,
+ * so zero, missing, or competing owners fail closed instead of being merged by
+ * a consumer-local registry.
+ */
+export function resolvePluginCollectionMigrationArtifactOwnerV1(
+  contributions: readonly PluginAccountCollectionContributionV1[],
+): PluginCollectionMigrationArtifactOwnerV1 | null {
+  const owners = contributions.filter((contribution) => contribution.migrations.length > 0);
+  if (owners.length !== 1 || !owners[0]!.migrationArtifact) return null;
+  return Object.freeze({
+    contributionId: owners[0]!.id,
+    reference: Object.freeze({ ...owners[0]!.migrationArtifact }),
+  });
+}

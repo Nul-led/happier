@@ -8,13 +8,14 @@ import { decodeAutomationRunCause, projectAutomationOriginRun } from "./automati
 import { advanceAutomationScheduleCursorAfterTerminalRunTx } from "./automationRunQueueService";
 import type { AutomationRunItem, AutomationRunState } from "./automationTypes";
 
-type AutomationTerminalState = "succeeded" | "failed" | "cancelled" | "outcome_uncertain";
+type AutomationTerminalState = "succeeded" | "failed" | "cancelled" | "outcome_uncertain" | "skipped";
 
 const AUTOMATION_TERMINAL_EVENT_BY_STATE = {
     succeeded: "run_succeeded",
     failed: "run_failed",
     cancelled: "run_cancelled",
     outcome_uncertain: "run_outcome_uncertain",
+    skipped: "run_skipped",
 } as const satisfies Record<AutomationTerminalState, string>;
 
 /**

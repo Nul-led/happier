@@ -47,6 +47,7 @@ import {
 import { OutboundIdentityEndpointError } from "@/app/net/outboundIdentityNetworkPolicy";
 import { identityProviderCallbackUrl, resolveOAuthRuntimeByIdInTx } from "@/app/auth/providers/identityProviderCatalog";
 import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
+import { readHomeConfigEnv } from "@/app/home/settings/homeSettings";
 import { inTx } from "@/storage/inTx";
 import { readTeamOperationAuthenticationFromRequest } from "@/app/teams/actorContext";
 
@@ -73,8 +74,9 @@ function projectProvider(
     secretHealth: IdentityProviderSecretHealth,
     currentRuntimeFingerprint: string | null,
     teamConsumers: readonly ManagedIdentityProviderTeamConsumerV1[],
+    publicServerUrl: string | undefined,
 ): ManagedIdentityProviderV1 {
-    const callbackUrl = identityProviderCallbackUrl(resolveConfiguredPublicServerUrl(process.env), instance);
+    const callbackUrl = identityProviderCallbackUrl(publicServerUrl, instance);
     const common = {
         v: 1 as const,
         ...(callbackUrl ? { callbackUrl } : {}),
@@ -178,11 +180,14 @@ async function projectProviders(instances: readonly IdentityProviderInstanceView
             }),
         };
     });
+    // The callback lives at the Home's effective public address, stored or inferred (plan §3.2).
+    const publicServerUrl = resolveConfiguredPublicServerUrl(await readHomeConfigEnv());
     return instances.map((instance) => projectProvider(
         instance,
         projected.secretHealthById.get(instance.id) ?? "unreadable",
         projected.currentRuntimeFingerprintById.get(instance.id) ?? null,
         projected.teamConsumersByProviderId.get(instance.id) ?? [],
+        publicServerUrl,
     ));
 }
 

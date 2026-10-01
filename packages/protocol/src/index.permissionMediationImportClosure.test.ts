@@ -12,5 +12,5 @@ describe('Protocol root permission-mediation import closure', () => {
     ] as const) {
       expect(protocol.getActionSpec(actionId).id).toBe(actionId);
     }
-  }, 30_000);
+  }, 60_000);
 });

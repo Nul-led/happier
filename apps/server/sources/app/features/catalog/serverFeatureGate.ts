@@ -1,16 +1,51 @@
 import type { FeaturesResponse } from "@/app/features/types";
-import { readServerEnabledBit, type FeatureId } from "@happier-dev/protocol";
+import { readServerEnabledBit, type FeatureId, type ServerConfigEnv } from "@happier-dev/protocol";
 
 import { resolveServerFeaturePayload } from "./resolveServerFeaturePayload";
 import { serverFeatureRegistry } from "./serverFeatureRegistry";
+import { readHomeConfigEnv, readHomeConfigEnvInTx } from "@/app/home/settings/homeSettings";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import type { Tx } from "@/storage/inTx";
 
 export function resolveServerFeaturesForGating(env: NodeJS.ProcessEnv): FeaturesResponse {
     return resolveServerFeaturePayload(env, serverFeatureRegistry);
 }
 
+/** The sync decision for a caller that already holds the Home-effective env (or a startup capture). */
 export function isServerFeatureEnabledForRequest(featureId: FeatureId, env: NodeJS.ProcessEnv): boolean {
     const payload = resolveServerFeaturesForGating(env);
     return readServerEnabledBit(payload, featureId) === true;
+}
+
+/**
+ * Where a live feature decision reads the Home-effective configuration (plan
+ * `2026-09-26-home-owner-console` R1, §3.1 "Request/job-scoped configuration"):
+ * - `env`: an injected environment (anything but `process.env`) is used as given, the same rule as
+ *   `createServerFeatureGatePreHandler`; `process.env` or absent means "the Home's configuration";
+ * - `tx`: code already inside a transaction reads the Home settings row through it (SQLite runs one
+ *   connection, so a read beside an open transaction would wait on it forever);
+ * - `request`: the request's overlay, read at most once per request;
+ * - nothing: a socket event, worker run or service call outside any transaction reads the row once.
+ *
+ * Every source ends in the same overlay (`buildHomeConfigEnv`): the deployment env stays the lock,
+ * `apply: 'restart'` keys keep the values this process started with. Nothing is cached.
+ */
+export type HomeConfigSource = Readonly<{
+    env?: NodeJS.ProcessEnv;
+    tx?: Tx;
+    request?: object;
+}>;
+
+export async function readHomeEffectiveEnv(source: HomeConfigSource = {}): Promise<ServerConfigEnv> {
+    if (source.env && source.env !== process.env) return source.env;
+    if (source.tx) return await readHomeConfigEnvInTx(source.tx, process.env);
+    if (source.request) return await readRequestHomeEnv(source.request);
+    return await readHomeConfigEnv(process.env);
+}
+
+/** The live feature decision on the Home-effective configuration; see `HomeConfigSource`. */
+export async function isServerFeatureEnabledForHome(featureId: FeatureId, source?: HomeConfigSource): Promise<boolean> {
+    return isServerFeatureEnabledForRequest(featureId, await readHomeEffectiveEnv(source));
 }
 
 export function isResolvedServerFeatureEnabledForGating(payload: FeaturesResponse, featureId: FeatureId): boolean {
@@ -47,8 +82,11 @@ export function createServerFeatureGatePreHandler(
     // feature truthfully declares its own status beside its own body.
     unavailableStatus: number = 404,
 ): RoutePreHandler {
-    return async (_request, reply) => {
-        if (!isServerFeatureEnabledForRequest(featureId, env)) {
+    return async (request, reply) => {
+        // The process environment stands for the Home's effective configuration: gate on the
+        // request overlay, so a Home feature switch applies on the next request (plan
+        // 2026-09-26-home-owner-console §3.8). An injected environment is used as given.
+        if (!await isServerFeatureEnabledForHome(featureId, { env, request })) {
             return reply.code(unavailableStatus).send(unavailableBody);
         }
         return undefined;

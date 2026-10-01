@@ -17,11 +17,12 @@ describe("browser server feature resolver", () => {
                 "localServicePreview",
                 "hostedPluginWeb",
                 "externalUrl",
+                "streamedBrowser",
                 "simulatorPreview",
             ],
             iframeAvailable: true,
             webViewAvailable: true,
-            streamedSurfaceAvailable: false,
+            streamedSurfaceAvailable: true,
             disabledReasons: [],
         });
         expect(payload.capabilities.browser.internal).toMatchObject({

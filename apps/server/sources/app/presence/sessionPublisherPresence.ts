@@ -64,6 +64,7 @@ export type RegisterSessionPublisherResult =
 export type TouchSessionPublisherResult =
     | { status: "touched"; committedFence: Date; activeAt: Date; recipientCursors: readonly SessionRecipientCursor[]; badgeAttentionChanged: boolean }
     | { status: "unregistered" | "superseded" }
+    | { status: "stale_observation" }
     | { status: "rejected"; reason: "not_found" | "unauthorized" | "archived" };
 
 export type CloseSessionPublisherResult =
@@ -332,6 +333,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
     const registerOnce = async (
         binding: SessionPublisherBinding,
         snapshot: SessionRuntimeActivitySnapshot,
+        observedAt?: Date,
     ): Promise<RegisterSessionPublisherResult> => await inTx(async (tx): Promise<RegisterSessionPublisherResult> => {
         const session = await tx.session.findUnique({
             where: { id: binding.sessionId },
@@ -389,7 +391,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         });
         if (activity.status === "rejected") return activity;
 
-        const committedFence = new Date(Math.max(now().getTime(), session.lastActiveAt.getTime() + 1));
+        const committedFence = new Date(Math.max((observedAt ?? now()).getTime(), session.lastActiveAt.getTime() + 1));
         const publisherGeneration = session.publisherGeneration + 1n;
         const updated = await tx.session.updateMany({
             where: {
@@ -436,12 +438,18 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         socket: object;
         binding: SessionPublisherBinding;
         completeActivitySnapshot: unknown;
+        observedAt?: Date;
     }>): Promise<RegisterSessionPublisherResult> => await serialize(params.socket, async () => {
         const snapshot = parseCompleteSnapshot(params.completeActivitySnapshot);
         if (!snapshot) return { status: "rejected", reason: "invalid-params" };
+        const registration = registrations.get(params.socket);
+        // A snapshot may have registered this socket after the heartbeat's unregistered touch.
+        if (params.observedAt && registration && params.observedAt.getTime() <= registration.committedFence.getTime()) {
+            return { status: "rejected", reason: "contention" };
+        }
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
-                const result = await registerOnce(params.binding, snapshot);
+                const result = await registerOnce(params.binding, snapshot, params.observedAt);
                 if (result.status === "registered") {
                     rememberRegistration(params.socket, {
                         binding: { ...params.binding },
@@ -457,12 +465,15 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         return { status: "rejected", reason: "contention" };
     });
 
-    const touchPublisher = async (params: Readonly<{ socket: object }>): Promise<TouchSessionPublisherResult> => await serialize(
+    const touchPublisher = async (params: Readonly<{ socket: object; observedAt?: Date }>): Promise<TouchSessionPublisherResult> => await serialize(
         params.socket,
         async (): Promise<TouchSessionPublisherResult> => {
             if (closeResults.has(params.socket)) return { status: "superseded" };
             const registration = registrations.get(params.socket);
             if (!registration) return { status: "unregistered" };
+            if (params.observedAt && params.observedAt.getTime() <= registration.committedFence.getTime()) {
+                return { status: "stale_observation" };
+            }
             const result = await inTx(async (tx): Promise<TouchSessionPublisherResult> => {
                 const session = await tx.session.findUnique({
                     where: { id: registration.binding.sessionId },
@@ -485,7 +496,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                 ) {
                     return { status: "superseded" };
                 }
-                const committedFence = new Date(Math.max(now().getTime(), session.lastActiveAt.getTime() + 1));
+                const committedFence = new Date(Math.max((params.observedAt ?? now()).getTime(), session.lastActiveAt.getTime() + 1));
                 const updated = await tx.session.updateMany({
                     where: {
                         id: registration.binding.sessionId,

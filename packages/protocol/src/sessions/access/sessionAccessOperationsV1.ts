@@ -1,7 +1,9 @@
 import { z } from 'zod';
+import { TeamCredentialRouteV1Schema } from '../../teams/credentials/resourceV1.js';
 import { PrincipalRefV1Schema, TeamPrincipalRefV1Schema, GroupPrincipalRefV1Schema } from '../../teams/principal.js';
 import { SessionAccessGrantV1Schema, SessionAccessLevelV1Schema, SessionGrantMutationV1Schema, type SessionAccessLevelV1 } from './sessionAccessGrantV1.js';
 import { SessionAccessAccountSummaryV1Schema } from './sessionAccessPrincipalV1.js';
+import { TeamExternalSharingPolicyV1Schema } from '../../teams/team.js';
 import {
   gainsSessionAccessDelegationCapabilityV1,
   SessionEffectiveAccessV1Schema,
@@ -40,6 +42,36 @@ export const SessionAccessPrincipalSummaryV1Schema = z.discriminatedUnion('kind'
   GroupPrincipalRefV1Schema.extend({ name: z.string(), teamName: z.string() }).strict(),
 ]);
 export type SessionAccessPrincipalSummaryV1 = z.infer<typeof SessionAccessPrincipalSummaryV1Schema>;
+
+export const ResolveSessionAccessPrincipalsRequestV1Schema = z.object({
+  v: z.literal(1),
+  subjects: z.array(PrincipalRefV1Schema),
+  /** Optional primary-Team decision needed by a restored New Session draft. */
+  creationTeamId: z.string().min(1).optional(),
+}).strict();
+export type ResolveSessionAccessPrincipalsRequestV1 = z.infer<typeof ResolveSessionAccessPrincipalsRequestV1Schema>;
+
+/**
+ * The server-owned creation facts for one primary Team. This is deliberately a
+ * narrow projection: the draft needs the already-admitted default/floor and
+ * display identity, not a second copy of Team policy or a Team directory.
+ */
+export const SessionAccessCreationDecisionV1Schema = z.object({
+  v: z.literal(1),
+  teamId: z.string().min(1),
+  teamName: z.string(),
+  requiredByPolicy: z.boolean(),
+  defaultGrant: z.object({ accessLevel: SessionAccessLevelV1Schema, canApprovePermissions: z.boolean() }).strict().nullable(),
+  externalSharingPolicy: TeamExternalSharingPolicyV1Schema,
+}).strict();
+export type SessionAccessCreationDecisionV1 = z.infer<typeof SessionAccessCreationDecisionV1Schema>;
+
+export const ResolveSessionAccessPrincipalsResponseV1Schema = z.object({
+  v: z.literal(1),
+  principals: z.array(SessionAccessPrincipalSummaryV1Schema),
+  creationDecision: SessionAccessCreationDecisionV1Schema.nullable().optional(),
+}).strict();
+export type ResolveSessionAccessPrincipalsResponseV1 = z.infer<typeof ResolveSessionAccessPrincipalsResponseV1Schema>;
 
 export const SessionAccessGrantTransitionsV1Schema = z.object({
   accessLevels: z.array(SessionAccessLevelV1Schema),
@@ -176,11 +208,20 @@ export const SessionAccessGrantsListResponseV1Schema = z.discriminatedUnion('vis
 ]);
 export type SessionAccessGrantsListResponseV1 = z.infer<typeof SessionAccessGrantsListResponseV1Schema>;
 
+/** Admission condition for explicitly consented Run credential visibility. */
+export const RequiredSessionTeamCredentialV1Schema = z.object({
+  resourceId: z.string().min(1),
+  expectedResourceRevision: z.number().int().nonnegative(),
+  deliveryMode: TeamCredentialRouteV1Schema,
+}).strict();
+export type RequiredSessionTeamCredentialV1 = z.infer<typeof RequiredSessionTeamCredentialV1Schema>;
+
 export const SetSessionAccessGrantRequestV1Schema = z.object({
   sessionId: z.string().min(1),
   ...SessionGrantMutationV1Schema.options[0].shape,
   subject: PrincipalRefV1Schema,
-}).strict().superRefine(({ sessionId: _sessionId, ...grant }, ctx) => {
+  requiredTeamCredential: RequiredSessionTeamCredentialV1Schema.optional(),
+}).strict().superRefine(({ sessionId: _sessionId, requiredTeamCredential: _requiredTeamCredential, ...grant }, ctx) => {
   const parsed = SessionGrantMutationV1Schema.safeParse(grant);
   if (!parsed.success) for (const issue of parsed.error.issues) {
     ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });

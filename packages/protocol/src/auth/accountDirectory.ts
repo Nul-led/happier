@@ -6,7 +6,10 @@ import {
   encodeCanonicalLengthDelimited,
 } from '../crypto/canonicalDigest.js';
 import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundleFormat.js';
-import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
+import {
+  normalizeServerIdentityIdCapability,
+  SERVER_IDENTITY_ID_PATTERN,
+} from '../features/payload/capabilities/serverIdentityCapabilities.js';
 import { isLoopbackHostname } from '../server/urls/loopbackHostname.js';
 import {
   IrohEndpointDescriptorV1Schema,
@@ -97,7 +100,6 @@ export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES =
 export const ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES =
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES + BOX_BUNDLE_MIN_BYTES;
 
-const SERVER_IDENTITY_ID_PATTERN = /^srv_[A-Za-z0-9._-]{1,60}$/u;
 const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 /**
  * Application endpoint policy for Home enrollment and canonical Home URLs.

@@ -1,1 +1,1 @@
-export const DEFAULT_PREVIEW_MAX_RESPONSE_HEADER_BYTES = 64 * 1024;
+export * from "@happier-dev/peer-mediation/localServices/preview/limits";

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { RunnerResourceIdSchema, RunnerSha256CommitmentSchema } from './activation.js';
 import { RunnerConsentV1Schema } from './consent.js';
 import { RunnerReadinessV1Schema } from './readiness.js';
-import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
+import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataSchemasV1.js';
 import { SessionOrganizationPlacementV1Schema } from '../sessions/creation/sessionSpawnNewResultV1.js';
 import { SessionInitialAccessMaterializedV1Schema } from '../sessions/access/sessionInitialAccessDraftV1.js';
 import { SessionTeamCredentialBindingIntentsV1Schema } from '../teams/credentials/sessionBindingIntentV1.js';

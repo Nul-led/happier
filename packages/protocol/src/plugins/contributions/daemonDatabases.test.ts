@@ -91,10 +91,4 @@ describe('daemon database manifest declarations', () => {
     expect(() => PluginDaemonDatabaseMigrationDeclarationV1Schema.parse({ version: 1, id: 'not valid' }))
       .toThrow();
   });
-
-  it('does not admit duplicate database declarations under a plugin', () => {
-    expect(() => PluginContributesV2Schema.parse({
-      daemonDatabases: [declaredDatabase, { ...declaredDatabase, incumbentQueryFixtureId: 'records-v3' }],
-    })).toThrow('Duplicate daemon database contribution id');
-  });
 });

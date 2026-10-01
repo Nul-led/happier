@@ -37,6 +37,24 @@ describe("eventRouter (rooms)", () => {
         vi.restoreAllMocks();
     });
 
+    it("disconnects only the Account terminal room after a policy change", () => {
+        const connections = [
+            { room: "account-terminal:u1", connected: true },
+            { room: "account-terminal:u2", connected: true },
+            { room: "user:u1", connected: true },
+        ];
+        // Socket.IO is the transport boundary; the router and room selection remain real.
+        eventRouter.setIo({
+            to: (room: string) => ({ disconnectSockets: () => {
+                for (const connection of connections) {
+                    if (connection.room === room) connection.connected = false;
+                }
+            } }),
+        } as unknown as Parameters<typeof eventRouter.setIo>[0]);
+        eventRouter.disconnectAccountTerminalSockets("u1");
+        expect(connections.map((connection) => connection.connected)).toEqual([false, true, true]);
+    });
+
     it("throws when HAPPY_SOCKET_ROOMS_ONLY=1 and io is not initialized", () => {
         const envSnapshot = snapshotEnv();
         applyEnvValues({

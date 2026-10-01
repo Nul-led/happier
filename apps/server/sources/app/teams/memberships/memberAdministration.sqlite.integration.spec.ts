@@ -5,6 +5,9 @@ import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import { admitTeamMemberInTx } from "./membershipService";
+import { applyExternalGroupContributionInTx, applyExternalTeamMembershipInTx } from "./externalFacts";
+import { addTeamGroupMemberForActorInTx, createTeamGroupForActorInTx } from "../groups/groupService";
+import { resolveEffectiveTeamGroupIdsForAccountInTx } from "../groups/effectiveGroupMembership";
 import { readTeamSummaryForActorInTx } from "../lifecycle";
 import {
     addTeamMemberForActorInTx,
@@ -553,6 +556,111 @@ describe("Team member administration (SQLite integration)", () => {
             .toBe(membership.sessionAccessStartsAt?.getTime());
     });
 
+    it.each([
+        { management: "native", state: "suspended" },
+        { management: "directory_source", state: "suspended" },
+        { management: "native", state: "active" },
+    ] as const)("reconciles exact Group contributions when transferring $state directory management to $management", async ({ management, state }) => {
+        const owner = await account();
+        const target = await account();
+        const acme = await team("Contribution-aware management transfer");
+        await member(acme.id, owner.id, "owner");
+        const source = await workosSource(acme.id, "Original directory");
+        const nextSource = await workosSource(acme.id, "Independent directory");
+        for (const directorySource of [source, nextSource]) {
+            await db.teamProvisionedIdentity.create({ data: {
+                source: { connect: { id: directorySource.id } },
+                boundAccount: { connect: { id: target.id } },
+                externalUserId: "person", state: "active",
+            } });
+        }
+        const externalMember = {
+            teamId: acme.id, accountId: target.id,
+            source: { kind: "directory_source" as const, directorySourceId: source.id, externalUserId: "person" },
+            historyAccess: "from_membership" as const,
+        };
+        const admitted = await inTx((tx) => applyExternalTeamMembershipInTx(tx, { ...externalMember, desired: "active" }));
+        if (admitted.status !== "applied" || !admitted.teamMembershipId) throw new Error("Admission failed");
+        const membershipId = admitted.teamMembershipId;
+        const groups = [];
+        const originalBindings = [];
+        for (const [index, contribution] of ["sole", "native", "other_source"].entries()) {
+            const created = await inTx((tx) => createTeamGroupForActorInTx(tx, {
+                teamId: acme.id, actorAccountId: owner.id, name: `Group ${index}`, requestKey: crypto.randomUUID(),
+            }));
+            if (!created.ok) throw new Error(created.error);
+            groups.push(created.value.id);
+            for (const directorySource of contribution === "other_source" ? [source, nextSource] : [source]) {
+                await db.teamDirectoryGroup.create({ data: {
+                    directorySourceId: directorySource.id, externalGroupId: created.value.id,
+                    externalDisplayName: created.value.name, state: "active",
+                } });
+                await db.teamDirectoryGroupMember.create({ data: {
+                    directorySourceId: directorySource.id, externalGroupId: created.value.id, externalUserId: "person",
+                } });
+                const binding = await db.teamExternalGroupBinding.create({ data: {
+                    teamId: acme.id, teamGroupId: created.value.id, directorySourceId: directorySource.id,
+                    externalGroupId: created.value.id, bindingMode: "native_target",
+                } });
+                if (directorySource.id === source.id) originalBindings.push(binding.id);
+                expect(await inTx((tx) => applyExternalGroupContributionInTx(tx, {
+                    teamId: acme.id, groupId: created.value.id, accountId: target.id,
+                    externalGroupBindingId: binding.id, desired: "present", historyAccess: "all_existing",
+                }))).toMatchObject({ status: "ok" });
+            }
+            if (contribution === "native") {
+                expect(await inTx((tx) => addTeamGroupMemberForActorInTx(tx, {
+                    teamId: acme.id, groupId: created.value.id, actorAccountId: owner.id,
+                    accountId: target.id, historyAccess: "all_existing",
+                }))).toMatchObject({ ok: true });
+            }
+        }
+        if (state === "suspended") {
+            await inTx(async (tx) => {
+                await tx.teamProvisionedIdentity.update({
+                    where: { directorySourceId_externalUserId: { directorySourceId: source.id, externalUserId: "person" } },
+                    data: { state },
+                });
+                expect(await applyExternalTeamMembershipInTx(tx, { ...externalMember, desired: state })).toMatchObject({ status: "applied" });
+            });
+        } else {
+            // Partial projection evidence cannot revoke an active person's
+            // retained contributions merely because management is handed off.
+            await db.teamDirectorySource.update({ where: { id: source.id }, data: {
+                state: "initializing", activeReconcileRunId: "partial-roster",
+                activeReconcileStartedAt: new Date("2026-09-26T10:00:00Z"),
+            } });
+            await db.teamDirectoryGroupMember.deleteMany({ where: { directorySourceId: source.id } });
+        }
+        const before = await db.teamMembership.findUniqueOrThrow({ where: { id: membershipId } });
+        const groupRowsBefore = await db.teamGroupMembership.findMany({ where: { teamMembershipId: membershipId } });
+        expect(await inTx((tx) => setTeamMemberManagementForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, membershipId,
+            management: management === "native" ? { kind: "native" } : { kind: "directory_source", directorySourceId: nextSource.id },
+        }))).toMatchObject({ ok: true });
+        const after = await db.teamMembership.findUniqueOrThrow({ where: { id: membershipId } });
+        expect(after).toMatchObject({ id: before.id, role: before.role, status: before.status, sessionAccessStartsAt: before.sessionAccessStartsAt });
+        expect(await db.teamGroupMembershipExternalContribution.count({
+            where: { teamMembershipId: membershipId, externalGroupBindingId: { in: originalBindings } },
+        })).toBe(state === "active" ? 3 : 0);
+        const retained = await db.teamGroupMembership.findMany({ where: { teamMembershipId: membershipId } });
+        expect(retained.map((row) => row.teamGroupId).sort()).toEqual((state === "active" ? groups : groups.slice(1)).sort());
+        for (const row of retained) {
+            expect(row.sessionAccessStartsAt).toEqual(groupRowsBefore.find((beforeRow) => beforeRow.teamGroupId === row.teamGroupId)?.sessionAccessStartsAt);
+        }
+        if (state === "suspended") {
+            if (management === "native") {
+                expect(await inTx((tx) => reactivateTeamMemberForActorInTx(tx, { teamId: acme.id, actorAccountId: owner.id, membershipId }))).toMatchObject({ ok: true });
+            } else {
+                expect(await inTx((tx) => applyExternalTeamMembershipInTx(tx, {
+                    ...externalMember, source: { ...externalMember.source, directorySourceId: nextSource.id }, desired: "active",
+                }))).toMatchObject({ status: "applied" });
+            }
+        }
+        expect(await inTx((tx) => resolveEffectiveTeamGroupIdsForAccountInTx(tx, { teamId: acme.id, accountId: target.id })))
+            .toEqual((state === "active" ? groups : groups.slice(1)).sort());
+    });
+
     it("unbinds identity-connection management when returning a JIT lifetime to native management", async () => {
         const owner = await account();
         const target = await account();
@@ -767,6 +875,12 @@ describe("Team member administration (SQLite integration)", () => {
         const targetMembership = await member(acme.id, target.id, "member");
         await suspendAccount(target.id);
 
+        await expect(inTx((tx) => getTeamMemberForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, membershipId: targetMembership.teamMembershipId,
+        }))).resolves.toMatchObject({ ok: true, value: { capabilities: {
+            setRole: true, assignableRoles: ["admin", "member", "guest"],
+        } } });
+
         await expect(inTx((tx) => setTeamMemberRoleForActorInTx(tx, {
             teamId: acme.id,
             actorAccountId: owner.id,
@@ -826,10 +940,10 @@ describe("Team member administration (SQLite integration)", () => {
         // Only the recovery projection: the eligible candidate may be promoted,
         // nothing else is offered, and never over the caller itself.
         expect(byId.get(candidateMembership.teamMembershipId)).toEqual({
-            setRole: true, suspend: false, reactivate: false, remove: false, setManagement: false,
+            setRole: true, assignableRoles: ["owner"], suspend: false, reactivate: false, remove: false, setManagement: false,
         });
         expect(byId.get(adminMembership.teamMembershipId)).toEqual({
-            setRole: false, suspend: false, reactivate: false, remove: false, setManagement: false,
+            setRole: false, assignableRoles: [], suspend: false, reactivate: false, remove: false, setManagement: false,
         });
 
         const detail = await inTx((tx) => getTeamMemberForActorInTx(tx, {
@@ -878,6 +992,7 @@ describe("Team member administration (SQLite integration)", () => {
         expect(demoted.value.role).toBe("member");
         expect(demoted.value.capabilities).toEqual({
             setRole: false,
+            assignableRoles: [],
             suspend: false,
             reactivate: false,
             remove: false,

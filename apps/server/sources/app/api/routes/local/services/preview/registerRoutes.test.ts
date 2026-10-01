@@ -1,1098 +1,394 @@
-import type { LocalServicePreviewResourceV1 } from "@happier-dev/protocol";
-import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from "@/app/api/testkit/routeHarness";
-import { describe, expect, it, vi } from "vitest";
-import * as previewRoutesModule from "./registerRoutes";
+import { EventEmitter } from 'node:events';
+import type { LocalServicePreviewResourceV1, MachineOperationProtocolCapabilitiesV1 } from '@happier-dev/protocol';
+import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from '@/app/api/testkit/routeHarness';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerLocalServicePreviewRoutes } from './registerRoutes';
+import { createLocalServicePreviewRuntime } from '@/app/local/services/preview/runtime';
+import type { OpenLocalServicePreviewTunnel } from '@/app/local/services/preview/httpAdapter';
+import { createLocalServiceRouteRuntimes, registerLocalServiceRoutes } from '../registerRoutes';
+import type { SessionAccessProjectionRow } from '@/app/session/access/sessionAccess';
+import { LocalServicePreviewNativeDirectAccessV1Schema, LocalServicePreviewServerAccessV1Schema } from '@happier-dev/protocol/local/services/preview/nativeDirect';
 
-type PreviewRoutesModule = typeof import("./registerRoutes");
-type RegisterLocalServicePreviewRoutes = PreviewRoutesModule["registerLocalServicePreviewRoutes"];
-type PreviewProxyHttp = NonNullable<Parameters<RegisterLocalServicePreviewRoutes>[1]["proxyHttp"]>;
-
-async function loadPreviewRoutesModule(): Promise<PreviewRoutesModule> {
-    return previewRoutesModule;
-}
+// Only database, HTTP router/socket and network tunnel boundaries are replaced.
+const machineFindFirst = vi.hoisted(() => vi.fn(async (_query: unknown): Promise<{
+    id: string; revokedAt?: Date | null; replacedByMachineId?: string | null;
+    operationProtocolCapabilities?: MachineOperationProtocolCapabilitiesV1;
+    operationProtocolCapabilitiesRevision?: number;
+} | null> => ({ id: 'machine_1' })));
+const sessionFindUnique = vi.hoisted(() => vi.fn(async (): Promise<SessionAccessProjectionRow | null> => null));
+vi.mock('@/storage/db', () => ({ db: { machine: { findFirst: machineFindFirst }, session: { findUnique: sessionFindUnique } } }));
 
 const preview: LocalServicePreviewResourceV1 = {
-    previewId: "preview_1",
-    sessionId: "session_1",
-    machineId: "machine_1",
-    owner: { kind: "session", id: "session_1" },
-    target: { scheme: "http", host: "127.0.0.1", port: 5173 },
-    initialPath: { pathname: "/", search: "" },
-    display: {
-        title: "Vite App",
-        addressLabel: "127.0.0.1:5173",
-    },
-    originMode: "path",
-    policy: {
-        allowedMethods: ["GET", "HEAD", "POST", "OPTIONS"],
-        cookiePolicy: "drop",
-        compressionPolicy: "identity",
-        redirectPolicy: "rewrite_path_mode",
-        maxRequestBodyBytes: 1024 * 1024,
-        maxResponseBodyBytes: 1024 * 1024,
-    },
+    previewId: 'preview_1', sessionId: 'session_1', machineId: 'machine_1',
+    owner: { kind: 'session', id: 'session_1' },
+    target: { scheme: 'http', host: '127.0.0.1', port: 5173 },
+    initialPath: { pathname: '/', search: '' },
+    display: { title: 'Vite App', addressLabel: 'localhost:5173' }, originMode: 'host',
 };
+const sharedSession: SessionAccessProjectionRow = {
+    id: 'session_1', accountId: 'user_1', account: { status: 'active' }, primaryTeamId: null,
+    seq: 0, currentStorageState: 'hosted', acceptedThroughServerSeq: 0,
+    materializationPublicationId: null, materializedThroughSourceAt: null, publishedThroughServerSeq: null,
+    shares: [{ id: 'share_1', sharedWithUserId: 'viewer_1', accessLevel: 'view', canApprovePermissions: false }],
+    teamGrants: [], groupGrants: [],
+};
+const HOST = 'preview-1.preview.happier.test';
+const DECODED_CRLF_PATH = 'foo\r\nX-Injected: yes\r\n\r\nGET /admin HTTP/1.1';
+const ENCODED_CRLF_PATH = '/foo%0D%0AX-Injected:%20yes%0D%0A%0D%0AGET%20/admin%20HTTP/1.1';
 
-describe("local service preview routes", () => {
-    function allowSessionAccess() {
-        return vi.fn(() => true);
-    }
+function fixture(openTunnel?: OpenLocalServicePreviewTunnel) {
+    const runtime = createLocalServicePreviewRuntime({
+        tokenSecret: 'secret', publicBaseUrl: 'https://app.happier.test',
+        hostOriginBaseDomain: 'preview.happier.test', nowMs: () => 1_000,
+    });
+    const registered = runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+    if (!registered.ok) throw new Error(registered.reasonCode);
+    if (!registered.accessUrl) throw new Error('Private preview fixture requires an access URL');
+    const queryToken = new URL(registered.accessUrl).searchParams.get('previewToken');
+    const binding = { previewId: preview.previewId, sessionId: preview.sessionId, machineId: preview.machineId };
+    const viewer = runtime.exchangeAccessToken({ ...binding, rawToken: queryToken });
+    if (!viewer.ok) throw new Error(viewer.reasonCode);
+    const upgradeHandlers: Array<(request: unknown, socket: unknown, head: Uint8Array) => unknown> = [];
+    const app = Object.assign(createFakeRouteApp(), {
+        server: { on(event: string, handler: (request: unknown, socket: unknown, head: Uint8Array) => unknown) {
+            if (event === 'upgrade') upgradeHandlers.push(handler);
+        } },
+    });
+    registerLocalServicePreviewRoutes(app as never, {
+        resolvePreview: runtime.resolvePreview, resolvePreviewByHost: runtime.resolvePreviewByHost,
+        hostOriginBaseDomain: 'preview.happier.test', registerPreview: runtime.registerPreview,
+        unregisterPreview: runtime.unregisterPreview, validateAccess: runtime.validateAccess,
+        exchangeAccessToken: runtime.exchangeAccessToken,
+        resolvePreviewAccountId: (id) => runtime.resolvePreviewContext(id)?.accountId,
+        openTunnel,
+    });
+    return { runtime, app, upgradeHandlers, cookie: `happier_preview_token=${viewer.rawToken}` };
+}
 
-    function createUpgradeRouteApp() {
-        const upgradeHandlers: Array<(request: unknown, socket: unknown, head: Uint8Array) => unknown> = [];
-        return {
-            ...createFakeRouteApp(),
-            server: {
-                on: vi.fn((event: string, handler: (request: unknown, socket: unknown, head: Uint8Array) => unknown) => {
-                    if (event === "upgrade") upgradeHandlers.push(handler);
-                }),
-            },
-            upgradeHandlers,
-        };
-    }
+function tunnelBoundary(response = 'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n') {
+    const writes: string[] = [];
+    const openTunnel: OpenLocalServicePreviewTunnel = async () => ({
+        tunnelId: 'tunnel', substreamId: 'stream',
+        write(bytes) { writes.push(new TextDecoder().decode(bytes)); },
+        endWrite() {}, close() {}, abort() {},
+        async *read() { yield new TextEncoder().encode(response); },
+    });
+    return { openTunnel, writes };
+}
 
-    function createBackpressureUpgradeSocket() {
-        const listeners = new Map<string, Array<() => void>>();
-        const socket = {
-            write: vi.fn((_chunk: Uint8Array) => false),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            once: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-                return socket;
-            }),
-            on: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-                return socket;
-            }),
-            off: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, (listeners.get(event) ?? []).filter((entry) => entry !== listener));
-                return socket;
-            }),
-            emit(event: string) {
-                for (const listener of listeners.get(event) ?? []) {
-                    listener();
-                }
-            },
-        };
-        return socket;
-    }
+function downstreamBoundary() {
+    const events = new EventEmitter();
+    let wrote = () => {};
+    const writing = new Promise<void>((resolve) => { wrote = resolve; });
+    const socket = Object.assign(events, {
+        destroyed: false, ended: false, writing, output: [] as string[],
+        writeHead() {},
+        write(bytes: Uint8Array) { socket.output.push(new TextDecoder().decode(bytes)); wrote(); return false; },
+        end() { socket.ended = true; },
+        destroy() { socket.destroyed = true; events.emit('close'); },
+        async *[Symbol.asyncIterator]() {},
+    });
+    return socket;
+}
 
-    function createBackpressureRawReply() {
-        const listeners = new Map<string, Array<() => void>>();
-        const raw = {
-            writeHead: vi.fn(),
-            write: vi.fn((_chunk: Uint8Array) => false),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            once: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-                return raw;
-            }),
-            on: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-                return raw;
-            }),
-            off: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, (listeners.get(event) ?? []).filter((entry) => entry !== listener));
-                return raw;
-            }),
-            removeListener: vi.fn((event: string, listener: () => void) => {
-                listeners.set(event, (listeners.get(event) ?? []).filter((entry) => entry !== listener));
-                return raw;
-            }),
-            emit(event: string) {
-                for (const listener of listeners.get(event) ?? []) {
-                    listener();
-                }
-            },
-        };
-        return raw;
-    }
-
-    it("leaves host wildcard OPTIONS preflight to global CORS", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            resolvePreviewByHost: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        expect(getRouteEntry(app, "OPTIONS", "/v1/local-services/preview/:previewId/*")).toBeTruthy();
-        expect(app.routes.has("OPTIONS /*")).toBe(false);
+describe('local service preview routes', () => {
+    beforeEach(() => {
+        machineFindFirst.mockReset().mockResolvedValue({ id: 'machine_1' });
+        sessionFindUnique.mockReset().mockResolvedValue(null);
     });
 
-    it("keeps preview lifecycle authenticated while data-plane handlers use preview-token access", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
+    it('refreshes expired server admission for a shared viewer without native endpoint availability', async () => {
+        sessionFindUnique.mockResolvedValue(sharedSession);
+        const env = { HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home', HANDY_MASTER_SECRET: 'test-master-secret',
+            HAPPIER_PUBLIC_SERVER_URL: 'https://app.happier.test', HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: 'true',
+            HAPPIER_FEATURE_MACHINES_TUNNEL_DIRECT_PEER__ENABLED: 'false' };
+        let now = 1_000;
+        const runtime = createLocalServicePreviewRuntime({ tokenSecret: 'secret', publicBaseUrl: env.HAPPIER_PUBLIC_SERVER_URL,
+            hostOriginBaseDomain: 'preview.happier.test', tokenTtlMs: 60_000, nowMs: () => now });
+        const registered = runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+        if (!registered.ok || !registered.accessUrl) throw new Error('Expected isolated server admission');
+        const binding = { previewId: preview.previewId, sessionId: preview.sessionId, machineId: preview.machineId };
+        now = 61_001;
+        expect(runtime.exchangeAccessToken({ ...binding, rawToken: new URL(registered.accessUrl).searchParams.get('previewToken') }))
+            .toEqual({ ok: false, reasonCode: 'expired' });
+        machineFindFirst.mockResolvedValue(null);
         const app = createFakeRouteApp();
-        const exchangeAccessToken = vi.fn(() => ({
-            ok: true as const,
-            rawToken: "cookie_token_1",
-            expiresAt: 61_000,
-        }));
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess,
-            exchangeAccessToken,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        const route = getRouteEntry(app, "GET", "/v1/local-services/preview/:previewId/*");
-        expect(route.opts.preHandler).toBeUndefined();
-        expect(route.opts.exposeHeadRoute).toBe(false);
-        expect(getRouteEntry(app, "POST", "/v1/local-services/preview/:previewId/*").opts.preHandler).toBeUndefined();
-        expect(app.routes.get("HEAD /v1/local-services/preview/:previewId/*")?.opts.preHandler).toBeUndefined();
-        expect(app.routes.get("OPTIONS /v1/local-services/preview/:previewId/*")?.opts.preHandler).toBeUndefined();
-        expect(getRouteEntry(app, "POST", "/v1/local-services/preview").opts.preHandler).toBe(app.authenticate);
-        expect(getRouteEntry(app, "DELETE", "/v1/local-services/preview/:previewId").opts.preHandler).toBe(app.authenticate);
-    });
-
-    it("validates cookie token access and passes the preserved path/query to the HTTP adapter", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
+        registerLocalServiceRoutes(app as never, { env, runtimes: { ...createLocalServiceRouteRuntimes(env), preview: runtime } });
+        const request = { userId: 'viewer_1', authAuthority: 'present_user', params: { previewId: preview.previewId },
+            body: { v: 1, kind: 'server_preview' } };
         const reply = createReplyStub();
-        await handler({
-            userId: "user_1",
-            params: { previewId: "preview_1", "*": "assets/app.js" },
-            query: { v: "1" },
-            headers: { host: "app.happier.test", cookie: "happier_preview_token=token_1" },
-            method: "GET",
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/access')(request, reply);
+        expect(reply.statusCode).toBe(200);
+        const refreshed = LocalServicePreviewServerAccessV1Schema.parse(reply.send.mock.calls[0]?.[0]);
+        expect(refreshed).toMatchObject({ v: 1, kind: 'server_preview', previewId: preview.previewId, machineId: preview.machineId });
+        expect(refreshed.expiresAt).toBeGreaterThan(now);
+        const freshUrl = new URL(refreshed.accessUrl);
+        expect(freshUrl.hostname).toBe('preview-1.preview.happier.test');
+        expect(runtime.exchangeAccessToken({ ...binding, rawToken: freshUrl.searchParams.get('previewToken') }).ok).toBe(true);
+        sessionFindUnique.mockResolvedValue(null);
+        const denied = createReplyStub();
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/access')(request, denied);
+        expect(denied.statusCode).toBe(403);
+    });
+
+    it('does not roll back replacement policy while a server admission waits for Session authorization', async () => {
+        let startRead!: () => void;
+        let finishRead!: (row: SessionAccessProjectionRow) => void;
+        const reading = new Promise<void>((resolve) => { startRead = resolve; });
+        const acl = new Promise<SessionAccessProjectionRow>((resolve) => { finishRead = resolve; });
+        sessionFindUnique.mockImplementation(async () => { startRead(); return acl; });
+        const env = { HAPPIER_PUBLIC_SERVER_URL: 'https://app.happier.test', HANDY_MASTER_SECRET: 'secret',
+            HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: 'true' };
+        const runtime = createLocalServicePreviewRuntime({ tokenSecret: 'secret', publicBaseUrl: env.HAPPIER_PUBLIC_SERVER_URL,
+            hostOriginBaseDomain: 'preview.happier.test' });
+        runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+        const app = createFakeRouteApp();
+        registerLocalServiceRoutes(app as never, { env, runtimes: { ...createLocalServiceRouteRuntimes(env), preview: runtime } });
+        const reply = createReplyStub();
+        const pending = getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/access')({
+            userId: 'viewer_1', authAuthority: 'present_user', params: { previewId: preview.previewId },
+            body: { v: 1, kind: 'server_preview' },
         }, reply);
-
-        expect(validateAccess).toHaveBeenCalledWith(expect.objectContaining({
-            previewId: "preview_1",
-            rawToken: "token_1",
-            sessionId: "session_1",
-            machineId: "machine_1",
-        }));
-        expect(proxyHttp).toHaveBeenCalledWith(expect.objectContaining({
-            preview,
-            request: expect.objectContaining({
-                method: "GET",
-                path: "/assets/app.js",
-                search: "?v=1",
-            }),
-        }));
-    });
-
-    it("passes downstream connection close as an abort signal to the HTTP adapter", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const proxyHttp = vi.fn<PreviewProxyHttp>(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        });
-
-        const listeners = new Map<string, Set<() => void>>();
-        const raw = {
-            writeHead: vi.fn(),
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn((event: string, listener: () => void) => {
-                const eventListeners = listeners.get(event) ?? new Set<() => void>();
-                eventListeners.add(listener);
-                listeners.set(event, eventListeners);
-                return raw;
-            }),
-            off: vi.fn((event: string, listener: () => void) => {
-                listeners.get(event)?.delete(listener);
-                return raw;
-            }),
-            removeListener: vi.fn((event: string, listener: () => void) => {
-                listeners.get(event)?.delete(listener);
-                return raw;
-            }),
+        await reading;
+        const policy: NonNullable<LocalServicePreviewResourceV1['policy']> = {
+            allowedMethods: ['POST'], cookiePolicy: 'drop', compressionPolicy: 'identity', redirectPolicy: 'preserve_host_origin',
+            maxRequestBodyBytes: 1_024, maxResponseBodyBytes: 1_024,
         };
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = {
-            ...createReplyStub(),
-            raw,
-        };
-        await handler({
-            params: { previewId: "preview_1", "*": "assets/app.js" },
-            query: {},
-            headers: { cookie: "happier_preview_token=token_1" },
-            method: "GET",
-        }, reply);
-
-        expect(proxyHttp).toHaveBeenCalledTimes(1);
-        const firstCall = proxyHttp.mock.calls[0];
-        if (!firstCall) throw new Error("expected proxyHttp call");
-        const signal = firstCall[0].request.signal;
-        expect(signal).toBeInstanceOf(AbortSignal);
-        expect(signal?.aborted).toBe(false);
-
-        for (const listener of listeners.get("close") ?? []) listener();
-
-        expect(signal?.aborted).toBe(true);
-    });
-
-    it("waits for downstream HTTP response drain before resolving private preview response writes", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const raw = createBackpressureRawReply();
-        const proxyHttp = vi.fn<PreviewProxyHttp>(async (input) => {
-            input.response.writeHead(200, "OK", { "content-type": "text/plain" });
-            let writeResolved = false;
-            void Promise.resolve(input.response.write(new Uint8Array([1]))).then(() => {
-                writeResolved = true;
-            });
-
-            await Promise.resolve();
-            expect(writeResolved).toBe(false);
-            raw.emit("drain");
-            await Promise.resolve();
-            expect(writeResolved).toBe(true);
-
-            return { ok: true as const };
-        });
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        await handler({
-            params: { previewId: "preview_1", "*": "assets/app.js" },
-            query: {},
-            headers: { cookie: "happier_preview_token=token_1" },
-            method: "GET",
-        }, {
-            ...createReplyStub(),
-            raw,
-        });
-
-        expect(raw.write).toHaveBeenCalledWith(new Uint8Array([1]));
-        expect(raw.once).toHaveBeenCalledWith("drain", expect.any(Function));
-    });
-
-    it("fails closed when preview access is missing", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: false as const, reasonCode: "token_mismatch" })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            userId: "user_1",
-            params: { previewId: "preview_1", "*": "" },
-            query: {},
-            headers: {},
-            method: "GET",
-        }, reply);
-
-        expect(proxyHttp).not.toHaveBeenCalled();
-        expect(reply.statusCode).toBe(401);
-        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
-            error: "preview_access_denied",
-        }));
-    });
-
-    it("treats malformed preview token cookies as missing token material", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const validateAccess = vi.fn(() => ({ ok: false as const, reasonCode: "preview_token_missing" }));
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            userId: "user_1",
-            params: { previewId: "preview_1", "*": "" },
-            query: {},
-            headers: { cookie: "happier_preview_token=%" },
-            method: "GET",
-        }, reply);
-
-        expect(validateAccess).toHaveBeenCalledWith(expect.objectContaining({
-            rawToken: null,
-        }));
-        expect(proxyHttp).not.toHaveBeenCalled();
-        expect(reply.statusCode).toBe(401);
-        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
-            reasonCode: "preview_token_missing",
-        }));
-    });
-
-    it("registers a private preview resource through the runtime owner", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const registerPreview = vi.fn(() => ({
-            ok: true as const,
-            resource: preview,
-            accessUrl: "https://app.happier.test/v1/local-services/preview/preview_1/?previewToken=token_1",
-            expiresAt: 61_000,
-        }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            registerPreview,
-        });
-
-        const handler = getRouteHandler(app, "POST", "/v1/local-services/preview");
-        const reply = createReplyStub();
-        await handler({ userId: "user_1", body: preview }, reply);
-
-        expect(registerPreview).toHaveBeenCalledWith({
-            resource: preview,
-            accountId: "user_1",
-        });
-        expect(reply.statusCode).toBe(201);
-        expect(reply.send).toHaveBeenCalledWith({
-            resource: preview,
-            accessUrl: "https://app.happier.test/v1/local-services/preview/preview_1/?previewToken=token_1",
-            expiresAt: 61_000,
-        });
-    });
-
-    it("fails closed before registering a preview when session access is denied", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const registerPreview = vi.fn(() => ({
-            ok: true as const,
-            resource: preview,
-            accessUrl: "https://app.happier.test/v1/local-services/preview/preview_1/?previewToken=token_1",
-            expiresAt: 61_000,
-        }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: vi.fn(() => false),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            registerPreview,
-        });
-
-        const handler = getRouteHandler(app, "POST", "/v1/local-services/preview");
-        const reply = createReplyStub();
-        await handler({ userId: "user_2", body: preview }, reply);
-
-        expect(registerPreview).not.toHaveBeenCalled();
-        expect(reply.statusCode).toBe(403);
-        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
-            reasonCode: "session_not_authorized",
-        }));
-    });
-
-    it("allows cookie-token-authenticated data-plane requests without bearer session auth", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: vi.fn(() => false),
-            proxyHttp,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            userId: "user_2",
-            params: { previewId: "preview_1", "*": "" },
-            query: {},
-            headers: { cookie: "happier_preview_token=token_1" },
-            method: "GET",
-        }, reply);
-
-        expect(proxyHttp).toHaveBeenCalled();
-        expect(reply.send).not.toHaveBeenCalledWith(expect.objectContaining({
-            reasonCode: "session_not_authorized",
-        }));
-    });
-
-    it("routes token-authenticated OPTIONS preflight through the preview data-plane", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: vi.fn(() => false),
-            proxyHttp,
-        });
-
-        const entry = app.routes.get("OPTIONS /v1/local-services/preview/:previewId/*");
-        expect(entry?.handler).toBeTypeOf("function");
-        const reply = createReplyStub();
-        await entry?.handler({
-            params: { previewId: "preview_1", "*": "api/data" },
-            query: {},
-            headers: {
-                cookie: "happier_preview_token=token_1",
-                origin: "https://app.happier.test",
-                "access-control-request-method": "PUT",
-            },
-            method: "OPTIONS",
-        }, reply);
-
-        expect(proxyHttp).toHaveBeenCalledWith(expect.objectContaining({
-            request: expect.objectContaining({
-                method: "OPTIONS",
-                path: "/api/data",
-                search: "",
-            }),
-        }));
-    });
-
-    it("exchanges query preview tokens into a scoped HTTP-only preview cookie and redirects to a tokenless URL", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        const exchangeAccessToken = vi.fn(() => ({
-            ok: true as const,
-            rawToken: "cookie_token_1",
-            expiresAt: 61_000,
-        }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess,
-            exchangeAccessToken,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            params: { previewId: "preview_1", "*": "" },
-            query: { previewToken: "token_1", v: "1" },
-            headers: {},
-            method: "GET",
-        }, reply);
-
-        expect(validateAccess).not.toHaveBeenCalled();
-        expect(exchangeAccessToken).toHaveBeenCalledWith({
-            previewId: "preview_1",
-            rawToken: "token_1",
-            sessionId: "session_1",
-            machineId: "machine_1",
-        });
-        expect(reply.statusCode).toBe(303);
-        expect(reply.headers["Set-Cookie"]).toContain("happier_preview_token=cookie_token_1");
-        expect(reply.headers["Set-Cookie"]).toContain("Path=/v1/local-services/preview/preview_1/");
-        expect(reply.headers["Set-Cookie"]).toContain("HttpOnly");
-        expect(reply.headers.Location).toBe("/v1/local-services/preview/preview_1/?v=1");
-    });
-
-    it("dispatches host-origin preview HTTP requests by host label", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const hostPreview: LocalServicePreviewResourceV1 = {
-            ...preview,
-            previewId: "preview_1",
-            originMode: "host",
-            initialPath: { pathname: "/dashboard", search: "?tab=preview" },
-        };
-        const app = createFakeRouteApp();
-        const resolvePreviewByHost = vi.fn(() => hostPreview);
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        const proxyHttp = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => null),
-            resolvePreviewByHost,
-            hostOriginBaseDomain: "preview.example.test",
-            validateAccess,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp,
-        } as never);
-
-        expect(getRouteEntry(app, "GET", "/*").opts.constraints).toEqual({
-            host: expect.any(RegExp),
-        });
-        const handler = getRouteHandler(app, "GET", "/*");
-        const reply = createReplyStub();
-        await handler({
-            params: { "*": "dashboard" },
-            query: { v: "1" },
-            headers: {
-                host: "preview-1.preview.example.test",
-                cookie: "happier_preview_token=token_1",
-            },
-            method: "GET",
-        }, reply);
-
-        expect(resolvePreviewByHost).toHaveBeenCalledWith("preview-1.preview.example.test");
-        expect(validateAccess).toHaveBeenCalledWith(expect.objectContaining({
-            previewId: "preview_1",
-            rawToken: "token_1",
-            sessionId: "session_1",
-            machineId: "machine_1",
-        }));
-        expect(proxyHttp).toHaveBeenCalledWith(expect.objectContaining({
-            preview: hostPreview,
-            request: expect.objectContaining({
-                method: "GET",
-                path: "/dashboard",
-                search: "?v=1",
-            }),
-        }));
-    });
-
-    it("unregisters a private preview resource through the runtime owner", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        const unregisterPreview = vi.fn(() => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            unregisterPreview,
-        });
-
-        const handler = getRouteHandler(app, "DELETE", "/v1/local-services/preview/:previewId");
-        const reply = createReplyStub();
-        await handler({ userId: "user_1", params: { previewId: "preview_1" } }, reply);
-
-        expect(unregisterPreview).toHaveBeenCalledWith("preview_1");
-        expect(reply.send).toHaveBeenCalledWith({ ok: true });
-    });
-
-    it("registers a raw WebSocket upgrade handler that validates preview token access", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        const proxyWebSocket = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket,
-        });
-
-        expect(app.server.on).toHaveBeenCalledWith("upgrade", expect.any(Function));
-        const socket = {
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn(),
-        };
-        await app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/@vite/client?previewToken=token_1&v=1",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-                "sec-websocket-protocol": "vite-hmr",
-            },
-            rawHeaders: [
-                "Host", "app.happier.test",
-                "Upgrade", "websocket",
-                "Connection", "Upgrade",
-                "Sec-WebSocket-Protocol", "vite-hmr",
-            ],
-        }, socket, new Uint8Array());
-
-        expect(validateAccess).toHaveBeenCalledWith(expect.objectContaining({
-            previewId: "preview_1",
-            rawToken: "token_1",
-            sessionId: "session_1",
-            machineId: "machine_1",
-        }));
-        expect(proxyWebSocket).toHaveBeenCalledWith(expect.objectContaining({
-            preview,
-            request: expect.objectContaining({
-                path: "/@vite/client",
-                search: "?v=1",
-                rawHeaders: expect.arrayContaining(["Sec-WebSocket-Protocol", "vite-hmr"]),
-            }),
-        }));
-    });
-
-    it("waits for downstream socket drain before resolving private preview WebSocket writes", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        const socket = createBackpressureUpgradeSocket();
-        const proxyWebSocket = vi.fn<NonNullable<Parameters<RegisterLocalServicePreviewRoutes>[1]["proxyWebSocket"]>>(async (input) => {
-            let writeResolved = false;
-            void Promise.resolve(input.request.client.write(new Uint8Array([1]))).then(() => {
-                writeResolved = true;
-            });
-
-            await Promise.resolve();
-            expect(writeResolved).toBe(false);
-            socket.emit("drain");
-            await Promise.resolve();
-            expect(writeResolved).toBe(true);
-
-            return { ok: true as const };
-        });
-
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket,
-        });
-
-        await app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/@vite/client?previewToken=token_1",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-            },
-            rawHeaders: [],
-        }, socket, new Uint8Array());
-
-        expect(socket.write).toHaveBeenCalledWith(new Uint8Array([1]));
-        expect(socket.once).toHaveBeenCalledWith("drain", expect.any(Function));
-    });
-
-    it("dispatches host-origin preview WebSocket upgrades by host label", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const hostPreview: LocalServicePreviewResourceV1 = {
-            ...preview,
-            previewId: "preview_1",
-            originMode: "host",
-        };
-        const app = createUpgradeRouteApp();
-        const resolvePreviewByHost = vi.fn(() => hostPreview);
-        const validateAccess = vi.fn(() => ({ ok: true as const }));
-        const proxyWebSocket = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => null),
-            resolvePreviewByHost,
-            hostOriginBaseDomain: "preview.example.test",
-            validateAccess,
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket,
-        } as never);
-
-        const socket = {
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn(),
-        };
-        await app.upgradeHandlers[0]?.({
-            url: "/@vite/client?previewToken=token_1&hmr=1",
-            headers: {
-                host: "preview-1.preview.example.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-                "sec-websocket-protocol": "vite-hmr",
-            },
-            rawHeaders: [
-                "Host", "preview-1.preview.example.test",
-                "Upgrade", "websocket",
-                "Connection", "Upgrade",
-                "Sec-WebSocket-Protocol", "vite-hmr",
-            ],
-        }, socket, new Uint8Array());
-
-        expect(resolvePreviewByHost).toHaveBeenCalledWith("preview-1.preview.example.test");
-        expect(validateAccess).toHaveBeenCalledWith(expect.objectContaining({
-            previewId: "preview_1",
-            rawToken: "token_1",
-            sessionId: "session_1",
-            machineId: "machine_1",
-        }));
-        expect(proxyWebSocket).toHaveBeenCalledWith(expect.objectContaining({
-            preview: hostPreview,
-            request: expect.objectContaining({
-                path: "/@vite/client",
-                search: "?hmr=1",
-                rawHeaders: expect.arrayContaining(["Sec-WebSocket-Protocol", "vite-hmr"]),
-            }),
-        }));
-    });
-
-    it("fails WebSocket upgrades closed before proxying when preview token access is denied", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        const proxyWebSocket = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: false as const, reasonCode: "token_mismatch" })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket,
-        });
-
-        const socket = {
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn(),
-        };
-        await app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/socket?previewToken=bad",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-            },
-            rawHeaders: [],
-        }, socket, new Uint8Array());
-
-        expect(proxyWebSocket).not.toHaveBeenCalled();
-        expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("401 Unauthorized");
-        expect(socket.destroy).toHaveBeenCalled();
-    });
-
-    it("waits for downstream drain before closing private preview WebSocket error responses", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        const socket = createBackpressureUpgradeSocket();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: false as const, reasonCode: "token_mismatch" })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        const pending = Promise.resolve(app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/socket?previewToken=bad",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-            },
-            rawHeaders: [],
-        }, socket, new Uint8Array()));
-
-        await Promise.resolve();
-        expect(socket.write).toHaveBeenCalled();
-        expect(socket.once).toHaveBeenCalledWith("drain", expect.any(Function));
-        expect(socket.destroy).not.toHaveBeenCalled();
-
-        socket.emit("drain");
+        expect(runtime.registerPreview({ resource: { ...preview, policy }, accountId: 'user_1' }).ok).toBe(true);
+        finishRead(sharedSession);
         await pending;
-        expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("401 Unauthorized");
-        expect(socket.destroy).toHaveBeenCalled();
+        expect(runtime.resolvePreview(preview.previewId)?.policy).toEqual(policy);
+        expect(reply.statusCode).toBe(404);
     });
 
-    it.each(["close", "error"] as const)(
-        "closes private preview WebSocket error responses when the downstream emits %s before drain",
-        async (event) => {
-            const mod = await loadPreviewRoutesModule();
-            expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-            if (!mod?.registerLocalServicePreviewRoutes) return;
-
-            const app = createUpgradeRouteApp();
-            const socket = createBackpressureUpgradeSocket();
-            mod.registerLocalServicePreviewRoutes(app as never, {
-                resolvePreview: vi.fn(() => preview),
-                validateAccess: vi.fn(() => ({ ok: false as const, reasonCode: "token_mismatch" })),
-                authorizeSessionAccess: allowSessionAccess(),
-                proxyHttp: vi.fn(async () => ({ ok: true as const })),
-                proxyWebSocket: vi.fn(async () => ({ ok: true as const })),
-            });
-
-            const pending = Promise.resolve(app.upgradeHandlers[0]?.({
-                url: "/v1/local-services/preview/preview_1/socket?previewToken=bad",
-                headers: {
-                    host: "app.happier.test",
-                    upgrade: "websocket",
-                    connection: "Upgrade",
-                },
-                rawHeaders: [],
-            }, socket, new Uint8Array()));
-
-            await Promise.resolve();
-            expect(socket.write).toHaveBeenCalled();
-            expect(socket.once).toHaveBeenCalledWith("drain", expect.any(Function));
-            expect(socket.destroy).not.toHaveBeenCalled();
-
-            socket.emit(event);
-            await expect(pending).resolves.toBeUndefined();
-            expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("401 Unauthorized");
-            expect(socket.destroy).toHaveBeenCalled();
-        },
-    );
-
-    it("fails WebSocket upgrades closed when the proxy transport rejects", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket: vi.fn(async () => {
-                throw new Error("transport down");
-            }),
-        });
-
-        const socket = {
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn(),
-        };
-        app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/socket?previewToken=token_1",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-            },
-            rawHeaders: [],
-        }, socket, new Uint8Array());
-        await new Promise((resolve) => setTimeout(resolve, 0));
-
-        expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("502 Bad Gateway");
-        expect(socket.destroy).toHaveBeenCalled();
-    });
-
-    it("fails malformed WebSocket preview paths closed instead of throwing", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createUpgradeRouteApp();
-        const proxyWebSocket = vi.fn(async () => ({ ok: true as const }));
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            proxyWebSocket,
-        });
-
-        const socket = {
-            write: vi.fn(),
-            end: vi.fn(),
-            destroy: vi.fn(),
-            on: vi.fn(),
-        };
-        app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/%/socket?previewToken=token_1",
-            headers: {
-                host: "app.happier.test",
-                upgrade: "websocket",
-                connection: "Upgrade",
-            },
-            rawHeaders: [],
-        }, socket, new Uint8Array());
-        await new Promise((resolve) => setTimeout(resolve, 0));
-
-        expect(proxyWebSocket).not.toHaveBeenCalled();
-        expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("400 Bad Request");
-        expect(socket.destroy).toHaveBeenCalled();
-    });
-
-    // S-1 (lane C1). The same decoded-CRLF sink is reachable from the PRIVATE preview, whose
-    // required session access level is only `view`, so a read-only guest could otherwise smuggle
-    // writes into the host's localhost service.
-    const ROUTER_DECODED_CRLF_PATH = "foo\r\nX-Injected: yes\r\n\r\nGET /admin HTTP/1.1";
-    const CANONICAL_ENCODED_CRLF_PATH = "/foo%0D%0AX-Injected:%20yes%0D%0A%0D%0AGET%20/admin%20HTTP/1.1";
-
-    it("never writes a second upstream request line for a router-decoded CRLF private preview path", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const writes: string[] = [];
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            authorizeSessionAccess: allowSessionAccess(),
-            openTunnel: (async () => ({
-                tunnelId: "preview_tunnel_test",
-                substreamId: "preview_substream_test",
-                write: (bytes: Uint8Array) => {
-                    writes.push(new TextDecoder().decode(bytes));
-                },
-                endWrite: vi.fn(),
-                read: async function* (): AsyncIterableIterator<Uint8Array> {
-                    yield new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-                },
-                close: vi.fn(),
-                abort: vi.fn(),
-            })) as never,
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            method: "GET",
-            params: { previewId: "preview_1", "*": ROUTER_DECODED_CRLF_PATH },
-            query: {},
-            headers: { host: "app.happier.test", cookie: "happier_preview_token=token_1" },
-        }, reply);
-
-        const upstream = writes.join("");
-        expect(upstream.split("\r\n\r\n")).toHaveLength(2);
-        expect(upstream.split("\r\n").filter((line) => /\sHTTP\/1\.1$/u.test(line))).toHaveLength(1);
-        expect(upstream).not.toMatch(/\r\nX-Injected:/u);
-        expect(upstream.split("\r\n")[0]).toBe(`GET ${CANONICAL_ENCODED_CRLF_PATH} HTTP/1.1`);
-    });
-
-    it("never emits a CRLF Location header when exchanging a preview token on a decoded CRLF path", async () => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            exchangeAccessToken: vi.fn(() => ({
-                ok: true as const,
-                rawToken: "cookie_token_1",
-                expiresAt: 61_000,
-            })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-        });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
-        const reply = createReplyStub();
-        await handler({
-            method: "GET",
-            params: { previewId: "preview_1", "*": ROUTER_DECODED_CRLF_PATH },
-            query: { previewToken: "token_1" },
-            headers: {},
-        }, reply);
-
-        expect(reply.statusCode).toBe(303);
-        expect(reply.headers.Location).not.toMatch(/[\r\n]/u);
-        expect(reply.headers.Location).toBe(
-            `/v1/local-services/preview/preview_1/${CANONICAL_ENCODED_CRLF_PATH.slice(1)}`,
-        );
-    });
-
-    // F-5 (review gate R1, routed from C1-X5 / audit S-9). The path-mode exchange cookie follows
-    // the deployment: `Secure` on https, omitted on http where the browser would drop it and break
-    // the private preview outright. Pinned here because the option is supplied by the composition
-    // site — wiring it to the wrong consumer would otherwise fail silently.
     it.each([
-        { name: "https deployment", publicBaseUrlSecure: true, expectSecure: true },
-        { name: "http deployment", publicBaseUrlSecure: false, expectSecure: false },
-    ])("marks the path-mode exchange cookie Secure only on an $name", async ({ publicBaseUrlSecure, expectSecure }) => {
-        const mod = await loadPreviewRoutesModule();
-        expect(mod?.registerLocalServicePreviewRoutes).toBeTypeOf("function");
-        if (!mod?.registerLocalServicePreviewRoutes) return;
-
-        const app = createFakeRouteApp();
-        mod.registerLocalServicePreviewRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
-            validateAccess: vi.fn(() => ({ ok: true as const })),
-            exchangeAccessToken: vi.fn(() => ({
-                ok: true as const,
-                rawToken: "cookie_token_1",
-                expiresAt: 61_000,
-            })),
-            authorizeSessionAccess: allowSessionAccess(),
-            proxyHttp: vi.fn(async () => ({ ok: true as const })),
-            publicBaseUrlSecure,
+        preview.owner,
+        { kind: 'plugin', id: 'plugin_1' },
+    ] satisfies LocalServicePreviewResourceV1['owner'][])('admits a shared Session viewer through real Session ACL without granting Machine ownership ($kind)', async (owner) => {
+        sessionFindUnique.mockResolvedValue(sharedSession);
+        machineFindFirst.mockImplementation(async (query: unknown) => {
+            const parsed = query as { where: { accountId: string; id: string } };
+            return parsed.where.accountId === 'user_1' && parsed.where.id === 'machine_1'
+                ? { id: 'machine_1', revokedAt: null, replacedByMachineId: null,
+                    operationProtocolCapabilitiesRevision: 1, operationProtocolCapabilities: {
+                        irohMachineEndpoint: { protocolVersions: [1], endpointId: 'b'.repeat(64) },
+                        localServicePreviewNativeAccess: { protocolVersions: [1] },
+                    } } : null;
         });
-
-        const handler = getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*");
+        const env = { HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home', HANDY_MASTER_SECRET: 'test-master-secret',
+            HAPPIER_PUBLIC_SERVER_URL: 'https://app.happier.test', HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: 'true',
+            HAPPIER_FEATURE_MACHINES_TUNNEL_DIRECT_PEER__ENABLED: 'true' };
+        const runtimes = createLocalServiceRouteRuntimes(env);
+        runtimes.preview.registerPreview({ resource: { ...preview, owner }, accountId: 'user_1' });
+        const app = createFakeRouteApp();
+        registerLocalServiceRoutes(app as never, { env, runtimes });
         const reply = createReplyStub();
-        await handler({
-            params: { previewId: "preview_1", "*": "" },
-            query: { previewToken: "token_1" },
-            headers: {},
-            method: "GET",
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/access')({
+            userId: 'viewer_1', authAuthority: 'present_user', params: { previewId: preview.previewId },
+            body: { v: 1, initiator: { kind: 'account_client', endpointId: 'a'.repeat(64) }, ephemeralPublicKeyBase64Url: 'c'.repeat(43) },
         }, reply);
+        expect(reply.statusCode).not.toBe(403);
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
+            grant: expect.objectContaining({ payload: expect.objectContaining({ accountId: 'user_1', exp: null }) }),
+        }));
+        const access = LocalServicePreviewNativeDirectAccessV1Schema.parse(reply.send.mock.calls[0]?.[0]);
+        const scope = access.grant.payload.scope;
+        if (scope.kind !== 'tcp_tunnel' || !scope.preview) throw new Error('Expected a preview grant');
+        const controlDenied = createReplyStub();
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/native-registration')({
+            userId: 'viewer_1', authAuthority: 'present_user', params: { previewId: preview.previewId },
+            body: { ...scope.preview, grantId: access.grant.payload.grantId },
+        }, controlDenied);
+        expect(controlDenied.statusCode).toBe(403);
+        sessionFindUnique.mockResolvedValue(null);
+        const denied = createReplyStub();
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview/:previewId/access')({
+            userId: 'viewer_1', authAuthority: 'present_user', params: { previewId: preview.previewId },
+            body: { v: 1, initiator: { kind: 'account_client', endpointId: 'a'.repeat(64) }, ephemeralPublicKeyBase64Url: 'c'.repeat(43) },
+        }, denied);
+        expect(denied.statusCode).toBe(403);
+    });
 
+    it('returns the typed no-private-route registration through the authenticated HTTP boundary', async () => {
+        const runtime = createLocalServicePreviewRuntime({ tokenSecret: 'secret', publicBaseUrl: 'https://app.happier.test', hostOriginBaseDomain: null });
+        const app = createFakeRouteApp();
+        registerLocalServicePreviewRoutes(app as never, { ...runtime });
+        const { sessionId: _sessionId, ...machinePreview } = preview;
+        const reply = createReplyStub();
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview')({ userId: 'user_1', body: { ...machinePreview, owner: { kind: 'user', id: 'user_1' } } }, reply);
+        expect(reply.statusCode).toBe(201);
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ accessUrl: null, expiresAt: null, accessUnavailableReasonCode: 'preview_private_route_unavailable' }));
+    });
+
+    it('authorizes a sessionless preview against its real Machine and Account', async () => {
+        const { app, runtime } = fixture();
+        const { sessionId: _sessionId, ...machinePreview } = preview;
+        const resource = { ...machinePreview, previewId: 'machine-preview', owner: { kind: 'user', id: 'user_1' } };
+        const handler = getRouteHandler(app, 'POST', '/v1/local-services/preview');
+        const reply = createReplyStub();
+        await handler({ userId: 'user_1', body: resource }, reply);
+        expect(reply.statusCode).toBe(201);
+        expect(runtime.resolvePreview('machine-preview')?.sessionId).toBeUndefined();
+        expect(machineFindFirst).toHaveBeenCalledWith({
+            where: { id: 'machine_1', accountId: 'user_1' }, select: { id: true },
+        });
+        machineFindFirst.mockResolvedValueOnce(null);
+        const denied = createReplyStub();
+        await handler({ userId: 'user_2', body: { ...resource, previewId: 'other', owner: { kind: 'user', id: 'user_2' } } }, denied);
+        expect(denied.statusCode).toBe(403);
+        expect(runtime.resolvePreview('other')).toBeNull();
+    });
+
+    it('refuses private preview data on the API origin even for a registered host resource', async () => {
+        const { app, runtime, upgradeHandlers, cookie } = fixture();
+        const registered = runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+        if (!registered.ok) throw new Error(registered.reasonCode);
+        const reply = createReplyStub();
+        await getRouteHandler(app, 'GET', '/v1/local-services/preview/:previewId/*')({
+            params: { previewId: 'preview_1', '*': '' }, headers: { host: 'app.happier.test' },
+            query: { previewToken: new URL(registered.accessUrl ?? '').searchParams.get('previewToken') },
+        }, reply);
+        expect(reply.statusCode).toBe(404);
+        expect(reply.headers['Set-Cookie']).toBeUndefined();
+        const socket = downstreamBoundary();
+        const pending = Promise.resolve(upgradeHandlers[0]?.({
+            url: '/v1/local-services/preview/preview_1/socket',
+            headers: { host: 'app.happier.test', cookie },
+        }, socket, new Uint8Array()));
+        await socket.writing;
+        socket.emit('drain');
+        await pending;
+        expect(socket.output.join('')).toContain('404 Not Found');
+        expect(socket.destroyed).toBe(true);
+    });
+
+    it('requires real Session authorization when a Session is supplied', async () => {
+        const { app, runtime } = fixture();
+        const reply = createReplyStub();
+        await getRouteHandler(app, 'POST', '/v1/local-services/preview')({
+            userId: 'user_1', authAuthority: 'present_user', body: { ...preview, previewId: 'other-session' },
+        }, reply);
+        expect(reply.statusCode).toBe(403);
+        expect(runtime.resolvePreview('other-session')).toBeNull();
+    });
+
+    it('revokes sessionless registration only for its owning Account and Machine', async () => {
+        const { app, runtime } = fixture();
+        const { sessionId: _sessionId, ...resource } = preview;
+        expect(runtime.registerPreview({ accountId: 'user_1', resource: {
+            ...resource, previewId: 'machine-preview', owner: { kind: 'user', id: 'user_1' },
+        } }).ok).toBe(true);
+        const handler = getRouteHandler(app, 'DELETE', '/v1/local-services/preview/:previewId');
+        const denied = createReplyStub();
+        await handler({ userId: 'user_2', params: { previewId: 'machine-preview' } }, denied);
+        expect(denied.statusCode).toBe(403);
+        const allowed = createReplyStub();
+        await handler({ userId: 'user_1', params: { previewId: 'machine-preview' } }, allowed);
+        expect(allowed.send).toHaveBeenCalledWith({ ok: true });
+        expect(runtime.resolvePreview('machine-preview')).toBeNull();
+    });
+
+    it('keeps lifecycle authenticated and host data-plane access preview-token scoped', async () => {
+        const network = tunnelBoundary();
+        const { app, cookie } = fixture(network.openTunnel);
+        expect(getRouteEntry(app, 'POST', '/v1/local-services/preview').opts.preHandler).toBe(app.authenticate);
+        expect(getRouteEntry(app, 'DELETE', '/v1/local-services/preview/:previewId').opts.preHandler).toBe(app.authenticate);
+        expect(getRouteEntry(app, 'GET', '/*').opts.preHandler).toBeUndefined();
+        const reply = createReplyStub();
+        await getRouteHandler(app, 'GET', '/*')({
+            params: { '*': 'assets/app.js' }, query: { v: '1' }, headers: { host: HOST, cookie },
+        }, reply);
+        expect(network.writes.join('')).toContain('GET /assets/app.js?v=1 HTTP/1.1\r\n');
+        for (const cookieHeader of [undefined, 'happier_preview_token=%E0%A4%A']) {
+            const denied = createReplyStub();
+            await getRouteHandler(app, 'GET', '/*')({ params: { '*': '' }, headers: { host: HOST, cookie: cookieHeader } }, denied);
+            expect(denied.statusCode).toBe(401);
+        }
+    });
+
+    it('exchanges a fresh URL token once into a Secure HTTP-only host cookie and tokenless redirect', async () => {
+        const { app, runtime } = fixture();
+        const registered = runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+        if (!registered.ok) throw new Error(registered.reasonCode);
+        const request = {
+            params: { '*': DECODED_CRLF_PATH }, headers: { host: HOST },
+            query: { previewToken: new URL(registered.accessUrl ?? '').searchParams.get('previewToken'), tab: '1' },
+        };
+        const reply = createReplyStub();
+        await getRouteHandler(app, 'GET', '/*')(request, reply);
         expect(reply.statusCode).toBe(303);
-        const setCookie = String(reply.headers["Set-Cookie"]);
-        expect(setCookie).toContain("happier_preview_token=cookie_token_1");
-        expect(setCookie).toContain("HttpOnly");
-        expect(setCookie.includes("Secure")).toBe(expectSecure);
+        expect(reply.headers.Location).toBe(`${ENCODED_CRLF_PATH}?tab=1`);
+        expect(reply.headers.Location).not.toMatch(/[\r\n]/u);
+        expect(String(reply.headers['Set-Cookie'])).toContain('Path=/');
+        expect(String(reply.headers['Set-Cookie'])).toContain('HttpOnly');
+        expect(String(reply.headers['Set-Cookie'])).toContain('Secure');
+        const authenticatedReload = createReplyStub();
+        await getRouteHandler(app, 'GET', '/*')({ ...request, headers: {
+            host: HOST, cookie: String(reply.headers['Set-Cookie']).split(';')[0],
+        } }, authenticatedReload);
+        expect(authenticatedReload.statusCode).toBe(303);
+        expect(authenticatedReload.headers.Location).toBe(`${ENCODED_CRLF_PATH}?tab=1`);
+        expect(authenticatedReload.headers['Set-Cookie']).toBeUndefined();
+        const replay = createReplyStub();
+        await getRouteHandler(app, 'GET', '/*')(request, replay);
+        expect(replay.statusCode).toBe(401);
+    });
+
+    it('never writes a second upstream request line for a router-decoded CRLF private preview path', async () => {
+        const network = tunnelBoundary();
+        const { app, cookie } = fixture(network.openTunnel);
+        await getRouteHandler(app, 'GET', '/*')({
+            method: 'GET', params: { '*': DECODED_CRLF_PATH }, headers: { host: HOST, cookie },
+        }, createReplyStub());
+        const upstream = network.writes.join('');
+        expect(upstream.split('\r\n').filter((line) => /\sHTTP\/1\.1$/u.test(line))).toHaveLength(1);
+        expect(upstream.split('\r\n')[0]).toBe(`GET ${ENCODED_CRLF_PATH} HTTP/1.1`);
+        expect(upstream).not.toMatch(/\r\nX-Injected:/u);
+    });
+
+    it('waits for downstream HTTP response drain before resolving private preview response writes', async () => {
+        const network = tunnelBoundary('HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx');
+        const { app, cookie } = fixture(network.openTunnel);
+        const raw = downstreamBoundary();
+        const pending = getRouteHandler(app, 'GET', '/*')({
+            params: { '*': '' }, headers: { host: HOST, cookie },
+        }, { ...createReplyStub(), raw });
+        await raw.writing;
+        expect(raw.ended).toBe(false);
+        raw.emit('drain');
+        await pending;
+        expect(raw.output.join('')).toBe('x');
+        expect(raw.ended).toBe(true);
+    });
+
+    it('waits for downstream socket drain before resolving private preview WebSocket writes', async () => {
+        const network = tunnelBoundary('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n');
+        const { upgradeHandlers, cookie } = fixture(network.openTunnel);
+        const socket = downstreamBoundary();
+        let completed = false;
+        const pending = Promise.resolve(upgradeHandlers[0]?.({
+            url: '/@vite/client?v=1',
+            headers: { host: HOST, cookie, upgrade: 'websocket', connection: 'Upgrade',
+                'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' },
+        }, socket, new Uint8Array())).then(() => { completed = true; });
+        await socket.writing;
+        expect(completed).toBe(false);
+        socket.emit('drain');
+        await pending;
+        expect(socket.output.join('')).toContain('101 Switching Protocols');
+        expect(network.writes.join('')).toContain('GET /@vite/client?v=1 HTTP/1.1');
+    });
+
+    it.each(['close', 'error'])('closes private WS error responses when downstream emits %s before drain', async (event) => {
+        const { upgradeHandlers } = fixture();
+        const socket = downstreamBoundary();
+        const pending = Promise.resolve(upgradeHandlers[0]?.({
+            url: '/socket', headers: { host: HOST },
+        }, socket, new Uint8Array()));
+        await socket.writing;
+        socket.emit(event);
+        await pending;
+        expect(socket.destroyed).toBe(true);
+        expect(socket.output.join('')).toContain('401 Unauthorized');
     });
 });

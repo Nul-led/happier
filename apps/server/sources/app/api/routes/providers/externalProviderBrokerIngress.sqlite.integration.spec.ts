@@ -10,6 +10,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { createSha256SecretDigest } from "@/app/auth/secretDigest";
 import {
     createTeamCredentialExternalApiKeyInTx,
+    authorizeTeamCredentialExternalApiKeyInTx,
     revokeTeamCredentialExternalApiKeyInTx,
     verifyTeamCredentialExternalApiKeyInTx,
 } from "@/app/teams/credentials/externalApiKey";
@@ -25,6 +26,9 @@ import {
 import { formatTeamCredentialExternalApiKeyV1, createTeamCredentialExternalApiKeyDisplayPrefixV1 } from "@happier-dev/protocol/teams";
 import { resolveTeamCredentialExternalBrokerPlacement } from "@/app/teams/credentials/externalBrokerPlacement";
 import { updateMachinePool } from "@/app/machines/pools/machinePoolService";
+import { readExternalBrokerOperation, retireExternalBrokerOperationInTx } from "@/app/teams/credentials/externalBrokerOperation";
+import { resolveTeamCredentialBrokerPlacementFingerprint } from "@/app/teams/credentials/brokerPlacementResolver";
+import { updateTeamCredentialResourceInTx } from "@/app/teams/credentials/resourceUpdate";
 
 /**
  * A Home that can actually serve this API also has the route-grant signing
@@ -164,6 +168,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
         // are the real ones.
         let presentMachineIds = new Set([broker.id, fallbackBroker.id]);
         let sourceEligibleMachineIds = new Set([broker.id, fallbackBroker.id]);
+        let sourceEligibilityUnavailable = false;
         const dispatch = vi.fn(async (_input: Parameters<ExternalProviderBrokerDispatch>[0]) => ({
             ok: true as const,
             statusCode: 200,
@@ -182,9 +187,12 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             },
             dispatch,
             readCurrentBrokerPresence: async () => ({ state: "known", machineIds: new Set(presentMachineIds) }),
-            readPoolSourceEligibility: async ({ machineIds }) => ({
-                eligibleMachineIds: new Set(machineIds.filter((machineId) => sourceEligibleMachineIds.has(machineId))),
-            }),
+            readPoolSourceEligibility: async ({ machineIds }) => {
+                if (sourceEligibilityUnavailable) throw new Error("eligibility transport unavailable");
+                return {
+                    eligibleMachineIds: new Set(machineIds.filter((machineId) => sourceEligibleMachineIds.has(machineId))),
+                };
+            },
         });
         await app.ready();
         const application = {
@@ -204,11 +212,12 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             });
             const dispatched = dispatch.mock.calls[0]?.[0];
             return response.statusCode === 200 && dispatched
-                ? { brokerMachineId: dispatched.target.brokerMachineId, requestId: dispatched.request.requestId }
+                ? { brokerMachineId: dispatched.target.brokerMachineId, requestId: dispatched.request.requestId,
+                    operationId: dispatched.target.operationId, brokerPlacementFingerprint: dispatched.target.brokerPlacementFingerprint }
                 : { status: response.statusCode };
         };
         /** The dispatched broker's admission of that exact request, by the real Home owner. */
-        const admitOn = (keyId: string, brokerMachineId: string, requestId: string) => inTx((tx) => (
+        const admitOn = (keyId: string, brokerMachineId: string, requestId: string, operationId: string | null, brokerPlacementFingerprint: string, expectedResourceRevision = resource.revision) => inTx((tx) => (
             admitTeamCredentialExternalProviderRequestInTx(tx, {
                 authenticatedBrokerAccountId: manager.id,
                 observedAt: new Date(),
@@ -221,11 +230,13 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                         resourceId: resource.id,
                         requestId,
                         externalApiKeyId: keyId,
+                        operationId,
+                        brokerPlacementFingerprint,
                         assignedAccountId: recipient.id,
                         assignedTeamMembershipId: membership.id,
                     },
                     brokerMachineId,
-                    expectedResourceRevision: resource.revision,
+                    expectedResourceRevision,
                     application,
                     requestFacts: {
                         generation: true,
@@ -240,7 +251,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
         const serve = async (key: Readonly<{ token: string; keyId: string }>) => {
             const dispatched = await send(key.token);
             if (!("brokerMachineId" in dispatched) || typeof dispatched.requestId !== "string") return dispatched;
-            const admitted = await admitOn(key.keyId, dispatched.brokerMachineId, dispatched.requestId);
+            const admitted = await admitOn(key.keyId, dispatched.brokerMachineId, dispatched.requestId, dispatched.operationId, dispatched.brokerPlacementFingerprint);
             expect(admitted, `admission on ${dispatched.brokerMachineId}`).toMatchObject({
                 ok: true,
                 brokerMachineId: dispatched.brokerMachineId,
@@ -287,8 +298,26 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                 { machineId: fallbackBroker.id, priorityTier: 1, enabled: true },
             ]);
 
-            // The first admitted inference establishes the key's operation on
-            // the current top tier (L10/05:123, L11/03:147 steps 3-6).
+            // Dispatch must already own the target, before a daemon admission
+            // or UsageEvent exists. A second request cannot establish B while
+            // the first request to A is still in flight or ambiguous.
+            const catalog = await app.inject({
+                method: "GET", url: "/api/provider-broker/v1/models",
+                headers: { authorization: `Bearer ${firstKey.token}` },
+            });
+            expect(catalog.statusCode).toBe(200);
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({
+                where: { id: firstKey.keyId },
+            })).currentBrokerOperationJson).toBeNull();
+            const beforeAdmission = await send(firstKey.token);
+            expect(beforeAdmission).toMatchObject({ brokerMachineId: broker.id });
+            await setPoolMembers([
+                { machineId: broker.id, priorityTier: 5, enabled: true },
+                { machineId: fallbackBroker.id, priorityTier: 1, enabled: true },
+            ]);
+            expect(await send(firstKey.token)).toMatchObject({ brokerMachineId: broker.id });
+
+            // The first admitted inference consumes that retained operation.
             await expect(serve(firstKey)).resolves.toBe(broker.id);
 
             // Tier reordering, disabling and removing members affect future
@@ -300,6 +329,14 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             ]);
             await expect(serve(firstKey)).resolves.toBe(broker.id);
             // A genuinely new operation (another key) follows the current tiers.
+            const concurrentOpens = await Promise.all([0, 1].map(() => resolveTeamCredentialExternalBrokerPlacement({
+                externalApiKeyId: secondKey.keyId,
+                observedAt: new Date(), signal: new AbortController().signal,
+                readCurrentPresence: async () => ({ state: "known", machineIds: new Set(presentMachineIds) }),
+                readPoolSourceEligibility: async () => ({ eligibleMachineIds: sourceEligibleMachineIds }),
+            })));
+            expect(concurrentOpens[0]).toMatchObject({ ok: true, brokerMachineId: fallbackBroker.id, operationId: expect.any(String) });
+            expect(concurrentOpens[1]).toEqual(concurrentOpens[0]);
             await expect(serve(secondKey)).resolves.toBe(fallbackBroker.id);
             await setPoolMembers([
                 { machineId: broker.id, priorityTier: 5, enabled: false },
@@ -309,24 +346,53 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             await setPoolMembers([{ machineId: fallbackBroker.id, priorityTier: 1, enabled: true }]);
             await expect(serve(firstKey)).resolves.toBe(broker.id);
 
-            // Source invalidity on the established Machine ends that operation
-            // (L11/03:147 step 7 → Lane 10 currentness); the next request is a
-            // fresh open over the current eligible members, never a replay.
+            // Failed readiness is not a retirement witness. A may retain its
+            // operation, so neither ineligibility nor transport failure may
+            // silently establish another operation on B.
             sourceEligibleMachineIds = new Set([fallbackBroker.id]);
-            await expect(serve(firstKey)).resolves.toBe(fallbackBroker.id);
+            await expect(send(firstKey.token)).resolves.toEqual({ status: 503 });
+            expect(dispatch).not.toHaveBeenCalled();
             sourceEligibleMachineIds = new Set([broker.id, fallbackBroker.id]);
+            sourceEligibilityUnavailable = true;
+            await expect(send(firstKey.token)).resolves.toEqual({ status: 503 });
+            expect(dispatch).not.toHaveBeenCalled();
+            sourceEligibilityUnavailable = false;
             await setPoolMembers([
                 { machineId: broker.id, priorityTier: 0, enabled: true },
                 { machineId: fallbackBroker.id, priorityTier: 1, enabled: true },
             ]);
-            await expect(serve(firstKey)).resolves.toBe(fallbackBroker.id);
-
-            // Daemon shutdown releases the operation (L10/05:123): a fresh open
-            // may choose another member, which then holds.
-            presentMachineIds = new Set([broker.id]);
             await expect(serve(firstKey)).resolves.toBe(broker.id);
+
+            // Missing presence cannot distinguish a disconnected retained
+            // operation from shutdown. The original exact target remains the
+            // only target when it reconnects.
+            presentMachineIds = new Set([fallbackBroker.id]);
+            await expect(send(firstKey.token)).resolves.toEqual({ status: 503 });
+            expect(dispatch).not.toHaveBeenCalled();
             presentMachineIds = new Set([broker.id, fallbackBroker.id]);
             await expect(serve(firstKey)).resolves.toBe(broker.id);
+
+            // Only the retained exact custodian can retire it. A new operation
+            // then follows current tiers, and a delayed old acknowledgement
+            // cannot clear that new operation.
+            if (!("operationId" in beforeAdmission) || !beforeAdmission.operationId) throw new Error("expected operation");
+            const retire = (machineId: string, operationId: string) => inTx((tx) => retireExternalBrokerOperationInTx(tx, {
+                authenticatedAccountId: manager.id, authenticatedMachineId: machineId,
+                externalApiKeyId: firstKey.keyId, operationId,
+            }));
+            await expect(retire(fallbackBroker.id, beforeAdmission.operationId)).resolves.toEqual({ ok: false, reasonCode: "resource_forbidden" });
+            await expect(retire(broker.id, beforeAdmission.operationId)).resolves.toEqual({ ok: true, retired: true });
+            await setPoolMembers([
+                { machineId: broker.id, priorityTier: 5, enabled: true },
+                { machineId: fallbackBroker.id, priorityTier: 1, enabled: true },
+            ]);
+            const reopened = await send(firstKey.token);
+            expect(reopened).toMatchObject({ brokerMachineId: fallbackBroker.id });
+            await expect(retire(broker.id, beforeAdmission.operationId)).resolves.toEqual({ ok: true, retired: false });
+            expect(await send(firstKey.token)).toEqual(expect.objectContaining({
+                brokerMachineId: fallbackBroker.id,
+                operationId: "operationId" in reopened ? reopened.operationId : null,
+            }));
 
             // With no established operation and no enabled member there is no
             // target; nothing is dispatched.
@@ -345,6 +411,55 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             if (!unplacedKey.ok) throw new Error("expected a third key");
             await expect(send(unplacedKey.token)).resolves.toEqual({ status: 503 });
             expect(dispatch).not.toHaveBeenCalled();
+
+            // A Home claim can commit before the first dispatch reaches the
+            // daemon. Moving the resource must not silently clear that claim;
+            // the existing explicit key replacement is the recovery path.
+            await setPoolMembers([{ machineId: broker.id, priorityTier: 0, enabled: true }]);
+            const stranded = await resolveTeamCredentialExternalBrokerPlacement({
+                externalApiKeyId: unplacedKey.key.keyId,
+                observedAt: new Date(), signal: new AbortController().signal,
+                readCurrentPresence: async () => ({ state: "known", machineIds: presentMachineIds }),
+                readPoolSourceEligibility: async () => ({ eligibleMachineIds: sourceEligibleMachineIds }),
+            });
+            expect(stranded).toMatchObject({ ok: true, brokerMachineId: broker.id, operationId: expect.any(String) });
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(await db.usageEvent.count({ where: { teamCredentialExternalApiKeyId: unplacedKey.key.keyId } })).toBe(0);
+            const replacementPool = await db.machinePool.create({ data: {
+                id: crypto.randomUUID(), accountId: manager.id, name: "Replacement broker pool",
+                members: { create: { machineId: fallbackBroker.id, priorityTier: 0, enabled: true } },
+            } });
+            const relocated = await inTx(tx => updateTeamCredentialResourceInTx(tx, {
+                actorAccountId: manager.id, authentication: TEST_AUTHENTICATION,
+                patch: { resourceId: resource.id, expectedRevision: resource.revision,
+                    brokerPlacement: { kind: "machine_pool", poolId: replacementPool.id } },
+            }));
+            expect(relocated).toMatchObject({ ok: true });
+            if (!relocated.ok || !stranded.ok) throw new Error("expected relocation and retained operation");
+            await expect(send(unplacedKey.token)).resolves.toEqual({ status: 503 });
+            expect(dispatch).not.toHaveBeenCalled();
+            const retained = await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: unplacedKey.key.keyId } });
+            if (retained.currentBrokerOperationJson === null) throw new Error("expected stranded binding to remain");
+            expect(readExternalBrokerOperation(retained.currentBrokerOperationJson)).toMatchObject({ operationId: stranded.operationId });
+            await expect(inTx(tx => revokeTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: manager.id, resourceId: resource.id, keyId: unplacedKey.key.keyId,
+                authentication: TEST_AUTHENTICATION,
+            }))).resolves.toMatchObject({ ok: true, revoked: true });
+            const replacementKey = await inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id,
+                label: unplacedKey.key.label, expiresAt: null, authentication: TEST_AUTHENTICATION,
+            }));
+            if (!replacementKey.ok) throw new Error("expected replacement key");
+            expect(replacementKey.key.keyId).not.toBe(unplacedKey.key.keyId);
+            await expect(send(unplacedKey.token)).resolves.toEqual({ status: 401 });
+            const fresh = await send(replacementKey.token);
+            expect(fresh).toMatchObject({ brokerMachineId: fallbackBroker.id });
+            if (!("brokerMachineId" in fresh) || typeof fresh.brokerMachineId !== "string") {
+                throw new Error("expected replacement dispatch");
+            }
+            await expect(admitOn(replacementKey.key.keyId, fresh.brokerMachineId, fresh.requestId,
+                fresh.operationId, fresh.brokerPlacementFingerprint, relocated.revision))
+                .resolves.toMatchObject({ ok: true, brokerMachineId: fallbackBroker.id });
         } finally {
             await app.close();
         }
@@ -377,6 +492,8 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             env: enabledEnv,
             dispatch: dispatch as never,
             readCurrentBrokerPresence: async () => ({ state: "known", machineIds: connectedBrokerMachineIds }),
+            // The source-eligibility RPC is a separate daemon boundary from presence.
+            readPoolSourceEligibility: async ({ machineIds }) => ({ eligibleMachineIds: new Set(machineIds) }),
         });
         await app.ready();
         try {
@@ -557,7 +674,15 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                 target: Readonly<{ custodianAccountId: string; brokerMachineId: string }>;
                 request: Readonly<Record<string, unknown>>;
             }>;
-            expect(call.target).toEqual({ custodianAccountId: manager.id, brokerMachineId: broker.id });
+            const retainedOperation = (await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: underscoreKeyId } })).currentBrokerOperationJson;
+            const operation = retainedOperation === null ? null : readExternalBrokerOperation(retainedOperation);
+            if (!operation) throw new Error("expected the dispatched operation to be retained");
+            expect(call.target).toEqual({
+                custodianAccountId: manager.id,
+                brokerMachineId: broker.id,
+                operationId: operation.operationId,
+                brokerPlacementFingerprint: resolveTeamCredentialBrokerPlacementFingerprint(resource),
+            });
             expect(call.request).toMatchObject({
                 resourceId: resource.id,
                 teamId: team.id,
@@ -581,6 +706,31 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             expect(call.request.headers).not.toHaveProperty("cookie");
             expect(call.request.headers).not.toHaveProperty("x-api-key");
 
+            // The actual public boundary rechecks the assigned member's proof.
+            await db.account.update({ where: { id: recipient.id }, data: { encryptionMode: "e2ee" } });
+            await db.team.update({ where: { id: team.id }, data: { authenticationPolicy: {
+                v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            } } });
+            const restrictedRequest = () => app.inject({
+                method: "POST", url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${underscoreToken}` }, payload: { model: "model-1", messages: [] },
+            });
+            dispatch.mockClear();
+            expect((await restrictedRequest()).statusCode).toBe(401);
+            expect(dispatch).not.toHaveBeenCalled();
+            await expect(inTx(tx => authorizeTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: recipient.id, resourceId: resource.id, keyId: underscoreKeyId,
+                authentication: { ...TEST_AUTHENTICATION,
+                    authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }] },
+            }))).resolves.toMatchObject({ ok: true });
+            expect((await restrictedRequest()).statusCode).toBe(200);
+            dispatch.mockClear();
+            await db.account.update({ where: { id: recipient.id }, data: { publicKey: null } });
+            expect((await restrictedRequest()).statusCode).toBe(401);
+            expect(dispatch).not.toHaveBeenCalled();
+            await db.account.update({ where: { id: recipient.id }, data: { publicKey: recipient.publicKey, encryptionMode: "plain" } });
+            await db.team.update({ where: { id: team.id }, data: { authenticationPolicy: { v: 1, mode: "inherit" } } });
+
             // Anthropic-compatible header agrees with the same key.
             dispatch.mockClear();
             const anthropic = await app.inject({
@@ -603,6 +753,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                 endpointTemplateId: "cliproxyapi-openai-responses",
                 protocol: "openai-responses" as const,
             };
+            const admittedTarget = dispatch.mock.calls[0]![0].target;
             const admissionRequest = (requestId: string) => ({
                 v: 1 as const,
                 binding: {
@@ -612,6 +763,8 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                     resourceId: resource.id,
                     requestId,
                     externalApiKeyId: underscoreKeyId,
+                    operationId: admittedTarget.operationId,
+                    brokerPlacementFingerprint: admittedTarget.brokerPlacementFingerprint,
                     assignedAccountId: recipient.id,
                     assignedTeamMembershipId: membership.id,
                 },
@@ -899,6 +1052,10 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                             ...DEPLOYED_ROUTE_GRANT_SIGNING_ENV,
                         },
                         readCurrentBrokerPresence: async () => ({ state: "known", machineIds: new Set([broker.id]) }),
+                        // Only the daemon's source-eligibility transport is substituted.
+                        readPoolSourceEligibility: async ({ machineIds }: { machineIds: readonly string[] }) => ({
+                            eligibleMachineIds: new Set(machineIds),
+                        }),
                         ...dependencies,
                     } as never,
                 );

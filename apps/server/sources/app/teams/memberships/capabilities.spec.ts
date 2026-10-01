@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AccountStatus, TeamMembershipStatus, TeamRole } from "@/storage/enums.generated";
-import { resolveTeamMemberTargetCapabilities, resolveTeamMembershipCapabilities } from "./capabilities";
+import { resolveTeamMemberTargetCapabilities, resolveTeamMembershipCapabilities, type TeamMemberActorFacts, type TeamMemberTargetFacts } from "./capabilities";
 
 const current = {
     accountStatus: AccountStatus.active,
@@ -105,6 +105,24 @@ describe("Team membership capability mapping", () => {
 });
 
 describe("Team management-transfer capability", () => {
+    it("projects exact role choices without removing inactive-member cleanup or narrow Home recovery", () => {
+        const project = (actor: TeamMemberActorFacts, target: TeamMemberTargetFacts = nativeMember, activeOwnerCount = 1) =>
+            resolveTeamMemberTargetCapabilities({ actor, target, teamArchivedAt: null, activeOwnerCount });
+        expect(project(manager)).toMatchObject({ setRole: true, assignableRoles: ["owner", "admin", "member", "guest"] });
+        expect(project({ ...manager, manageOwners: false })).toMatchObject({ assignableRoles: ["admin", "member", "guest"] });
+        expect(project(manager, { ...nativeMember, accountStatus: AccountStatus.suspended }))
+            .toMatchObject({ setRole: true, assignableRoles: ["admin", "member", "guest"], remove: true });
+        expect(project(manager, { ...nativeMember, role: TeamRole.owner }))
+            .toMatchObject({ setRole: false, assignableRoles: [] });
+        const recovering = { ...manager, manageMembers: false, manageOwners: false, homeManagesAllTeams: true };
+        expect(project(recovering, nativeMember, 0)).toMatchObject({ setRole: true, assignableRoles: ["owner"] });
+        expect(project(recovering, nativeMember, 1)).toMatchObject({ setRole: false, assignableRoles: [] });
+        expect(project({ ...recovering, manageMembers: true }, nativeMember, 0))
+            .toMatchObject({ setRole: true, assignableRoles: ["owner", "admin", "member", "guest"] });
+        expect(project(recovering, { ...nativeMember, accountStatus: AccountStatus.suspended }, 0))
+            .toMatchObject({ setRole: false, assignableRoles: [] });
+    });
+
     it("withholds the transfer from a native membership no source could take over", () => {
         // The conversion binds to an unbound provisioned identity. Without one
         // the mutation refuses by construction, so advertising it would be a

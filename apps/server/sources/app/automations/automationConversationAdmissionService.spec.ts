@@ -33,7 +33,11 @@ const bridgeCaller = {
     machineId: "machine-1",
     machineInstallationId: "installation-1",
     materializationId: "materialization-slack-1",
-    immutableGenerationId: "generation-slack-1",
+    sourceCustody: {
+        kind: "managed",
+        immutableGenerationId: "generation-slack-1",
+        installSource: "archive",
+    },
 } as const;
 
 const input = {

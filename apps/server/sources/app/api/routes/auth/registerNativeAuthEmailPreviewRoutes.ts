@@ -133,6 +133,7 @@ export function registerNativeAuthEmailOperationRoutes(
                         },
                     },
                     select: {
+                        id: true,
                         providerUserId: true,
                         account: {
                             select: {
@@ -154,6 +155,7 @@ export function registerNativeAuthEmailOperationRoutes(
                 return {
                     accountId: identity.account.id,
                     identity: identity.providerUserId,
+                    nativeIdentityId: identity.id,
                     revision: identity.account.AccountPasswordCredential.revision,
                     mode: parsed.mode,
                 } as const;
@@ -163,6 +165,7 @@ export function registerNativeAuthEmailOperationRoutes(
                     recipient,
                     accountId: eligible.accountId,
                     credentialRevision: eligible.revision,
+                    nativeIdentityId: eligible.nativeIdentityId,
                     expectedNativeIdentity: eligible.identity,
                 });
             } else if (eligible?.mode === "e2ee") {

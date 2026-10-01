@@ -10,8 +10,8 @@ import {
     migrateMachineAccountEncryptionInTx,
 } from "@/app/machines/migrateMachineAccountEncryptionInTx";
 import {
-    migrateTodoAccountEncryptionInTx,
-} from "@/app/kv/migrateTodoAccountEncryptionInTx";
+    migrateAccountJsonKvEncryptionInTx,
+} from "@/app/kv/migrateAccountJsonKvEncryptionInTx";
 import {
     migrateAutomationAccountEncryptionInTx,
 } from "@/app/automations/automationCrudService";
@@ -46,6 +46,7 @@ import {
 import {
     inspectAccountSettingsForEncryptionTransitionInTx,
 } from "@/app/accountSettings/accountEncryptionTransitionCensus";
+import { migrateAuthoringMemoryForAccountModeInTx } from "@/app/kv/authoringMemoryEncryptionMigration";
 
 export type UpdateAccountEncryptionModeResult =
     | Readonly<{
@@ -106,6 +107,10 @@ export async function updateAccountEncryptionMode(params: Readonly<{
         if (hasSettings) {
             return { status: "migration_required" };
         }
+        const authoringMemory = await migrateAuthoringMemoryForAccountModeInTx(tx, {
+            accountId: params.accountId, toMode: params.mode,
+        });
+        if (authoringMemory.status !== "applied") return { status: "migration_required" };
         const pluginDataCensus =
             await inspectPluginAccountDataForEncryptionTransitionInTx(
                 tx,
@@ -169,7 +174,8 @@ export async function updateAccountEncryptionMode(params: Readonly<{
                 directive: { action: "assert_empty" },
             });
         const todoInventory =
-            await migrateTodoAccountEncryptionInTx({
+            await migrateAccountJsonKvEncryptionInTx({
+                namespace: "todo",
                 tx,
                 accountId: params.accountId,
                 fromMode: account.currentness.encryptionMode,
@@ -183,9 +189,15 @@ export async function updateAccountEncryptionMode(params: Readonly<{
                 toMode: params.mode,
                 directive: { action: "assert_empty" },
             });
+        const workspaceInventory = await migrateAccountJsonKvEncryptionInTx({
+            tx, accountId: params.accountId, namespace: 'workspace',
+            fromMode: account.currentness.encryptionMode, toMode: params.mode,
+            directive: { action: 'assert_empty' },
+        });
         if (
             machineInventory.status !== "applied"
             || todoInventory.status !== "applied"
+            || workspaceInventory.status !== 'applied'
             || artifactInventory.status !== "applied"
         ) {
             return { status: "migration_required" };

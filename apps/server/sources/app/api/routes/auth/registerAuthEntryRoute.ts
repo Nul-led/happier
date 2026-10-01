@@ -8,8 +8,10 @@ import {
     resolveOptionalPublicAuthDisposition,
     SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR,
 } from '@/app/api/utils/apiTokenRouteAdmission';
-import { resolveAuthEntry } from '@/app/auth/entry/resolveAuthEntry';
+import { projectUnavailableHomeAuthEntry, resolveAuthEntry } from '@/app/auth/entry/resolveAuthEntry';
 import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
+import { captureFastifyExceptionForSentry } from '@/app/monitoring/sentry';
+import { readRequestHomeEnv } from '@/app/home/settings/requestHomeEnv';
 
 /**
  * Public, stateless authentication presentation. The response is never
@@ -25,7 +27,7 @@ import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDeliv
  */
 export function registerAuthEntryRoute(app: Fastify, params: Readonly<{
     isEmailDeliveryReady: () => boolean | Promise<boolean>;
-}> = { isEmailDeliveryReady: () => isAuthEmailDeliveryReady(process.env) }): void {
+}> = { isEmailDeliveryReady: () => isAuthEmailDeliveryReady({}) }): void {
     app.post(
         '/v1/auth/entry',
         {
@@ -41,10 +43,11 @@ export function registerAuthEntryRoute(app: Fastify, params: Readonly<{
             },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const verification = await verifyRequestPrincipal({
                 authorizationHeader: request.headers?.authorization,
                 allowLegacyHomeToken: true,
-                env: process.env,
+                env: requestHomeEnv,
             });
             const publicAuthDisposition = resolveOptionalPublicAuthDisposition(
                 verification.status === 'verified'
@@ -76,10 +79,15 @@ export function registerAuthEntryRoute(app: Fastify, params: Readonly<{
                 }
                 : null;
             const projection = await resolveAuthEntry(request.body, {
-                env: process.env,
+                env: requestHomeEnv,
                 principal,
                 emailDeliveryReady: await params.isEmailDeliveryReady(),
                 requestIp: request.ip,
+            }).catch((error: unknown) => {
+                if (request.body.scope.kind !== 'home') throw error;
+                app.log.error({ err: error }, 'Failed to resolve the Home authentication policy for auth entry');
+                captureFastifyExceptionForSentry(error, request);
+                return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
             });
             reply.header('Cache-Control', 'no-store');
             return reply.send(projection);

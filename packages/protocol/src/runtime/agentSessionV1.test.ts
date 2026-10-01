@@ -42,6 +42,14 @@ describe('Agent session VB4 open inputs', () => {
     expect(AgentSessionConfigurationSnapshotV1Schema.parse(configuration)).toEqual(configuration);
   });
 
+  it('carries the host-stamped workspace-write restriction separately from permission intent', () => {
+    const handsOff = { ...configuration, workspaceWrites: 'deny' };
+    expect(AgentSessionConfigurationSnapshotV1Schema.parse(handsOff)).toEqual(handsOff);
+    expect(AgentSessionConfigurationUpdateV1Schema.parse(handsOff)).toEqual(handsOff);
+    expect(AgentSessionConfigurationSnapshotV1Schema.safeParse({ ...configuration, workspaceWrites: 'unknown' }).success).toBe(false);
+  });
+
+
   it('accepts an exact Provider binding descriptor only on a configuration update', () => {
     const update = {
       ...configuration,

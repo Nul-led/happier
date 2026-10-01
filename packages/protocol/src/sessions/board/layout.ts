@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SessionBoardTabIdSchema, SessionSurfaceItemIdSchema } from './ids.js';
 
 export const SessionBoardItemWidthSchema = z.enum(['compact', 'medium', 'wide', 'full']);
+export const SessionBoardItemFrameStyleSchema = z.enum(['card', 'plain']);
 export const SessionBoardLayoutV1Schema = z.object({
   v: z.literal(1),
   tabs: z.array(z.object({
@@ -10,6 +11,7 @@ export const SessionBoardLayoutV1Schema = z.object({
     items: z.array(z.object({
       itemId: SessionSurfaceItemIdSchema,
       width: SessionBoardItemWidthSchema,
+      frameStyle: SessionBoardItemFrameStyleSchema.optional(),
     }).strict()),
   }).strict()),
 }).strict().superRefine((layout, context) => {
@@ -25,6 +27,7 @@ export const SessionBoardLayoutV1Schema = z.object({
   });
 });
 export type SessionBoardItemWidth = z.infer<typeof SessionBoardItemWidthSchema>;
+export type SessionBoardItemFrameStyle = z.infer<typeof SessionBoardItemFrameStyleSchema>;
 export type SessionBoardLayoutV1 = Readonly<{
   v: 1;
   tabs: readonly Readonly<{
@@ -33,6 +36,7 @@ export type SessionBoardLayoutV1 = Readonly<{
     items: readonly Readonly<{
       itemId: z.infer<typeof SessionSurfaceItemIdSchema>;
       width: SessionBoardItemWidth;
+      frameStyle?: SessionBoardItemFrameStyle;
     }>[];
   }>[];
 }>;

@@ -332,9 +332,7 @@ async function reportSourceStatus(params: Readonly<{
         reporterMachineId: params.caller.machineId,
         reporterMachineInstallationId: params.caller.machineInstallationId,
         reporterMaterializationId: params.caller.materializationId,
-        // The materialization release still owns manifest currentness. Recovery
-        // provenance instead records the exact host-stamped contributor bytes.
-        reporterImmutableGenerationId: params.caller.immutableGenerationId,
+        reporterSourceCustody: params.caller.sourceCustody,
         state: params.input.state,
         code: params.input.code === "none" ? null : params.input.code,
         lastObservedAt: params.input.lastObservedAt === undefined
@@ -435,10 +433,7 @@ async function reportCatalogStatus(params: Readonly<{
     const values = {
         reporterMachineId: params.caller.machineId,
         reporterMachineInstallationId: params.caller.machineInstallationId,
-        // Runtime currentness stays with the exact-generation CLI owner. The
-        // server persists the generation that authored this report as bounded
-        // immutable provenance beside the materialization facts it can verify.
-        reporterImmutableGenerationId: params.caller.immutableGenerationId,
+        reporterSourceCustody: params.caller.sourceCustody,
         observedRevision,
         adoptedRevision,
         state: params.input.state,

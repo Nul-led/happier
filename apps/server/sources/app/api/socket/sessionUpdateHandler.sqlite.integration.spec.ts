@@ -9,6 +9,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { resolvePresenceTimeoutConfig, runPresenceTimeoutTick } from "@/app/presence/timeout";
 import { sessionUpdateHandler } from "@/app/api/socket/sessionUpdateHandler";
 import {
     createAuthenticatedFakeSocket,
@@ -115,7 +116,6 @@ describe("session update handler on SQLite", () => {
 
     it("posts Agent Discussion provenance only through the exact current Session publisher", async () => {
         process.env.HAPPIER_FEATURE_SESSIONS__ENABLED = "1";
-        process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = "1";
         process.env.HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED = "1";
         const owner = await db.account.create({
             data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
@@ -687,6 +687,302 @@ describe("session update handler on SQLite", () => {
             where: { sessionId_turnId: { sessionId: session.id, turnId } },
             select: { status: true },
         })).resolves.toEqual({ status: "cancelled" });
+    });
+
+    async function createReleasedAliveSession(
+        now: () => number,
+        presence = createSessionPublisherPresence({ now: () => new Date(now()) }),
+    ) {
+        const owner = await db.account.create({
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = `machine-${randomUUID()}`;
+        await db.machine.create({ data: { id: machineId, accountId: owner.id, metadata: "{}" } });
+        const session = await db.session.create({
+            data: {
+                accountId: owner.id,
+                tag: `session-${randomUUID()}`,
+                metadata: "{}",
+                active: false,
+                lastActiveAt: new Date("2026-07-22T07:00:00.000Z"),
+                runtimeActivityState: "unknown",
+                runtimeActivityActiveCount: 0,
+                runtimeActivityRevision: 0n,
+            },
+            select: { id: true },
+        });
+        await db.accessKey.create({
+            data: { accountId: owner.id, machineId, sessionId: session.id, data: "encrypted" },
+        });
+        const socket = createAuthenticatedFakeSocket();
+        const binding = { accountId: owner.id, machineId, sessionId: session.id };
+        sessionUpdateHandler(
+            owner.id,
+            socket as never,
+            { connectionType: "session-scoped", socket, userId: owner.id, sessionId: session.id } as never,
+            {
+                presence,
+                binding,
+            },
+        );
+        const alive = getSocketHandler(socket, "session-alive");
+        // cli-v0.2.12 / cli-v0.2.12-preview.1 at a357c655: createSessionAlivePayload.
+        const heartbeat = async (thinking = false) => await alive({
+            sid: session.id, time: now(), thinking, mode: "remote",
+        });
+        return { sessionId: session.id, heartbeat, socket, presence, binding };
+    }
+
+    it.each([
+        { sessionTimeoutMs: 35_000, thinkingUntilMs: 0, idleSpacingMs: 15_000 },
+        { sessionTimeoutMs: 60_000, thinkingUntilMs: 0, idleSpacingMs: 15_000 },
+        { sessionTimeoutMs: 20_000, thinkingUntilMs: 8_000, idleSpacingMs: 16_000 },
+    ])("keeps released heartbeats reachable with a $sessionTimeoutMs ms presence expiry after thinking until $thinkingUntilMs ms", async ({ sessionTimeoutMs, thinkingUntilMs, idleSpacingMs }) => {
+        process.env.HAPPIER_PRESENCE_SESSION_TIMEOUT_MS = String(sessionTimeoutMs);
+        process.env.HAPPIER_PRESENCE_TIMEOUT_TICK_MS = "1000";
+        const timeoutConfig = resolvePresenceTimeoutConfig();
+        const startedAt = Date.parse("2026-07-22T08:00:00.000Z");
+        let clockMs = startedAt;
+        const { sessionId, heartbeat } = await createReleasedAliveSession(() => clockMs);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const now = vi.spyOn(Date, "now").mockImplementation(() => clockMs);
+        let lastHeartbeatAtMs = startedAt;
+        try {
+            await heartbeat(thinkingUntilMs > 0);
+            for (let elapsedMs = timeoutConfig.tickMs; elapsedMs <= sessionTimeoutMs * 2; elapsedMs += timeoutConfig.tickMs) {
+                clockMs = startedAt + elapsedMs;
+                // Expiry runs first so a coincident heartbeat cannot conceal an already stale fence.
+                await runPresenceTimeoutTick(timeoutConfig);
+                await expect(db.session.findUniqueOrThrow({
+                    where: { id: sessionId }, select: { active: true },
+                })).resolves.toEqual({ active: true });
+                await vi.advanceTimersByTimeAsync(timeoutConfig.tickMs);
+                // The released 2s loop takes 16s to meet the 15s idle cadence after thinking.
+                const heartbeatDue = elapsedMs <= thinkingUntilMs
+                    ? elapsedMs % 2_000 === 0
+                    : (elapsedMs - thinkingUntilMs) % idleSpacingMs === 0;
+                if (heartbeatDue) {
+                    lastHeartbeatAtMs = clockMs;
+                    await heartbeat(elapsedMs < thinkingUntilMs);
+                }
+            }
+            clockMs += sessionTimeoutMs / 2;
+            await vi.advanceTimersByTimeAsync(sessionTimeoutMs / 2);
+            await vi.waitFor(async () => {
+                const persisted = await db.session.findUniqueOrThrow({
+                    where: { id: sessionId }, select: { lastActiveAt: true },
+                });
+                expect(persisted.lastActiveAt.getTime()).toBe(lastHeartbeatAtMs);
+            });
+            clockMs = lastHeartbeatAtMs + sessionTimeoutMs - 1;
+            await runPresenceTimeoutTick(timeoutConfig);
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: sessionId }, select: { active: true },
+            })).resolves.toEqual({ active: true });
+            clockMs += 1;
+            await runPresenceTimeoutTick(timeoutConfig);
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: sessionId }, select: { active: true },
+            })).resolves.toEqual({ active: false });
+        } finally {
+            now.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it.each(["trailing", "session-runtime-activity-close", "session-end", "disconnect", "replacement"])(
+        "settles the default released heartbeat window through %s without inventing liveness",
+        async (transition) => {
+            const startedAt = Date.parse("2026-07-22T08:00:00.000Z");
+            let clockMs = startedAt;
+            const { sessionId, heartbeat, socket, presence, binding } = await createReleasedAliveSession(() => clockMs);
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const now = vi.spyOn(Date, "now").mockImplementation(() => clockMs);
+            try {
+                await heartbeat();
+                clockMs += 59_999;
+                await heartbeat();
+                await expect(db.session.findUniqueOrThrow({
+                    where: { id: sessionId }, select: { lastActiveAt: true },
+                })).resolves.toEqual({ lastActiveAt: new Date(startedAt) });
+                clockMs += 1;
+                if (transition === "replacement") {
+                    await presence.registerPublisher({ socket: {}, binding, completeActivitySnapshot: { state: "unknown", activeCount: 0 } });
+                } else if (transition !== "trailing") {
+                    await getSocketHandler(socket, transition)(transition === "session-runtime-activity-close"
+                        ? { sessionId }
+                        : { sid: sessionId, time: clockMs });
+                    if (transition === "disconnect") await presence.forgetDisconnectedPublisher({ socket });
+                    expect(vi.getTimerCount()).toBe(0);
+                }
+                await vi.advanceTimersByTimeAsync(60_000);
+                await presence.runAsCurrentPublisher({ socket, operation: async () => null });
+                await vi.waitFor(async () => {
+                    const persisted = await db.session.findUniqueOrThrow({
+                        where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+                    });
+                    expect(persisted).toEqual({
+                        active: transition === "trailing" || transition === "replacement" || transition === "disconnect",
+                        lastActiveAt: new Date(startedAt + (transition === "trailing" ? 59_999 : transition === "replacement" ? 60_000 : 0)),
+                    });
+                });
+                expect(vi.getTimerCount()).toBe(0);
+                if (transition === "trailing") {
+                    for (let elapsedMs = 75_000; elapsedMs <= 180_000; elapsedMs += 15_000) {
+                        clockMs = startedAt + elapsedMs;
+                        await vi.advanceTimersByTimeAsync(15_000);
+                        await presence.runAsCurrentPublisher({ socket, operation: async () => null });
+                        await vi.waitFor(async () => {
+                            const persisted = await db.session.findUniqueOrThrow({
+                                where: { id: sessionId }, select: { lastActiveAt: true },
+                            });
+                            const expectedObservationMs = elapsedMs < 120_000 ? 59_999 : Math.floor(elapsedMs / 60_000) * 60_000 - 15_000;
+                            expect(persisted.lastActiveAt.getTime()).toBe(startedAt + expectedObservationMs);
+                        });
+                        await heartbeat();
+                    }
+                }
+            } finally {
+                await socket.handlers.get("disconnect")?.();
+                now.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+    );
+
+    it.each([false, true])("retains in-flight released observations without reviving a replacement (replacement: %s)", async (replacePublisher) => {
+        const startedAt = Date.parse("2026-07-22T08:00:00.000Z");
+        let clockMs = startedAt;
+        const { sessionId, heartbeat, socket, presence, binding } = await createReleasedAliveSession(() => clockMs);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const now = vi.spyOn(Date, "now").mockImplementation(() => clockMs);
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        try {
+            await heartbeat();
+            const holder = presence.runAsCurrentPublisher({ socket, operation: async () => {
+                entered();
+                await held;
+            } });
+            await started;
+            clockMs = startedAt + 60_000;
+            const inFlight = heartbeat();
+            for (const offset of [1_000, 2_000]) {
+                clockMs = startedAt + 60_000 + offset;
+                await heartbeat();
+            }
+            clockMs = startedAt + 63_000;
+            if (replacePublisher) {
+                await presence.registerPublisher({ socket: {}, binding, completeActivitySnapshot: { state: "unknown", activeCount: 0 } });
+            }
+            release();
+            await Promise.all([holder, inFlight]);
+            clockMs = startedAt + 123_000;
+            await vi.advanceTimersByTimeAsync(60_000);
+            await presence.runAsCurrentPublisher({ socket, operation: async () => null });
+            await vi.waitFor(async () => {
+                const persisted = await db.session.findUniqueOrThrow({
+                    where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+                });
+                expect(persisted).toEqual({ active: true, lastActiveAt: new Date(startedAt + (replacePublisher ? 63_000 : 62_000)) });
+            });
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            release();
+            now.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not register a disconnected socket after an accepted released heartbeat backlog", async () => {
+        let clockMs = Date.parse("2026-07-22T08:00:00.000Z");
+        const presence = createSessionPublisherPresence({ now: () => new Date(clockMs) });
+        const blocker = await createReleasedAliveSession(() => clockMs, presence);
+        const target = await createReleasedAliveSession(() => clockMs, presence);
+        const now = vi.spyOn(Date, "now").mockImplementation(() => clockMs);
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let entered!: () => void;
+        const started = new Promise<void>((resolve) => { entered = resolve; });
+        try {
+            await blocker.heartbeat();
+            const holder = presence.runAsCurrentPublisher({ socket: blocker.socket, operation: async () => {
+                entered();
+                await held;
+            } });
+            await started;
+            clockMs += 60_000;
+            const blockerAlive = blocker.heartbeat();
+            await Promise.resolve();
+            const targetAlive = target.heartbeat();
+            await target.socket.handlers.get("disconnect")?.();
+            await presence.forgetDisconnectedPublisher({ socket: target.socket });
+            release();
+            await Promise.all([holder, blockerAlive, targetAlive]);
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: target.sessionId }, select: { active: true },
+            })).resolves.toEqual({ active: false });
+        } finally {
+            release();
+            now.mockRestore();
+        }
+    });
+
+    it.each([
+        { sessionTimeoutMs: 600_000, retryCeilingMs: 60_000 },
+        { sessionTimeoutMs: 35_000, retryCeilingMs: 17_500 },
+    ])("bounds released alive retry backoff to $retryCeilingMs ms for a $sessionTimeoutMs ms presence expiry", async ({ sessionTimeoutMs, retryCeilingMs }) => {
+        process.env.HAPPIER_PRESENCE_SESSION_TIMEOUT_MS = String(sessionTimeoutMs);
+        process.env.HAPPIER_DB_TX_MAX_RETRIES = "0";
+        process.env.HAPPIER_DB_TX_MAX_WAIT_MS = "1000";
+        process.env.HAPPIER_DB_TX_TIMEOUT_MS = "30000";
+        let clockMs = Date.parse("2026-07-22T08:00:00.000Z");
+        const { sessionId, heartbeat } = await createReleasedAliveSession(() => clockMs);
+        const initial = await db.session.findUniqueOrThrow({
+            where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+        });
+        const now = vi.spyOn(Date, "now").mockImplementation(() => clockMs);
+        try {
+            let releaseHolder!: () => void;
+            const holderRelease = new Promise<void>((resolve) => { releaseHolder = resolve; });
+            let resolveHolderEntered!: () => void;
+            const holderEntered = new Promise<void>((resolve) => { resolveHolderEntered = resolve; });
+            const holderReleased = new Error("release acquisition holder");
+            const holder = inTx(async () => {
+                resolveHolderEntered();
+                await holderRelease;
+                throw holderReleased;
+            });
+            await holderEntered;
+            try {
+                // Preserve the destination's 2s exponential base and force its existing ceiling.
+                for (const advanceMs of [0, 0, 2_000, 4_000, 8_000, 16_000, 32_000]) {
+                    clockMs += advanceMs;
+                    await heartbeat();
+                }
+            } finally {
+                releaseHolder();
+                await expect(holder).rejects.toBe(holderReleased);
+            }
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+            })).resolves.toEqual(initial);
+            clockMs += retryCeilingMs - 1;
+            await heartbeat();
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+            })).resolves.toEqual(initial);
+            clockMs += 1;
+            await heartbeat();
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: sessionId }, select: { active: true, lastActiveAt: true },
+            })).resolves.toEqual({ active: true, lastActiveAt: new Date(clockMs) });
+        } finally {
+            now.mockRestore();
+        }
     });
 
     it("does not let concurrent released alive sockets exhaust the single SQLite transaction connection", async () => {

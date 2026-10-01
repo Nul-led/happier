@@ -105,6 +105,40 @@ describe('redactBrowserAutomationTimelineDetails — URL value-shape redaction',
 });
 
 describe('redactBrowserAutomationActionResultDetails — locator preservation stays intact', () => {
+  it('reports timeline compaction even when the source result was complete', () => {
+    const details = { note: 'visible '.repeat(100), truncated: false };
+    expect(redactBrowserAutomationActionResultDetails(details)).toEqual(details);
+    expect(redactBrowserAutomationTimelineDetails(details)).toMatchObject({ truncated: true });
+  });
+  it('preserves complete readable agent results while the timeline stays compact', () => {
+    const selector = `[data-testid="${'long-selector-'.repeat(100)}"]`;
+    const visibleText = 'Visible page content '.repeat(100);
+    const details = { visibleText, text: visibleText, selector, elements: Array.from({ length: 40 }, (_, index) => ({ name: `Item ${index}`, selector })) };
+    const result = redactBrowserAutomationActionResultDetails(details) as typeof details;
+    expect(result.visibleText).toBe(visibleText);
+    expect(result.text).toBe(visibleText);
+    expect(result.selector).toBe(selector);
+    expect(result.elements).toHaveLength(40);
+    const timeline = redactBrowserAutomationTimelineDetails(details) as Record<string, unknown>;
+    expect(timeline.textLength).toBe(visibleText.length);
+    expect(timeline.selectorAvailable).toBe(true);
+    expect(timeline.elements).toHaveLength(25);
+  });
+
+  it('applies URL and secret-key floors even inside preserved agent locators and arrays', () => {
+    const result = redactBrowserAutomationActionResultDetails({ selector: `[href="${SEEDED_URL}"]`, entries: Array.from({ length: 40 }, () => ({ href: SEEDED_URL, cookie: 'secret' })) });
+    expect(serialized(result)).not.toContain(QUERY_TOKEN);
+    expect(serialized(result)).not.toContain(PATH_TOKEN);
+    expect(serialized(result)).not.toContain('cookie');
+  });
+  it('omits unsafe locators rather than changing their executable target', () => {
+    const details = { selector: `[href="${SEEDED_URL}"]`, locator: { kind: 'css', value: `[href="${SEEDED_URL}"]` } };
+    const result = redactBrowserAutomationActionResultDetails(details);
+    expect(result).toMatchObject({ selectorAvailable: false, locatorAvailable: false, truncated: true });
+    expect(result).not.toHaveProperty('selector');
+    expect(result).not.toHaveProperty('locator');
+    expect(serialized(result)).not.toContain(QUERY_TOKEN);
+  });
   it('preserves bounded locator values but still strips URL-shaped values elsewhere', () => {
     const out = redactBrowserAutomationActionResultDetails({
       selector: 'role=button[name="Reset"]',

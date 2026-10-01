@@ -1,7 +1,21 @@
+import type {
+    HOME_OWNER_CLAIM_COMMAND_ARGUMENT_V1,
+    HomeOwnerClaimCommandOutputV1 as HomeOwnerClaimCommandOutputContractV1,
+} from "@happier-dev/protocol";
+
 import type { HomeOwnerClaimResult } from "./ownerAssignment";
 
-export const CLAIM_HOME_OWNER_ARGUMENT = "--claim-home-owner";
+// Type-only binding to the protocol contract the hosting desktop's claim task consumes, so the
+// argument and output cannot drift without a compile error and the entrypoint loads nothing.
+export const CLAIM_HOME_OWNER_ARGUMENT: typeof HOME_OWNER_CLAIM_COMMAND_ARGUMENT_V1 = "--claim-home-owner";
 export const RECOVER_LOST_OWNER_ARGUMENT = "--recover-lost-owner";
+/**
+ * Mints a one-time claim code for the app (plan `2026-09-26-home-owner-console` §3.5, D-5): on
+ * demand, never at startup, so a live bearer only ever reaches the terminal of the operator who
+ * asked for it. Same literal as the protocol's `HOME_CLAIM_CODE_COMMAND_ARGUMENT_V1`, kept local so
+ * recognizing the command does not load the protocol package into the light boot path.
+ */
+export const PRINT_HOME_CLAIM_CODE_ARGUMENT = "--print-home-claim-code";
 
 /**
  * What the operator says they are doing.
@@ -34,7 +48,7 @@ export type HomeOwnerClaimCommandOutputV1 = Readonly<{
 }>;
 
 export type HomeOwnerClaimCommandRunV1 = Readonly<{
-    output: HomeOwnerClaimCommandOutputV1;
+    output: HomeOwnerClaimCommandOutputV1 & HomeOwnerClaimCommandOutputContractV1;
     exitCode: 0 | 1;
 }>;
 
@@ -115,5 +129,45 @@ export async function runHomeOwnerClaimCommand(
             result,
         },
         exitCode: result.status === "claimed" ? 0 : 1,
+    };
+}
+
+/** Whether this invocation asks for a claim code. */
+export function readPrintHomeClaimCodeRequest(argv: readonly string[]): boolean {
+    return argv.includes(PRINT_HOME_CLAIM_CODE_ARGUMENT);
+}
+
+export type PrintHomeClaimCodeOutputV1 = Readonly<{
+    v: 1;
+    command: "print-home-claim-code";
+    result:
+        | Readonly<{ status: "minted"; code: string; expiresAt: string }>
+        | Readonly<{ status: "already_owned" }>;
+}>;
+
+/**
+ * Mints the code against an already-opened database. The code is printed once, grouped for
+ * reading, and never logged; an owned Home gets no code and a nonzero exit.
+ */
+export async function runPrintHomeClaimCodeCommand(): Promise<Readonly<{ output: PrintHomeClaimCodeOutputV1; exitCode: 0 | 1 }>> {
+    const [{ mintHomeClaimCode }, { formatHomeClaimCodeV1 }] = await Promise.all([
+        import("./homeClaimCode"),
+        import("@happier-dev/protocol"),
+    ]);
+    const minted = await mintHomeClaimCode();
+    if (minted.status !== "minted") {
+        return { output: { v: 1, command: "print-home-claim-code", result: { status: "already_owned" } }, exitCode: 1 };
+    }
+    return {
+        output: {
+            v: 1,
+            command: "print-home-claim-code",
+            result: {
+                status: "minted",
+                code: formatHomeClaimCodeV1(minted.code),
+                expiresAt: new Date(minted.expiresAt).toISOString(),
+            },
+        },
+        exitCode: 0,
     };
 }

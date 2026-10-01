@@ -3,6 +3,7 @@ import tweetnacl from "tweetnacl";
 
 import { resolveMachineTransferFeature } from "../machineTransferFeature";
 import { resolvePeerMediationFeature } from "../peerMediationFeature";
+import { resolveLocalServicesFeature } from "../localServicesFeature";
 import { resolveMachineLiveStreamFeature } from "../machineLiveStreamFeature";
 import { resolveSessionHandoffFeature } from "../sessionHandoffFeature";
 import { resolveServerUsageAnalyticsCapabilitiesFeature } from "../serverUsageAnalyticsCapabilitiesFeature";
@@ -104,6 +105,8 @@ describe("resolveServerFeaturePayload", () => {
     it("publishes external credential API deployment readiness through the canonical feature payload", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test/prefix/",
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: "route-grant-key",
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)),
         }, serverFeatureRegistry);
         expect(payload.capabilities.teams?.credentialResources.externalApi).toEqual({
             available: true,
@@ -322,7 +325,7 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features.terminal.embeddedPty.enabled).toBe(true);
     });
 
-    it("enables session handoff and server-routed transfer by default", () => {
+    it("enables session handoff and both released transfer routes by default", () => {
         const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [resolveSessionHandoffFeature, resolveMachineTransferFeature]);
         expect(payload.features.sessions.handoff.enabled).toBe(true);
         expect(payload.features.machines.transfer.serverRouted.enabled).toBe(true);
@@ -430,7 +433,6 @@ describe("resolveServerFeaturePayload", () => {
             preferredEncoding: "binary_frame_v2",
             substreams: {
                 maxConcurrentSubstreams: 32,
-                maxTotalSubstreams: 1024,
             },
             disabledReason: "relay_disabled_by_server_policy",
         });
@@ -448,7 +450,7 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.features).not.toHaveProperty("channelBridges");
     });
 
-    it("disables only generic server-routed transfer when the env toggle is off", () => {
+    it("keeps released direct transfer advertised when server-routed transfer is disabled", () => {
         const payload = resolveServerFeaturePayload({
             HAPPIER_FEATURE_MACHINES_TRANSFER_SERVER_ROUTED__ENABLED: "0",
         } as NodeJS.ProcessEnv, [resolveSessionHandoffFeature, resolveMachineTransferFeature]);
@@ -475,7 +477,7 @@ describe("resolveServerFeaturePayload", () => {
         } as NodeJS.ProcessEnv, [resolveSessionHandoffFeature, resolveMachineTransferFeature, resolvePeerMediationFeature]);
 
         expect(payload.capabilities.machines.peerMediation.grantSigningKeys).toEqual([]);
-        expect(payload.capabilities.machines.peerMediation.directRouteGrantProofMintVersions).toEqual([]);
+        expect(payload.capabilities.machines.peerMediation).not.toHaveProperty('directRouteGrantProofMintVersions');
         expect(payload.capabilities.machines.peerMediation.tcpTunnelRelayAuthorizationMintVersions).toEqual([]);
         expect(readOptionalPath(payload, ["features", "machines", "peerMediation", "enabled"])).toBe(false);
     });
@@ -508,8 +510,36 @@ describe("resolveServerFeaturePayload", () => {
                 expiresAt: 1_900_000_000_000,
             },
         ]);
-        expect(payload.capabilities.machines.peerMediation.directRouteGrantProofMintVersions).toEqual([2]);
+        expect(payload.capabilities.machines.peerMediation).not.toHaveProperty('directRouteGrantProofMintVersions');
         expect(payload.capabilities.machines.peerMediation.tcpTunnelRelayAuthorizationMintVersions).toEqual([2]);
+    });
+
+    it("advertises peer mediation and direct transfer for a fresh managed Personal Home", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HANDY_MASTER_SECRET: "fresh-personal-home-master-secret",
+        } as NodeJS.ProcessEnv, [resolveMachineTransferFeature, resolvePeerMediationFeature]);
+
+        expect(readServerEnabledBit(payload, "machines.peerMediation")).toBe(true);
+        expect(readServerEnabledBit(payload, "machines.transfer.directPeer")).toBe(true);
+        expect(payload.capabilities.machines.peerMediation.grantSigningKeys).toHaveLength(1);
+    });
+
+    it("keeps released direct transfer independent when the canonical peer-mediation signer is unavailable", () => {
+        const genericPayload = resolveServerFeaturePayload({
+            HAPPIER_MANAGED_RELAY_PURPOSE: "generic",
+            HANDY_MASTER_SECRET: "generic-home-master-secret",
+        } as NodeJS.ProcessEnv, [resolveMachineTransferFeature, resolvePeerMediationFeature]);
+        const partialExplicitPayload = resolveServerFeaturePayload({
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HANDY_MASTER_SECRET: "personal-home-master-secret",
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: "partial-operator-key",
+        } as NodeJS.ProcessEnv, [resolveMachineTransferFeature, resolvePeerMediationFeature]);
+
+        expect(readServerEnabledBit(genericPayload, "machines.peerMediation")).toBe(false);
+        expect(readServerEnabledBit(genericPayload, "machines.transfer.directPeer")).toBe(true);
+        expect(readServerEnabledBit(partialExplicitPayload, "machines.peerMediation")).toBe(false);
+        expect(readServerEnabledBit(partialExplicitPayload, "machines.transfer.directPeer")).toBe(true);
     });
 
     // P1-1: `machines.peerMediation.observability` gates 3,031 LOC across four codebases and had no
@@ -524,6 +554,18 @@ describe("resolveServerFeaturePayload", () => {
             HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT: "1900000000000",
         } as NodeJS.ProcessEnv;
     }
+
+    it("does not advertise preview relay readiness with an expired signing root", () => {
+        const payload = resolveServerFeaturePayload({
+            ...signingEnv(),
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT: "1",
+            HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ENABLED: "true",
+            HAPPIER_FEATURE_MACHINES_TUNNEL_ALLOWED_PORTS: "3000",
+        }, [resolveLocalServicesFeature, resolvePeerMediationFeature]);
+        expect(payload.capabilities.localServices.preview.pmsRelayReady).toBe(false);
+        expect(payload.capabilities.localServices.preview.disabledReasons)
+            .toContain("peer_mediation_grant_signing_unavailable");
+    });
 
     it("keeps peer mediation observability disabled when its enabling variable is absent", () => {
         const payload = resolveServerFeaturePayload(

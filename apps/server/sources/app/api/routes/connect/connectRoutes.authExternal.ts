@@ -41,6 +41,7 @@ import {
     resolveTeamAdmissionStartBinding,
     type TeamAdmissionStartBinding,
 } from "./oauthExternal/teamAdmissionStartBinding";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function connectAuthExternalRoutes(app: Fastify) {
     //
@@ -121,6 +122,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
         const teamAdmission = request.query.purpose === "team_admission";
         const teamId = teamAdmission ? String(request.query.teamId ?? "").trim() : "";
@@ -129,11 +131,11 @@ export function connectAuthExternalRoutes(app: Fastify) {
         if (teamAdmission && !teamId) {
             return reply.code(400).send({ error: "invalid-team-admission" });
         }
-        if (teamAdmission && !isTeamMembershipAdmissionEnabled()) {
+        if (teamAdmission && !await isTeamMembershipAdmissionEnabled({ env: requestHomeEnv })) {
             return reply.code(403).send({ error: "invalid-team-admission" });
         }
         const resolved = await resolveOAuthRuntimeById(
-            process.env,
+            requestHomeEnv,
             providerId,
             teamAdmission && teamProviderOrigin === "team" ? { kind: "team", teamId } : undefined,
         );
@@ -202,13 +204,13 @@ export function connectAuthExternalRoutes(app: Fastify) {
             try {
                 const webAppOAuthReturnUrl =
                     resolveWebAppOAuthReturnUrlFromRequestHeaders({
-                        env: process.env,
+                        env: requestHomeEnv,
                         providerId,
                         headers: request.headers as Record<string, unknown>,
                     });
                 const url = await createExternalAuthorizeUrl({
                     flow: "auth",
-                    env: process.env,
+                    env: requestHomeEnv,
                     providerId,
                     provider,
                     reference,
@@ -259,7 +261,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 request.query.canonicalServerUrl ?? "",
             );
             const currentTarget =
-                await resolveCurrentAccountDirectoryOAuthTarget(process.env);
+                await resolveCurrentAccountDirectoryOAuthTarget(requestHomeEnv);
             if (
                 !requestedEndpointUrl
                 || !currentTarget
@@ -282,19 +284,19 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 canonicalServerUrl: currentTarget.canonicalServerUrl,
                 expiresAt: new Date(
                     Date.now()
-                    + resolveOauthStateAttemptTtlMsFromEnv(process.env),
+                    + resolveOauthStateAttemptTtlMsFromEnv(requestHomeEnv),
                 ),
             };
         }
 
         const mode = (request.query as any)?.mode === "keyless" ? "keyless" : "keyed";
-        const policy = resolveAuthPolicyFromEnv(process.env);
+        const policy = resolveAuthPolicyFromEnv(requestHomeEnv);
         const keyedAllowed = teamAdmission
             ? true
             : isAccountDirectory
             ? reference.source !== "managed" && policy.signupProviders.includes(providerId)
             : await isEffectiveHomeAuthMethodActionEnabled({
-                env: process.env,
+                env: requestHomeEnv,
                 methodId: providerId,
                 actionId: "provision",
                 mode: "keyed",
@@ -305,13 +307,13 @@ export function connectAuthExternalRoutes(app: Fastify) {
         }
         if (mode === "keyless" && !isAccountDirectory && !teamAdmission) {
             keylessAllowed = await isEffectiveHomeAuthMethodActionEnabled({
-                env: process.env,
+                env: requestHomeEnv,
                 methodId: providerId,
                 actionId: "login",
                 mode: "keyless",
             });
             if (!keylessAllowed) return reply.code(403).send({ error: "keyless-disabled" });
-            const availability = resolveKeylessAccountsAvailability(process.env);
+            const availability = resolveKeylessAccountsAvailability(requestHomeEnv);
             if (!availability.ok) {
                 return reply.code(403).send({ error: availability.reason === "e2ee-required" ? "e2ee-required" : "keyless-disabled" });
             }
@@ -320,7 +322,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
             const proofHashCandidate = String((request.query as any)?.proofHash ?? "").trim();
             if (proofHashCandidate) {
                 keylessAllowed = await isEffectiveHomeAuthMethodActionEnabled({
-                    env: process.env,
+                    env: requestHomeEnv,
                     methodId: providerId,
                     actionId: "login",
                     mode: "keyless",
@@ -329,7 +331,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     return reply.code(403).send({ error: "signup-provider-disabled" });
                 }
                 if (keylessAllowed) {
-                    const availability = resolveKeylessAccountsAvailability(process.env);
+                    const availability = resolveKeylessAccountsAvailability(requestHomeEnv);
                     if (!availability.ok && !keyedAllowed) {
                         return reply.code(403).send({ error: availability.reason === "e2ee-required" ? "e2ee-required" : "keyless-disabled" });
                     }
@@ -364,14 +366,14 @@ export function connectAuthExternalRoutes(app: Fastify) {
 
         try {
             const webAppOAuthReturnUrl = resolveWebAppOAuthReturnUrlFromRequestHeaders({
-                env: process.env,
+                env: requestHomeEnv,
                 providerId,
                 headers: request.headers as any,
             });
             if (teamAdmission) {
                 const attempt = await createExternalAuthorizeAttempt({
                     flow: "auth",
-                    env: process.env,
+                    env: requestHomeEnv,
                     providerId,
                     provider,
                     reference,
@@ -392,7 +394,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
             }
             const url = await createExternalAuthorizeUrl({
                 flow: "auth",
-                env: process.env,
+                env: requestHomeEnv,
                 providerId,
                 provider,
                 reference,
@@ -452,8 +454,9 @@ export function connectAuthExternalRoutes(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        if (!await resolveOAuthRuntimeById(process.env, providerId)) {
+        if (!await resolveOAuthRuntimeById(requestHomeEnv, providerId)) {
             return reply.code(404).send({ error: "unsupported-provider" });
         }
 

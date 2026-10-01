@@ -21,7 +21,8 @@ const latestReleasedPredecessorLastId = "20260902120000_add_pending_activation_a
 // Immutable server-v0.2.12 at a357c65536ba89669422977d6f7daf9aa0d17e73
 // ends at `latestReleasedPredecessorLastId`; every included SQLite SQL file is
 // byte-identical to the retained current migration with the same identity.
-// Current predecessor basis: ../0.2 at 7e1ce993c408c0f634b81267aac2bcd8e7859975.
+// Current predecessor basis: ../0.2 at ac30c50856abd2265c14459e77ee3384da1698ad
+// (branch `dev`, clean).
 // Its relevant migration tree is clean through 20260907190000. The aggregate hashes below pin
 // every migration ID and SQL byte so this fixture cannot silently borrow changed 0.3 history.
 const currentPredecessorLaterIds = [
@@ -60,6 +61,10 @@ const predecessorSqlDigests = {
     "current-0.2": "0890d61c09138618af0fa2d1a1152cea38a349fbe8fae2c1b7bc11807be3b6e5",
 } as const;
 type PredecessorFrontier = "released-v0.2.1" | "released-v0.2.12" | "current-0.2";
+const workflowEnvelopeFixture = JSON.stringify({
+    t: "plain",
+    v: "workflow-envelope-".repeat(40),
+});
 
 async function copyMigration(sourceId: string, targetRoot: string): Promise<void> {
     await cp(join(sqliteMigrationsRoot, sourceId), join(targetRoot, sourceId), {
@@ -341,6 +346,19 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
                     'released-session', 'released-session', 'released-account', '{}', CURRENT_TIMESTAMP,
                     5, 2, 1000
                 );
+                INSERT INTO "Automation" (
+                    "id", "accountId", "name", "scheduleKind", "targetType",
+                    "templateCiphertext", "updatedAt"
+                ) VALUES (
+                    'workflow-predecessor-automation', 'released-account', 'Released automation',
+                    'manual', 'new_session', 'sealed-template', CURRENT_TIMESTAMP
+                );
+                INSERT INTO "AutomationRun" (
+                    "id", "automationId", "accountId", "state", "scheduledAt", "dueAt", "updatedAt"
+                ) VALUES (
+                    'workflow-predecessor-run', 'workflow-predecessor-automation', 'released-account',
+                    'succeeded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
             `);
         } finally {
             predecessor.close();
@@ -354,6 +372,32 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
 
         const deployed = new DatabaseSync(databasePath);
         try {
+            deployed.prepare(`
+                UPDATE "AutomationRun"
+                SET "workflowAcceptedSnapshotEnvelope" = ?, "workflowCheckpointEnvelope" = ?,
+                    "workflowCustodyState" = 'pending'
+                WHERE "id" = 'workflow-predecessor-run'
+            `).run(workflowEnvelopeFixture, workflowEnvelopeFixture);
+            deployed.prepare(`
+                INSERT INTO "WorkflowRunInvocation" (
+                    "id", "runId", "sequence", "memberOrdinal", "contentEnvelope", "updatedAt"
+                ) VALUES ('workflow-predecessor-invocation', 'workflow-predecessor-run', 0, 0, ?, CURRENT_TIMESTAMP)
+            `).run(workflowEnvelopeFixture);
+            expect(deployed.prepare(`
+                SELECT "originKind", "automationId",
+                       length("workflowAcceptedSnapshotEnvelope") AS "acceptedLength",
+                       length("workflowCheckpointEnvelope") AS "checkpointLength"
+                FROM "AutomationRun" WHERE "id" = 'workflow-predecessor-run'
+            `).get()).toEqual({
+                originKind: "automation",
+                automationId: "workflow-predecessor-automation",
+                acceptedLength: workflowEnvelopeFixture.length,
+                checkpointLength: workflowEnvelopeFixture.length,
+            });
+            expect(deployed.prepare(`
+                SELECT length("contentEnvelope") AS "contentLength"
+                FROM "WorkflowRunInvocation" WHERE "id" = 'workflow-predecessor-invocation'
+            `).get()).toEqual({ contentLength: workflowEnvelopeFixture.length });
             expect(deployed.prepare('SELECT "publicKey" FROM "Account" WHERE "id" = ?')
                 .get("released-account")).toEqual({ publicKey: "released-account-key" });
             expect(deployed.prepare(`

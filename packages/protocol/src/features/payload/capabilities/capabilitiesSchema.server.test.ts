@@ -31,6 +31,36 @@ describe('CapabilitiesSchema (server capabilities)', () => {
     expect(OldCapabilitiesSchema.parse({ pluginDataCollections: limits })).toEqual({ server: {} });
   });
 
+  it('publishes the running release beside, not inside, the strict server object released readers parse', () => {
+    const payload = {
+      server: { canonicalServerUrl: 'https://stack.example.test' },
+      serverRelease: { version: '0.3.1', flavor: 'light' },
+    };
+    expect(CapabilitiesSchema.parse(payload).serverRelease).toEqual({ version: '0.3.1', flavor: 'light' });
+    expect(CapabilitiesSchema.parse({}).serverRelease).toBeUndefined();
+    expect(CapabilitiesSchema.safeParse({ serverRelease: { flavor: 'heavy' } }).success).toBe(false);
+    // The server object stays closed: the release never travels inside it.
+    expect(CapabilitiesSchema.safeParse({ server: { version: '0.3.1' } }).success).toBe(false);
+
+    // Released reader, pinned from tag `cli-v0.2.11` (commit 98ea8fb767, also `ui-web-v0.2.11-preview.186`):
+    // `packages/protocol/src/features/payload/capabilities/serverCapabilities.ts` is a strict object of
+    // exactly these keys, under a root `z.object` that drops families it does not know. The 0.3
+    // `retention`/`usageAnalytics` leaves are omitted from the payload because released readers of
+    // 0.3 servers are not a supported direction (one-way 0.3 upgrade); this pins only the new family.
+    const ReleasedCapabilitiesSchema = z.object({
+      server: z.object({
+        canonicalServerUrl: z.string().trim().min(1).optional(),
+        webappUrl: z.string().trim().min(1).optional(),
+        retention: z.unknown().optional(),
+      }).strict().optional(),
+    });
+    expect(ReleasedCapabilitiesSchema.safeParse(payload)).toMatchObject({
+      success: true,
+      data: { server: { canonicalServerUrl: 'https://stack.example.test' } },
+    });
+    expect(ReleasedCapabilitiesSchema.safeParse({ server: { ...payload.server, version: '0.3.1' } }).success).toBe(false);
+  });
+
   it('parses server identity capabilities outside the strict server capability object', () => {
     const parsed = CapabilitiesSchema.parse({
       server: {
@@ -103,11 +133,8 @@ describe('CapabilitiesSchema (server capabilities)', () => {
         tunnel: {
           directPeer: {
             allowedPorts: [3000, 5173],
-            maxIdleMs: 30_000,
-            maxDurationMs: 300_000,
           },
           serverRouted: {
-            maxBytes: 4096,
             maxActiveTunnelsPerSocket: 2,
             maxFrameBytes: 1024,
             supportedEncodings: ['binary_frame_v2'],
@@ -117,14 +144,7 @@ describe('CapabilitiesSchema (server capabilities)', () => {
             maxFramedMessageBytes: 4096,
             substreams: {
               maxConcurrentSubstreams: 8,
-              maxTotalSubstreams: 64,
-              maxBytesPerSubstream: 8192,
-              maxAggregateBytes: 16_384,
-              maxSubstreamIdleMs: 5000,
-              maxSessionIdleMs: 10_000,
             },
-            maxIdleMs: 10_000,
-            maxDurationMs: 60_000,
             disabledReason: 'relay_disabled_by_server_policy',
           },
         },
@@ -133,7 +153,6 @@ describe('CapabilitiesSchema (server capabilities)', () => {
 
     expect(parsed.machines.tunnel.directPeer.allowedPorts).toEqual([3000, 5173]);
     expect(parsed.machines.tunnel.serverRouted).toMatchObject({
-      maxBytes: 4096,
       maxActiveTunnelsPerSocket: 2,
       maxFrameBytes: 1024,
       preferredEncoding: 'binary_frame_v2',
@@ -147,9 +166,6 @@ describe('CapabilitiesSchema (server capabilities)', () => {
     ]);
     expect(parsed.machines.tunnel.serverRouted.substreams).toMatchObject({
       maxConcurrentSubstreams: 8,
-      maxTotalSubstreams: 64,
-      maxBytesPerSubstream: 8192,
-      maxAggregateBytes: 16_384,
     });
   });
 

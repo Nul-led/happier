@@ -5,6 +5,7 @@ import { UsernameTakenError, usernameUpdate } from "@/app/social/usernameUpdate"
 import { resolveFriendsPolicyFromServerFeatures } from "@/app/social/resolveFriendsPolicyFromServerFeatures";
 import { validateUsername } from "@/app/social/usernamePolicy";
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerAccountUsernameRoute(app: Fastify): void {
     app.post('/v1/account/username', {
@@ -20,7 +21,8 @@ export function registerAccountUsernameRoute(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const friendsPolicy = resolveFriendsPolicyFromServerFeatures(process.env);
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        const friendsPolicy = resolveFriendsPolicyFromServerFeatures(requestHomeEnv);
         if (!friendsPolicy.enabled) {
             return reply.code(400).send({ error: 'friends-disabled' });
         }
@@ -43,7 +45,7 @@ export function registerAccountUsernameRoute(app: Fastify): void {
             }
         }
 
-        const validation = validateUsername(request.body.username, process.env);
+        const validation = validateUsername(request.body.username, requestHomeEnv);
         if (!validation.ok) {
             return reply.code(400).send({ error: 'invalid-username' });
         }

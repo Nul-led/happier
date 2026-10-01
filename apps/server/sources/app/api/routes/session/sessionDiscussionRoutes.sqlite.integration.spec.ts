@@ -34,7 +34,6 @@ describe("Session discussion HTTP transport (SQLite)", () => {
 
     const featureEnvKeys = [
         "HAPPIER_FEATURE_SESSIONS__ENABLED",
-        "HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED",
         "HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED",
     ] as const;
     const savedEnv = new Map<string, string | undefined>();

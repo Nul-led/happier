@@ -30,6 +30,7 @@ describe('scmCapabilities', () => {
     expect(capabilities.readHostingProvider).toBe(false);
     expect(capabilities.readPullRequestStatus).toBe(false);
     expect(capabilities.writePullRequestCreate).toBe(false);
+    expect(capabilities.writePullRequestDraftCreate).toBe(false);
     expect(capabilities.writePullRequestCheckout).toBe(false);
     expect(capabilities.writePullRequestPrepareWorktree).toBe(false);
     expect(capabilities.writePullRequestRunStacked).toBe(false);
@@ -40,6 +41,11 @@ describe('scmCapabilities', () => {
     expect(capabilities.writeRepositoryRemoveIndexLock).toBe(false);
     expect(capabilities.readStash).toBe(false);
     expect(capabilities.writeStash).toBe(false);
+    expect(capabilities.writeStashCreate).toBe(false);
+    expect(capabilities.writeRemotePolicies).toBe(false);
+    expect(capabilities.writeRemoteForceWithLease).toBe(false);
+    expect(capabilities.writeConflictResolution).toBe(false);
+    expect(capabilities.writeBranchOperationSkip).toBe(false);
   });
 
   it('creates git capability defaults', () => {
@@ -62,6 +68,7 @@ describe('scmCapabilities', () => {
     expect(capabilities.readHostingProvider).toBe(false);
     expect(capabilities.readPullRequestStatus).toBe(false);
     expect(capabilities.writePullRequestCreate).toBe(false);
+    expect(capabilities.writePullRequestDraftCreate).toBe(false);
     expect(capabilities.writePullRequestCheckout).toBe(false);
     expect(capabilities.writePullRequestPrepareWorktree).toBe(false);
     expect(capabilities.writePullRequestRunStacked).toBe(false);
@@ -72,6 +79,7 @@ describe('scmCapabilities', () => {
     expect(capabilities.writeRepositoryRemoveIndexLock).toBe(false);
     expect(capabilities.readStash).toBe(true);
     expect(capabilities.writeStash).toBe(true);
+    expect(capabilities.writeStashCreate).toBe(true);
   });
 
   it('creates sapling capability defaults', () => {
@@ -97,6 +105,7 @@ describe('scmCapabilities', () => {
     expect(capabilities.readHostingProvider).toBe(false);
     expect(capabilities.readPullRequestStatus).toBe(false);
     expect(capabilities.writePullRequestCreate).toBe(false);
+    expect(capabilities.writePullRequestDraftCreate).toBe(false);
     expect(capabilities.writePullRequestCheckout).toBe(false);
     expect(capabilities.writePullRequestPrepareWorktree).toBe(false);
     expect(capabilities.writePullRequestRunStacked).toBe(false);
@@ -107,6 +116,7 @@ describe('scmCapabilities', () => {
     expect(capabilities.writeRepositoryRemoveIndexLock).toBe(false);
     expect(capabilities.readStash).toBe(false);
     expect(capabilities.writeStash).toBe(false);
+    expect(capabilities.writeStashCreate).toBe(false);
   });
 
   it('preserves explicit local backend capability scope overrides', () => {
@@ -141,6 +151,7 @@ describe('scmCapabilities', () => {
         include: { support: 'supported' },
         exclude: { support: 'supported' },
         discard: { support: 'supported' },
+        stashCreate: { support: 'supported' },
       },
       commit: {
         create: { support: 'supported' },
@@ -175,6 +186,7 @@ describe('scmCapabilities', () => {
         repositoryPublishTargets: { support: 'supported' },
         repositoryPublish: { support: 'supported' },
         pullRequestCreate: { support: 'supported' },
+        pullRequestDraftCreate: { support: 'supported' },
         pullRequestCheckout: { support: 'supported' },
         pullRequestPrepareWorktree: { support: 'supported' },
         pullRequestRunStacked: { support: 'supported' },
@@ -192,6 +204,7 @@ describe('scmCapabilities', () => {
       readHostingProvider: true,
       readPullRequestStatus: true,
       writePullRequestCreate: true,
+      writePullRequestDraftCreate: true,
       writePullRequestCheckout: true,
       writePullRequestPrepareWorktree: true,
       writePullRequestRunStacked: true,

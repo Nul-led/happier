@@ -106,6 +106,20 @@ export const ChangeEntrySchema = z.object({
 
 export type ChangeEntry = z.infer<typeof ChangeEntrySchema>;
 
+/** The server's existing advisory hint for a durable row revised at unchanged seq. */
+export function readSessionUpdatedMessageChangeHintV1(
+  change: Readonly<{ kind: string; hint?: unknown }>,
+): Readonly<{ seq: number; messageId: string }> | null {
+  if (change.kind !== 'session' && change.kind !== 'share') return null;
+  const hint = change.hint;
+  if (!hint || typeof hint !== 'object' || Array.isArray(hint)) return null;
+  const record = hint as Record<string, unknown>;
+  const seq = record.updatedMessageSeq;
+  const messageId = typeof record.updatedMessageId === 'string' ? record.updatedMessageId.trim() : '';
+  if (typeof seq !== 'number' || !Number.isFinite(seq) || seq < 0 || !messageId) return null;
+  return { seq: Math.trunc(seq), messageId };
+}
+
 /**
  * Durable Account-change fact emitted only after the Server has committed the
  * physical Session deletion. Ordinary Account-relative unavailability (for

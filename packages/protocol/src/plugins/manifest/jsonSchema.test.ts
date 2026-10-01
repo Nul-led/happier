@@ -117,7 +117,7 @@ describe('createPluginManifestJsonSchemaV2', () => {
     expect(validateExternalManifest(invalid)).toBe(false);
   });
 
-  it('keeps hosted HTML and the Session widget role aligned at both manifest boundaries', () => {
+  it('keeps hosted HTML and the widget role aligned at both manifest boundaries', () => {
     const renderer = {
       id: 'inline-status',
       kind: 'hostedHtml',
@@ -132,7 +132,7 @@ describe('createPluginManifestJsonSchemaV2', () => {
           renderers: [renderer],
           views: [{
             id: 'session-status',
-            container: 'sessionWidget',
+            container: 'widget',
             target: { kind: 'session' },
             renderer: renderer.id,
             title: 'Session status',
@@ -144,9 +144,28 @@ describe('createPluginManifestJsonSchemaV2', () => {
     expect(PluginManifestV2Schema.safeParse(valid).success).toBe(true);
     expect(validateExternalManifest(valid)).toBe(true);
 
+    const homeWidget = {
+      ...valid,
+      contributes: { ui: { ...valid.contributes.ui, views: [{
+        ...valid.contributes.ui.views[0],
+        id: 'home-status',
+        target: { kind: 'app' },
+        home: { default: 'shown' },
+      }] } },
+    } as const;
+    expect(PluginManifestV2Schema.safeParse(homeWidget).success).toBe(true);
+    expect(validateExternalManifest(homeWidget)).toBe(true);
+    expect(PluginManifestV2Schema.safeParse({
+      ...homeWidget,
+      contributes: { ui: { ...homeWidget.contributes.ui, views: [{
+        ...homeWidget.contributes.ui.views[0], container: 'unsupportedWidget',
+      }] } },
+    }).success).toBe(false);
+
     for (const view of [
-      { ...valid.contributes.ui.views[0], target: { kind: 'app' } },
+      { ...valid.contributes.ui.views[0], target: { kind: 'project' } },
       { ...valid.contributes.ui.views[0], instancePolicy: 'singleton' },
+      { ...valid.contributes.ui.views[0], home: { default: 'shown' } },
     ]) {
       const invalid = {
         ...valid,
@@ -356,6 +375,47 @@ describe('createPluginManifestJsonSchemaV2', () => {
     expect(validateExternalManifest(direct)).toBe(true);
     expect(PluginManifestV2Schema.safeParse(legacyBinding).success).toBe(false);
     expect(validateExternalManifest(legacyBinding)).toBe(false);
+  });
+
+  it('keeps placement and app-page columns identical in canonical and generated authoring schemas', () => {
+    const page = {
+      ...manifestForDestinationBindingSlot(PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1.find(
+        (slot) => slot.container === 'appPage' && slot.targetKind === 'app',
+      )!),
+    };
+    const withView = (view: Record<string, unknown>) => ({
+      ...page,
+      contributes: {
+        ...page.contributes,
+        ui: { ...page.contributes.ui, views: [view] },
+      },
+    });
+    const original = page.contributes.ui.views[0]!;
+    for (const [view, accepted] of [
+      [{ ...original, placement: { kind: 'rail' }, column: { renderer: 'slot-renderer' } }, true],
+      [{ ...original, placement: { kind: 'column', column: 'projects' } }, true],
+      [{ ...original, obsoletePlacement: 'navigation' }, false],
+      [{ ...original, placement: { kind: 'column', column: 'Bad Column' } }, false],
+    ] as const) {
+      const candidate = withView(view);
+      expect(PluginManifestV2Schema.safeParse(candidate).success).toBe(accepted);
+      expect(validateExternalManifest(candidate)).toBe(accepted);
+    }
+    const appTab = manifestForDestinationBindingSlot(PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1.find(
+      (slot) => slot.container === 'rightSidebarTab' && slot.targetKind === 'app',
+    )!);
+    const appTabWithPlacement = {
+      ...appTab,
+      contributes: {
+        ...appTab.contributes,
+        ui: {
+          ...appTab.contributes.ui,
+          views: [{ ...appTab.contributes.ui.views[0]!, placement: { kind: 'rail' } }],
+        },
+      },
+    };
+    expect(PluginManifestV2Schema.safeParse(appTabWithPlacement).success).toBe(true);
+    expect(validateExternalManifest(appTabWithPlacement)).toBe(true);
   });
 
   it('derives every Registry binding row into the generated author schema and rejects an unsupported pair', () => {

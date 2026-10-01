@@ -5,10 +5,12 @@ import { SessionViewerProjectionV1Schema } from '../sessions/personal/viewer.js'
 import { AutomationRunStateV3Schema } from '../automations/automationRunStateV3.js';
 import { AutomationRunStateChangedHostEventV1Schema } from '../plugins/events/hostReferencesV1.js';
 import { ExternalSessionTranscriptInvalidationV1Schema } from '../sessions/external/secureRefreshV1.js';
+import { ExternalSessionStorageStateV1Schema } from '../sessions/external/operationV1.js';
 import { ExecutionRunPublicStateSchema } from '../execution/runs/index.js';
 import { SessionMessageAttentionImpactSchema } from '../sessions/messages/transcriptRawRecordV1.js';
 import { SessionMessageRoleSchema } from '../sessions/messages/sessionMessageRole.js';
 import { SessionMessageAccountActorV1Schema } from '../sessions/messages/sessionMessageAccountActorV1.js';
+import { SessionInputAdmissionReceiptV1Schema } from '../sessions/messages/sessionInputAdmission.js';
 import { SessionMessageDeliveryResolutionV1Schema } from '../sessions/messages/sessionMessageDeliveryResolutionV1.js';
 import { SessionTranscriptObservationProvenanceV1Schema } from '../sessions/messages/transcriptObservationV1.js';
 import { SessionStoredMessageContentSchema } from '../sessions/messages/sessionStoredMessageContent.js';
@@ -22,9 +24,10 @@ import {
   parseSessionRuntimeActivityProjectionFields,
   SessionRuntimeActivityStateSchema,
 } from '../sessions/runtime/activity/index.js';
-import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
+import { SessionOwnerMetadataEnvelopeV1Schema } from '../sessions/metadata/sessionMetadataSchemasV1.js';
 import { PendingActivationAuthorizationV1Schema } from '../sessions/pending/pendingActivationAuthorizationV1.js';
 import { ParticipantExecutionRunRecipientRoutingIdentityV1Schema } from '../messages/structured/participantMessageV1.js';
+import { ActivityMessageReferenceV2Schema } from '../push/activityRemoteAlert.js';
 
 const TimestampMsSchema = z.number().int().min(0);
 const Base64Schema = z.string();
@@ -66,6 +69,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
          * current producer evaluated this row and denies Account attribution.
          */
         accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
+        inputAdmissionReceipt: SessionInputAdmissionReceiptV1Schema.optional(),
       })
       .passthrough(),
   }).passthrough(),
@@ -93,6 +97,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
          * current producer evaluated this row and denies Account attribution.
          */
         accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
+        inputAdmissionReceipt: SessionInputAdmissionReceiptV1Schema.optional(),
       })
       .passthrough(),
   }).passthrough(),
@@ -115,6 +120,8 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     createdAt: TimestampMsSchema,
     updatedAt: TimestampMsSchema,
     meaningfulActivityAt: TimestampMsSchema.optional(),
+    /** Where the Session's transcript lives (an imported external session starts `machine_only`). */
+    currentStorageState: ExternalSessionStorageStateV1Schema.optional(),
   }).passthrough(),
   z.object({
     t: z.literal('update-session'),
@@ -135,6 +142,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     pendingRequestObservedAt: TimestampMsSchema.nullable().optional(),
     latestReadyEventSeq: z.number().int().min(0).nullable().optional(),
     latestReadyEventAt: TimestampMsSchema.nullable().optional(),
+    latestReadyEventLocalId: z.string().min(1).optional(),
     latestTurnId: TurnIdSchema.nullable().optional(),
     latestTurnStatus: PrimaryTurnStatusV1Schema.nullable().optional(),
     latestTurnStatusObservedAt: TimestampMsSchema.nullable().optional(),
@@ -187,7 +195,7 @@ export const UpdateBodySchema = z.discriminatedUnion('t', [
     // reject a same-machine reclaim. Older supported producers omit it.
     attempt: z.number().int().min(0).optional(),
     /** Exact machine wake for persisted Workflow cancellation custody. */
-    workflowControl: z.literal('cancel_requested').optional(),
+    workflowControl: z.enum(['cancel_requested', 'review_resolved']).optional(),
   }).passthrough(),
   z.object({
     t: z.literal('automation-run-state-changed'),
@@ -412,6 +420,24 @@ export const TranscriptStreamSegmentDeltaEphemeralMessageSchema = z.object({
   updatedAt: TimestampMsSchema,
 }).passthrough();
 
+/** A committed, content-free recipient fact; never persisted or replayed as history. */
+const SessionPersonalEventEphemeralBaseV1Schema = z.object({
+  type: z.literal('session-personal-event'),
+  sessionId: z.string().min(1),
+  eventId: z.string().min(1),
+}).strict();
+
+export const SessionPersonalEventEphemeralV1Schema = z.discriminatedUnion('event', [
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.literal('directly_shared') }).strict(),
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.literal('assigned'), assignmentAutoFollowed: z.boolean().optional() }).strict(),
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.literal('source_unavailable') }).strict(),
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.enum(['failed', 'cancelled']), turnId: TurnIdSchema }).strict(),
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.literal('human_message'), message: ActivityMessageReferenceV2Schema, sourceAccountId: z.string().min(1) }).strict(),
+  SessionPersonalEventEphemeralBaseV1Schema.extend({ event: z.literal('message'), message: ActivityMessageReferenceV2Schema }).strict(),
+]);
+
+export type SessionPersonalEventEphemeralV1 = z.infer<typeof SessionPersonalEventEphemeralV1Schema>;
+
 export const EphemeralUpdateSchema = z.discriminatedUnion('type', [
   // Hottest live event first: delta ticks stream at the live cadence (~25Hz per active segment).
   z.object({
@@ -467,6 +493,7 @@ export const EphemeralUpdateSchema = z.discriminatedUnion('type', [
   }).passthrough(),
   ActionOperationSnapshotEphemeralV1Schema,
   ActionOperationRevisionEphemeralV1Schema,
+  SessionPersonalEventEphemeralV1Schema,
 ]);
 
 export type EphemeralUpdate = z.infer<typeof EphemeralUpdateSchema>;

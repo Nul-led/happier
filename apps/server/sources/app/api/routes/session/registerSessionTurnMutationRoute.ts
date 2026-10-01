@@ -26,7 +26,7 @@ import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmiss
 export function registerSessionTurnMutationRoute(app: Fastify) {
     app.post("/v1/sessions/:sessionId/turns/mutations", {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
+        config: { restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: SessionTurnMutationV1Schema,
@@ -91,7 +91,10 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
 
     app.get("/v1/sessions/:sessionId/turns", {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
+        config: {
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
+            apiTokenSessionAction: "session.transcript.get",
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.object({}).strict(),

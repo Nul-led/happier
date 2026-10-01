@@ -60,7 +60,7 @@ export function registerSessionBoardRoutes(app: Fastify) {
         preHandler: [app.authenticate, createServerFeatureGatePreHandler("sessions.board")],
         config: {
             rateLimit,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionBoardRouteErrorHandler,
         schema: {
@@ -94,6 +94,6 @@ export function registerSessionBoardRoutes(app: Fastify) {
         });
         if (result.ok) return reply.send(result.result);
         const error = result.result.error;
-        return reply.code(error === "session_board_invalid" ? 400 : error === "session_board_forbidden" ? 403 : error === "session_board_item_not_found" ? 404 : 409).send(result.result);
+        return reply.code(error === "session_board_invalid" ? 400 : error === "session_board_forbidden" ? 403 : error === "session_board_item_not_found" || error === "not_found" ? 404 : 409).send(result.result);
     });
 }

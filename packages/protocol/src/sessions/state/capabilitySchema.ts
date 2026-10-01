@@ -54,6 +54,8 @@ export const SessionStateCapabilitiesV1Schema = z
     intent: z
       .object({
         model: SessionStateFieldCapabilitySchema.optional(),
+        role: SessionStateFieldCapabilitySchema.optional(),
+        sessionRoles: SessionStateFieldCapabilitySchema.optional(),
         permissionMode: SessionStateFieldCapabilitySchema.optional(),
         acpSessionMode: SessionStateFieldCapabilitySchema.optional(),
         acpConfigOption: SessionStateFieldCapabilitySchema.optional(),

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { projectSessionMetadataForWire } from './terminalMetadata.js';
+import { readSessionRoleIdV1, readSessionRolesV1, writeSessionRoleIdV1ToMetadata } from '../../prompts/roles/sessionRolesSnapshot.js';
 import { z } from 'zod';
 
 import {
@@ -35,6 +37,9 @@ import {
   SessionOwnerMetadataCiphertextV1Schema,
   SessionOwnerMetadataEnvelopeV1Schema,
   SessionOwnerMetadataV1Schema,
+  SessionOwnerModeCatalogV1Schema,
+  readSessionModesMetadata,
+  projectSessionModesV1Compatibility,
   SessionSharedMetadataV1Schema,
   createPlainSessionOwnerMetadataEnvelopeV1,
   createSessionOwnerMetadataV1,
@@ -57,12 +62,92 @@ function deterministicRandomBytes(seed: number): (length: number) => Uint8Array 
   return (length) => Uint8Array.from({ length }, () => next++ & 0xff);
 }
 
+describe('native mode catalog compatibility', () => {
+  it('admits known choices with unknown current through the complete owner envelope without weakening strict V1', () => {
+    const state = { v: 2 as const, agentId: 'opencode', updatedAt: 1, currentModeId: null, availableModes: [{ id: 'custom', name: 'Custom' }] };
+    const created = createSessionOwnerMetadataV1({ metadata: { sessionModesV2: state } });
+    expect(created).toMatchObject({ ok: true, ownerMetadata: { runtime: { sessionModesV2: state } } });
+    if (!created.ok) throw new Error('Owner metadata unavailable');
+    const wire = projectSessionOwnerCompatibilityViewV1({ sharedMetadata: projectSessionSharedMetadataV1({ metadata: {} }), ownerMetadata: created.ownerMetadata });
+    expect(readSessionModesMetadata(wire)).toEqual(state);
+    expect(projectSessionModesV1Compatibility(state)).toBeUndefined();
+    expect(SessionOwnerModeCatalogV1Schema.safeParse({ ...state, v: 1 }).success).toBe(false);
+    expect(SessionOwnerModeCatalogV1Schema.safeParse({ ...state, v: 1, currentModeId: 'custom', extra: true }).success).toBe(false);
+    const compatible = projectSessionModesV1Compatibility({ ...state, currentModeId: 'custom' });
+    expect(SessionOwnerModeCatalogV1Schema.parse(compatible)).toEqual({ ...state, v: 1, currentModeId: 'custom' });
+    expect(readSessionModesMetadata({ acpSessionModesV1: compatible })).toEqual({ ...state, currentModeId: 'custom' });
+    expect(readSessionModesMetadata({ sessionModesV2: state, sessionModesV1: compatible })).toEqual(state);
+    expect(readSessionModesMetadata({ sessionModesV2: { ...state, unrecognizedAuthority: true }, sessionModesV1: compatible })).toBeNull();
+  });
+});
+
+describe('session role owner metadata', () => {
+  it('keeps the reviewer override private and publishes only a strict request-only decision', () => {
+    const created = createSessionOwnerMetadataV1({ metadata: { approvalReviewerEnabled: true } });
+    expect(created.ownerMetadata.runtime?.approvalReviewerEnabled).toBe(true);
+    const claim = { version: 1 as const, origin: 'approvalReviewer' as const, decision: 'approved' as const, scope: 'request' as const };
+    const shared = projectSessionSharedMetadataV1({ metadata: { approvalReviewerEnabled: true }, agentState: {
+      completedRequests: { read: { tool: 'Read', createdAt: 100, completedAt: 200, status: 'approved', arguments: { sensitive: 'private' }, permissionDecisionClaimV1: claim } },
+    } });
+    expect(shared).not.toHaveProperty('approvalReviewerEnabled');
+    expect(shared.publicAgentState?.completedRequests.read).toEqual({ tool: 'Read', createdAt: 100, completedAt: 200, status: 'approved', permissionDecisionClaimV1: claim });
+  });
+  it('preserves the current role binding and private role snapshot through canonical metadata normalization', () => {
+    const sessionRolesV1 = { overrides: {}, sessionRoles: {}, notes: 'Lead instructions', memoryDocRef: { kind: 'doc' as const, artifactId: 'private-memory' } };
+    const created = createSessionOwnerMetadataV1({ metadata: writeSessionRoleIdV1ToMetadata({ work: { sessionRolesV1 } }, 'orchestrator') });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('Producer role metadata rejected');
+    expect(created.ownerMetadata.work).toMatchObject({ sessionRolesV1: { ...sessionRolesV1, roleId: 'orchestrator' } });
+    const sealed = sealSessionOwnerMetadataEnvelopeV1({ material: material(7), ownerMetadata: created.ownerMetadata, randomBytes: deterministicRandomBytes(3) });
+    const opened = openSessionOwnerMetadataEnvelopeV1({ accountMode: 'e2ee', material: material(7), envelope: sealed });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) throw new Error('Owner role envelope unavailable');
+    const domain = projectSessionOwnerCompatibilityViewV1({ sharedMetadata: projectSessionSharedMetadataV1({ metadata: {} }), ownerMetadata: opened.ownerMetadata });
+    expect(readSessionRoleIdV1(domain)).toBe('orchestrator');
+    expect(readSessionRolesV1(domain)).toEqual({ ...sessionRolesV1, roleId: 'orchestrator' });
+    expect(domain).not.toHaveProperty('sessionRolesV1');
+    const cleared = createSessionOwnerMetadataV1({ metadata: writeSessionRoleIdV1ToMetadata(domain, null) });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) throw new Error('Cleared role metadata rejected');
+    const clearedDomain = projectSessionOwnerCompatibilityViewV1({ sharedMetadata: projectSessionSharedMetadataV1({ metadata: {} }), ownerMetadata: cleared.ownerMetadata });
+    expect(readSessionRoleIdV1(clearedDomain)).toBeNull();
+    expect(readSessionRolesV1(clearedDomain)).toEqual(sessionRolesV1);
+    expect(SessionOwnerMetadataV1Schema.safeParse({ ...created.ownerMetadata, work: { ...created.ownerMetadata.work, sessionRolesV1: { ...sessionRolesV1, projectOverrides: {} } } }).success).toBe(false);
+    expect(createSessionOwnerMetadataV1({ metadata: { work: { sessionRolesV1, unrecognizedAuthority: true } } })).toMatchObject({ ok: false, error: 'unsupported_owner_metadata' });
+    const shared = projectSessionSharedMetadataV1({ metadata: domain });
+    expect(shared).not.toHaveProperty('work');
+    expect(shared).not.toHaveProperty('sessionRolesV1');
+  });
+});
+
 function material(byte: number): AccountScopedCryptoMaterial {
   return {
     type: 'dataKey',
     machineKey: Uint8Array.from({ length: 32 }, () => byte),
   };
 }
+
+describe('terminal host owner metadata', () => {
+  it.each([
+    { mode: 'herdr', requested: 'herdr', herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1', paneId: 'w1:p2' } },
+    { mode: 'zellij', requested: 'zellij', zellij: { sessionName: 'work', paneId: '9', socketDirV1: '/tmp/zellij' } },
+  ])('preserves $mode attachment identity through Account owner seal, open and domain projection', (terminal) => {
+    const created = createSessionOwnerMetadataV1({ metadata: { terminal } });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error('Owner terminal metadata rejected');
+    const sealed = sealSessionOwnerMetadataEnvelopeV1({ material: material(7), ownerMetadata: created.ownerMetadata, randomBytes: deterministicRandomBytes(3) });
+    const opened = openSessionOwnerMetadataEnvelopeV1({ accountMode: 'e2ee', material: material(7), envelope: sealed });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) throw new Error('Owner terminal envelope unavailable');
+    const domain = projectSessionOwnerCompatibilityViewV1({ sharedMetadata: projectSessionSharedMetadataV1({ metadata: {} }), ownerMetadata: opened.ownerMetadata });
+    expect(domain.terminal).toEqual(terminal);
+    expect(createSessionOwnerMetadataV1({ metadata: projectSessionMetadataForWire({ terminal }) })).toMatchObject({
+      ok: true, ownerMetadata: { runtime: { terminal } },
+    });
+    expect(createSessionOwnerMetadataV1({ metadata: { terminal: { ...terminal, unrecognizedAuthority: true } } })).toMatchObject({ ok: false, error: 'unsupported_owner_metadata' });
+    expect(SessionOwnerMetadataV1Schema.safeParse({ ...opened.ownerMetadata, runtime: { ...opened.ownerMetadata.runtime, terminal: { ...terminal, unrecognizedAuthority: true } } }).success).toBe(false);
+  });
+});
 
 function operationProgress() {
   const request = {
@@ -85,7 +170,7 @@ function operationProgress() {
       },
       linkGeneration: 'link-generation-1',
       sourceGeneration: 'source-generation-1',
-      contributionGeneration: 'contribution-generation-1',
+      sourceCustody: { kind: 'development' as const, registeredRootId: 'source-root-1' },
     },
     plan: 'materialize' as const,
     targetStorageMode: 'external-linked' as const,

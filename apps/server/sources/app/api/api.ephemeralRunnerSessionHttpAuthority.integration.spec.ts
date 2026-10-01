@@ -48,7 +48,6 @@ describe("ephemeral Runner Session HTTP authority (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
         });

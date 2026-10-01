@@ -28,6 +28,8 @@ export const MachineLiveStreamReceiptV1Schema = z
     routeKind: MachineLiveStreamRouteKindV1Schema,
     flowKind: z.literal('live_stream'),
     reasonCode: z.string().min(1).optional(),
+    terminal: z.boolean().optional(),
+    terminalOutcome: z.enum(['stopped', 'error']).optional(),
     bytesSent: NonNegativeIntSchema.optional(),
     bytesRelayed: NonNegativeIntSchema.optional(),
     bytesDropped: NonNegativeIntSchema.optional(),
@@ -52,3 +54,7 @@ export const MachineLiveStreamReceiptV1Schema = z
     }
   });
 export type MachineLiveStreamReceiptV1 = z.infer<typeof MachineLiveStreamReceiptV1Schema>;
+
+export function isMachineLiveStreamTerminalReceiptV1(receipt: MachineLiveStreamReceiptV1): boolean {
+  return receipt.terminal === true;
+}

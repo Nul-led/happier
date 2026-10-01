@@ -6,6 +6,10 @@ import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 import type { EphemeralPayload } from "@/app/events/eventPayloadTypes";
 import { sealAccountScopedBlobCiphertext } from "@happier-dev/protocol";
 
+vi.mock("@/app/api/socket/socketCredentialCurrentness", async () => (
+    await import("../testkit/socketHarness")
+).createCurrentSocketCredentialModuleMock());
+
 const emitUpdate = vi.fn();
 const emitEphemeral = vi.fn();
 const buildUpdateMachineUpdate = vi.fn((_machineId: string, updSeq: number, updId: string) => ({

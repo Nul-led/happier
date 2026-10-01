@@ -19,13 +19,15 @@ import {
     ReviewCommentSetDispositionRequestV1Schema,
     ReviewCommentPrincipalHeaderV1Schema,
     ReviewCommentTransitionRequestV1Schema,
-    reviewCommentMutationInputWithoutEventEnvelopeV1,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
+    ReviewCommentPrepareMutationRequestV1Schema, ReviewCommentCommitMutationRequestV1Schema,
 } from "@happier-dev/protocol";
+import { readReviewCommentPreparationReceipt } from "./mutations";
 import tweetnacl from "tweetnacl";
 
 import {
     createReviewCommentOperations,
+    assertReviewCommentCurrentIntent,
     type ReviewCommentOperations,
 } from "./operations";
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
@@ -35,12 +37,17 @@ import { ReviewCommentOperationError } from "./errors";
 import type { ReviewCommentPrincipal } from "./permissions";
 import { createSqlReviewCommentStore } from "./store";
 import { resolveTrustedPluginPermissionGrants } from "@/app/plugins/permissions/resolve";
+import { workflowRunIdentityWhere } from "@/app/workflows/workflowRunService";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import { readSessionLedSubtreeSessionIdsInTx } from "@/app/session/relations/sessionReportsToSubtree";
+import { resolveEffectiveSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 
 const DEFAULT_REVIEW_COMMENT_PRINCIPAL_PROOF_MAX_AGE_MS = 5 * 60_000;
 const DEFAULT_REVIEW_COMMENT_PRINCIPAL_PROOF_CLOCK_SKEW_MS = 60_000;
 
 export type ReviewCommentRoutePrincipalResolver = (
-    request: Readonly<{
+    request: Parameters<typeof readSessionAccessAuthenticationFromRequest>[0] & Readonly<{
         userId: string;
         body?: unknown;
         query?: unknown;
@@ -76,6 +83,12 @@ function readHeaderValue(
         return value[0] ?? null;
     }
     return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readCanonicalMutationRequest(accountId: string, path: string | undefined, body: unknown) {
+    if (path === "/v1/reviews/comments/mutations/prepare") return parseReviewCommentRouteInput(ReviewCommentPrepareMutationRequestV1Schema, body, "review_comment_invalid_request");
+    if (path === "/v1/reviews/comments/mutations/commit") return readReviewCommentPreparationReceipt(accountId, parseReviewCommentRouteInput(ReviewCommentCommitMutationRequestV1Schema, body, "review_comment_invalid_request").receipt).request;
+    return null;
 }
 
 function readReviewCommentPrincipalHeader(
@@ -171,32 +184,14 @@ async function verifyReviewCommentPrincipalHeader(params: Readonly<{
     }
     const currentIntent = params.headerPrincipal.currentIntent;
     if (currentIntent) {
-        const body = ReviewCommentCreateRequestV1Schema.safeParse(params.body);
-        const logicalEffectBodySha256Base64Url = body.success
-            ? createHash("sha256")
-                .update(stringifyReviewCommentPrincipalCanonicalJsonV1(
-                    reviewCommentMutationInputWithoutEventEnvelopeV1({ ...body.data }),
-                ))
-                .digest("base64url")
-            : null;
-        if (
-            proof.method !== "POST"
-            || proof.path !== "/v1/reviews/comments"
-            || currentIntent.effectBodySha256Base64Url !== logicalEffectBodySha256Base64Url
-            || params.headerPrincipal.actor.kind !== "agent"
-            || currentIntent.agentId !== params.headerPrincipal.actor.agentId
-            || currentIntent.sessionId !== params.headerPrincipal.actor.sessionId
-            || !body.success
-            || currentIntent.projectId !== body.data.projectId
-            || currentIntent.workspaceId !== body.data.workspaceId
-            || currentIntent.sessionId !== body.data.sessionId
-            || currentIntent.runId !== body.data.runId
-            || currentIntent.pluginId !== body.data.engineId
-        ) {
-            throw new ReviewCommentOperationError(
-                "review_comment_permission_denied",
-                "Review-comment current intent does not match the exact effect",
-            );
+        const prepared = readCanonicalMutationRequest(params.accountId, proof.path, params.body);
+        if (proof.method !== "POST" || (!prepared && (proof.path !== "/v1/reviews/comments" || !ReviewCommentCreateRequestV1Schema.safeParse(params.body).success)) || (prepared && prepared.mutation.actionId !== "reviews.comments.create")) {
+            throw new ReviewCommentOperationError("review_comment_permission_denied", "Review-comment current intent requires its exact create effect");
+        }
+        if (prepared?.mutation.actionId === "reviews.comments.create") assertReviewCommentCurrentIntent({ accountId: params.accountId, actor: params.headerPrincipal.actor, currentIntent, input: prepared.mutation.input, contentCommitment: prepared.contentCommitment });
+        else {
+            const legacy = ReviewCommentCreateRequestV1Schema.parse(params.body);
+            assertReviewCommentCurrentIntent({ accountId: params.accountId, actor: params.headerPrincipal.actor, currentIntent, input: legacy });
         }
     }
     const machine = await db.machine.findFirst({
@@ -267,13 +262,7 @@ async function verifyReviewCommentPrincipalHeader(params: Readonly<{
     };
 }
 
-async function resolveDefaultPrincipal(request: Readonly<{
-    userId: string;
-    body?: unknown;
-    method?: string;
-    path?: string;
-    headers?: Record<string, string | string[] | undefined>;
-}>): Promise<ReviewCommentPrincipal> {
+async function resolveDefaultPrincipal(request: Parameters<ReviewCommentRoutePrincipalResolver>[0]): Promise<ReviewCommentPrincipal> {
     const account = await db.account.findUnique({
         where: { id: request.userId },
         select: {
@@ -307,9 +296,67 @@ async function resolveDefaultPrincipal(request: Readonly<{
         })
         : null;
     const actor = verifiedHeaderPrincipal?.actor ?? defaultActorForUser(request.userId);
+    const canonicalRequest = readCanonicalMutationRequest(request.userId, request.path, request.body);
+    const createBody = canonicalRequest?.mutation.actionId === "reviews.comments.create" ? canonicalRequest.mutation.input : request.body;
+    if (verifiedHeaderPrincipal?.currentIntent?.kind === "review_findings_materialization") {
+        const body = canonicalRequest?.mutation.actionId === "reviews.comments.create" ? canonicalRequest.mutation.input : ReviewCommentCreateRequestV1Schema.parse(request.body);
+        if (body.workspace && body.workspace.machineId !== verifiedHeaderPrincipal.machineId) {
+            throw new ReviewCommentOperationError("review_comment_permission_denied", "Review findings must reference their signed host workspace");
+        }
+    }
+    const workflow = actor.kind === "workflow"
+        ? await db.automationRun.findFirst({
+            where: workflowRunIdentityWhere({ runId: actor.runId, accountId: request.userId }),
+            select: { originSessionId: true, claimedByMachineId: true, assignments: { orderBy: { priority: "asc" }, take: 1, select: { machineId: true } } },
+        }) : null;
+    const scopeSessionId = actor.kind === "agent" ? actor.sessionId
+        : actor.kind === "workflow" ? workflow?.originSessionId : null;
+    const workflowMaterialization = actor.kind === "workflow" && verifiedHeaderPrincipal?.currentIntent?.kind === "review_findings_materialization";
+    if (workflowMaterialization && verifiedHeaderPrincipal) {
+        const body = canonicalRequest?.mutation.actionId === "reviews.comments.create" ? canonicalRequest.mutation.input : ReviewCommentCreateRequestV1Schema.parse(request.body);
+        if (!workflow || workflow.assignments[0]?.machineId !== verifiedHeaderPrincipal.machineId
+            || (workflow.claimedByMachineId !== null && workflow.claimedByMachineId !== verifiedHeaderPrincipal.machineId)
+            || body.workspace?.machineId !== verifiedHeaderPrincipal.machineId
+            || (body.sessionId !== undefined && body.sessionId !== scopeSessionId)) {
+            throw new ReviewCommentOperationError("review_comment_permission_denied", "Workflow finding materialization does not match its assigned host");
+        }
+    }
+    let ledSubtreeSessionIds: string[] | undefined;
+    if (actor.kind === "agent" || actor.kind === "workflow") {
+        if ((!scopeSessionId && !workflowMaterialization) || !request.authAuthority) {
+            throw new ReviewCommentOperationError("review_comment_permission_denied", "Verified Session review authority is unavailable");
+        }
+        const access = scopeSessionId ? await resolveSessionAccessForOperation(db, {
+            accountId: request.userId,
+            sessionId: scopeSessionId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
+            capability: request.method === "GET" ? "readTranscript" : "submitAgentInput",
+        }) : null;
+        if (access && access.status !== "allowed") {
+            throw new ReviewCommentOperationError("review_comment_permission_denied", "Session review access is unavailable");
+        }
+        if (actor.kind === "agent" && (request.method === "GET"
+            || request.path?.endsWith("/transition") || request.path?.endsWith("/disposition")
+            || canonicalRequest?.mutation.actionId === "reviews.comments.transition" || canonicalRequest?.mutation.actionId === "reviews.comments.setDisposition" || canonicalRequest?.mutation.actionId === "reviews.comments.bulkTransition")) {
+            const authentication = readSessionAccessAuthenticationFromRequest(request);
+            ledSubtreeSessionIds = await readSessionLedSubtreeSessionIdsInTx(db, {
+                accountId: request.userId, rootSessionId: actor.sessionId, authentication,
+            });
+            if (request.method !== "GET") {
+                // Relation membership never supplies input authority. Intersect
+                // the readable subtree with the canonical credential's access.
+                const writable = await resolveEffectiveSessionAccessWhere({ tx: db,
+                    accountId: request.userId, capability: "submitAgentInput", mode: "effective_access_v1", authentication });
+                ledSubtreeSessionIds = (await db.session.findMany({
+                    where: { AND: [writable.where, { id: { in: ledSubtreeSessionIds } }] }, select: { id: true },
+                })).map((session) => session.id);
+            }
+        }
+    }
     const grantPluginId = actor.kind === "plugin"
         ? actor.pluginId
-        : verifiedHeaderPrincipal?.currentIntent?.pluginId;
+        : verifiedHeaderPrincipal?.currentIntent?.kind === "execution_run_host_action"
+            ? verifiedHeaderPrincipal.currentIntent.pluginId : undefined;
     const trustedGrants = grantPluginId
         ? await resolveTrustedPluginPermissionGrants({
             accountId: request.userId,
@@ -317,13 +364,15 @@ async function resolveDefaultPrincipal(request: Readonly<{
             installationId: verifiedHeaderPrincipal?.installationId,
             pluginId: grantPluginId,
             capability: REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
-            targetScope: readReviewCommentCreateTargetScope(request.body),
+            targetScope: readReviewCommentCreateTargetScope(createBody),
             subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
         })
         : [];
     return {
         accountId: request.userId,
         actor,
+        ...(actor.kind === "workflow" && scopeSessionId ? { workflowOriginSessionId: scopeSessionId } : {}),
+        ...(ledSubtreeSessionIds ? { ledSubtreeSessionIds } : {}),
         grants: trustedGrants.map((grant) => grant.capability),
         ...(verifiedHeaderPrincipal?.currentIntent ? { currentIntent: verifiedHeaderPrincipal.currentIntent } : {}),
         storageMode: mode.mode,
@@ -380,20 +429,58 @@ function parseReviewCommentRouteInput<T>(
     throw new ReviewCommentOperationError(code, "Review comment request is invalid");
 }
 
+function parseReviewCommentRouteQuery(query: unknown): unknown {
+    if (!query || typeof query !== "object") return query;
+    const decoded: Record<string, unknown> = { ...query };
+    if (typeof decoded.workspace === "string") {
+        try {
+            decoded.workspace = JSON.parse(decoded.workspace) as unknown;
+        } catch {
+            throw new ReviewCommentOperationError("review_comment_invalid_filter", "Review workspace query must be canonical JSON");
+        }
+    }
+    if (decoded.includeHistory === "true") decoded.includeHistory = true;
+    if (decoded.includeHistory === "false") decoded.includeHistory = false;
+    if (typeof decoded.limit === "string" && /^\d+$/.test(decoded.limit)) decoded.limit = Number(decoded.limit);
+    if (decoded["states[]"] !== undefined) {
+        if (decoded.states !== undefined) throw new ReviewCommentOperationError("review_comment_invalid_filter", "Review states query cannot use conflicting encodings");
+        decoded.states = decoded["states[]"];
+        delete decoded["states[]"];
+    }
+    if (typeof decoded.states === "string") decoded.states = [decoded.states];
+    return decoded;
+}
+
 export function registerReviewCommentRoutes(app: Fastify, options: ReviewCommentRoutesOptions = {}): void {
     const operations = options.operations ?? createDefaultOperations();
     const resolvePrincipal = options.resolvePrincipal ?? resolveDefaultPrincipal;
+
+    app.post("/v1/reviews/comments/mutations/prepare", { preHandler: app.authenticate }, async (request, reply) => {
+        try {
+            const principal = await resolvePrincipal(withPrincipalRouteBinding(request, "POST", "/v1/reviews/comments/mutations/prepare"));
+            return await operations.prepareMutation({ ...principal, input: parseReviewCommentRouteInput(ReviewCommentPrepareMutationRequestV1Schema, request.body, "review_comment_invalid_request") });
+        } catch (error) { return sendOperationError(reply, error); }
+    });
+    app.post("/v1/reviews/comments/mutations/commit", { preHandler: app.authenticate }, async (request, reply) => {
+        try {
+            const principal = await resolvePrincipal(withPrincipalRouteBinding(request, "POST", "/v1/reviews/comments/mutations/commit"));
+            return await operations.commitMutation({ ...principal, input: parseReviewCommentRouteInput(ReviewCommentCommitMutationRequestV1Schema, request.body, "review_comment_invalid_request") });
+        } catch (error) { return sendOperationError(reply, error); }
+    });
 
     app.get("/v1/reviews/comments", {
         preHandler: app.authenticate,
     }, async (request, reply) => {
         try {
             const principal = await resolvePrincipal(withPrincipalRouteBinding(request, "GET", "/v1/reviews/comments"));
-            return await operations.list({
-                accountId: principal.accountId,
+            const decoded = parseReviewCommentRouteQuery(request.query ?? {}) as Record<string, unknown>;
+            const { stored, ...query } = decoded;
+            const list = stored === "true" || stored === true ? operations.listStored : operations.list;
+            return await list({
+                ...principal,
                 input: parseReviewCommentRouteInput(
                     ReviewCommentListRequestV1Schema,
-                    request.query ?? {},
+                    query,
                     "review_comment_invalid_filter",
                 ),
             });
@@ -412,14 +499,16 @@ export function registerReviewCommentRoutes(app: Fastify, options: ReviewComment
                 "GET",
                 `/v1/reviews/comments/${encodeReviewCommentPathSegment(params.commentId)}`,
             ));
-            return await operations.get({
-                accountId: principal.accountId,
+            const { stored, ...query } = request.query as Record<string, unknown> ?? {};
+            const get = stored === "true" || stored === true ? operations.getStored : operations.get;
+            return await get({
+                ...principal,
                 input: parseReviewCommentRouteInput(
                     ReviewCommentGetRequestV1Schema,
-                    {
+                    parseReviewCommentRouteQuery({
                         commentId: params.commentId,
-                        ...(request.query ?? {}),
-                    },
+                        ...query,
+                    }),
                     "review_comment_invalid_request",
                 ),
             });

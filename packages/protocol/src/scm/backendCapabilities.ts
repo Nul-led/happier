@@ -81,6 +81,7 @@ export const ScmBackendChangeSetCapabilitiesSchema = capabilityLeafMap([
   'include',
   'exclude',
   'discard',
+  'stashCreate',
 ]).extend({
   model: ScmChangeSetModelSchema,
   diffAreas: z.array(ScmDiffAreaSchema).min(1),
@@ -88,6 +89,8 @@ export const ScmBackendChangeSetCapabilitiesSchema = capabilityLeafMap([
 
 export const ScmBackendCommitCapabilitiesSchema = capabilityLeafMap([
   'create',
+  'amend',
+  'signOff',
   'pathSelection',
   'lineSelection',
   'backout',
@@ -102,6 +105,8 @@ export const ScmBackendRemoteCapabilitiesSchema = capabilityLeafMap([
   'pull',
   'push',
   'publish',
+  'policies',
+  'forceWithLease',
 ]);
 
 export const ScmBackendBranchCapabilitiesSchema = capabilityLeafMap([
@@ -111,6 +116,8 @@ export const ScmBackendBranchCapabilitiesSchema = capabilityLeafMap([
   'merge',
   'rebase',
   'operationControl',
+  'operationSkip',
+  'conflictResolution',
 ]);
 
 export const ScmBackendWorktreeCapabilitiesSchema = capabilityLeafMap([
@@ -135,6 +142,7 @@ export const ScmBackendHostingCapabilitiesSchema = capabilityLeafMap([
   'pullRequestRead',
   'pullRequestStatus',
   'pullRequestCreate',
+  'pullRequestDraftCreate',
   'pullRequestReuse',
   'pullRequestCheckout',
   'pullRequestPrepareWorktree',

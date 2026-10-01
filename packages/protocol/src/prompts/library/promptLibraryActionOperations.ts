@@ -138,6 +138,29 @@ export async function updatePromptDocInLibrary(params: Readonly<{
   return { ok: true, artifactId: params.request.artifactId };
 }
 
+/** Account-scoped Artifact storage supplies decryption and access; reads never
+ * reuse a cached document, so an approved learning is visible on the next turn. */
+export async function readPromptDocInLibrary(params: Readonly<{
+  store: PromptLibraryArtifactStore;
+  artifactId: string;
+  signal?: AbortSignal;
+}>): Promise<Readonly<{ ok: true; artifactId: string; title: string; markdown: string }>
+  | Readonly<{ ok: false; errorCode: 'prompt_doc_not_found' | 'prompt_doc_invalid_body'; error: string }>> {
+  throwIfAborted(params.signal);
+  const artifact = await params.store.read(params.artifactId, params.signal ? { signal: params.signal } : undefined);
+  throwIfAborted(params.signal);
+  if (!artifact) return { ok: false, errorCode: 'prompt_doc_not_found', error: 'prompt_doc_not_found' };
+  const title = readArtifactTitle(artifact);
+  const body = parseArtifactBody(artifact.body, (value) => {
+    const parsed = PromptDocBodyV1Schema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  });
+  if (artifact.header?.kind !== 'prompt_doc.v2' || !title || !body) {
+    return { ok: false, errorCode: 'prompt_doc_invalid_body', error: 'prompt_doc_invalid_body' };
+  }
+  return { ok: true, artifactId: params.artifactId, title, markdown: body.markdown };
+}
+
 export async function updatePromptBundleInLibrary(params: Readonly<{
   store: PromptLibraryArtifactStore;
   request: Readonly<{

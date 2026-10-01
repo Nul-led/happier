@@ -4,33 +4,31 @@ import {
     openReviewCommentEventSensitiveEnvelopeV1,
     buildReviewCommentEventRequestBindingV1,
     sealReviewCommentEventSensitiveEnvelopeV1,
+    ReviewCommentEventV1Schema,
     type ReviewCommentEventV1,
 } from "@happier-dev/protocol";
 
 import {
     bindReviewCommentEventSensitiveForStorage,
-    buildReviewCommentEvent,
     decodeReviewCommentEventSensitiveFromStorage,
 } from "./events";
 
 function event(): ReviewCommentEventV1 {
-    return buildReviewCommentEvent({
-        runtime: {
-            now: () => 10_000,
-            createId: () => "event-1",
-        },
+    return ReviewCommentEventV1Schema.parse({
+        eventId: "event-1",
+        createdAt: 10_000,
         accountId: "account-1",
         projectId: "project-1",
         commentId: "comment-1",
         actor: { kind: "user", userId: "user-1" },
         serverRevision: 2,
         eventKind: "transitioned",
-        clientMutationId: "mutation-1",
         bulkActionId: "bulk-1",
         authorDeviceId: "device-1",
         clientLamport: 3,
         event: {
             reason: "private reason",
+            clientMutationId: "mutation-1",
         },
     });
 }

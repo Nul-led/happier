@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { MentionRefV1Schema } from '../runtime/input/mentionRefV1.js';
+import { MENTION_BOUNDS, MentionRefV1Schema } from '../runtime/input/mentionRefV1.js';
 import { PortableComposerAttachmentV1Schema } from '../runtime/input/composerAttachmentV1.js';
 
 /**
@@ -11,7 +11,7 @@ import { PortableComposerAttachmentV1Schema } from '../runtime/input/composerAtt
  */
 export const WorkflowStepComposerDocumentSchema = z.object({
   text: z.string().min(1),
-  references: z.array(MentionRefV1Schema).default([]),
+  references: z.array(MentionRefV1Schema).max(MENTION_BOUNDS.maxPerMessage).default([]),
   attachments: z.array(PortableComposerAttachmentV1Schema).default([]),
 }).strict();
 export type WorkflowStepComposerDocument = z.infer<typeof WorkflowStepComposerDocumentSchema>;

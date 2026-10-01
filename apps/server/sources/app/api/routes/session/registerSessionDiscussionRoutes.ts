@@ -22,10 +22,9 @@ import {
 import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
-    PRESENT_USER_REQUIRED_ERROR,
     PresentUserRequiredResponseSchema,
-    requirePresentUser,
 } from "@/app/api/utils/requirePresentUser";
+import { requireRouteActionAuthority } from "@/app/api/utils/requireRouteActionAuthority";
 import {
     archiveSessionDiscussion,
     createSessionDiscussion,
@@ -107,57 +106,6 @@ const PresentUserDiscussionErrorResponses = {
     403: z.union([SessionDiscussionErrorResponseV1Schema, PresentUserRequiredResponseSchema]),
 } as const;
 
-type DiscussionMutationRequest = Pick<FastifyRequest,
-    | "authAuthority"
-    | "authTokenKind"
-    | "externalActionExecutionAuthorized"
-    | "externalActionEffectActionId"
-    | "externalActionExecutionTarget"
-    | "params"
->;
-
-/**
- * Posting is the sole Discussion mutation exposed to account automation. The
- * authentication owner has already verified the PAT, current Machine binding,
- * signed HTTP request and resolved target; this route only binds that trusted
- * proof to its exact domain effect and Session path. Raw PATs and every other
- * Discussion mutation remain present-user only.
- */
-export async function requirePresentUserOrExternalDiscussionPost(
-    request: DiscussionMutationRequest,
-    reply: FastifyReply,
-): Promise<unknown> {
-    if (request.authAuthority === "present_user" && request.authTokenKind === "account") {
-        return undefined;
-    }
-    // A Runner is this Session's own unattended runtime. The credential
-    // boundary has already bound the request to the exact Session named in the
-    // path, so posting here needs no second Session comparison and no external
-    // Action target; every other Discussion mutation stays present-user only.
-    if (
-        request.authAuthority === "account_automation"
-        && request.authTokenKind === "ephemeral_session_runner"
-    ) {
-        return undefined;
-    }
-    const sessionId = typeof request.params === "object" && request.params !== null
-        ? Reflect.get(request.params, "sessionId")
-        : null;
-    const target = request.externalActionExecutionTarget;
-    if (
-        request.authAuthority === "account_automation"
-        && request.authTokenKind === "api_token"
-        && request.externalActionExecutionAuthorized === true
-        && request.externalActionEffectActionId === "session.discussion.post"
-        && target?.kind === "session"
-        && typeof sessionId === "string"
-        && target.sessionId === sessionId
-    ) {
-        return undefined;
-    }
-    return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
-}
-
 /**
  * Session-owned human discussion transport.
  *
@@ -183,7 +131,7 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
         config: {
             allowApiToken: true,
             rateLimit,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
@@ -205,8 +153,8 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.post(SESSION_DISCUSSION_HTTP_PATHS_V1.collection, {
-        preHandler: [app.authenticate, requirePresentUser],
-        config: { allowApiToken: true, rateLimit },
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.create")],
+        config: { rateLimit },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteParamsV1Schema,
@@ -232,7 +180,7 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
         config: {
             allowApiToken: true,
             rateLimit,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
@@ -251,8 +199,8 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.patch(SESSION_DISCUSSION_HTTP_PATHS_V1.discussion, {
-        preHandler: [app.authenticate, requirePresentUser],
-        config: { allowApiToken: true, rateLimit },
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.rename")],
+        config: { rateLimit },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,
@@ -275,8 +223,8 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.post(SESSION_DISCUSSION_HTTP_PATHS_V1.archive, {
-        preHandler: [app.authenticate, requirePresentUser],
-        config: { allowApiToken: true, rateLimit },
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.archive")],
+        config: { rateLimit },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,
@@ -294,8 +242,8 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.post(SESSION_DISCUSSION_HTTP_PATHS_V1.restore, {
-        preHandler: [app.authenticate, requirePresentUser],
-        config: { allowApiToken: true, rateLimit },
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.restore")],
+        config: { rateLimit },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,
@@ -317,7 +265,7 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
         config: {
             allowApiToken: true,
             rateLimit,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
@@ -340,10 +288,10 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.post(SESSION_DISCUSSION_HTTP_PATHS_V1.messages, {
-        preHandler: [app.authenticate, requirePresentUserOrExternalDiscussionPost],
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.post")],
         config: {
             rateLimit,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
@@ -371,8 +319,8 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
     });
 
     discussionsApp.put(SESSION_DISCUSSION_HTTP_PATHS_V1.read, {
-        preHandler: [app.authenticate, requirePresentUser],
-        config: { allowApiToken: true, rateLimit },
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.discussion.read_state.set")],
+        config: { rateLimit },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,

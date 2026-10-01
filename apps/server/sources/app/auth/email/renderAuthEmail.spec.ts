@@ -111,4 +111,18 @@ describe("renderAuthEmailV1", async () => {
         const decoded = await sharp(attachment.content).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
         expect(jsQR(new Uint8ClampedArray(decoded.data), decoded.info.width, decoded.info.height)?.data).toBe(joinUrl);
     });
+
+    it("states times as a readable explicit-UTC date, never a raw machine timestamp", async () => {
+        const invitation = await renderAuthEmailV1({
+            kind: "invitation", to, joinUrl: "https://app.example.test/join/" + "A".repeat(43),
+            homeName: "Home", teamName: "Team", inviterLabel: "Alice", requestedRole: "member",
+            sharesSessionHistory: false, emailBound: true, expiresAt,
+        });
+        expect(invitation.text).toContain("This invitation expires on 6 September 2026 at 00:00 UTC.");
+        expect(invitation.text).not.toContain(expiresAt.toISOString());
+
+        const changed = await renderAuthEmailV1(notice);
+        expect(changed.text).toContain("This happened on 6 September 2026 at 00:00 UTC.");
+        expect(changed.text).not.toContain(expiresAt.toISOString());
+    });
 });

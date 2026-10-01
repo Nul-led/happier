@@ -8,6 +8,7 @@ import {
 import { BrowserHttpOriginV1Schema, BrowserHttpUrlV1Schema } from '../url.js';
 import { BrowserPlatformV1Schema } from '../view/v1.js';
 import { BrowserViewTargetV1Schema } from '../target/v1.js';
+import { BrowserAutomationControllerStateV1Schema } from '../automation/v1.js';
 
 const BrowserEventBaseV1Schema = z
   .object({
@@ -19,6 +20,7 @@ const BrowserEventBaseV1Schema = z
 
 const BrowserViewEventBaseV1Schema = BrowserEventBaseV1Schema.extend({
   viewId: z.string().trim().min(1).max(256),
+  navigationGeneration: z.number().int().nonnegative().optional(),
 });
 
 export const BrowserNavigationLoadingStateV1Schema = z.enum(['idle', 'loading', 'ready', 'failed']);
@@ -36,6 +38,7 @@ export const BrowserEventKindV1Schema = z.enum([
   'navigationFinished',
   'navigationFailed',
   'navigationStateChanged',
+  'controllerChanged',
   'titleChanged',
   'faviconChanged',
   'loadingProgressChanged',
@@ -126,6 +129,11 @@ export const BrowserTitleChangedEventV1Schema = BrowserViewEventBaseV1Schema.ext
   title: z.string().trim().max(512),
 });
 
+export const BrowserControllerChangedEventV1Schema = BrowserViewEventBaseV1Schema.extend({
+  kind: z.literal('controllerChanged'),
+  state: BrowserAutomationControllerStateV1Schema,
+});
+
 export const BrowserFaviconChangedEventV1Schema = BrowserViewEventBaseV1Schema.extend({
   kind: z.literal('faviconChanged'),
   faviconUrl: BrowserHttpUrlV1Schema.optional(),
@@ -184,6 +192,7 @@ export const BrowserEventV1Schema = z.discriminatedUnion('kind', [
   BrowserNavigationFinishedEventV1Schema,
   BrowserNavigationFailedEventV1Schema,
   BrowserNavigationStateChangedEventV1Schema,
+  BrowserControllerChangedEventV1Schema,
   BrowserTitleChangedEventV1Schema,
   BrowserFaviconChangedEventV1Schema,
   BrowserLoadingProgressChangedEventV1Schema,
@@ -195,3 +204,6 @@ export const BrowserEventV1Schema = z.discriminatedUnion('kind', [
   BrowserAdapterUnavailableEventV1Schema,
 ]);
 export type BrowserEventV1 = z.infer<typeof BrowserEventV1Schema>;
+
+/** One metadata observation includes both authorities so stream startup can retain just the latest. */
+export const BrowserEventBatchV1Schema = z.object({ v: z.literal(1), events: z.array(BrowserEventV1Schema) }).strict();

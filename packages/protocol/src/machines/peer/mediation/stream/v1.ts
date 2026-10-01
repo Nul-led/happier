@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { readCanonicalPaddedBase64DecodedLength } from '../../../../crypto/base64.js';
 import { createCanonicalJsonSigningInput } from '../../../../crypto/canonicalJson.js';
 import { MachineLiveStreamControlSidebandV1Schema } from './controlV1.js';
+import { MachineLiveStreamCodecIdV1Schema, getMachineLiveStreamPayloadDecodedByteLength } from './codecsV1.js';
+
+export { getMachineLiveStreamPayloadDecodedByteLength } from './codecsV1.js';
 
 export const MACHINE_LIVE_STREAM_SOCKET_EVENT = 'machines.liveStream.v1' as const;
 export const MACHINE_LIVE_STREAM_RELAY_AUTHORIZATION_AUDIENCE_V1 = 'happier-live-stream-relay-authorization' as const;
@@ -18,15 +21,11 @@ const Base64Schema = z.string().superRefine((value, context) => {
 });
 const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
-export function getMachineLiveStreamPayloadDecodedByteLength(payloadBase64: string): number {
-  return readCanonicalPaddedBase64DecodedLength(payloadBase64) ?? 0;
-}
-
 const MachineLiveStreamCapsV1Shape = {
-  maxBitrateBps: PositiveIntSchema,
-  maxFramesPerSecond: PositiveIntSchema,
-  maxFrameBytes: PositiveIntSchema,
-  maxDurationMs: PositiveIntSchema,
+  maxBitrateBps: PositiveIntSchema.optional(),
+  maxFramesPerSecond: PositiveIntSchema.optional(),
+  maxFrameBytes: PositiveIntSchema.optional(),
+  maxDurationMs: PositiveIntSchema.optional(),
   maxTotalBytes: PositiveIntSchema.optional(),
 } as const;
 
@@ -35,10 +34,9 @@ export const MachineLiveStreamCapsV1Schema = z.object(MachineLiveStreamCapsV1Sha
 export const MachineLiveStreamRelayCapsV1Schema = z
   .object({
     ...MachineLiveStreamCapsV1Shape,
-    maxTotalBytes: PositiveIntSchema,
-    maxConcurrentStreamsPerAccount: PositiveIntSchema,
-    maxConcurrentStreamsPerSocket: PositiveIntSchema,
-    maxConcurrentStreamsPerMachine: PositiveIntSchema,
+    maxConcurrentStreamsPerAccount: PositiveIntSchema.optional(),
+    maxConcurrentStreamsPerSocket: PositiveIntSchema.optional(),
+    maxConcurrentStreamsPerMachine: PositiveIntSchema.optional(),
   })
   .passthrough();
 
@@ -56,6 +54,7 @@ export const MachineLiveStreamRelayAuthorizationPayloadV1Schema = z
     routeKind: z.literal('server_relay'),
     streamId: z.string().min(1),
     streamFamily: z.string().min(1),
+    sourceId: z.string().min(1).optional(),
     // Optional per-tab viewer target (C1). When the watcher is a user-scoped browser
     // socket rather than a peer machine, the grant is minted bound to that socket id so the
     // server can deliver frames to the exact tab (`io.to(viewerSocketId)`) instead of a
@@ -64,6 +63,8 @@ export const MachineLiveStreamRelayAuthorizationPayloadV1Schema = z
     // mint, start-request, and handler-verify time.
     viewerSocketId: z.string().min(1).optional(),
     ...MachineLiveStreamCapsV1Shape,
+    codecId: MachineLiveStreamCodecIdV1Schema.optional(),
+    viewerCodecs: z.array(MachineLiveStreamCodecIdV1Schema).optional(),
     iat: NonNegativeIntSchema,
     exp: PositiveIntSchema,
     aud: z.literal(MACHINE_LIVE_STREAM_RELAY_AUTHORIZATION_AUDIENCE_V1),
@@ -103,15 +104,21 @@ export const MachineLiveStreamStartRequestV1Schema = z
     v: z.literal(1),
     streamId: z.string().min(1),
     streamFamily: z.string().min(1),
+    sourceId: z.string().min(1).optional(),
     routeKind: MachineLiveStreamRouteKindV1Schema,
     sourceMachineId: z.string().min(1),
     targetMachineId: z.string().min(1),
     viewerSocketId: z.string().min(1).optional(),
     ...MachineLiveStreamCapsV1Shape,
+    codecId: MachineLiveStreamCodecIdV1Schema.optional(),
+    viewerCodecs: z.array(MachineLiveStreamCodecIdV1Schema).optional(),
     authorization: MachineLiveStreamRelayAuthorizationV1Schema.optional(),
   })
   .passthrough()
   .superRefine((request, ctx) => {
+    if (request.streamFamily === 'browser.streamed' && !request.sourceId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceId'], message: 'Browser streams require the exact view source' });
+    }
     const authorization = request.authorization;
     if (request.routeKind === 'server_relay' && !authorization) {
       ctx.addIssue({
@@ -130,11 +137,13 @@ export const MachineLiveStreamStartRequestV1Schema = z
       routeKind: request.routeKind,
       streamId: request.streamId,
       streamFamily: request.streamFamily,
+      sourceId: request.sourceId,
       maxBitrateBps: request.maxBitrateBps,
       maxFramesPerSecond: request.maxFramesPerSecond,
       maxFrameBytes: request.maxFrameBytes,
       maxDurationMs: request.maxDurationMs,
       maxTotalBytes: request.maxTotalBytes,
+      codecId: request.codecId,
     };
     for (const [key, value] of Object.entries(expected)) {
       if (payload[key as keyof typeof expected] === value) continue;
@@ -143,6 +152,10 @@ export const MachineLiveStreamStartRequestV1Schema = z
         path: ['authorization', 'payload', key],
         message: 'Live-stream relay authorization must match the start request',
       });
+    }
+    if (JSON.stringify(request.viewerCodecs) !== JSON.stringify(payload.viewerCodecs)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['authorization', 'payload', 'viewerCodecs'],
+        message: 'Live-stream relay authorization must match the viewer codecs' });
     }
     // The viewer target is part of the signed grant; the start request must not re-point a
     // grant minted for one tab at a different socket (C1). `undefined` on both sides is the
@@ -188,14 +201,7 @@ export const MachineLiveStreamFrameV1Schema = z
     payloadEncoding: z.literal('binary_base64'),
     payloadBase64: Base64Schema,
     payloadSizeBytes: NonNegativeIntSchema,
-    encryption: z
-      .object({
-        alg: z.string().min(1),
-        aadBase64: Base64Schema,
-        keyId: z.string().min(1).optional(),
-      })
-      .passthrough()
-      .optional(),
+    codecId: MachineLiveStreamCodecIdV1Schema.optional(),
   })
   .passthrough()
   .superRefine((frame, ctx) => {
@@ -269,12 +275,8 @@ export const MachineLiveStreamControlV1Schema = z.discriminatedUnion('kind', [
   BaseControlSchema.extend({
     kind: z.literal('ack'),
     nextSequence: PositiveIntSchema,
-    // Flow-control contract (L1): the daemon `framePump` starts with unbounded local send
-    // credit because the server relay is the bounded network window owner. A socket-precise
-    // viewer sends `ack` after delivered frames; the server validates the viewer socket id,
-    // replenishes its bounded relay window from these optional credit fields (or its configured
-    // defaults), drains queued frames, and forwards the ack to the daemon for diagnostics/local
-    // pump credit. A viewer path without a socket id must fail closed before relay open.
+    // The server relay owns network credit. ACKs do not change producer sequencing or
+    // capture credit; direct transports may consume them at their own carrier boundary.
     windowFrames: NonNegativeIntSchema.optional(),
     windowBytes: NonNegativeIntSchema.optional(),
   }).passthrough(),
@@ -300,7 +302,17 @@ export const MachineLiveStreamControlV1Schema = z.discriminatedUnion('kind', [
   }).passthrough(),
 ]);
 
-export const MachineLiveStreamRelayEnvelopeV1Schema = z
+const MachineLiveStreamPublicMessageSchemas = [
+  z.object({ kind: z.literal('start'), startRequest: MachineLiveStreamStartRequestV1Schema }).passthrough(),
+  z.object({ kind: z.literal('renew'), startRequest: MachineLiveStreamStartRequestV1Schema }).strict(),
+  z.object({ kind: z.literal('start_response'), startResponse: MachineLiveStreamStartResponseV1Schema }).passthrough(),
+  z.object({ kind: z.literal('control'), control: MachineLiveStreamControlV1Schema }).passthrough(),
+  z.object({ kind: z.literal('receipt'), receipt: z.unknown() }).passthrough(),
+  z.object({ kind: z.literal('metering'), metering: MachineLiveStreamMeteringV1Schema }).passthrough(),
+] as const;
+
+// Decoded process-local content. Never emit this schema's frame/input shapes on the socket.
+export const MachineLiveStreamDecodedEnvelopeV1Schema = z
   .object({
     v: z.literal(1),
     sourceMachineId: z.string().min(1),
@@ -310,16 +322,48 @@ export const MachineLiveStreamRelayEnvelopeV1Schema = z
     // viewer socket. Omitted on the legacy machine→machine path.
     viewerSocketId: z.string().min(1).optional(),
     message: z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('start'), startRequest: MachineLiveStreamStartRequestV1Schema }).passthrough(),
-      z.object({ kind: z.literal('start_response'), startResponse: MachineLiveStreamStartResponseV1Schema }).passthrough(),
+      ...MachineLiveStreamPublicMessageSchemas,
       z.object({ kind: z.literal('frame'), frame: MachineLiveStreamFrameV1Schema }).passthrough(),
-      z.object({ kind: z.literal('control'), control: MachineLiveStreamControlV1Schema }).passthrough(),
       z.object({ kind: z.literal('sideband_control'), control: MachineLiveStreamControlSidebandV1Schema }).strict(),
-      z.object({ kind: z.literal('receipt'), receipt: z.unknown() }).passthrough(),
-      z.object({ kind: z.literal('metering'), metering: MachineLiveStreamMeteringV1Schema }).passthrough(),
     ]),
   })
-  .passthrough();
+  .strict();
+
+const EncryptedStreamPayloadSchema = z.object({ t: z.literal('encrypted'), c: Base64Schema }).strict();
+export const MachineLiveStreamWireFrameV1Schema = z.object({
+  v: z.literal(1),
+  streamId: z.string().min(1),
+  sequence: PositiveIntSchema,
+  timestampMs: NonNegativeIntSchema,
+  payloadKind: MachineLiveStreamPayloadKindV1Schema,
+  payloadEncoding: z.literal('binary_base64'),
+  payloadSizeBytes: NonNegativeIntSchema,
+  codecId: MachineLiveStreamCodecIdV1Schema.optional(),
+  payload: z.discriminatedUnion('t', [
+    z.object({ t: z.literal('plain'), v: Base64Schema }).strict(),
+    EncryptedStreamPayloadSchema,
+  ]),
+}).strict().superRefine((frame, ctx) => {
+  const encoded = frame.payload.t === 'plain' ? frame.payload.v : frame.payload.c;
+  if (getMachineLiveStreamPayloadDecodedByteLength(encoded) === frame.payloadSizeBytes) return;
+  ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['payloadSizeBytes'],
+    message: 'Live-stream transport size must match payload bytes' });
+});
+
+// The relay can inspect routing/metering headers, never decoded input or E2EE pixels.
+export const MachineLiveStreamRelayEnvelopeV1Schema = MachineLiveStreamDecodedEnvelopeV1Schema.extend({
+  message: z.discriminatedUnion('kind', [
+    ...MachineLiveStreamPublicMessageSchemas,
+    z.object({ kind: z.literal('frame'), frame: MachineLiveStreamWireFrameV1Schema }).strict(),
+    z.object({ kind: z.literal('sideband_control'), control: z.object({
+      v: z.literal(1), streamId: z.string().min(1),
+      payload: z.discriminatedUnion('t', [
+        z.object({ t: z.literal('plain'), v: MachineLiveStreamControlSidebandV1Schema }).strict(),
+        EncryptedStreamPayloadSchema,
+      ]),
+    }).strict() }).strict(),
+  ]),
+}).strict();
 
 export type MachineLiveStreamCapsV1 = z.infer<typeof MachineLiveStreamCapsV1Schema>;
 export type MachineLiveStreamRouteKindV1 = z.infer<typeof MachineLiveStreamRouteKindV1Schema>;
@@ -332,5 +376,7 @@ export type MachineLiveStreamStartResponseV1 = z.infer<typeof MachineLiveStreamS
 export type MachineLiveStreamFrameV1 = z.infer<typeof MachineLiveStreamFrameV1Schema>;
 export type MachineLiveStreamMeteringV1 = z.infer<typeof MachineLiveStreamMeteringV1Schema>;
 export type MachineLiveStreamControlV1 = z.infer<typeof MachineLiveStreamControlV1Schema>;
-export type MachineLiveStreamRelayEnvelopeV1 = z.infer<typeof MachineLiveStreamRelayEnvelopeV1Schema>;
+export type MachineLiveStreamRelayEnvelopeV1 = z.infer<typeof MachineLiveStreamDecodedEnvelopeV1Schema>;
+export type MachineLiveStreamWireEnvelopeV1 = z.infer<typeof MachineLiveStreamRelayEnvelopeV1Schema>;
+export type MachineLiveStreamWireFrameV1 = z.infer<typeof MachineLiveStreamWireFrameV1Schema>;
 export type MachineLiveStreamRelayCaps = z.infer<typeof MachineLiveStreamRelayCapsV1Schema>;

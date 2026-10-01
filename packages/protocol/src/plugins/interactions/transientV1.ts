@@ -163,7 +163,7 @@ function issueForDuplicateIds(
 export const InteractionTransientRequesterV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   contributionId: asProtocolZod(PluginContributionLocalIdSchema),
-  generationId: boundedIdentifier('Interaction generation ids'),
+  occurrenceId: boundedIdentifier('Interaction occurrence ids'),
   invocationId: boundedIdentifier('Interaction invocation ids'),
 }).strict();
 export type InteractionTransientRequesterV1 = z.infer<typeof InteractionTransientRequesterV1Schema>;
@@ -189,7 +189,7 @@ export const InteractionTransientRequestStampV1Schema = z.object({
    * arms a timer that settles `timedOut`. Absent: the host imposes no deadline
    * at all — the arm L-25 requires for interactive prompts — and the request
    * settles only on an observable lifecycle event (user answer, requester
-   * abort, generation retirement, Session end, host restart, unavailability).
+   * abort, occurrence retirement, Session end, host restart, unavailability).
    * An absent deadline is never a very large one: no timer exists for it.
    */
   expiresAtMs: z.number().int().nonnegative().optional(),
@@ -436,7 +436,7 @@ export const InteractionTerminalStatusV1Schema = z.enum([
   'requesterAborted',
   'timedOut',
   'sessionEnded',
-  'generationRetired',
+  'occurrenceRetired',
   'hostRestarted',
   'unavailable',
 ]);
@@ -567,7 +567,7 @@ function isOwnerOnlyInteractionTerminalStatus(
   return status === 'requesterAborted'
     || status === 'timedOut'
     || status === 'sessionEnded'
-    || status === 'generationRetired'
+    || status === 'occurrenceRetired'
     || status === 'hostRestarted'
     || status === 'unavailable';
 }

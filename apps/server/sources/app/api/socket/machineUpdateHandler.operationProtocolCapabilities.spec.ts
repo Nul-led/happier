@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createFakeSocket, getSocketHandler } from '../testkit/socketHarness';
 
+vi.mock("@/app/api/socket/socketCredentialCurrentness", async () => (
+    await import("../testkit/socketHarness")
+).createCurrentSocketCredentialModuleMock());
+
 const updateMany = vi.fn();
 const machineFindFirst = vi.fn();
 const markAccountChanged = vi.fn(async () => 17);

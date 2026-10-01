@@ -11,6 +11,7 @@ import { isPrismaErrorCode } from "@/storage/prisma";
 import { log, warn } from "@/utils/logging/log";
 import type { Prisma } from "@prisma/client";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import { scheduleSessionPersonalEvent } from "@/app/session/personal/publishPersonalEvent";
 import {
     SESSION_MESSAGE_NO_USER_ATTENTION_IMPACT,
     AccountEncryptionMigrateSessionsDirectiveSchema,
@@ -90,7 +91,7 @@ import {
     type SessionTranscriptStoragePolicy,
     type SessionTranscriptWriteRejectionCode,
 } from "./sessionTranscriptWrite";
-import { parseStoredSessionTurnTranscriptAnchors } from "./turns/parseSessionTurnState";
+import { parseStoredSessionTurnFacts, parseStoredSessionTurnTranscriptAnchors } from "./turns/parseSessionTurnState";
 import { deriveSessionTurnTranscriptAnchorProjection } from "./turns/sessionTurnTranscriptAnchorProjection";
 import {
     applySessionTranscriptPublicationCeilingToProjection,
@@ -648,7 +649,7 @@ export async function updateSessionMessageActivityProjection(
     tx: Tx,
     params: Readonly<{
         sessionId: string;
-        created: Pick<SessionMessageWriteRow, "seq" | "createdAt">;
+        created: Pick<SessionMessageWriteRow, "seq" | "createdAt" | "localId">;
         trustedSessionEventType?: "ready";
         affectsMeaningfulActivity?: boolean;
     }>,
@@ -667,6 +668,7 @@ export async function updateSessionMessageActivityProjection(
     const readyProjection: SessionReadyProjectionUpdate = {
         latestReadyEventSeq: params.created.seq,
         latestReadyEventAt: params.created.createdAt.getTime(),
+        ...(params.created.localId ? { latestReadyEventLocalId: params.created.localId } : {}),
     };
     const update = await tx.session.updateMany({
         where: {
@@ -807,12 +809,53 @@ export type SessionMutationContextResult =
       }
     | { ok: false; error: "session-not-found" | "forbidden" };
 
+type SessionMutationContextTypedResult = Exclude<SessionMutationContextResult, { ok: false }>
+    | { ok: false; error: "session-not-found" | "forbidden" | "authentication_required" | "authentication_unavailable" | "unavailable" };
+
+type SessionMutationContextInput =
+    | Readonly<{ actorUserId: string; sessionId: string; kind: "owner" }>
+    | Readonly<{ actorUserId: string; sessionId: string; kind: "capability"; capability: SessionCapability; authentication: SessionAccessAuthentication; preserveAccessFailure?: boolean }>;
+type SessionMutationContextPreservingInput = Readonly<{
+    actorUserId: string;
+    sessionId: string;
+    kind: "capability";
+    capability: SessionCapability;
+    authentication: SessionAccessAuthentication;
+    preserveAccessFailure: true;
+}>;
+
+function isTypedSessionMutationContextInput(input: SessionMutationContextInput): input is SessionMutationContextPreservingInput {
+    return input.kind === "capability" && input.preserveAccessFailure === true;
+}
+
+function mapSessionMutationContextFailure(
+    input: SessionMutationContextInput,
+    reason: "authentication_required" | "authentication_unavailable" | "unavailable",
+): "forbidden" | "authentication_required" | "authentication_unavailable" | "unavailable" {
+    return isTypedSessionMutationContextInput(input) ? reason : "forbidden";
+}
+
+function mapSharedEditorAccessFailure(
+    error: Extract<SessionMutationContextTypedResult, { ok: false }>["error"],
+): Extract<UpdateSessionMetadataEnvelopeTupleResult, { ok: false }>["error"] {
+    if (error === "authentication_required") return "session_access_authentication_required";
+    if (error === "authentication_unavailable") return "session_access_authentication_unavailable";
+    return error === "unavailable" ? "forbidden" : error;
+}
+
+function loadSessionMutationContextInTx(
+    tx: Tx,
+    params: SessionMutationContextPreservingInput,
+): Promise<SessionMutationContextTypedResult>;
+function loadSessionMutationContextInTx(
+    tx: Tx,
+    params: SessionMutationContextInput,
+): Promise<SessionMutationContextResult>;
+
 async function loadSessionMutationContextInTx(
     tx: Tx,
-    params:
-        | Readonly<{ actorUserId: string; sessionId: string; kind: "owner" }>
-        | Readonly<{ actorUserId: string; sessionId: string; kind: "capability"; capability: SessionCapability; authentication: SessionAccessAuthentication }>,
-): Promise<SessionMutationContextResult> {
+    params: SessionMutationContextInput,
+): Promise<SessionMutationContextResult | SessionMutationContextTypedResult> {
     const session = await tx.session.findUnique({
         where: { id: params.sessionId },
         select: { tag: true, encryptionMode: true, ...selectSessionActivityBadgeInputs() },
@@ -822,7 +865,7 @@ async function loadSessionMutationContextInTx(
     const admitted = params.kind === "owner"
         ? await assertSessionOwnerInTx(input)
         : await assertSessionCapabilityInTx({ ...input, capability: params.capability, authentication: params.authentication });
-    if (!admitted.ok) return { ok: false, error: "forbidden" };
+    if (!admitted.ok) return { ok: false, error: mapSessionMutationContextFailure(params, admitted.reason) };
     return {
         ok: true,
         sessionOwnerId: session.accountId,
@@ -832,6 +875,13 @@ async function loadSessionMutationContextInTx(
         recipientAccountIds: await resolveCurrentSessionRecipientAccountIdsInTx(tx, { sessionId: params.sessionId }),
         sessionActivityBadgeInputs: toSessionActivityBadgeInputs(session),
     };
+}
+
+async function loadSessionMutationContextPreservingAccessFailureInTx(
+    tx: Tx,
+    params: SessionMutationContextPreservingInput,
+): Promise<SessionMutationContextTypedResult> {
+    return loadSessionMutationContextInTx(tx, params);
 }
 
 /** Loads mutation context only after canonical input admission in this transaction. */
@@ -960,6 +1010,7 @@ type CreateSessionMessageParams = CreateSessionMessageParamsBase & (
 export type SessionReadyProjectionUpdate = Readonly<{
     latestReadyEventSeq: number;
     latestReadyEventAt: number;
+    latestReadyEventLocalId?: string;
 }>;
 
 type SuccessfulSessionEditAccess = Extract<SessionMutationContextResult, { ok: true }>;
@@ -1256,6 +1307,12 @@ async function createSessionMessageAttempt(
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const ciphertext = "ciphertext" in params && typeof params.ciphertext === "string" ? params.ciphertext : "";
+    const directTokenInput = params.inputAdmission === "authenticatedAccount" && params.authentication.apiTokenGrant !== undefined;
+    if (directTokenInput && (
+        params.messageRole !== undefined && params.messageRole !== null && params.messageRole !== "user"
+        || params.trustedSessionEventType !== undefined
+        || params.trustedTranscriptObservationProvenance !== undefined
+    )) return { ok: false, error: "invalid-params" };
     const localId = typeof params.localId === "string" ? params.localId : null;
     const parsedSidechainId = parseSessionMessageSidechainId(params.sidechainId, { emptyString: "invalid" });
     if (!parsedSidechainId.ok) {
@@ -1302,10 +1359,13 @@ async function createSessionMessageAttempt(
     const resolveRoleForStorageMode = (storageMode: "e2ee" | "plain") =>
         resolveSessionMessageRoleForWrite({
             content,
-            suppliedRole: params.messageRole,
+            suppliedRole: directTokenInput ? (content.t === "encrypted" ? "user" : undefined) : params.messageRole,
             sessionId,
             storageMode,
         });
+    if (directTokenInput && content.t === "plain" && resolveRoleForStorageMode("plain") !== "user") {
+        return { ok: false, error: "invalid-params" };
+    }
 
     try {
         return await inTx(async (tx) => {
@@ -1402,7 +1462,8 @@ async function createSessionMessageAttempt(
                 sidechainId,
                 messageRole: resolvedRole,
                 ...(params.inputAdmission === "authenticatedAccount" && !hasTrustedProvenance && resolvedRole === "user"
-                    ? { inputAdmissionReceipt: buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access }) }
+                    ? { inputAdmissionReceipt: buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access,
+                        callerInputConstraints: params.authentication.callerInputConstraints ?? params.authentication.apiTokenGrant }) }
                     : {}),
                 ...(sourceCreatedAt ? { sourceCreatedAt } : {}),
                 ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
@@ -1420,6 +1481,12 @@ async function createSessionMessageAttempt(
             }
             const created = persisted.message;
             if (params.inputAdmission === "authenticatedAccount" && resolvedRole === "user") {
+                for (const recipientAccountId of access.recipientAccountIds) {
+                    scheduleSessionPersonalEvent(tx, recipientAccountId, {
+                        type: "session-personal-event", sessionId, eventId: created.id, event: "human_message",
+                        message: { sequenceDomain: "session_transcript", messageSeq: created.seq }, sourceAccountId: actorUserId,
+                    });
+                }
                 afterTx(tx, () => scheduleSessionActivityRemoteAlerts({
                     sessionId,
                     event: "human_message",
@@ -1446,6 +1513,12 @@ async function createSessionMessageAttempt(
                 // The canonical attention-impact classifier distinguishes a
                 // newly published material message from replay/history and
                 // non-attention system rows without reading ciphertext here.
+                for (const recipientAccountId of access.recipientAccountIds) {
+                    scheduleSessionPersonalEvent(tx, recipientAccountId, {
+                        type: "session-personal-event", sessionId, eventId: created.id, event: "message",
+                        message: { sequenceDomain: "session_transcript", messageSeq: created.seq },
+                    });
+                }
                 afterTx(tx, () => scheduleSessionActivityRemoteAlerts({
                     sessionId,
                     event: "message",
@@ -1604,7 +1677,8 @@ async function createSessionMessageAttempt(
                     const storedReceipt = existing.inputAdmissionReceipt == null ? null
                         : SessionInputAdmissionReceiptV1Schema.safeParse(existing.inputAdmissionReceipt);
                     const admittedReceipt = params.inputAdmission === "authenticatedAccount" && resolvedRole === "user"
-                        ? buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access })
+                        ? buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access,
+                            callerInputConstraints: params.authentication.callerInputConstraints ?? params.authentication.apiTokenGrant })
                         : null;
                     if (storedReceipt !== null && (!storedReceipt.success
                         || admittedReceipt !== null && !isSameSessionInputAdmissionIssuer(storedReceipt.data, admittedReceipt))) {
@@ -2460,9 +2534,14 @@ export async function updateSessionAgentState(params: {
             }
 
             for (const occurrence of parsedUserActionRequiredOccurrences.data) {
+                const sourceTurn = await tx.sessionTurn.findUnique({
+                    where: { sessionId_turnId: { sessionId, turnId: occurrence.sourceTurnId } },
+                    select: { initiator: true, workDepth: true, workflowInvocationJson: true },
+                });
                 const lifecycleAdmissions = await admitSessionLifecycleAutomationRunsTx({
                     tx,
                     accountId: access.sessionOwnerId,
+                    ...(sourceTurn ? { sourceTurnFacts: parseStoredSessionTurnFacts(sourceTurn) } : {}),
                     occurrence: {
                         v: 1,
                         kind: "sessionLifecycle",
@@ -2581,6 +2660,9 @@ type SessionTurnApplicationRow = Readonly<{
     agentId: string | null;
     agentTurnId: string | null;
     status: string;
+    initiator: string;
+    workDepth: number;
+    workflowInvocationJson: string | null;
     startedAt: bigint | number;
     updatedAt: bigint | number;
     terminalAt: bigint | number | null;
@@ -3470,6 +3552,12 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
                         agentId: params.turnMutation.agentId ?? null,
                         agentTurnId: "agentTurnId" in params.turnMutation ? params.turnMutation.agentTurnId ?? null : null,
                         status: "in_progress",
+                        // Only insertion establishes facts; re-begin/recovery
+                        // update the existing turn without changing its origin.
+                        initiator: params.turnMutation.action === "begin" ? params.turnMutation.initiator ?? "user" : "user",
+                        workDepth: params.turnMutation.action === "begin" ? params.turnMutation.workDepth ?? 0 : 0,
+                        workflowInvocationJson: params.turnMutation.action === "begin" && params.turnMutation.workflowInvocation
+                            ? JSON.stringify(params.turnMutation.workflowInvocation) : null,
                         startedAt: observedAt,
                         updatedAt: observedAt,
                         terminalAt: null,
@@ -3546,6 +3634,7 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
             const lifecycleAdmissions = await admitSessionLifecycleAutomationRunsTx({
                 tx,
                 accountId: writeAuthority.accountId,
+                sourceTurnFacts: parseStoredSessionTurnFacts(appliedTurn),
                 occurrence: {
                     v: 1,
                     kind: "sessionLifecycle",
@@ -3563,9 +3652,16 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
                 sourceTurnId: targetTurnId,
             });
             if (lifecycleEvent === "parentTurnFailed" || lifecycleEvent === "parentTurnCancelled") {
+                const event = lifecycleEvent === "parentTurnFailed" ? "failed" : "cancelled";
+                for (const recipientAccountId of access.recipientAccountIds) {
+                    scheduleSessionPersonalEvent(tx, recipientAccountId, {
+                        type: "session-personal-event", sessionId: params.turnMutation.sessionId,
+                        eventId: params.turnMutation.mutationId, event, turnId: targetTurnId,
+                    });
+                }
                 afterTx(tx, () => scheduleSessionActivityRemoteAlerts({
                     sessionId: params.turnMutation.sessionId,
-                    event: lifecycleEvent === "parentTurnFailed" ? "failed" : "cancelled",
+                    event,
                     committedTurnId: targetTurnId,
                     ...(params.runtimeComposition ? { runtimeComposition: params.runtimeComposition } : {}),
                 }));
@@ -4153,6 +4249,8 @@ export type UpdateSessionMetadataEnvelopeTupleResult =
         error:
             | "invalid-params"
             | "forbidden"
+            | "session_access_authentication_required"
+            | "session_access_authentication_unavailable"
             | "session-not-found"
             | "session_active"
             | "session_archived"
@@ -4684,9 +4782,11 @@ export async function updateSessionMetadataEnvelopeTupleInTx(
     const access = params.mode !== "shared_editor"
         ? await loadSessionOwnerMutationContextInTx(tx, params)
         : params.mutationIntent === "rename_session"
-            ? await loadSessionMutationContextForCapabilityInTx(tx, params, "renameSession")
-            : await loadSessionInputMutationContextInTx(tx, params);
-    if (!access.ok) return { ok: false, error: access.error };
+            ? await loadSessionMutationContextPreservingAccessFailureInTx(tx, { ...params, kind: "capability", capability: "renameSession", preserveAccessFailure: true })
+            : await loadSessionMutationContextPreservingAccessFailureInTx(tx, { ...params, kind: "capability", capability: "submitAgentInput", preserveAccessFailure: true });
+    if (!access.ok) {
+        return { ok: false, error: mapSharedEditorAccessFailure(access.error) };
+    }
 
     const account = await tx.account.findUnique({
         where: { id: access.sessionOwnerId },
@@ -5166,10 +5266,10 @@ export async function updateSessionMetadataEnvelopeTupleInTx(
         }
         if (params.mode === "shared_editor") {
             const freshAccess = params.mutationIntent === "rename_session"
-                ? await loadSessionMutationContextForCapabilityInTx(tx, params, "renameSession")
-                : await loadSessionInputMutationContextInTx(tx, params);
+            ? await loadSessionMutationContextPreservingAccessFailureInTx(tx, { ...params, kind: "capability", capability: "renameSession", preserveAccessFailure: true })
+            : await loadSessionMutationContextPreservingAccessFailureInTx(tx, { ...params, kind: "capability", capability: "submitAgentInput", preserveAccessFailure: true });
             if (!freshAccess.ok) {
-                return { ok: false, error: freshAccess.error };
+                return { ok: false, error: mapSharedEditorAccessFailure(freshAccess.error) };
             }
         }
         return toMetadataEnvelopeTupleVersionMismatch(fresh, params);

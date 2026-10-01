@@ -43,74 +43,15 @@ import {
 
 /** One page of Event-source definitions cannot exceed this bounded Action contract. */
 export const MAX_AUTOMATION_EVENT_SOURCE_DEFINITIONS_PER_PAGE = 500;
-export const MAX_AUTOMATION_EVENT_FILTER_CLAUSES = 32;
-export const MAX_AUTOMATION_EVENT_FILTER_IN_VALUES = 64;
-export const MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS = 256;
-const MAX_AUTOMATION_EVENT_FILTER_POINTER_DEPTH = 32;
+export { MAX_AUTOMATION_EVENT_FILTER_CLAUSES, MAX_AUTOMATION_EVENT_FILTER_IN_VALUES, MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS } from './automationEventFilterV1.js';
 
 export const OPAQUE_CURSOR_SCHEMA = z.string().min(1).max(1024).regex(/^[A-Za-z0-9_-]+$/u);
-const MAX_SIGNED_BIGINT_DECIMAL = '9223372036854775807';
-export const UNSIGNED_DECIMAL_BIGINT_SCHEMA = z.string()
-  .regex(/^(?:0|[1-9][0-9]*)$/u)
-  .max(MAX_SIGNED_BIGINT_DECIMAL.length)
-  .refine((value) => (
-    value.length < MAX_SIGNED_BIGINT_DECIMAL.length || value <= MAX_SIGNED_BIGINT_DECIMAL
-  ));
-
-const AutomationJsonScalarV1Schema = z.union([
-  z.null(),
-  z.boolean(),
-  z.number().finite(),
-  z.string().superRefine((value, context) => {
-    if (value !== value.normalize('NFC')) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Filter strings must be NFC-normalized' });
-    }
-    if (Array.from(value).length > MAX_AUTOMATION_EVENT_FILTER_VALUE_CODE_POINTS) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Filter strings exceed the code-point limit' });
-    }
-  }),
-]);
-export type AutomationJsonScalarV1 = z.infer<typeof AutomationJsonScalarV1Schema>;
-
-export const AutomationJsonPointerV1Schema = z.string().min(1).max(1024)
-  .regex(/^\/(?:[^~]|~[01])*$/u, 'Expected one RFC 6901 JSON pointer')
-  .superRefine((value, context) => {
-    const segments = value.slice(1).split('/');
-    if (segments.length > MAX_AUTOMATION_EVENT_FILTER_POINTER_DEPTH || segments.some((segment) => segment === '-')) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Filter pointers must address one bounded scalar leaf' });
-    }
-  });
-export type AutomationJsonPointerV1 = z.infer<typeof AutomationJsonPointerV1Schema>;
-
-const AutomationEventFilterClauseV1Schema = z.discriminatedUnion('op', [
-  z.object({
-    op: z.literal('eq'),
-    field: AutomationJsonPointerV1Schema,
-    value: AutomationJsonScalarV1Schema,
-  }).strict(),
-  z.object({
-    op: z.literal('in'),
-    field: AutomationJsonPointerV1Schema,
-    values: z.array(AutomationJsonScalarV1Schema)
-      .min(1)
-      .max(MAX_AUTOMATION_EVENT_FILTER_IN_VALUES)
-      .superRefine((values, context) => {
-        const canonicalValues = values.map((value) => createCanonicalJsonSigningInput(value));
-        if (new Set(canonicalValues).size !== canonicalValues.length) {
-          context.addIssue({ code: z.ZodIssueCode.custom, message: 'Filter in-values must be unique' });
-        }
-      }),
-  }).strict(),
-]);
-export type AutomationEventFilterClauseV1 = z.infer<typeof AutomationEventFilterClauseV1Schema>;
-
-export const AutomationEventFilterV1Schema = z.object({
-  v: z.literal(1),
-  all: z.array(AutomationEventFilterClauseV1Schema)
-    .min(1)
-    .max(MAX_AUTOMATION_EVENT_FILTER_CLAUSES),
-}).strict();
-export type AutomationEventFilterV1 = z.infer<typeof AutomationEventFilterV1Schema>;
+import { AutomationEventFilterV1Schema } from './automationEventFilterV1.js';
+export { AutomationEventFilterV1Schema, AutomationJsonPointerV1Schema } from './automationEventFilterV1.js';
+export type { AutomationEventFilterV1, AutomationEventFilterClauseV1, AutomationJsonScalarV1, AutomationJsonPointerV1 } from './automationEventFilterV1.js';
+import { UNSIGNED_DECIMAL_BIGINT_SCHEMA, AutomationEventSourceStatusStateV1Schema, AutomationEventSourceStatusCodeV1Schema, AutomationEventSourceCatalogStatusStateV1Schema } from './automationEventSourceStatusV1.js';
+export { UNSIGNED_DECIMAL_BIGINT_SCHEMA, AutomationEventSourceStatusStateV1Schema, AutomationEventSourceStatusCodeV1Schema, AutomationEventSourceCatalogStatusStateV1Schema } from './automationEventSourceStatusV1.js';
+export type { AutomationEventSourceStatusStateV1, AutomationEventSourceStatusCodeV1, AutomationEventSourceCatalogStatusStateV1 } from './automationEventSourceStatusV1.js';
 
 export const AutomationEventSourceObservationTransportV1Schema = z.discriminatedUnion('kind', [
   z.object({
@@ -467,7 +408,7 @@ export type AutomationConversationTargetsListInputV1 = z.infer<typeof Automation
  * projected, and nothing here is readable only in plain mode.
  */
 export const AutomationConversationTargetExecutionV1Schema = z.object({
-  targetType: z.enum(['new_session', 'existing_session', 'execution_run']),
+  targetType: z.enum(['new_session', 'existing_session', 'execution_run']).nullable(),
   enabled: z.boolean(),
 }).strict();
 export type AutomationConversationTargetExecutionV1 = z.infer<
@@ -487,38 +428,7 @@ export const AutomationConversationTargetsListResultV1Schema = z.object({
 }).strict();
 export type AutomationConversationTargetsListResultV1 = z.infer<typeof AutomationConversationTargetsListResultV1Schema>;
 
-export const AutomationEventSourceStatusStateV1Schema = z.enum([
-  'uninitialized',
-  'baselined',
-  'observing',
-  'backingOff',
-  'attention',
-]);
-export type AutomationEventSourceStatusStateV1 = z.infer<typeof AutomationEventSourceStatusStateV1Schema>;
 
-export const AutomationEventSourceStatusCodeV1Schema = z.enum([
-  'none',
-  'credentialMissing',
-  'credentialRevoked',
-  'rateLimited',
-  'historyGap',
-  'capacityBlocked',
-  'definitionStale',
-  'sourceContractIncompatible',
-  'admissionUnavailable',
-]);
-export type AutomationEventSourceStatusCodeV1 = z.infer<
-  typeof AutomationEventSourceStatusCodeV1Schema
->;
-
-export const AutomationEventSourceCatalogStatusStateV1Schema = z.enum([
-  'current',
-  'reconciling',
-  'reconciliationLate',
-]);
-export type AutomationEventSourceCatalogStatusStateV1 = z.infer<
-  typeof AutomationEventSourceCatalogStatusStateV1Schema
->;
 
 function compareUnsignedDecimalStrings(left: string, right: string): number {
   if (left.length !== right.length) return left.length - right.length;

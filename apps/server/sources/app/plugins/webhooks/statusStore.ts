@@ -8,6 +8,7 @@ import {
 import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
+import { readHomeConfigEnv } from "@/app/home/settings/homeSettings";
 import { inTx } from "@/storage/inTx";
 
 import { projectPluginWebhookEndpointReadinessV1 } from "./endpointReadiness";
@@ -19,7 +20,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
 }>): Promise<PluginWebhookAccountStatusResultV1> {
     const input = params.input;
     const serverIdentityId = await getOrCreateServerIdentityId(process.env);
-    const publicBaseUrl = resolveConfiguredPublicServerUrl(process.env);
+    const publicBaseUrl = resolveConfiguredPublicServerUrl(await readHomeConfigEnv());
     if (!publicBaseUrl) throw new Error("Plugin webhook public URL is unavailable");
     return await inTx(async (tx) => {
         const rows = await tx.pluginWebhookEndpoint.findMany({

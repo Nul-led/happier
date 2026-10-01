@@ -40,7 +40,7 @@ describe('external Provider broker dispatcher', () => {
         const accountId = 'custodian-account-1';
         let transportCloseCount = 0;
         const dispatch = createExternalProviderBrokerDispatcher({
-            enabled: true,
+            enabled: () => true,
             env: {
                 HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: 'test-key',
                 HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: Buffer.alloc(32, 7).toString('base64url'),
@@ -97,7 +97,7 @@ describe('external Provider broker dispatcher', () => {
         const cancellation = new AbortController();
         const removeAbortListener = vi.spyOn(cancellation.signal, 'removeEventListener');
         const result = await dispatch({
-            target: { custodianAccountId: accountId, brokerMachineId: machineId },
+            target: { custodianAccountId: accountId, brokerMachineId: machineId, operationId: null, brokerPlacementFingerprint: 'a'.repeat(64) },
             signal: cancellation.signal,
             request: {
                 v: 1,

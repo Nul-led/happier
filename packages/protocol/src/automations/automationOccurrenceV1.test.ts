@@ -75,6 +75,7 @@ describe('Automation occurrence V1', () => {
       requestKind: 'permission',
       occurredAt: 1_714_000_000_000,
     });
+    if (evidence.event !== 'userActionRequired') throw new Error('Wrong lifecycle arm');
     const key = deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence });
 
     expect(deriveAutomationOccurrenceKeyV1({
@@ -101,6 +102,17 @@ describe('Automation occurrence V1', () => {
         occurredAt: evidence.occurredAt,
       },
     })).not.toBe(key);
+  });
+  it('uses one creation identity and distinct archive transitions without manufacturing a source turn', () => {
+    const started = { v: 1 as const, kind: 'sessionLifecycle' as const, event: 'sessionStarted' as const,
+      sourceSessionId: 'session-source-1', occurredAt: 1_714_000_000_000 };
+    const archived = { ...started, event: 'sessionArchived' as const };
+    expect(AutomationSessionLifecycleOccurrenceEvidenceV1Schema.parse(started)).not.toHaveProperty('sourceTurnId');
+    expect(AutomationSessionLifecycleOccurrenceEvidenceV1Schema.safeParse({ ...started, sourceTurnId: 'fake' }).success).toBe(false);
+    expect(deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence: started }))
+      .toBe(deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence: { ...started, occurredAt: started.occurredAt + 1 } }));
+    expect(deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence: archived }))
+      .not.toBe(deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence: { ...archived, occurredAt: archived.occurredAt + 1 } }));
   });
   it('normalizes and bounds the shared manual idempotency contract by UTF-8 bytes', () => {
     expect(AutomationManualIdempotencyKeyV1Schema.parse('  ci-build-42  '))

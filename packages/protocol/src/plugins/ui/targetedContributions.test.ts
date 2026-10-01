@@ -14,7 +14,11 @@ import {
 const admittedSnapshot = {
   target: {
     pluginId: 'acme.target',
-    immutableGenerationId: 'target-generation-a',
+    occurrenceId: 'target-occurrence-a',
+    sourceCustody: {
+      kind: 'development',
+      registeredRootId: 'target-root',
+    },
   },
   points: [{
     pointId: 'connection',
@@ -24,7 +28,14 @@ const admittedSnapshot = {
         contributor: {
           pluginId: 'acme.provider',
           contributionId: 'github-connection',
-          immutableGenerationId: 'provider-generation-a',
+          occurrenceId: 'provider-occurrence-a',
+          sourceCustody: {
+            kind: 'bundled_first_party',
+            packagedRuntime: {
+              kind: 'cli_version_root',
+              versionRootId: 'cli-version-a',
+            },
+          },
         },
         protocol: { id: 'connection', version: 1 },
         descriptor: { providerId: 'github' },
@@ -33,7 +44,14 @@ const admittedSnapshot = {
           contributor: {
             pluginId: 'acme.provider',
             contributionId: 'github-connection',
-            immutableGenerationId: 'provider-generation-a',
+            occurrenceId: 'provider-occurrence-a',
+            sourceCustody: {
+              kind: 'bundled_first_party',
+              packagedRuntime: {
+                kind: 'cli_version_root',
+                versionRootId: 'cli-version-a',
+              },
+            },
           },
           role: 'connectionTest',
           action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },
@@ -43,7 +61,14 @@ const admittedSnapshot = {
           contributor: {
             pluginId: 'acme.provider',
             contributionId: 'github-connection',
-            immutableGenerationId: 'provider-generation-a',
+            occurrenceId: 'provider-occurrence-a',
+            sourceCustody: {
+              kind: 'bundled_first_party',
+              packagedRuntime: {
+                kind: 'cli_version_root',
+                versionRootId: 'cli-version-a',
+              },
+            },
           },
           role: 'detail',
           presentation: 'content',
@@ -70,7 +95,7 @@ describe('targeted Host API contribution projection', () => {
       ...base,
       surface: {
         ...surface,
-        contributor: { ...surface.contributor, immutableGenerationId: 'provider-generation-b' },
+        contributor: { ...surface.contributor, occurrenceId: 'provider-occurrence-b' },
       },
     })).toBe(key);
 
@@ -135,12 +160,19 @@ describe('targeted Host API contribution projection', () => {
 
   it('keeps qualified protocol identity admission aligned with portable selection parsing', () => {
     const selection = {
-      target: admittedSnapshot.target,
+      target: {
+        pluginId: admittedSnapshot.target.pluginId,
+        sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+      },
       point: {
         pointId: admittedSnapshot.points[0].pointId,
         protocol: { id: 'happier.channels/providers', version: 1 },
       },
-      contributor: admittedSnapshot.points[0].protocols[0].contributions[0].contributor,
+      contributor: {
+        pluginId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.pluginId,
+        contributionId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.contributionId,
+        sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
+      },
     } as const;
 
     expect(PluginTargetedContributionSelectionV1Schema.parse(selection)).toEqual(selection);
@@ -158,9 +190,16 @@ describe('targeted Host API contribution projection', () => {
 
   it('keeps the portable selection closed and non-executable', () => {
     const selection = {
-      target: admittedSnapshot.target,
+      target: {
+        pluginId: admittedSnapshot.target.pluginId,
+        sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+      },
       point: admittedSnapshot.points[0].protocols[0].contributions[0].operations[0].point,
-      contributor: admittedSnapshot.points[0].protocols[0].contributions[0].contributor,
+      contributor: {
+        pluginId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.pluginId,
+        contributionId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.contributionId,
+        sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
+      },
     } as const;
 
     expect(PluginTargetedContributionSelectionV1Schema.parse(selection)).toEqual(selection);
@@ -181,36 +220,111 @@ describe('targeted Host API contribution projection', () => {
       contributor: {
         pluginId: selection.contributor.pluginId,
         contributionLocalId: selection.contributor.contributionId,
-        immutableGenerationId: selection.contributor.immutableGenerationId,
+        sourceCustody: selection.contributor.sourceCustody,
       },
     }).success).toBe(false);
   });
 
-  it('rejects whitespace-padded immutable identities instead of rewriting their closed bytes', () => {
+  it('reuses the canonical strict custody discriminator for portable selections', () => {
     const selection = {
-      target: admittedSnapshot.target,
+      target: {
+        pluginId: admittedSnapshot.target.pluginId,
+        sourceCustody: { kind: 'development', registeredRootId: 'target-root' },
+      },
       point: admittedSnapshot.points[0].protocols[0].contributions[0].operations[0].point,
-      contributor: admittedSnapshot.points[0].protocols[0].contributions[0].contributor,
+      contributor: {
+        pluginId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.pluginId,
+        contributionId: admittedSnapshot.points[0].protocols[0].contributions[0].contributor.contributionId,
+        sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
+      },
     } as const;
 
     expect(PluginTargetedContributionSelectionV1Schema.safeParse({
       ...selection,
       target: {
         ...selection.target,
-        immutableGenerationId: ` ${selection.target.immutableGenerationId} `,
+        sourceCustody: { kind: 'unknown', registeredRootId: 'target-root' },
       },
     }).success).toBe(false);
     expect(PluginTargetedContributionSelectionV1Schema.safeParse({
       ...selection,
       contributor: {
         ...selection.contributor,
-        immutableGenerationId: ` ${selection.contributor.immutableGenerationId} `,
+        sourceCustody: { ...selection.contributor.sourceCustody, unexpected: true },
       },
     }).success).toBe(false);
   });
 
   it('admits only an exact, target-scoped immutable snapshot', () => {
     expect(PluginUiTargetedContributionsV1Schema.parse(admittedSnapshot)).toEqual(admittedSnapshot);
+    expect(PluginUiTargetedContributionsV1Schema.safeParse({
+      ...admittedSnapshot,
+      target: {
+        pluginId: admittedSnapshot.target.pluginId,
+        occurrenceId: admittedSnapshot.target.occurrenceId,
+      },
+    }).success).toBe(false);
+    expect(PluginUiTargetedContributionsV1Schema.safeParse({
+      ...admittedSnapshot,
+      points: admittedSnapshot.points.map((point) => ({
+        ...point,
+        protocols: point.protocols.map((protocol) => ({
+          ...protocol,
+          contributions: protocol.contributions.map((contribution) => ({
+            ...contribution,
+            contributor: {
+              pluginId: contribution.contributor.pluginId,
+              contributionId: contribution.contributor.contributionId,
+              occurrenceId: contribution.contributor.occurrenceId,
+            },
+          })),
+        })),
+      })),
+    }).success).toBe(false);
+    expect(PluginUiTargetedContributionsV1Schema.safeParse({
+      ...admittedSnapshot,
+      points: [{
+        ...admittedSnapshot.points[0],
+        protocols: [{
+          ...admittedSnapshot.points[0].protocols[0],
+          contributions: [{
+            ...admittedSnapshot.points[0].protocols[0].contributions[0],
+            operations: [{
+              ...admittedSnapshot.points[0].protocols[0].contributions[0].operations[0],
+              contributor: {
+                ...admittedSnapshot.points[0].protocols[0].contributions[0].operations[0].contributor,
+                sourceCustody: {
+                  kind: 'development',
+                  registeredRootId: 'different-provider-root',
+                },
+              },
+            }],
+          }],
+        }],
+      }],
+    }).success).toBe(false);
+    expect(PluginUiTargetedContributionsV1Schema.safeParse({
+      ...admittedSnapshot,
+      points: [{
+        ...admittedSnapshot.points[0],
+        protocols: [{
+          ...admittedSnapshot.points[0].protocols[0],
+          contributions: [{
+            ...admittedSnapshot.points[0].protocols[0].contributions[0],
+            surfaces: [{
+              ...admittedSnapshot.points[0].protocols[0].contributions[0].surfaces[0],
+              contributor: {
+                ...admittedSnapshot.points[0].protocols[0].contributions[0].surfaces[0].contributor,
+                sourceCustody: {
+                  kind: 'development',
+                  registeredRootId: 'different-provider-root',
+                },
+              },
+            }],
+          }],
+        }],
+      }],
+    }).success).toBe(false);
   });
 
   it('enforces the target-point, contributor, and operation ceilings instead of accepting an unbounded cross-realm catalog', () => {
@@ -380,7 +494,7 @@ describe('targeted Host API contribution projection', () => {
               ...contribution.operations[0],
               contributor: {
                 ...contribution.operations[0].contributor,
-                immutableGenerationId: 'provider-generation-b',
+                occurrenceId: 'provider-occurrence-b',
               },
             }],
           }],
@@ -409,7 +523,7 @@ describe('targeted Host API contribution projection', () => {
               ...contribution.surfaces[0],
               contributor: {
                 ...contribution.surfaces[0].contributor,
-                immutableGenerationId: 'provider-generation-b',
+                occurrenceId: 'provider-occurrence-b',
               },
             }],
           }],
@@ -544,7 +658,7 @@ describe('target-local contribution selection', () => {
       .toBeUndefined();
   });
 
-  it('fails closed for a stale nested generation and for duplicated candidates', () => {
+  it('fails closed for a stale nested occurrence and for duplicated candidates', () => {
     const staleSurfaceGeneration = {
       ...admitted,
       points: [{
@@ -557,7 +671,7 @@ describe('target-local contribution selection', () => {
               ...contribution.surfaces[0]!,
               contributor: {
                 ...contribution.surfaces[0]!.contributor,
-                immutableGenerationId: 'provider-generation-b',
+                occurrenceId: 'provider-occurrence-b',
               },
             }],
           }],

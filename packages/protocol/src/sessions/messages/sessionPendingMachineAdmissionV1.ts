@@ -9,6 +9,7 @@ import {
 } from './sessionInputAdmission.js';
 import { SessionStoredMessageContentSchema } from './sessionStoredMessageContent.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
+import { ExternalActionMachineRpcExecutionV1Schema } from '../../actions/externalActionApi.js';
 
 export const SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1 =
   'session-pending-enqueue-by-machine-v1' as const;
@@ -24,6 +25,8 @@ export const SessionPendingEnqueueByMachineFieldsV1 = {
   content: SessionStoredMessageContentSchema,
   requestedAction: PendingRequestedActionV1Schema,
   requestEqualityEvidenceV1: SessionInputRequestEqualityEvidenceV1Schema.optional(),
+  /** Existing invocation authorization plus exact Machine-signed payload; never raw caller constraints. */
+  externalAction: ExternalActionMachineRpcExecutionV1Schema.optional(),
 };
 
 /** Shared host-equality boundary for each closed Machine admission epoch. */

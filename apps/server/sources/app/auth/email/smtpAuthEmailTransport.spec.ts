@@ -77,7 +77,7 @@ describe("production auth SMTP transport", () => {
         try {
             expect(isAuthEmailTransportConfigured(sandbox.env)).toBe(true);
             const delivery = resolveAuthEmailDelivery(sandbox.env);
-            expect(delivery.isReady).toBe(true);
+            await expect(delivery.isReady()).resolves.toBe(true);
             expect(await delivery.deliver(message)).toEqual({ status: "sent" });
             expect(sandbox.recipients).toEqual(["RCPT TO:<recipient@example.test>"]);
             expect(sandbox.messages).toHaveLength(1);

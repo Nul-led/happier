@@ -14,7 +14,7 @@ import {
 } from "@happier-dev/protocol/teams";
 import { resolveTeamCredentialExternalApiAvailability } from "@happier-dev/protocol";
 import type { Fastify } from "@/app/api/types";
-import { resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
+import { readHomeEffectiveEnv, resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { inTx } from "@/storage/inTx";
 import {
@@ -69,7 +69,7 @@ export type ExternalProviderBrokerDispatchResult =
 
 export type ExternalProviderBrokerDispatch = (input: Readonly<{
     request: TeamCredentialExternalProviderApplicationRequestV1;
-    target: Readonly<{ custodianAccountId: string; brokerMachineId: string }>;
+    target: Readonly<{ custodianAccountId: string; brokerMachineId: string; operationId: string | null; brokerPlacementFingerprint: string }>;
     signal: AbortSignal;
 }>) => Promise<ExternalProviderBrokerDispatchResult>;
 
@@ -180,8 +180,10 @@ export function registerExternalProviderApiRoutes(
     const env = dependencies.env ?? process.env;
     const verify = dependencies.verify ?? ((token) => inTx((tx) =>
         verifyTeamCredentialExternalApiKeyInTx(tx, { token })));
-    const operationGate = async (_request: FastifyRequest, reply: FastifyReply) => {
-        const availability = resolveTeamCredentialExternalApiAvailability(resolveServerFeaturesForGating(env));
+    const operationGate = async (request: FastifyRequest, reply: FastifyReply) => {
+        const availability = resolveTeamCredentialExternalApiAvailability(
+            resolveServerFeaturesForGating(await readHomeEffectiveEnv({ env, request })),
+        );
         if (!availability.available) return reply.code(404).send({ error: "not_found" });
     };
     const rateLimit = resolveApiHotEndpointRateLimit(env, "providerBroker.externalApi");
@@ -249,6 +251,7 @@ export function registerExternalProviderApiRoutes(
                 const placement = await resolveTeamCredentialExternalBrokerPlacement({
                     externalApiKeyId: verified.keyId,
                     observedAt: new Date(),
+                    catalogOnly: route === "models",
                     signal: cancellation.signal,
                     readCurrentPresence: readCurrentBrokerPresence,
                     readPoolSourceEligibility,
@@ -260,6 +263,8 @@ export function registerExternalProviderApiRoutes(
                 const target = {
                     custodianAccountId: placement.custodianAccountId,
                     brokerMachineId: placement.brokerMachineId,
+                    operationId: placement.operationId,
+                    brokerPlacementFingerprint: placement.brokerPlacementFingerprint,
                 };
                 let result: ExternalProviderBrokerDispatchResult;
                 try {

@@ -7,6 +7,7 @@ import {
     VoiceMediaGrantScopeV1Schema,
     LiveStreamGrantScopeV1Schema,
     MachineLiveStreamCapsV1Schema,
+    MachineLiveStreamCodecIdV1Schema,
     PeerTcpTunnelDestinationV1Schema,
     PEER_MEDIATION_RECEIPTS,
     PEER_TCP_TUNNEL_RELAY_SOCKET_ID_MAX_LENGTH,
@@ -33,6 +34,7 @@ import {
 import {
     createServerFeatureGatePreHandler,
     isPeerMediationGrantSigningAdvertisedForRequest,
+    readHomeEffectiveEnv,
 } from "@/app/features/catalog/serverFeatureGate";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
@@ -40,6 +42,7 @@ import {
     mintDirectRouteGrantV2,
     resolvePeerMediationGrantSigningConfig,
 } from "@/app/machines/peer/mediation/mintDirectRouteGrantV1";
+import { resolveMachineLiveStreamRelayCaps } from "@/app/machines/peer/mediation/stream/relayCaps";
 import { mintMachineLiveStreamRelayAuthorizationV1 } from "@/app/machines/peer/mediation/stream";
 import { mintPeerTcpTunnelRelayAuthorizationV2 } from "@/app/machines/peer/mediation/tunnel";
 import type { PeerMediationViewerSocketOwnershipVerifier } from "@/app/api/socket/viewerSocketOwnership";
@@ -124,8 +127,10 @@ const LiveStreamServerRelayAuthorizationRequestSchema = z.object({
     flowKind: z.literal("live_stream"),
     routeKind: z.literal("server_relay"),
     ttlMs: z.number().int().positive(),
-    maxFramesPerSecond: z.number().int().positive(),
-    maxFrameBytes: z.number().int().positive(),
+    maxFramesPerSecond: z.number().int().positive().optional(),
+    maxFrameBytes: z.number().int().positive().optional(),
+    codecId: MachineLiveStreamCodecIdV1Schema.optional(),
+    viewerCodecs: z.array(MachineLiveStreamCodecIdV1Schema).optional(),
     // Optional per-tab viewer socket id (C1). When the watcher is a user-scoped browser socket the
     // grant is minted bound to it so the relay delivers frames to exactly that tab. It is part of
     // the signed payload, so it must round-trip mint → start-request → handler-verify unchanged.
@@ -187,8 +192,8 @@ function createPeerMediationGrantFeatureGatePreHandler(
 function createPeerMediationGrantSigningGatePreHandler(
     env: NodeJS.ProcessEnv,
 ): RoutePreHandler {
-    return async (_request, reply) => {
-        if (isPeerMediationGrantSigningAdvertisedForRequest(env)) {
+    return async (request, reply) => {
+        if (isPeerMediationGrantSigningAdvertisedForRequest(await readHomeEffectiveEnv({ env, request }))) {
             return undefined;
         }
         return reply.code(404).send({ error: "not_found" });
@@ -236,8 +241,8 @@ function resolveServerRelayedTcpTunnelTtlMs(requestedTtlMs: number): number {
 
 function buildLiveStreamRelayRequestedCaps(input: Readonly<{
     scope: LiveStreamGrantScopeV1;
-    maxFramesPerSecond: number;
-    maxFrameBytes: number;
+    maxFramesPerSecond?: number;
+    maxFrameBytes?: number;
 }>): MachineLiveStreamCapsV1 {
     return MachineLiveStreamCapsV1Schema.parse({
         maxBitrateBps: input.scope.maxBitrateBps,
@@ -246,30 +251,6 @@ function buildLiveStreamRelayRequestedCaps(input: Readonly<{
         maxDurationMs: input.scope.maxDurationMs,
         ...(input.scope.maxTotalBytes ? { maxTotalBytes: input.scope.maxTotalBytes } : {}),
     });
-}
-
-function validateLiveStreamRelayCaps(input: Readonly<{
-    requested: MachineLiveStreamCapsV1;
-    serverCaps: MachineLiveStreamCapsV1;
-}>): "relay_cap_missing" | "relay_cap_exceeded" | null {
-    const requested = input.requested;
-    const serverCaps = input.serverCaps;
-    if (
-        requested.maxBitrateBps > serverCaps.maxBitrateBps
-        || requested.maxFramesPerSecond > serverCaps.maxFramesPerSecond
-        || requested.maxFrameBytes > serverCaps.maxFrameBytes
-        || requested.maxDurationMs > serverCaps.maxDurationMs
-    ) {
-        return "relay_cap_exceeded";
-    }
-    if (
-        typeof requested.maxTotalBytes === "number"
-        && typeof serverCaps.maxTotalBytes === "number"
-        && requested.maxTotalBytes > serverCaps.maxTotalBytes
-    ) {
-        return "relay_cap_exceeded";
-    }
-    return null;
 }
 
 export function registerPeerMediationGrantRoutes(
@@ -377,6 +358,11 @@ export function registerPeerMediationGrantRoutes(
             };
         }
 
+        // Only the preview access owner can mint resource/policy-bound authority.
+        if (parsed.data.scope.kind === 'tcp_tunnel' && parsed.data.scope.preview) {
+            return { ok: false, reasonCode: 'invalid_scope', receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected };
+        }
+
         const accountId = typeof request.userId === "string" && request.userId.length > 0
             ? request.userId
             : "";
@@ -427,6 +413,8 @@ export function registerPeerMediationGrantRoutes(
                             kind: "tcp_tunnel",
                             tunnelId: parsed.data.scope.tunnelId,
                             allowedPorts: [parsed.data.destination.port],
+                        },
+                        applicationBudgets: {
                             maxIdleMs: parsed.data.scope.maxIdleMs,
                             maxDurationMs: parsed.data.scope.maxDurationMs,
                             ...(parsed.data.scope.maxTotalBytes !== undefined
@@ -439,15 +427,8 @@ export function registerPeerMediationGrantRoutes(
                         serverCaps: {
                             allowedPorts: tunnelFeatureEnv.allowedPorts,
                             maxBytes: liveStreamFeatureEnv.serverRoutedCaps.maxTotalBytes,
-                            maxFrameBytes: liveStreamFeatureEnv.serverRoutedCaps.maxFrameBytes,
-                            maxIdleMs: Math.min(
-                                tunnelFeatureEnv.maxIdleMs,
-                                liveStreamFeatureEnv.serverRoutedCaps.maxDurationMs,
-                            ),
-                            maxDurationMs: Math.min(
-                                tunnelFeatureEnv.maxDurationMs,
-                                liveStreamFeatureEnv.serverRoutedCaps.maxDurationMs,
-                            ),
+                            maxFrameBytes: liveStreamFeatureEnv.serverRoutedCaps.maxFrameBytes ?? tunnelFeatureEnv.serverRoutedMaxFrameBytes,
+                            maxDurationMs: liveStreamFeatureEnv.serverRoutedCaps.maxDurationMs,
                         },
                         capProfileId: DAEMON_VOICE_AUDIO_RELAY_CAP_PROFILE_ID,
                         flowKind: "voice_media",
@@ -476,10 +457,7 @@ export function registerPeerMediationGrantRoutes(
                     serverGateEnabled: featureEnv.serverRoutedEnabled,
                     serverCaps: {
                         allowedPorts: featureEnv.allowedPorts,
-                        maxBytes: featureEnv.serverRoutedMaxBytes,
                         maxFrameBytes: featureEnv.serverRoutedMaxFrameBytes,
-                        maxIdleMs: featureEnv.maxIdleMs,
-                        maxDurationMs: featureEnv.maxDurationMs,
                     },
                     signingKey: {
                         keyId: signing.keyId,
@@ -513,14 +491,14 @@ export function registerPeerMediationGrantRoutes(
                 maxFramesPerSecond: parsed.data.maxFramesPerSecond,
                 maxFrameBytes: parsed.data.maxFrameBytes,
             });
-            const capsFailure = validateLiveStreamRelayCaps({
+            const effectiveCaps = resolveMachineLiveStreamRelayCaps({
                 requested: requestedCaps,
                 serverCaps: featureEnv.serverRoutedCaps,
             });
-            if (capsFailure) {
+            if (!effectiveCaps) {
                 return {
                     ok: false,
-                    reasonCode: capsFailure,
+                    reasonCode: "relay_cap_exceeded",
                     receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
                 };
             }
@@ -531,8 +509,11 @@ export function registerPeerMediationGrantRoutes(
                 targetMachineId: parsed.data.targetMachineId,
                 streamId: parsed.data.scope.streamId,
                 streamFamily: parsed.data.scope.streamFamily,
+                ...(parsed.data.scope.sourceId ? { sourceId: parsed.data.scope.sourceId } : {}),
                 ...(parsed.data.viewerSocketId ? { viewerSocketId: parsed.data.viewerSocketId } : {}),
-                caps: requestedCaps,
+                ...(parsed.data.codecId ? { codecId: parsed.data.codecId } : {}),
+                ...(parsed.data.viewerCodecs ? { viewerCodecs: parsed.data.viewerCodecs } : {}),
+                caps: effectiveCaps,
                 nowMs: nowMs(),
                 ttlMs: resolveServerRelayedLiveStreamTtlMs(parsed.data.ttlMs),
                 serverGateEnabled: true,

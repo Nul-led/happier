@@ -27,6 +27,7 @@ import {
   PluginUiCallerHostedHtmlHostMethodV1Schema,
   PluginUiHostMethodV1Schema,
   isPluginUiHostApiVersionCompatibleV1,
+  isPluginUiHostApiVersionCompatibleWithVersionV1,
 } from './hostApi.js';
 
 const NOT_A_HOST_METHOD = '__not_a_host_method__';
@@ -162,6 +163,11 @@ describe('plugin UI initial host-method vocabulary closure', () => {
     for (const range of ['^2.0.0', '<1.0.0', 'not-a-semver-range']) {
       expect(isPluginUiHostApiVersionCompatibleV1(range)).toBe(false);
     }
+  });
+
+  it('uses ordinary semver prerelease exclusion for an explicitly supplied host version', () => {
+    expect(isPluginUiHostApiVersionCompatibleWithVersionV1('1.1.0-beta.1', '>=1.0.0 <2.0.0')).toBe(false);
+    expect(isPluginUiHostApiVersionCompatibleWithVersionV1('1.1.0-beta.1', '>=1.1.0-beta.0 <2.0.0')).toBe(true);
   });
 
   it('owns strict diagnostic and utility-effect request grammars at the Host API boundary', () => {

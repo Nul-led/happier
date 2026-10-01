@@ -90,6 +90,123 @@ describe("Team credential resource routes (SQLite integration)", () => {
         return await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
     }
 
+    it("keeps valid catalog siblings when one resource source binding is malformed", async () => {
+        const owner = await createAccount();
+        const recipient = await createAccount();
+        const team = await db.team.create({ data: { name: "Catalog row corruption" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: "member" } });
+        const source = {
+            v: 1,
+            kind: "provider_connection",
+            connectionId: "catalog-row-source",
+            connectionSecurityFingerprint: "connection-security:v1:catalog-row",
+            credentialSlotId: "apiKey",
+        } as const;
+        const valid = await db.teamCredentialResource.create({ data: {
+            id: "catalog-valid-sibling",
+            teamId: team.id,
+            custodianAccountId: owner.id,
+            displayName: "Valid sibling",
+            disclosureCeiling: "brokered_only",
+            sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify(source),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        await db.teamCredentialResource.create({ data: {
+            id: "catalog-malformed-source",
+            teamId: team.id,
+            custodianAccountId: owner.id,
+            displayName: "Malformed source sibling",
+            disclosureCeiling: "brokered_only",
+            sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: "not-json",
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+
+        const response = await post("/v1/teams/credential-resources/entitled/list", recipient.id, { teamId: team.id });
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json().resources).toContainEqual(expect.objectContaining({
+            id: valid.id,
+        }));
+        expect(response.json().resources).toContainEqual(expect.objectContaining({
+            id: "catalog-malformed-source",
+            readiness: { kind: "resource_corrupt" },
+            recoveryAction: "source_owner_action",
+        }));
+    });
+
+    it("authorizes only the assigned external key through the authenticated route without accepting caller proof", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "e2ee" } });
+        const member = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "e2ee" } });
+        const team = await db.team.create({ data: { name: "External route qualification", authenticationPolicy: {
+            v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+        } } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: member.id, role: "member" } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: manager.id, displayName: "External authorization",
+            disclosureCeiling: "brokered_only", sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "route-qualification",
+                connectionSecurityFingerprint: "connection-security:v1:route", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        const evidence = [{ kind: "home_method", methodId: "key_challenge" }];
+        const created = await post("/v1/teams/credential-resources/external-keys/create", manager.id, {
+            resourceId: resource.id, teamMembershipId: membership.id, label: "Member's tool", expiresAt: null,
+        }, evidence);
+        expect({ status: created.statusCode, error: created.json().error }).toEqual({ status: 200, error: undefined });
+        const payload = { resourceId: resource.id, keyId: created.json().key.keyId };
+        const url = "/v1/teams/credential-resources/external-keys/authorize";
+        expect((await post(url, manager.id, payload, evidence)).statusCode).toBe(403);
+        expect((await post(url, member.id, { ...payload, authenticationEvidence: evidence })).statusCode).toBe(400);
+        const pending = await post("/v1/teams/credential-resources/external-keys/list", member.id, { resourceId: resource.id });
+        expect(pending.statusCode).toBe(200);
+        expect(pending.json().keys).toMatchObject([{ authenticationStatus: "authentication_required", canAuthorize: true }]);
+        const authorized = await post(url, member.id, payload, evidence);
+        expect(authorized.statusCode).toBe(200);
+        expect(authorized.json()).toMatchObject({ key: { keyId: payload.keyId, authenticationStatus: "satisfied" } });
+        expect(authorized.json()).not.toHaveProperty("token");
+        expect(authorized.body).not.toContain(created.json().token);
+    });
+
+    it("withdraws only the source owner's captured direct publication and rejects a delayed withdrawal", async () => {
+        const owner = await createAccount();
+        const outsider = await createAccount();
+        const team = await db.team.create({ data: { name: "Direct source withdrawal" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+        const sourceMemberKey = computeTeamCredentialSourceMemberKeyV1({
+            kind: "provider_credential_slot", connectionId: "direct-withdrawal-source" as ProviderConnectionId, credentialSlotId: "apiKey",
+        });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id,
+            custodianAccountId: owner.id,
+            displayName: "Direct publication",
+            disclosureCeiling: "direct_allowed",
+            sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "direct-withdrawal-source", connectionSecurityFingerprint: "connection-security:v1:test", credentialSlotId: "apiKey" }),
+            directSourceVersionsJson: JSON.stringify({ [sourceMemberKey]: "version-2", unrelated: "other-version" }),
+        } });
+        const withdraw = (accountId: string, expectedPublishedSourceVersion: string) => app.inject({
+            method: "DELETE",
+            url: `/v2/teams/${team.id}/credential-resources/${resource.id}/direct-material`,
+            headers: { "x-test-user-id": accountId },
+            payload: { sourceMemberKey, expectedResourceRevision: resource.revision, expectedPublishedSourceVersion },
+        });
+        const refused = await withdraw(outsider.id, "version-2");
+        expect(refused.statusCode, refused.body).toBe(400);
+        expect(refused.json()).toEqual({ error: "source_owner_required" });
+        const stale = await withdraw(owner.id, "version-1");
+        expect(stale.statusCode, stale.body).toBe(400);
+        expect(stale.json()).toEqual({ error: "source_replaced_or_missing" });
+        expect((await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).directSourceVersionsJson)
+            .toBe(JSON.stringify({ [sourceMemberKey]: "version-2", unrelated: "other-version" }));
+        expect((await withdraw(owner.id, "version-2")).statusCode).toBe(200);
+        expect((await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).directSourceVersionsJson)
+            .toBe(JSON.stringify({ unrelated: "other-version" }));
+        expect((await withdraw(owner.id, "version-2")).statusCode).toBe(200);
+    });
+
     it("discovers value-free request-policy support for every authorized exact source without caller-authored application authority", async () => {
         const owner = await createAccount();
         const manager = await createAccount();
@@ -2542,8 +2659,7 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 body: { error: "team_authentication_required" },
             });
         }
-        // Minting an external bearer on a restricted Team is refused permanently,
-        // not transiently: the bearer can carry no Team authentication at all.
+        // The manager must qualify before issuing any assigned key.
         const deniedExternalKeyCreate = await post(
             "/v1/teams/credential-resources/external-keys/create",
             manager.id,
@@ -2551,7 +2667,7 @@ describe("Team credential resource routes (SQLite integration)", () => {
         );
         expect({ status: deniedExternalKeyCreate.statusCode, body: deniedExternalKeyCreate.json() }).toEqual({
             status: 403,
-            body: { error: "external_api_restricted_team" },
+            body: { error: "team_authentication_required" },
         });
         const deniedDirectMaterial = await post(
             `/v2/teams/${team.id}/credential-resources/${resource.id}/direct-material`,

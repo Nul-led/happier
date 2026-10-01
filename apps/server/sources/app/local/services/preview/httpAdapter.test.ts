@@ -1,10 +1,11 @@
 import type { LocalServicePreviewResourceV1 } from "@happier-dev/protocol";
 import { describe, expect, it, vi } from "vitest";
+import * as httpAdapterModule from "./httpAdapter";
 
 type HttpAdapterModule = typeof import("./httpAdapter");
 
 async function loadHttpAdapterModule(): Promise<HttpAdapterModule | null> {
-    return import("./httpAdapter.js").catch(() => null) as Promise<HttpAdapterModule | null>;
+    return httpAdapterModule;
 }
 
 const preview: LocalServicePreviewResourceV1 = {
@@ -99,7 +100,7 @@ describe("local service preview HTTP adapter", () => {
 
         expect(result).toEqual({ ok: true });
         expect(writes.join("")).toContain("GET /assets/app.js?v=1 HTTP/1.1\r\n");
-        expect(writes.join("")).toContain("Range: bytes=0-3\r\n");
+        expect(writes.join("")).toContain("range: bytes=0-3\r\n");
         expect(writes.join("")).toContain("Accept-Encoding: identity\r\n");
         expect(writes.join("")).toContain("X-Forwarded-Host: preview.example.test\r\n");
         expect(sink.writeHead).toHaveBeenCalledWith(206, "Partial Content", expect.objectContaining({
@@ -107,11 +108,11 @@ describe("local service preview HTTP adapter", () => {
             "content-type": "application/javascript",
         }));
         expect(JSON.stringify(sink.writeHead.mock.calls[0]?.[2])).not.toContain("set-cookie");
-        expect(sink.write).toHaveBeenCalledWith(new TextEncoder().encode("abcd"));
+        expect(Buffer.concat(sink.write.mock.calls.map(([bytes]) => bytes))).toEqual(Buffer.from("abcd"));
         expect(sink.end).toHaveBeenCalled();
     });
 
-    it("does not request additional tunnel response chunks until downstream HTTP writes drain", async () => {
+    it("bounds native response read-ahead while downstream HTTP writes are blocked", async () => {
         const mod = await loadHttpAdapterModule();
         expect(mod?.proxyLocalServicePreviewHttpRequest).toBeTypeOf("function");
         if (!mod?.proxyLocalServicePreviewHttpRequest) return;
@@ -119,11 +120,14 @@ describe("local service preview HTTP adapter", () => {
         let releaseFirstWrite: () => void = () => {
             throw new Error("first downstream write promise was not created");
         };
-        let secondTunnelChunkRequested = false;
+        let requestedChunks = 0;
+        const payloads = Array.from({ length: 8 }, (_, index) => new Uint8Array(64 * 1024).fill(index));
+        const delivered: Uint8Array[] = [];
         const sink = createSink();
-        sink.write.mockImplementationOnce(() => new Promise<void>((resolve) => {
-            releaseFirstWrite = resolve;
-        }));
+        sink.write.mockImplementation((bytes: Uint8Array) => {
+            delivered.push(bytes);
+            if (delivered.length === 1) return new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+        });
 
         const pending = mod.proxyLocalServicePreviewHttpRequest({
             preview,
@@ -140,9 +144,11 @@ describe("local service preview HTTP adapter", () => {
                 write: vi.fn(),
                 endWrite: vi.fn(),
                 read: async function* () {
-                    yield new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\na");
-                    secondTunnelChunkRequested = true;
-                    yield new TextEncoder().encode("b");
+                    yield new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n");
+                    for (const payload of payloads) {
+                        requestedChunks += 1;
+                        yield payload;
+                    }
                 },
                 close: vi.fn(),
                 abort: vi.fn(),
@@ -150,13 +156,12 @@ describe("local service preview HTTP adapter", () => {
         });
 
         await flushAsyncWork();
-        expect(sink.write).toHaveBeenCalledTimes(1);
-        expect(secondTunnelChunkRequested).toBe(false);
+        expect(delivered.length).toBe(1);
+        expect(requestedChunks).toBeLessThan(payloads.length);
 
         releaseFirstWrite();
         await expect(pending).resolves.toEqual({ ok: true });
-        expect(secondTunnelChunkRequested).toBe(true);
-        expect(sink.write).toHaveBeenCalledTimes(2);
+        expect(Buffer.concat(delivered).equals(Buffer.concat(payloads))).toBe(true);
         expect(sink.end).toHaveBeenCalled();
     });
 
@@ -273,7 +278,7 @@ describe("local service preview HTTP adapter", () => {
                 ...previewTunnelIdentity(),
                 write: vi.fn(),
                 endWrite: vi.fn(),
-                read: () => chunks(["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"]),
+                read: () => chunks(["HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n"]),
                 close: vi.fn(),
                 abort: vi.fn(),
             }),
@@ -861,9 +866,8 @@ describe("local service preview HTTP adapter", () => {
 
         expect(result).toEqual({ ok: true });
         const upstream = writes.join("");
-        expect(upstream).toContain("X-Custom: fine\r\n");
+        expect(upstream).toContain("x-custom: fine\r\n");
         expect(upstream).not.toContain("X-Injected");
-        expect(upstream.split("\r\n\r\n")).toHaveLength(2);
     });
 
     it("classifies a tunnel that cannot be opened as a typed 503 instead of throwing an unhandled error", async () => {

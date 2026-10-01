@@ -24,6 +24,7 @@ import {
     PluginPermissionGrantListActionOutputV1Schema,
     PluginPermissionGrantRequestActionOutputV1Schema,
     PluginPermissionGrantRevokeActionOutputV1Schema,
+    pluginPermissionSubjectsEqualV1,
 } from "@happier-dev/protocol";
 import { isPrismaUniqueConstraintError } from "@/storage/prisma";
 
@@ -265,7 +266,10 @@ export function createPluginPermissionGrantOperations(
                     && (params.input.pluginId === undefined || grant.pluginId === params.input.pluginId)
                     && (params.input.capability === undefined || grant.capability === params.input.capability)
                     && (params.input.targetScope === undefined || isDeepStrictEqual(grant.targetScope, params.input.targetScope))
-                    && (params.input.subject === undefined || isDeepStrictEqual(grant.subject, params.input.subject))
+                    && (
+                        params.input.subject === undefined
+                        || pluginPermissionSubjectsEqualV1(grant.subject, params.input.subject)
+                    )
                     && (params.input.includeRevoked || grant.status !== "revoked");
                 return PluginPermissionGrantListActionOutputV1Schema.parse({
                     grants: matches ? [grant] : [],

@@ -14,6 +14,9 @@ export type TranscriptBodySemanticProjection = Readonly<{
   sidechainId?: string;
   toolName?: string;
   callId?: string;
+  /** Actual codec evidence, not rendered summary text or inferred execution. */
+  toolCalls?: readonly Readonly<{ callId: string; name: string; input: unknown }>[];
+  toolResults?: readonly Readonly<{ callId: string; output: unknown; isError: boolean }>[];
 }>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -138,6 +141,7 @@ function projectAcpLikeData(params: Readonly<{
       kind: 'tool_call',
       ...(toolName ? { toolName } : {}),
       ...(callId ? { callId } : {}),
+      ...(callId && toolName ? { toolCalls: [{ callId, name: toolName, input: params.data.input }] } : {}),
       ...(detail ? { summary: toolName ? `Tool use (${toolName}): ${detail}` : `Tool use: ${detail}` } : {}),
       ...commonFields,
     };
@@ -150,6 +154,7 @@ function projectAcpLikeData(params: Readonly<{
       semanticRole: 'tool',
       kind: 'tool_result',
       ...(callId ? { callId } : {}),
+      ...(callId ? { toolResults: [{ callId, output: params.data.output, isError }] } : {}),
       ...(output ? { summary: isError ? `Tool result (error): ${output}` : `Tool result: ${output}` } : {}),
       ...commonFields,
     };
@@ -187,37 +192,47 @@ function projectOutputContent(content: Record<string, unknown>): TranscriptBodyS
   const sidechainId = readNonEmptyString(data.sidechainId);
   const provider = readNonEmptyString(content.agentId) ?? 'claude';
   const commonFields = { provider, ...(sidechainId ? { sidechainId } : {}) };
-  if (data.type !== 'assistant') {
+  if (data.type !== 'assistant' && data.type !== 'user') {
     return directText ? { semanticRole: 'assistant', kind: 'assistant_message', text: directText, ...commonFields } : null;
   }
   const message = asRecord(data.message);
   if (!message) {
     return directText ? { semanticRole: 'assistant', kind: 'assistant_message', text: directText, ...commonFields } : null;
   }
-  const text = extractTextParts(message.content);
-  if (text) return { semanticRole: 'assistant', kind: 'assistant_message', text, ...commonFields };
-
   const messageRole = typeof message.role === 'string' ? message.role : 'unknown';
   const parts = Array.isArray(message.content) ? message.content : [];
   const summaries: string[] = [];
+  const toolCalls: NonNullable<TranscriptBodySemanticProjection['toolCalls']>[number][] = [];
+  const toolResults: NonNullable<TranscriptBodySemanticProjection['toolResults']>[number][] = [];
   for (const part of parts) {
     const record = asRecord(part);
     if (messageRole === 'assistant' && record?.type === 'tool_use') {
       const toolName = readNonEmptyString(record.name) ?? 'Unknown';
       const detail = summarizeToolInput(record.input);
+      const callId = readNonEmptyString(record.id);
+      if (callId) toolCalls.push({ callId, name: toolName, input: record.input });
       summaries.push(detail ? `Tool use (${toolName}): ${detail}` : `Tool use (${toolName})`);
     }
     if (messageRole === 'user' && record?.type === 'tool_result') {
       const output = summarizeToolOutput(record.content);
+      const callId = readNonEmptyString(record.tool_use_id);
+      if (callId) toolResults.push({ callId, output: record.content, isError: record.is_error === true });
       if (output) summaries.push(`Tool result: ${normalizeInlineText(output) ?? output}`);
     }
   }
+  const evidence = {
+    ...(toolCalls.length ? { toolCalls } : {}),
+    ...(toolResults.length ? { toolResults } : {}),
+  };
+  const text = data.type === 'assistant' ? extractTextParts(message.content) : null;
+  if (text) return { semanticRole: 'assistant', kind: 'assistant_message', text, ...evidence, ...commonFields };
   const summary = summaries.join('\n').trim();
   if (summary.length === 0) return null;
   return {
     semanticRole: 'tool',
     kind: messageRole === 'assistant' ? 'tool_call' : 'tool_result',
     summary,
+    ...evidence,
     ...commonFields,
   };
 }

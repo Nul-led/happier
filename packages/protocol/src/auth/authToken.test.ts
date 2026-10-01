@@ -5,9 +5,32 @@ import {
     AuthTokenAuthenticationEvidenceSnapshotV1Schema,
     AuthTokenProvenanceV2Schema,
     AuthTokenProvenanceSchema,
+    readAuthTokenProvenance,
 } from './authToken.js';
 
 describe('auth token provenance contract', () => {
+    it('reads raw released and normalized legacy payloads only when compatibility is admitted', () => {
+        // server-v0.2.11 (98ea8fb76733b1dd785d38c31360179cafa84824) golden JWT payload.
+        const released = { sub: 'released-terminal-auth-no-epoch', session: 'terminal-auth-request-released-0.2.11',
+            iat: 1789195501, nbf: 1789195501, iss: 'handy', jti: 'e3d2e1b8-84b4-419a-85c1-ddf01202a5ea' };
+        const terminal = { provenance: { v: 1, kind: 'terminal', authority: 'account_automation' }, legacy: true };
+        expect(readAuthTokenProvenance(released, { allowLegacyHome: true })).toEqual(terminal);
+        expect(readAuthTokenProvenance({ extras: { session: released.session } }, { allowLegacyHome: true })).toEqual(terminal);
+        expect(readAuthTokenProvenance({ sub: 'legacy-account' }, { allowLegacyHome: true })).toEqual({
+            provenance: { v: 1, kind: 'account', authority: 'present_user' }, legacy: true,
+        });
+        expect(readAuthTokenProvenance(released, { allowLegacyHome: false })).toBeNull();
+    });
+
+    it('fails malformed and future structured markers closed instead of falling back to legacy authority', () => {
+        const account = { v: 1, kind: 'account', authority: 'present_user' };
+        expect(readAuthTokenProvenance({ provenance: account }, { allowLegacyHome: false })).toEqual({ provenance: account, legacy: false });
+        for (const provenance of [null, { ...account, v: 3 }, { ...account, authority: 'account_automation' },
+            { v: 1, kind: 'api_token', authority: 'account_automation' }]) {
+            expect(readAuthTokenProvenance({ provenance, extras: { provenance: account } }, { allowLegacyHome: true })).toBeNull();
+        }
+        expect(readAuthTokenProvenance('not-a-payload', { allowLegacyHome: true })).toBeNull();
+    });
     it('accepts exactly the canonical kind/authority pairings', () => {
         const canonicalPairings = [
             { kind: 'account', authority: 'present_user' },

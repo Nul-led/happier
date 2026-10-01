@@ -28,6 +28,9 @@ export function registerAccountErasureRoute(app: Fastify): void {
                 return await reply.code(400).send({ error: "invalid_request" });
             }
             const result = await deleteAccountForErasure({ accountId: request.userId });
+            if (result.status === "failed" && result.code === "account_erasure_transition_cleanup_pending") {
+                return await reply.code(409).send({ error: result.code });
+            }
             if (result.status === "failed" && result.code === "home_owner_transfer_required") {
                 // Actionable, and refused before any external object was
                 // deleted: the Account still owns this Home.

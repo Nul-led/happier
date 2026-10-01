@@ -4,6 +4,7 @@ import {
   SignedProviderBrokerRouteGrantV1Schema,
   IrohProviderBrokerHandshakeV1Schema,
   ProviderBrokerOpenRequestV1Schema,
+  ProviderBrokerOpenResponseV1Schema,
   ProviderBrokerRequestAdmissionV1Schema,
   ProviderBrokerRequestAdmissionResponseV1Schema,
   ProviderBrokerModelCatalogAuthorizationV1Schema,
@@ -21,6 +22,8 @@ const payload = {
   v: 1, grantId: 'grant', aud: 'happier-provider-broker-route-v1', issuedAt: 100, expiresAt: 200,
   teamId: 'team', resourceId: 'resource',
   sourceRevision: 'source-revision-3',
+  brokerPlacementFingerprint: 'c'.repeat(64),
+  initiatorTokenEpoch: 0,
   initiator: { accountId: 'requester', machineId: 'worker', endpointId: 'a'.repeat(64) },
   target: { custodianAccountId: 'custodian', machineId: 'broker', endpointId: 'b'.repeat(64) },
   consumer: { kind: 'session', sessionId: 'session' },
@@ -34,6 +37,30 @@ const payload = {
 const authority = { payload, signature: { alg: 'Ed25519', keyId: 'home', valueBase64Url: 'A'.repeat(86) } };
 
 describe('Provider broker authority V1', () => {
+  it('carries the complete target descriptor bound to the signed endpoint identity', () => {
+    const endpoint = {
+      endpointId: payload.target.endpointId,
+      directAddresses: ['10.0.0.2:7777'],
+      relayUrls: ['https://target-relay.example.test/'],
+    };
+    const response = {
+      ok: true,
+      authority,
+      target: {
+        custodianAccountId: payload.target.custodianAccountId,
+        brokerMachineId: payload.target.machineId,
+        endpointId: payload.target.endpointId,
+        endpointRevision: 7,
+        endpoint,
+      },
+    };
+    expect(ProviderBrokerOpenResponseV1Schema.parse(response)).toEqual(response);
+    expect(ProviderBrokerOpenResponseV1Schema.safeParse({
+      ...response,
+      target: { ...response.target, endpoint: { ...endpoint, endpointId: 'd'.repeat(64) } },
+    }).success).toBe(false);
+  });
+
   it('initializes the broker and Team credential resource schema graph', () => {
     expect(ProviderBrokerRequestAdmissionResponseV1Schema).toBeDefined();
     expect(TeamCredentialResourceCreateInputV1Schema).toBeDefined();
@@ -58,6 +85,14 @@ describe('Provider broker authority V1', () => {
   it('signs no model id: the model is a current request fact (L10/04:270)', () => {
     expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse(payload).success).toBe(true);
     expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse({ ...payload, modelId: 'gpt-5' }).success).toBe(false);
+  });
+
+  it('requires the opaque original placement without disclosing Pool identity', () => {
+    const { brokerPlacementFingerprint, ...missingPlacement } = payload;
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse(missingPlacement).success).toBe(false);
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse({ ...payload, brokerPlacementFingerprint: 'pool-id' }).success).toBe(false);
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.safeParse({ ...payload, brokerPoolId: 'pool-id' }).success).toBe(false);
+    expect(ProviderBrokerRouteGrantPayloadV1Schema.parse(payload).brokerPlacementFingerprint).toBe(brokerPlacementFingerprint);
   });
 
   it('requires an exact occurrence on signed Run authority while open resolves it daemon-side', () => {

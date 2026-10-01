@@ -14,8 +14,8 @@ import {
 } from './generatedBuiltInLegacyConnectedAccountCompatibility.js';
 import {
   QualifiedConnectedAccountProfileV4Schema,
-  QualifiedConnectedAccountRefSchema,
-} from './qualifiedConnectedAccountsV4.js';
+} from './qualifiedConnectedAccountProjectionsV4.js';
+import { QualifiedConnectedAccountRefSchema } from './qualifiedConnectedAccountPersistence.js';
 import { ConnectedServiceIdSchema } from './connectedServiceBindings.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
@@ -150,6 +150,7 @@ export const ConnectedAccountDaemonCommandSchema =
     z.object({
       operation: z.literal('read'),
       attemptId: BoundedIdentitySchema,
+      restoreKind: z.literal('oauth').optional(),
     }).strict(),
   ]);
 export type ConnectedAccountDaemonCommand =
@@ -207,6 +208,10 @@ export type ConnectedAccountPeerOperationTransport =
 
 export const ConnectedAccountDaemonControlCommandSchema =
   z.discriminatedUnion('operation', [
+    z.object({
+      operation: z.literal('listPendingAttempts'),
+      service: asProtocolZod(PluginContributionIdentityV1Schema),
+    }).strict(),
     z.object({
       operation: z.literal('describeService'),
       service: asProtocolZod(PluginContributionIdentityV1Schema),
@@ -380,6 +385,18 @@ const ConnectedAccountConfigurationControlViewSchema = z.object({
 
 export const ConnectedAccountDaemonControlResponseSchema =
   z.discriminatedUnion('status', [
+    z.object({
+      status: z.literal('pendingAttempts'),
+      attempts: z.array(z.object({
+        attemptId: BoundedIdentitySchema,
+        kind: z.enum(['oauth', 'device']),
+        modeId: BoundedIdentitySchema,
+        intent: z.enum(['connect', 'reconnect']),
+        phase: z.enum(['awaitingOAuth', 'awaitingDeviceAuthorization', 'outcomeUnknown']),
+        createdAtMs: z.number().int().nonnegative(),
+        expiresAtMs: z.number().int().positive(),
+      }).strict()),
+    }).strict(),
     z.object({
       status: z.literal('described'),
       service: asProtocolZod(PluginContributionIdentityV1Schema),

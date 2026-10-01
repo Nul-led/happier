@@ -2,7 +2,10 @@ import { z } from 'zod';
 
 import { SessionEffectiveAccessV1Schema } from '../access/sessionEffectiveAccessV1.js';
 import { V2SessionRecordSchema } from '../control/contract.js';
+import { SessionListMetadataUpgradeRequiredCountSchema } from '../control/listResult.js';
 import { SessionViewerProjectionV1Schema } from '../personal/viewer.js';
+
+export { SessionListMetadataUpgradeRequiredCountSchema } from '../control/listResult.js';
 
 /**
  * Canonical record contract for current Session projections.
@@ -19,18 +22,6 @@ export const SessionCurrentProjectionRecordV1Schema = V2SessionRecordSchema.and(
 }).passthrough());
 
 export type SessionCurrentProjectionRecordV1 = Readonly<z.infer<typeof SessionCurrentProjectionRecordV1Schema>>;
-
-/**
- * States how many rows this page selected but could not project because the
- * owning Account has not yet migrated their Session metadata to the current
- * layout. The rows are omitted individually so one unmigrated historical share
- * cannot refuse a whole page; this count keeps that refusal visible instead of
- * silently shrinking the page.
- */
-export const SessionListMetadataUpgradeRequiredCountSchema = z
-  .number()
-  .int()
-  .nonnegative();
 
 /**
  * Closed V1 response envelope for filtered listing. Session rows retain the

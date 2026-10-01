@@ -32,7 +32,7 @@ const binding = {
     },
     generation: 'source-generation-1',
   },
-  contributionGeneration: 'contribution-generation-1',
+  sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
   cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
 } as const satisfies ExternalSessionTranscriptRefreshBindingV1;
 const requestCursor = 'happier_external_cursor_v1:eyJuYXRpdmVDdXJzb3IiOiIvcHJpdmF0ZS9hZ2VudC90cmFuc2NyaXB0Lmpzb25sOjIwNDgifQ';
@@ -126,6 +126,16 @@ describe('External Sessions secure refresh contract', () => {
       requestCursor,
       nextCursor,
       hasMore: true,
+    })).toBe(true);
+    expect(shouldResyncExternalSessionTranscriptReadAfterV1({
+      requestCursor, nextCursor, hasMore: true, allowAdjacentPage: true,
+    })).toBe(false);
+    expect(shouldResyncExternalSessionTranscriptReadAfterV1({
+      requestCursor, nextCursor, hasMore: true, allowAdjacentPage: true,
+      diagnostics: [{ severity: 'required' }],
+    })).toBe(true);
+    expect(shouldResyncExternalSessionTranscriptReadAfterV1({
+      requestCursor, nextCursor: requestCursor, hasMore: true, allowAdjacentPage: true,
     })).toBe(true);
     expect(shouldResyncExternalSessionTranscriptReadAfterV1({
       requestCursor,
@@ -467,7 +477,7 @@ describe('External Sessions secure refresh contract', () => {
       },
     }],
     ['source generation', { source: { ...binding.source, generation: 'source-generation-stale' } }],
-    ['contribution generation', { contributionGeneration: 'contribution-generation-stale' }],
+    ['source custody', { sourceCustody: { kind: 'development', registeredRootId: 'source-root-stale' } }],
     ['cursor identity', { cursorIdentity: `external_session_cursor_binding_v1:${'b'.repeat(64)}` }],
   ] as const)('applies zero items for a stale or mismatched %s binding', (_label, changedFields) => {
     const response = ExternalSessionTranscriptRefreshReadAfterResponseV1Schema.parse({

@@ -1,14 +1,13 @@
 // Explicit compiler-only drift gate; excluded from prerequisite dependency builds.
 // Each generated family and public support root is verified against its canonical owner.
 import type { PluginActionInputById as SchemaInputs, PluginActionResultById as SchemaResults } from './actionSpecs.js';
-import type { PluginActionInputById as DtoInputs, PluginActionResultById as DtoResults } from './pluginActionDtos.js';
+import type { PluginActionInputById as DtoInputs, PluginActionResultById as DtoResults } from '../../../plugin-sdk/src/actions/actionTypeMap.generated.js';
 import type { PluginDeclarativeNodeV2 as CanonicalDeclarativeNode } from '../plugins/contributions/ui/v2.js';
-import type { PluginDeclarativeNodeV2 as DeclarativeNodeDto } from '../plugins/contributions/ui/actionDeclarativeNodeDto.js';
-import type { PluginUiIconTokenV1 as IconDto } from '../plugins/contributions/ui/actionDeclarativeNodeDto.js';
+import type { PluginDeclarativeNodeV2 as DeclarativeNodeDto, PluginUiIconTokenV1 as IconDto } from '../../../plugin-sdk/src/actions/dtos/actionDeclarativeNodeDto.generated.js';
 import type { PLUGIN_UI_ICON_TOKENS_V1 } from '../plugins/contributions/ui/tokens.js';
 import type * as CanonicalAction from './actionSpecs.js';
 import type * as CanonicalHints from './actionInputHintsRuntime.js';
-import type * as DtoSupport from './pluginActionDtoSupport.js';
+import type * as DtoSupport from '../../../plugin-sdk/src/actions/dtos/pluginActionDtoSupport.generated.js';
 import type * as CanonicalExternalLinks from '../plugins/contributions/agentExternalSessions.js';
 import type { ActionInputPredicate as CanonicalPredicate } from './actionInputPredicates.js';
 import type { PluginMachineExecutionOriginV1 as CanonicalOrigin } from '../machines/administration/pluginMachineExecutionOriginV1.js';

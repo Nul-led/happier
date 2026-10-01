@@ -132,7 +132,7 @@ describe('FeaturesResponseSchema', () => {
       plainAccountSettingsAtRest: 'server_sealed',
       plainAccountCredentialsAtRest: 'server_sealed',
     });
-    expect((parsed as any).capabilities.auth.methods).toEqual([]);
+    expect(parsed.capabilities.auth.methods).toBeUndefined();
     expect(parsed.capabilities.auth.login.methods).toEqual([]);
     expect(parsed.capabilities.auth.mtls).toEqual({
       mode: 'forwarded',
@@ -259,7 +259,7 @@ describe('FeaturesResponseSchema', () => {
     });
 
     expect(parsed.capabilities.auth.login.methods).toEqual([]);
-    expect((parsed as any).capabilities.auth.methods).toEqual([]);
+    expect(parsed.capabilities.auth.methods).toBeUndefined();
   });
 
   it('coerces bug reports capabilities from sparse payloads', () => {

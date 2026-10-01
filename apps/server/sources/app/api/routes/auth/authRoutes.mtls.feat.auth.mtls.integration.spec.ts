@@ -17,6 +17,7 @@ import {
 import { digestTeamInvitationToken, mintTeamInvitationToken } from "@/app/teams/invitations/token";
 import { isEffectiveHomeAuthMethodActionEnabled } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { resolveTeamAuthenticationPolicyInTx } from "@/app/auth/entry/resolveTeamAuthenticationPolicy";
+import { qualifyTeamAuthenticationInTx } from "@/app/auth/entry/qualifyTeamAuthentication";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -40,6 +41,7 @@ describe("authRoutes (mTLS) (integration)", () => {
     }, 120_000);
     afterEach(async () => {
         await closeTrackedApps();
+        await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS mtls_invitation_mint_failure');
         harness.resetEnv();
         vi.unstubAllGlobals();
         await db.teamInvitation.deleteMany().catch(() => {});
@@ -120,7 +122,7 @@ describe("authRoutes (mTLS) (integration)", () => {
         await app.close();
     });
 
-    it("uses one exact Team invitation to atomically provision an mTLS Account and membership", async () => {
+    it.each(["mtls", "key_challenge"] as const)("uses one exact Team invitation to atomically provision an mTLS Account without requiring %s qualification", async (acceptedMethod) => {
         harness.resetEnv({
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0",
@@ -154,7 +156,7 @@ describe("authRoutes (mTLS) (integration)", () => {
             authenticationPolicy: {
                 v: 1,
                 mode: "restricted",
-                accepted: [{ kind: "home_method", methodId: "mtls" }],
+                accepted: [{ kind: "home_method", methodId: acceptedMethod }],
             },
         } });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
@@ -186,8 +188,7 @@ describe("authRoutes (mTLS) (integration)", () => {
             resolution: {
                 status: "restricted",
                 choices: [expect.objectContaining({
-                    reference: { kind: "home_method", methodId: "mtls" },
-                    availability: "usable",
+                    reference: { kind: "home_method", methodId: acceptedMethod },
                 })],
             },
         });
@@ -217,15 +218,18 @@ describe("authRoutes (mTLS) (integration)", () => {
         })).resolves.toEqual({ acceptedAt: null, acceptedByAccountId: null });
         delete process.env.HAPPIER_BUILD_FEATURES_DENY;
 
-        const createTokenSpy = vi.spyOn(auth, "createTokenInTx")
-            .mockRejectedValueOnce(new Error("injected mTLS token mint failure"));
+        // The database boundary changes the newly admitted Account before the
+        // real token owner revalidates it. No internal finalizer is mocked out.
+        await db.$executeRawUnsafe(`CREATE TRIGGER mtls_invitation_mint_failure
+            AFTER INSERT ON TeamMembership WHEN NEW.role = 'member'
+            BEGIN UPDATE Account SET status = 'suspended' WHERE id = NEW.accountId; END`);
         const failed = await app.inject({
             method: "POST",
             url: "/v1/auth/mtls",
             headers,
             payload: { admission: { kind: "team_invitation", token: invitationToken } },
         });
-        expect(failed.statusCode).toBe(500);
+        expect(failed.statusCode).toBe(403);
         expect(await db.accountIdentity.findFirst({
             where: { provider: "mtls", providerUserId: "joiner@example.com" },
         })).toBeNull();
@@ -236,13 +240,13 @@ describe("authRoutes (mTLS) (integration)", () => {
             select: { acceptedAt: true, acceptedByAccountId: true },
         })).resolves.toEqual({ acceptedAt: null, acceptedByAccountId: null });
 
+        await db.$executeRawUnsafe('DROP TRIGGER mtls_invitation_mint_failure');
         const response = await app.inject({
             method: "POST",
             url: "/v1/auth/mtls",
             headers,
             payload: { admission: { kind: "team_invitation", token: invitationToken } },
         });
-        createTokenSpy.mockRestore();
 
         expect(response.statusCode, JSON.stringify({
             body: response.body,
@@ -258,6 +262,19 @@ describe("authRoutes (mTLS) (integration)", () => {
         await expect(db.teamMembership.findUnique({
             where: { teamId_accountId: { teamId: team.id, accountId: account.accountId } },
         })).resolves.toMatchObject({ role: "member" });
+
+        if (acceptedMethod === "key_challenge") {
+            const principal = await auth.verifyToken(response.json().token);
+            expect(principal).not.toBeNull();
+            const qualification = await inTx((tx) => qualifyTeamAuthenticationInTx(tx, {
+                env: process.env,
+                team,
+                accountId: account.accountId,
+                verifiedCredentialEvidence: principal?.authenticationEvidence,
+                operationContext: { kind: "present_user" },
+            }));
+            expect(qualification.status).not.toBe("satisfied");
+        }
 
         const replay = await app.inject({
             method: "POST",
@@ -999,7 +1016,15 @@ describe("authRoutes (mTLS) (integration)", () => {
             },
         });
         const owner = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
-        const team = await db.team.create({ data: { name: "Native mTLS Team", admissionMode: "invite_only" } });
+        const team = await db.team.create({ data: {
+            name: "Native mTLS Team",
+            admissionMode: "invite_only",
+            authenticationPolicy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+        } });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
         const invitationToken = mintTeamInvitationToken();
         await db.teamInvitation.create({ data: {
@@ -1145,34 +1170,8 @@ describe("authRoutes (mTLS) (integration)", () => {
                 },
             },
         });
-        const deniedByCurrentPolicy = await app.inject({
-            method: "POST",
-            url: "/v1/auth/mtls/claim",
-            payload: { code, admissionReference: preparation.admissionReference },
-        });
-        expect(deniedByCurrentPolicy.statusCode, deniedByCurrentPolicy.body).toBe(401);
-        expect(await db.accountIdentity.findFirst({
-            where: { provider: "mtls", providerUserId: "native-joiner@example.com" },
-        })).toBeNull();
-        expect(await db.teamMembership.count({ where: { teamId: team.id } })).toBe(1);
-        await expect(db.teamInvitation.findFirstOrThrow({
-            where: { teamId: team.id },
-            select: { acceptedAt: true, acceptedByAccountId: true },
-        })).resolves.toEqual({ acceptedAt: null, acceptedByAccountId: null });
-        expect(await db.repeatKey.findUnique({
-            where: { key: `mtls_claim_${code}` },
-        })).not.toBeNull();
-        await db.team.update({
-            where: { id: team.id },
-            data: {
-                authenticationPolicy: {
-                    v: 1,
-                    mode: "restricted",
-                    accepted: [{ kind: "home_method", methodId: "mtls" }],
-                },
-            },
-        });
-
+        // Protected-operation qualification is independent of this exact
+        // invitation's structural admission, even after policy changes.
         const claimed = await app.inject({
             method: "POST",
             url: "/v1/auth/mtls/claim",

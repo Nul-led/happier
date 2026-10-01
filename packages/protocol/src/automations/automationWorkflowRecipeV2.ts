@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import {
-  WorkflowArtifactRevisionV1Schema,
-  WorkflowDefinitionMetadataV1Schema,
+  WorkflowRoleOverridesV1Schema,
+  WorkflowResolvedInputsV1Schema,
+  WorkflowRunExecutionTargetV1Schema,
 } from '../workflows/workflowDefinitionV1.js';
-import { WorkflowDefinitionIdV1Schema } from '../workflows/workflowIdsV1.js';
 import { WorkflowDefinitionV1Schema } from '../workflows/workflowV1.js';
-import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
+import { preservedBoundedNfcString } from '../strings/preservedBoundedNfcString.js';
 import {
   addAutomationStoredEnvelopeUtf8LimitIssue,
   AutomationStoredContentEnvelopeV1Schema,
@@ -17,23 +17,27 @@ import {
 const UTF8_ENCODER = new TextEncoder();
 
 export const AutomationStoredWorkflowDefinitionV2Schema = z.object({
-  definition: WorkflowDefinitionV1Schema,
-  metadata: WorkflowDefinitionMetadataV1Schema.optional(),
-  /** Automation-bound target; the reusable Workflow definition stays portable. */
-  project: WorkflowProjectTargetV1Schema,
-  source: z.object({
-    definitionId: WorkflowDefinitionIdV1Schema,
-    revision: WorkflowArtifactRevisionV1Schema,
-  }).strict().optional(),
+  workspace: z.object({
+    directory: z.string().min(1),
+    workspaceRefId: preservedBoundedNfcString(191, 'Workspace reference ids').optional(),
+  }).strict(),
+  executionTarget: WorkflowRunExecutionTargetV1Schema,
+  inputs: WorkflowResolvedInputsV1Schema.optional(),
+  visibleTeamId: preservedBoundedNfcString(191, 'Team ids').nullable().optional(),
+  roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
+  inlineDefinition: WorkflowDefinitionV1Schema.optional(),
+  onComplete: z.object({ kind: z.literal('originating_session') }).strict().optional(),
 }).strict();
+export type AutomationStoredWorkflowDefinitionV2 = z.infer<typeof AutomationStoredWorkflowDefinitionV2Schema>;
+export type WorkflowTriggerContextV1 = AutomationStoredWorkflowDefinitionV2;
 
 /**
- * The explicit next Automation definition recipe epoch for managed workflows.
+ * The current Automation definition recipe for managed workflows.
  *
- * `v: 1` remains the released one-shot recipe. This epoch has no synthetic
- * one-shot target: the reusable definition remains portable while the
- * Automation-bound project target is stored beside it. Occurrence evidence
- * and resolved machine-local workspace facts are frozen at Run admission.
+ * The V1 one-shot recipe is a separate current format. This recipe has no synthetic
+ * one-shot target. The assignment owns the machine; this payload owns run
+ * context and an inline target's definition. Workflow references resolve live
+ * at claim and are never copied into this payload.
  */
 export const AutomationStoredWorkflowDefinitionRecipeV2Schema = z.object({
   v: z.literal(2),

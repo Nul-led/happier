@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SessionListResultSchema } from '../control/listResult.js';
+import { SessionListResultSchema, SessionListMetadataUpgradeRequiredCountSchema } from '../control/listResult.js';
 
 import {
   SESSION_AWARENESS_PROJECTION_VERSION_V1,
@@ -51,6 +51,7 @@ const SessionListAttentionContinuationFieldsV1 = {
 
 const SessionListActionResultMarkerFieldsV1 = {
   queryVersion: z.literal(SESSION_LIST_QUERY_RESULT_VERSION_V1).optional(),
+  metadataUpgradeRequiredCount: SessionListMetadataUpgradeRequiredCountSchema.optional(),
   ...SessionListAttentionContinuationFieldsV1,
 } as const;
 
@@ -108,6 +109,7 @@ export const SessionAwarenessListResultV1Schema = z.object({
     sessions: z.array(SessionAwarenessProjectionV1Schema),
     nextCursor: z.string().min(1).nullable(),
     hasNext: z.boolean(),
+    metadataUpgradeRequiredCount: SessionListMetadataUpgradeRequiredCountSchema.optional(),
     ...SessionListAttentionContinuationFieldsV1,
   })
   .strict()
@@ -195,6 +197,7 @@ export function buildSessionAwarenessListResultV1(params: Readonly<{
   sessions: readonly SessionAwarenessProjectionV1[];
   nextCursor: string | null;
   hasNext: boolean;
+  metadataUpgradeRequiredCount?: number;
 }> & SessionListAttentionContinuationInputV1): SessionAwarenessListResultV1 {
   return {
     view: SESSION_LIST_AWARENESS_VIEW_V1,
@@ -202,6 +205,9 @@ export function buildSessionAwarenessListResultV1(params: Readonly<{
     sessions: params.sessions,
     nextCursor: params.nextCursor,
     hasNext: params.hasNext,
+    ...(params.metadataUpgradeRequiredCount !== undefined
+      ? { metadataUpgradeRequiredCount: params.metadataUpgradeRequiredCount }
+      : {}),
     ...(params.attentionNextCursor !== undefined && params.attentionHasNext !== undefined
       ? {
           attentionNextCursor: params.attentionNextCursor,

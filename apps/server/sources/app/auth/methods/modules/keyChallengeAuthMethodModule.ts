@@ -19,8 +19,8 @@ export const keyChallengeAuthMethodModule: AuthMethodModule = Object.freeze({
         };
     },
     registerRoutes: (app) => {
-        const featureEnv = readAuthFeatureEnv(process.env);
-        if (!featureEnv.loginKeyChallengeEnabled) return;
+        // Native E2EE password admission shares this protocol. The finalizer
+        // admits the method actually proven, independently of route presence.
         registerKeyChallengeAuthRoute(app);
     },
 });

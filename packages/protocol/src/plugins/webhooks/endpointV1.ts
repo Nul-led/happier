@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { encodeBase64 } from '../../crypto/base64.js';
+import { isLoopbackHostname } from '../../server/urls/loopbackHostname.js';
 import { PluginMachineMaterializationRefV1Schema } from '../availability/materializationRefV1.js';
 import type { PluginJsonSchemaV2 } from '../contributions/publicTypes.js';
 import { PluginContributionIdentityV1Schema } from '../contributionIdentity.js';
@@ -59,11 +60,7 @@ export const PluginWebhookPublicUrlV1Schema = z.string().url().max(2_048).refine
   const url = new URL(value);
   if (url.protocol === 'https:') return true;
   if (url.protocol !== 'http:') return false;
-  const hostname = url.hostname.toLowerCase();
-  return hostname === 'localhost'
-    || hostname.endsWith('.localhost')
-    || hostname === '127.0.0.1'
-    || hostname === '[::1]';
+  return isLoopbackHostname(url.hostname);
 }, {
   message: 'Webhook public URLs require HTTPS except for an explicit loopback development URL',
 });

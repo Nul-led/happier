@@ -17,6 +17,8 @@ import { registerExternalConnectFinalizeRoute } from "./oauthExternal/registerEx
 import { ExternalOAuthErrorResponseSchema, ExternalOAuthParamsResponseSchema } from "@happier-dev/protocol";
 import { NotFoundSchema } from "../../schemas/notFoundSchema";
 import { resolveWebAppOAuthReturnUrlFromRequestHeaders } from "./oauthExternal/oauthExternalConfig";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import { PresentUserRequiredResponseSchema, requirePresentUser } from "../../utils/requirePresentUser";
 
 export function connectConnectExternalRoutes(app: Fastify) {
     //
@@ -24,7 +26,7 @@ export function connectConnectExternalRoutes(app: Fastify) {
     //
 
     app.get("/v1/connect/external/:provider/params", {
-        preHandler: app.authenticate,
+        preHandler: [app.authenticate, requirePresentUser],
         config: { rateLimit: oauthExternalRateLimitConnectParamsPerUser() },
         schema: {
             params: z.object({ provider: z.string() }),
@@ -43,6 +45,7 @@ export function connectConnectExternalRoutes(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
         // The authenticated Team entry. The member already holds this Account, so the
         // Team identity is linked to it through the connect finalizer rather than
@@ -53,11 +56,11 @@ export function connectConnectExternalRoutes(app: Fastify) {
         if (teamAdmission && !teamId) {
             return reply.code(400).send({ error: "invalid-team-admission" });
         }
-        if (teamAdmission && !isTeamMembershipAdmissionEnabled()) {
+        if (teamAdmission && !await isTeamMembershipAdmissionEnabled({ env: requestHomeEnv })) {
             return reply.code(403).send({ error: "invalid-team-admission" });
         }
         const resolved = await resolveOAuthRuntimeById(
-            process.env,
+            requestHomeEnv,
             providerId,
             teamAdmission && teamProviderOrigin === "team" ? { kind: "team", teamId } : undefined,
         );
@@ -66,7 +69,7 @@ export function connectConnectExternalRoutes(app: Fastify) {
 
         try {
             const webAppOAuthReturnUrl = resolveWebAppOAuthReturnUrlFromRequestHeaders({
-                env: process.env,
+                env: requestHomeEnv,
                 providerId,
                 headers: request.headers as any,
             });
@@ -83,7 +86,7 @@ export function connectConnectExternalRoutes(app: Fastify) {
                 if (!binding) return reply.code(403).send({ error: "invalid-team-admission" });
                 const attempt = await createExternalAuthorizeAttempt({
                     flow: "connect",
-                    env: process.env,
+                    env: requestHomeEnv,
                     providerId,
                     provider,
                     reference,
@@ -107,14 +110,12 @@ export function connectConnectExternalRoutes(app: Fastify) {
             }
             const url = await createExternalAuthorizeUrl({
                 flow: "connect",
-                env: process.env,
+                env: requestHomeEnv,
                 providerId,
                 provider,
                 reference,
                 userId: request.userId,
-                ...(request.query.connectFinalization
-                    ? { connectFinalization: request.query.connectFinalization }
-                    : {}),
+                connectFinalization: "credential_adoption_v1",
                 ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
             });
             if (!url) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
@@ -139,8 +140,9 @@ export function connectConnectExternalRoutes(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        if (!await resolveOAuthRuntimeById(process.env, providerId)) {
+        if (!await resolveOAuthRuntimeById(requestHomeEnv, providerId)) {
             return reply.code(404).send({ error: "unsupported-provider" });
         }
 
@@ -161,11 +163,12 @@ export function connectConnectExternalRoutes(app: Fastify) {
     });
 
     app.delete("/v1/connect/external/:provider", {
-        preHandler: app.authenticate,
+        preHandler: [app.authenticate, requirePresentUser],
         schema: {
             params: z.object({ provider: z.string() }),
             response: {
                 200: z.object({ success: z.literal(true) }),
+                403: PresentUserRequiredResponseSchema,
                 404: z.union([NotFoundSchema, z.object({ error: z.literal("unsupported-provider") })]),
                 409: z.object({
                     error: z.literal("identity-management-denied"),

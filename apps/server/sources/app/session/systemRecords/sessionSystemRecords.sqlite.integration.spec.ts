@@ -4,6 +4,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 import { sessionRoutes } from "@/app/api/routes/session/sessionRoutes";
 import { registerSessionSystemRecordRoutes } from "@/app/api/routes/session/registerSessionSystemRecordRoutes";
+import { setHomeSettings } from "@/app/home/settings/homeSettings";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -360,6 +361,62 @@ describe("SessionSystemRecord CONTRACT on SQLite", () => {
             expect(forbidden.json()).toEqual({ error: "session_board_forbidden" });
             expect(await db.sessionSystemRecord.count({ where: { sessionId: session.id } })).toBe(2);
         } finally { await app.close(); }
+    });
+
+    it("keeps a Board feature disabled after route admission distinct from denied edit capability", async () => {
+        const { account, session } = await createAccountAndSession(`board-gate-race-${randomUUID()}`);
+        await db.account.update({ where: { id: account.id }, data: { homeRole: "owner", status: "active" } });
+        const outsider = await db.account.create({ data: { publicKey: `board-gate-outsider-${randomUUID()}`, encryptionMode: "plain" } });
+        let actorUserId = account.id;
+        let disableAfterAdmission = true;
+        const app = Fastify().withTypeProvider<ZodTypeProvider>();
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        app.decorate("authenticate", async (request: FastifyRequest) => { request.userId = actorUserId; request.authAuthority = "present_user"; });
+        app.addHook("onRoute", (route) => {
+            if (route.url !== "/v2/sessions/:sessionId/board") return;
+            const preHandlers = Array.isArray(route.preHandler) ? route.preHandler : route.preHandler ? [route.preHandler] : [];
+            route.preHandler = [...preHandlers, async () => {
+                if (!disableAfterAdmission) return;
+                disableAfterAdmission = false;
+                // Schedule a real Home-owner write after the real feature prehandler
+                // admits the request, but before Board opens its transaction.
+                expect((await setHomeSettings({ actorAccountId: account.id, write: {
+                    expectedRevision: 0, values: { HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: false },
+                } })).status).toBe("applied");
+            }];
+        });
+        sessionRoutes(app);
+        const previous = process.env.HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED;
+        const request = { method: "PUT" as const, url: `/v2/sessions/${session.id}/board`, payload: {
+            operation: "update_layout", expectedLayoutRevision: null, layoutContent: { t: "plain", v: { v: 1, tabs: [] } },
+        } };
+        try {
+            // Leave the deployment switch unset so persisted Home settings decide.
+            delete process.env.HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED;
+            const disabled = await app.inject(request);
+            expect(disabled.statusCode).toBe(404);
+            expect(disabled.json()).toEqual({ error: "not_found" });
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: session.id } })).toBe(0);
+
+            expect((await setHomeSettings({ actorAccountId: account.id, write: {
+                expectedRevision: 1, values: { HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: true },
+            } })).status).toBe("applied");
+            actorUserId = outsider.id;
+            const denied = await app.inject(request);
+            expect(denied.statusCode).toBe(403);
+            expect(denied.json()).toEqual({ error: "session_board_forbidden" });
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: session.id } })).toBe(0);
+
+            actorUserId = account.id;
+            expect((await app.inject(request)).statusCode).toBe(200);
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: session.id } })).toBe(1);
+        } finally {
+            if (previous === undefined) delete process.env.HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED;
+            else process.env.HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED = previous;
+            await db.homeSettings.deleteMany({ where: { id: "home" } });
+            await app.close();
+        }
     });
 
     it("disables exact surface reads and namespace lists without disabling workflow or deleting stored records", async () => {

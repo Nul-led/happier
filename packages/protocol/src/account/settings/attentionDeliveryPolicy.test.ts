@@ -8,6 +8,13 @@ import {
 import { parseAccountSettings, resolveAttentionDecision } from './attentionDeliveryPolicy.testkit.js';
 
 describe('attentionDeliveryPolicyV1 resolver', () => {
+  it('applies Notify me event privacy and quiet hours to plugin delivery', () => {
+    expect(resolveAttentionDecision({ policy: {
+      events: { notify_me: { previewBehavior: 'title_only', quietHoursBehavior: 'suppress' } },
+      quietHours: { enabled: true, timezone: 'UTC', windows: [{ startLocalTime: '00:00', endLocalTime: '01:00' }] },
+    }, event: 'notify_me', channel: 'plugin', now: new Date('2026-05-03T00:30:00Z') }))
+      .toMatchObject({ delivery: 'suppress', reason: 'quiet_hours', previewBehavior: 'title_only' });
+  });
   it('owns the complete remote-alert policy event vocabulary and default projections', () => {
     expect(AttentionDeliveryEventIdSchema.safeParse('follow_update').success).toBe(true);
     expect(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS).toEqual([

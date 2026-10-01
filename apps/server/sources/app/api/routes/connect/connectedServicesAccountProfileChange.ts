@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { buildUpdateAccountUpdate, eventRouter } from "@/app/events/eventRouter";
 import { afterTx, type Tx } from "@/storage/inTx";
@@ -14,7 +14,7 @@ export async function recordConnectedServiceAccountProfileChange(params: Readonl
     const projection = await buildAccountConnectedServicesProjection({
         tx: params.tx,
         accountId: params.accountId,
-        includeGroups: isServerFeatureEnabledForRequest("connectedServices.accountGroups", process.env),
+        includeGroups: await isServerFeatureEnabledForHome("connectedServices.accountGroups", { tx: params.tx }),
     });
     const cursor = await markAccountChanged(params.tx, {
         accountId: params.accountId,

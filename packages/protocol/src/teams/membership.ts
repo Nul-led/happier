@@ -157,6 +157,7 @@ export type TeamMembershipManagementV1 = z.infer<typeof TeamMembershipManagement
  */
 export const TeamMembershipCapabilitiesV1Schema = z.object({
   setRole: z.boolean(),
+  assignableRoles: z.array(TeamRoleV1Schema),
   suspend: z.boolean(),
   reactivate: z.boolean(),
   remove: z.boolean(),
@@ -166,6 +167,7 @@ export type TeamMembershipCapabilitiesV1 = z.infer<typeof TeamMembershipCapabili
 
 export const NO_TEAM_MEMBERSHIP_CAPABILITIES_V1: TeamMembershipCapabilitiesV1 = Object.freeze({
   setRole: false,
+  assignableRoles: [],
   suspend: false,
   reactivate: false,
   remove: false,

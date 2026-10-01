@@ -60,6 +60,8 @@ export const ExecutionRunTurnStreamReadRequestSchema = z.object({
   streamId: z.string().min(1),
   cursor: z.number().int().min(0),
   maxEvents: z.number().int().min(1).max(256).optional(),
+  /** Hold an empty read until this cursor has events or the stream becomes terminal. */
+  waitForEvents: z.boolean().optional(),
 }).passthrough();
 export type ExecutionRunTurnStreamReadRequest = z.infer<typeof ExecutionRunTurnStreamReadRequestSchema>;
 

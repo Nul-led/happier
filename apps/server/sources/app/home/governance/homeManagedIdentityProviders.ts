@@ -32,6 +32,9 @@ import {
     publishTeamChangedInTx,
 } from "@/app/teams/teamChanges";
 
+import type { HomeAdministrationActionV1 } from "@happier-dev/protocol";
+
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import { readHomeGovernanceAccountInTx, resolveHomeGovernanceAuthority } from "./homeCapabilities";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
 import { readHomeGovernancePolicyInTx, resolveTeamProviderKindPolicy } from "./governancePolicy";
@@ -45,19 +48,36 @@ function providerOwner(input: Readonly<{ owner?: ProviderCatalogContext }>): Pro
     return input.owner ?? HOME_PROVIDER_CONTEXT;
 }
 
+type HomeProviderAuditAction = Extract<HomeAdministrationActionV1, `identity_provider.${string}`>;
+
 /**
  * Provider instances owned by the Home are part of its administrative auth
  * projection. Publish only after their lifecycle owner reports a committed
  * mutation; Team-owned instances use the Team identity owner's invalidation.
+ * A committed Home-owned mutation is also Home administration, so it is recorded
+ * in Activity here, in the same transaction, naming the provider and never a secret.
  */
 async function publishCommittedHomeProviderMutationInTx(
     tx: Tx,
     owner: ProviderCatalogContext,
     providerInstanceId: string,
     committed: boolean,
+    /** `null` for a fact about the provider rather than an administrator's change (a recorded test). */
+    audit: Readonly<{ actorAccountId: string; action: HomeProviderAuditAction; displayName?: string }> | null,
 ): Promise<void> {
     if (!committed) return;
     if (owner.kind === "home") {
+        const displayName = !audit ? null : audit.displayName ?? (await tx.identityProviderInstance.findUnique({
+            where: { id: providerInstanceId },
+            select: { displayName: true },
+        }))?.displayName;
+        if (audit && displayName) {
+            await recordHomeAdministrationEventInTx(tx, {
+                actor: { kind: "account", accountId: audit.actorAccountId },
+                target: { kind: "identity_provider", id: providerInstanceId },
+                detail: { action: audit.action, summary: { displayName } },
+            });
+        }
         await publishHomeGovernanceChangedInTx(tx);
         await publishIdentityProviderTeamsChangedInTx(tx, { providerInstanceId });
     } else {
@@ -149,7 +169,10 @@ export async function createHomeManagedOidcProvider(input: Readonly<{
             createdByAccountId: input.actorAccountId,
         });
         if (result.status === "created") {
-            await publishCommittedHomeProviderMutationInTx(tx, owner, result.instance.id, true);
+            await publishCommittedHomeProviderMutationInTx(tx, owner, result.instance.id, true, {
+                actorAccountId: input.actorAccountId,
+                action: "identity_provider.create",
+            });
         }
         return result;
     });
@@ -177,7 +200,10 @@ export async function updateHomeManagedIdentityProvider(input: Readonly<{
             ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
             ...(input.config === undefined ? {} : { config: input.config }),
         });
-        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied");
+        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied", {
+            actorAccountId: input.actorAccountId,
+            action: "identity_provider.update",
+        });
         return result;
     });
 }
@@ -202,7 +228,10 @@ export async function replaceHomeManagedIdentityProviderSecret(input: Readonly<{
             expectedRevision: input.expectedRevision,
             secrets: { v: 1, kind: "oidc", clientSecret: input.clientSecret },
         });
-        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied");
+        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied", {
+            actorAccountId: input.actorAccountId,
+            action: "identity_provider.secret.replace",
+        });
         return result;
     });
 }
@@ -254,7 +283,10 @@ export async function setHomeManagedIdentityProviderEnabled(input: Readonly<{
                 expectedSecurityRevision: input.expectedSecurityRevision,
                 enabled: true,
             });
-            await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied");
+            await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied", {
+                actorAccountId: input.actorAccountId,
+                action: "identity_provider.enable",
+            });
             return result;
         });
     }
@@ -274,7 +306,10 @@ export async function setHomeManagedIdentityProviderEnabled(input: Readonly<{
             expectedSecurityRevision: input.expectedSecurityRevision,
             enabled: false,
         });
-        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied");
+        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "applied", {
+            actorAccountId: input.actorAccountId,
+            action: "identity_provider.disable",
+        });
         return result;
     });
 }
@@ -472,6 +507,7 @@ export async function consumeHomeManagedIdentityProviderTest(input: Readonly<{
             providerOwner(input),
             input.id,
             true,
+            null,
         );
         return {
             status: "consumed" as const,
@@ -509,12 +545,21 @@ export async function deleteHomeManagedIdentityProvider(input: Readonly<{
         const denied = await authorizeProviderOwnerInTx(tx, input);
         if (denied) return denied;
         const owner = providerOwner(input);
+        // Named before it is gone, so Activity can still say which provider was removed.
+        const removing = await tx.identityProviderInstance.findUnique({
+            where: { id: input.id },
+            select: { displayName: true },
+        });
         const result = await deleteIdentityProviderInstanceInTx(tx, {
             id: input.id,
             owner,
             expectedRevision: input.expectedRevision,
         });
-        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "deleted");
+        await publishCommittedHomeProviderMutationInTx(tx, owner, input.id, result.status === "deleted", {
+            actorAccountId: input.actorAccountId,
+            action: "identity_provider.remove",
+            ...(removing ? { displayName: removing.displayName } : {}),
+        });
         return result;
     });
 }

@@ -27,22 +27,24 @@ import {
     type SessionFollowRuntimePrincipalV1,
 } from "@/app/session/access/sessionContextInjection";
 import { AccountStatus } from "@/storage/prisma";
-import { afterTx, inTx, type Tx } from "@/storage/inTx";
+import { inTx, type Tx } from "@/storage/inTx";
 import {
     readCurrentSourceSessionFollowFrontier,
     readStoredSessionFollowFrontier,
     writeSessionFollowFrontierColumns,
-} from "./sessionFollowEdgeFrontier";
+} from "@/app/session/relations/sessionEdgeFrontier";
 import {
     hasCanonicalFollowProviderInputAcceptanceInTx,
     hasCanonicalFollowWakeEventAcceptanceInTx,
 } from "./providerInputAcceptance";
 import { projectSessionMessageAccountActors } from "@/app/session/messages/projectSessionMessageAccountActors";
 import { verifyCurrentMaterializedRunnerPrincipalInTx } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
-import { markCurrentSessionReadersChanged } from "@/app/session/changeTracking/markCurrentSessionReadersChanged";
 import { resolveCurrentSessionRecipientAccountIdsInTx } from "@/app/session/access/sessionRecipients";
-import { eventRouter } from "@/app/events/eventRouter";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
+import { readSessionPendingReviewRunCountsInTx } from '@/app/session/awareness/sessionReportsProjection';
+import {
+    invalidateSessionRelationProjectionsInTx as invalidateSessionFollowDestinationsInTx,
+    scheduleSessionRelationBroadcastAfterTx as scheduleSessionFollowDestinationBroadcastAfterTx,
+} from "@/app/session/relations/sessionRelationChanges";
 
 /**
  * The canonical `SessionFollowEdge` owner.
@@ -87,14 +89,21 @@ export async function projectSessionFollowSourceForRunnerInTx(
     if (input.principal.sessionId !== input.destinationSessionId) return null;
     if (input.request.sourceSessionId === input.destinationSessionId) return null;
     if (!await verifyCurrentMaterializedRunnerPrincipalInTx(tx, input.principal)) return null;
-    const edge = await tx.sessionFollowEdge.findUnique({
+    const followEdge = input.request.edgeKind === 'reports_to' ? null : await tx.sessionFollowEdge.findUnique({
         where: { destinationSessionId_sourceSessionId: {
             destinationSessionId: input.destinationSessionId,
             sourceSessionId: input.request.sourceSessionId,
         } },
         select: EDGE_SELECT,
     }) as EdgeRow | null;
+    const reportsTo = input.request.edgeKind === 'reports_to' ? await tx.sessionReportsTo.findUnique({
+        where: { sessionId: input.request.sourceSessionId }, select: REPORTS_TO_EDGE_SELECT,
+    }) : null;
+    const edge = followEdge ?? (reportsTo?.leadSessionId === input.destinationSessionId ? asReportsToContextEdge(reportsTo) : null);
     if (!edge) return null;
+    if (edge.edgeKind === 'reports_to' && edge.attachedAt!.getTime() !== input.request.attachedAt) return null;
+    const snapshot = input.request.readMode === 'initial_current_snapshot';
+    if (snapshot && edge.edgeKind !== 'reports_to') return null;
     if (!(await assertSessionFollowSourceReadInTx(tx, {
         principal: input.principal,
         sourceSessionId: input.request.sourceSessionId,
@@ -122,6 +131,7 @@ export async function projectSessionFollowSourceForRunnerInTx(
         },
     });
     if (!source || source.archivedAt !== null || (source.encryptionMode !== "plain" && source.encryptionMode !== "e2ee")) return null;
+    const pendingReviewRuns = await readSessionPendingReviewRunCountsInTx(tx, [source.id]);
     // The Runner reports the observation it is hydrating, but those sequence
     // numbers are never read authority. Bound the lower bound by the exact
     // transaction-loaded edge frontier so a stale or malicious caller cannot
@@ -131,7 +141,7 @@ export async function projectSessionFollowSourceForRunnerInTx(
     // wake scans past a full nonhuman page for protected human ingress (09D
     // §6.3), which delivery and ACK never skip.
     if (
-        input.request.afterTranscriptSeq < edge.deliveredTranscriptSeq
+        (!snapshot && input.request.afterTranscriptSeq < edge.deliveredTranscriptSeq)
         || input.request.observedTranscriptSeq > source.seq
     ) return null;
     const fetched = await tx.sessionMessage.findMany({
@@ -143,7 +153,7 @@ export async function projectSessionFollowSourceForRunnerInTx(
             seq: true, content: true, messageRole: true, createdAt: true,
             inputAdmissionReceipt: true, authorAccountId: true,
         },
-        orderBy: { seq: "asc" },
+        orderBy: { seq: snapshot ? 'desc' : 'asc' },
         take: input.request.limit + 1,
     });
     const hasMore = fetched.length > input.request.limit;
@@ -166,6 +176,7 @@ export async function projectSessionFollowSourceForRunnerInTx(
             latestReadyEventAt: source.latestReadyEventAt?.getTime() ?? null,
             meaningfulActivityAt: source.meaningfulActivityAt?.getTime() ?? null,
             agentStateVersion: source.agentStateVersion,
+            pendingReviewRuns: pendingReviewRuns.get(source.id) ?? 0,
             pendingPermissionRequestCount: source.pendingPermissionRequestCount,
             pendingUserActionRequestCount: source.pendingUserActionRequestCount,
             pendingRequestObservedAt: source.pendingRequestObservedAt?.getTime() ?? null,
@@ -227,7 +238,24 @@ type EdgeRow = Readonly<{
     deliveredTurnId: string | null;
     deliveredTurnStatus: string | null;
     mode: 'next_turn' | 'wake_on_human_change';
+    edgeKind?: 'reports_to';
+    attachedAt?: Date;
 }>;
+
+const REPORTS_TO_EDGE_SELECT = {
+    sessionId: true, leadSessionId: true, attachedAt: true,
+    deliveredTranscriptSeq: true, deliveredReadyEventSeq: true, deliveredAgentStateVersion: true,
+    deliveredTurnId: true, deliveredTurnStatus: true,
+} as const;
+
+function asReportsToContextEdge(row: Readonly<{
+    sessionId: string; leadSessionId: string; attachedAt: Date;
+    deliveredTranscriptSeq: number; deliveredReadyEventSeq: number; deliveredAgentStateVersion: number;
+    deliveredTurnId: string | null; deliveredTurnStatus: string | null;
+}>): EdgeRow {
+    return { ...row, sourceSessionId: row.sessionId, destinationSessionId: row.leadSessionId,
+        mode: 'next_turn', edgeKind: 'reports_to', attachedAt: row.attachedAt };
+}
 
 function projectSource(edge: EdgeRow, source: SessionRow | null, dormant: boolean): SessionFollowSourceV1 {
     return {
@@ -257,43 +285,6 @@ async function canReadSession(tx: Tx, accountId: string, sessionId: string, auth
 
 async function canSubmitDestinationInput(tx: Tx, accountId: string, sessionId: string, authentication: SessionAccessAuthentication): Promise<boolean> {
     return (await resolveEffectiveSessionAccess(tx, { accountId, sessionId, authentication }))?.capabilities.submitAgentInput === true;
-}
-
-async function invalidateSessionFollowDestinationsInTx(
-    tx: Tx,
-    destinationSessionIds: Iterable<string>,
-): Promise<void> {
-    for (const destinationSessionId of [...new Set(destinationSessionIds)].sort()) {
-        const recipients = await markCurrentSessionReadersChanged({ tx, sessionId: destinationSessionId });
-        scheduleSessionFollowDestinationBroadcastAfterTx(
-            tx,
-            destinationSessionId,
-            recipients.map(({ accountId }) => accountId),
-        );
-    }
-}
-
-function scheduleSessionFollowDestinationBroadcastAfterTx(
-    tx: Tx,
-    destinationSessionId: string,
-    accountIds: readonly string[],
-): void {
-    const recipients = [...new Set(accountIds)].sort();
-    if (recipients.length === 0) return;
-    const payload = {
-        id: randomKeyNaked(12),
-        createdAt: Date.now(),
-        body: { t: "session-changed" as const, sessionId: destinationSessionId },
-    };
-    afterTx(tx, () => {
-        for (const userId of recipients) {
-            void eventRouter.emitSessionBroadcast({
-                userId,
-                sessionId: destinationSessionId,
-                payload,
-            });
-        }
-    });
 }
 
 /** Publishes only the optional destination socket hint for a committed source projection change. */
@@ -498,7 +489,7 @@ export async function removeSessionFollowSource(input: Readonly<{
 /**
  * Content-free server admission for the encrypted exact-Machine source-key
  * carrier. The DEK never enters this service: it validates only the current
- * caller, Follow relation, pairwise audience policy, ephemeral destination
+ * caller, current context relation, pairwise audience policy, ephemeral destination
  * Machine, and exact AccessKey binding used to select the receiver room.
  */
 type SessionFollowSourceKeyPreparerInput = Readonly<{
@@ -513,7 +504,7 @@ async function prepareSessionFollowSourceKeyPreparerInTx(
     input: SessionFollowSourceKeyPreparerInput,
 ): Promise<SessionFollowSourceResult<Readonly<{ destinationRuntimeAccountId: string }>>> {
     if (!await isActingAccountActive(tx, input.accountId)) return { ok: false, error: "account_inactive" };
-    const [source, destination, edge] = await Promise.all([
+    const [source, destination, edge, reportsTo] = await Promise.all([
         loadSession(tx, input.sourceSessionId),
         loadSession(tx, input.destinationSessionId),
         tx.sessionFollowEdge.findUnique({
@@ -523,8 +514,14 @@ async function prepareSessionFollowSourceKeyPreparerInTx(
             } },
             select: EDGE_SELECT,
         }) as Promise<EdgeRow | null>,
+        tx.sessionReportsTo.findUnique({
+            where: { sessionId: input.sourceSessionId },
+            select: { leadSessionId: true },
+        }),
     ]);
-    if (!source || !destination || !edge) return { ok: false, error: "session_not_found" };
+    if (!source || !destination || (!edge && reportsTo?.leadSessionId !== input.destinationSessionId)) {
+        return { ok: false, error: "session_not_found" };
+    }
     if (source.archivedAt !== null || destination.archivedAt !== null) {
         return { ok: false, error: "session_archived" };
     }
@@ -619,6 +616,8 @@ export type PendingSessionFollowObservationV1 = Readonly<{
     delivered: SessionFollowFrontierV1;
     observed: SessionFollowFrontierV1;
     mode: 'next_turn' | 'wake_on_human_change';
+    edgeKind?: 'reports_to';
+    attachedAt?: number;
 }>;
 
 export type SessionFollowObservationResultV1 = Readonly<{
@@ -636,6 +635,7 @@ export type SessionFollowObservationResultV1 = Readonly<{
 export async function observePendingSessionFollowForDestinationInTx(tx: Tx, input: Readonly<{
     principal: SessionFollowRuntimePrincipalV1;
     destinationSessionId: string;
+    includeReportsTo?: boolean;
 }>): Promise<SessionFollowObservationResultV1> {
     if (
         input.principal.kind === "ephemeral_session_runner"
@@ -652,11 +652,16 @@ export async function observePendingSessionFollowForDestinationInTx(tx: Tx, inpu
     if (destination.accountId !== destinationRuntimeAccountId) return { currentSourceSessionIds: [], observations: [] };
     if (!await isActingAccountActive(tx, destinationRuntimeAccountId)) return { currentSourceSessionIds: [], observations: [] };
     if (!await canSubmitDestinationInput(tx, destinationRuntimeAccountId, destination.id, authentication)) return { currentSourceSessionIds: [], observations: [] };
-    const edges = await tx.sessionFollowEdge.findMany({
+    const followEdges = await tx.sessionFollowEdge.findMany({
         where: { destinationSessionId: input.destinationSessionId },
         select: EDGE_SELECT,
         orderBy: { sourceSessionId: "asc" },
     }) as readonly EdgeRow[];
+    const workerEdges = input.includeReportsTo ? (await tx.sessionReportsTo.findMany({
+        where: { leadSessionId: input.destinationSessionId }, select: REPORTS_TO_EDGE_SELECT,
+        orderBy: { sessionId: 'asc' },
+    })).map(asReportsToContextEdge) : [];
+    const edges = [...followEdges, ...workerEdges];
 
     const pending: PendingSessionFollowObservationV1[] = [];
     const currentSourceSessionIds: string[] = [];
@@ -678,9 +683,10 @@ export async function observePendingSessionFollowForDestinationInTx(tx: Tx, inpu
             delivered,
             observed,
             mode: edge.mode,
+            ...(edge.edgeKind ? { edgeKind: edge.edgeKind, attachedAt: edge.attachedAt!.getTime() } : {}),
         });
     }
-    return { currentSourceSessionIds, observations: pending };
+    return { currentSourceSessionIds: [...new Set(currentSourceSessionIds)], observations: pending };
 }
 
 export type SessionFollowAcknowledgeRejection =
@@ -715,6 +721,8 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
     principal: SessionFollowRuntimePrincipalV1;
     destinationSessionId: string;
     sourceSessionId: string;
+    edgeKind?: 'reports_to';
+    attachedAt?: number;
     expectedPublisherGeneration: bigint;
     expected: SessionFollowFrontierV1;
     observed: SessionFollowFrontierV1;
@@ -752,7 +760,12 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
         default:
             return { ok: false, rejection: "provider_acceptance_unverified" };
     }
-    const edge = await tx.sessionFollowEdge.findUnique({
+    const workerRow = input.edgeKind === 'reports_to' ? await tx.sessionReportsTo.findUnique({
+        where: { sessionId: input.sourceSessionId }, select: REPORTS_TO_EDGE_SELECT,
+    }) : null;
+    const edge = input.edgeKind === 'reports_to'
+        ? workerRow && workerRow.leadSessionId === input.destinationSessionId ? asReportsToContextEdge(workerRow) : null
+        : await tx.sessionFollowEdge.findUnique({
         where: {
             destinationSessionId_sourceSessionId: {
                 destinationSessionId: input.destinationSessionId,
@@ -762,6 +775,9 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
         select: EDGE_SELECT,
     }) as EdgeRow | null;
     if (!edge) return { ok: false, rejection: "edge_not_found" };
+    if (edge.edgeKind === 'reports_to' && edge.attachedAt!.getTime() !== input.attachedAt) {
+        return { ok: false, rejection: 'stale_expected_frontier' };
+    }
     const stored = readStoredSessionFollowFrontier(edge);
     if (!isSessionFollowFrontierEqualV1(stored, input.expected)) {
         return { ok: false, rejection: "stale_expected_frontier" };
@@ -790,7 +806,7 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
         return { ok: false, rejection: "stale_publisher_generation" };
     }
 
-    if (acceptance.kind === "context_only_wake" && edge.mode !== "wake_on_human_change") {
+    if (acceptance.kind === "context_only_wake" && edge.edgeKind !== 'reports_to' && edge.mode !== "wake_on_human_change") {
         return { ok: false, rejection: "provider_acceptance_unverified" };
     }
     let hasCanonicalAcceptance: boolean;
@@ -806,11 +822,12 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
             return { ok: false, rejection: "provider_acceptance_unverified" };
         }
         const acceptedObservation = acceptance.observations.find(
-            (observation) => observation.sourceSessionId === input.sourceSessionId,
+            (observation) => observation.sourceSessionId === input.sourceSessionId && observation.edgeKind === input.edgeKind,
         );
         if (
             expectedEventLocalId !== acceptance.eventLocalId
             || !acceptedObservation
+            || acceptedObservation.attachedAt !== input.attachedAt
             || !isSessionFollowFrontierEqualV1(acceptedObservation.expected, input.expected)
             || !isSessionFollowFrontierEqualV1(acceptedObservation.consumed, input.consumed)
         ) {
@@ -844,16 +861,19 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
         return { ok: false, rejection: "stale_terminal_turn" };
     }
 
-    const written = await tx.sessionFollowEdge.updateMany({
-        where: {
-            destinationSessionId: input.destinationSessionId,
-            sourceSessionId: input.sourceSessionId,
+    const frontierWhere = {
             deliveredTranscriptSeq: input.expected.transcriptSeq,
             deliveredReadyEventSeq: input.expected.readyEventSeq,
             deliveredAgentStateVersion: input.expected.agentStateVersion,
             deliveredTurnId: input.expected.turn?.id ?? null,
             deliveredTurnStatus: input.expected.turn?.status ?? null,
-        },
+    };
+    const written = edge.edgeKind === 'reports_to' ? await tx.sessionReportsTo.updateMany({
+        where: { sessionId: input.sourceSessionId, leadSessionId: input.destinationSessionId,
+            attachedAt: edge.attachedAt!, ...frontierWhere },
+        data: writeSessionFollowFrontierColumns(input.consumed),
+    }) : await tx.sessionFollowEdge.updateMany({
+        where: { destinationSessionId: input.destinationSessionId, sourceSessionId: input.sourceSessionId, ...frontierWhere },
         data: writeSessionFollowFrontierColumns(input.consumed),
     });
     if (written.count === 0) return { ok: false, rejection: "stale_expected_frontier" };

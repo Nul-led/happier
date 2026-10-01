@@ -31,6 +31,7 @@ import { NotFoundSchema } from "../../schemas/notFoundSchema";
 import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
 import { buildAccountTextPrefixFilter } from "@/app/account/accountTextPrefixFilter";
 import { buildSessionAccessCollaborationAccountWhere } from "@/app/session/access/sessionAccessGrantEligibility";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export async function userRoutes(app: Fastify) {
     const friendsApp = createServerFeatureGatedRouteApp(app, "social.friends", process.env);
@@ -104,15 +105,17 @@ export async function userRoutes(app: Fastify) {
         },
         preHandler: [
             async (request, reply) => {
+                const requestHomeEnv = await readRequestHomeEnv(request);
                 if (request.query.purpose === "collaboration") return;
-                if (!isServerFeatureEnabledForRequest("social.friends", process.env)) {
+                if (!isServerFeatureEnabledForRequest("social.friends", requestHomeEnv)) {
                     return reply.code(404).send({ error: "not_found" });
                 }
             },
             app.authenticate,
         ],
     }, async (request, reply) => {
-        const friendsPolicy = resolveFriendsPolicyFromServerFeatures(process.env);
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        const friendsPolicy = resolveFriendsPolicyFromServerFeatures(requestHomeEnv);
         const requiredIdentityProviderId = friendsPolicy.requiredIdentityProviderId;
 
         const { query, cursor, purpose } = request.query;
@@ -122,7 +125,7 @@ export async function userRoutes(app: Fastify) {
 
         const serverFlavorRaw = (process.env.HAPPIER_SERVER_FLAVOR ?? process.env.HAPPY_SERVER_FLAVOR)?.trim();
         const fallbackProvider = serverFlavorRaw === "light" ? "sqlite" : "postgres";
-        const dbProvider = getDbProviderFromEnv(process.env, fallbackProvider);
+        const dbProvider = getDbProviderFromEnv(requestHomeEnv, fallbackProvider);
         const username = buildAccountTextPrefixFilter(query, dbProvider);
 
         const queryKey = `v1:user-search:${query}:${searchIdentityProviderId ?? "username"}:${purpose ?? "social"}`;

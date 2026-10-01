@@ -30,7 +30,13 @@ const caller = {
     machineId: MACHINE_ID,
     machineInstallationId: MACHINE_INSTALLATION_ID,
     materializationId: MATERIALIZATION_ID,
-    immutableGenerationId: "generation-conversation-target-verifier",
+    sourceCustody: {
+        kind: "bundled_first_party",
+        packagedRuntime: {
+            kind: "cli_version_root",
+            versionRootId: "channels-test-cli-root",
+        },
+    },
 } as const;
 
 const releaseFacts = normalizePluginReleaseFactsV1({
@@ -289,7 +295,11 @@ describe("Automation conversation target verification database boundary", () => 
                 machineId: MACHINE_ID,
                 machineInstallationId: MACHINE_INSTALLATION_ID,
                 materializationId: "materialization-acme-slack-bridge",
-                immutableGenerationId: "generation-acme-slack-bridge",
+                sourceCustody: {
+                    kind: "managed",
+                    immutableGenerationId: "generation-acme-slack-bridge",
+                    installSource: "archive",
+                },
             },
             input: {
                 automationId: "automation-schedule-owned",
@@ -530,6 +540,31 @@ describe("Automation conversation target verification database boundary", () => 
                 { automationId: "automation-schedule-owned", label: "Owned schedule", execution: { targetType: "execution_run", enabled: true } },
             ],
             nextCursor: null,
+        });
+    });
+
+    it("lists workflow recipe Automations whose target type is null", async () => {
+        await db.automation.create({
+            data: {
+                id: "automation-workflow-owned",
+                accountId: ACCOUNT_ID,
+                name: "Workflow target",
+                enabled: true,
+                targetType: null,
+                templateCiphertext: "workflow-recipe",
+                templateVersion: 2,
+            },
+        });
+
+        const result = await listAutomationConversationTargetsV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: { limit: 100 },
+        });
+        expect(result.items).toContainEqual({
+            automationId: "automation-workflow-owned",
+            label: "Workflow target",
+            execution: { targetType: null, enabled: true },
         });
     });
 

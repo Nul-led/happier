@@ -2,8 +2,11 @@
 // owners, so importing it here costs the capability probe nothing.
 import {
     readHomeOwnerClaimRequest,
+    readPrintHomeClaimCodeRequest,
     runHomeOwnerClaimCommand,
+    runPrintHomeClaimCodeCommand,
 } from '@/app/home/governance/claimHomeOwnerCommand';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
 const LIGHT_RUNTIME_CAPABILITY_PROBE_ARGUMENT = '--probe-runtime-capabilities';
 const LIGHT_RUNTIME_CAPABILITY_PROBE_RESULT = {
@@ -59,7 +62,7 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
     ): Promise<void> => {
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
-        if (process.env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return;
+        if (!isPersonalHomeRuntimePurpose(process.env.HAPPIER_MANAGED_RELAY_PURPOSE)) return;
         const { assertPersonalHomeBootAdmission, resolvePersonalHomeRuntimeLayout } = await import('@happier-dev/cli-common/firstPartyRuntime/server');
         const layout = resolvePersonalHomeRuntimeLayout({ env: process.env });
         if (action === 'ordinary') {
@@ -161,6 +164,19 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
         });
         process.stdout.write(`${JSON.stringify(claim.output)}\n`);
         process.exitCode = claim.exitCode;
+        return;
+    }
+
+    if (readPrintHomeClaimCodeRequest(argv)) {
+        // Same needs and admission as the owner claim it enables: the Home's database only.
+        await admitPersonalHomeMaintenance('ordinary');
+        const { initDbSqlite, shutdownDbClient } = await import('@/storage/db');
+        await initDbSqlite();
+        const printed = await runPrintHomeClaimCodeCommand().finally(async () => {
+            await shutdownDbClient();
+        });
+        process.stdout.write(`${JSON.stringify(printed.output)}\n`);
+        process.exitCode = printed.exitCode;
         return;
     }
 

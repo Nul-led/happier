@@ -7,8 +7,11 @@ import type { NormalizedVerifiedEmail } from "@happier-dev/protocol";
  * delivery is retryable by the owning product action.
  */
 export interface AuthEmailDelivery {
-    /** Canonical readiness of this selected transport instance. */
-    readonly isReady: boolean;
+    /**
+     * Whether this delivery has a configured transport. Asynchronous because the composed Home
+     * delivery resolves its configuration (Home settings over env) at the moment it is asked.
+     */
+    isReady(): Promise<boolean>;
     deliver(message: AuthEmailMessage): Promise<AuthEmailDeliveryResult>;
 }
 
@@ -65,7 +68,18 @@ export type AccountAuthenticationChangedNoticeV1 = Readonly<{
     accountSecurityUrl?: string | null;
 }>;
 
+/**
+ * The Home owner's "Send a test email" (`home.mailDelivery.test`): a fixed, non-actionable message
+ * that proves the transport. It carries no link and no bearer.
+ */
+export type MailDeliveryTestV1 = Readonly<{
+    kind: "mail_delivery_test";
+    to: AuthEmailRecipient;
+    homeName: string | null;
+}>;
+
 export type AuthEmailMessage =
+    | MailDeliveryTestV1
     | InvitationEmailV1
     | NativeEmailVerificationV1
     | PlainPasswordResetV1

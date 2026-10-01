@@ -12,10 +12,10 @@ export type CreateLocalServicePreviewTokenInput = Readonly<{
     tokenId: string;
     rawToken: string;
     previewId: string;
-    sessionId: string;
+    sessionId: string | undefined;
     machineId: string;
     issuedAt: number;
-    expiresAt: number;
+    expiresAt: number | null;
     exchangeMode: "url" | "cookie";
 }>;
 
@@ -28,13 +28,13 @@ export type ValidateLocalServicePreviewTokenInput = Readonly<{
     rawToken: string;
     record: LocalServicePreviewTokenRecord;
     previewId: string;
-    sessionId: string;
+    sessionId: string | undefined;
     machineId: string;
     nowMs: number;
     expectedExchangeMode?: "url" | "cookie";
 }>;
 
-function hashPreviewToken(secret: string, rawToken: string): string {
+export function hashLocalServicePreviewToken(secret: string, rawToken: string): string {
     return createHmac("sha256", secret).update(rawToken, "utf8").digest("hex");
 }
 
@@ -63,7 +63,13 @@ export function createLocalServicePreviewToken(input: CreateLocalServicePreviewT
     requireNonEmpty(input.secret, "secret");
     requireNonEmpty(input.rawToken, "raw token");
     requireNonEmpty(input.tokenId, "id");
-    assertValidTokenWindow(input.issuedAt, input.expiresAt);
+    if (input.expiresAt === null) {
+        if (input.exchangeMode !== 'cookie' || !Number.isSafeInteger(input.issuedAt) || input.issuedAt < 0) {
+            throw new Error('Only registered viewer sessions may omit expiry.');
+        }
+    } else {
+        assertValidTokenWindow(input.issuedAt, input.expiresAt);
+    }
 
     return {
         token: input.rawToken,
@@ -76,7 +82,7 @@ export function createLocalServicePreviewToken(input: CreateLocalServicePreviewT
             issuedAt: input.issuedAt,
             expiresAt: input.expiresAt,
             exchangeMode: input.exchangeMode,
-            tokenHash: hashPreviewToken(input.secret, input.rawToken),
+            tokenHash: hashLocalServicePreviewToken(input.secret, input.rawToken),
         },
     };
 }
@@ -97,13 +103,15 @@ export function validateLocalServicePreviewToken(
     if (input.nowMs < input.record.issuedAt) {
         return { ok: false, reasonCode: "not_yet_valid" };
     }
-    if (input.nowMs >= input.record.expiresAt) {
+    if (input.record.expiresAt === null
+        ? input.record.exchangeMode !== 'cookie'
+        : input.nowMs >= input.record.expiresAt) {
         return { ok: false, reasonCode: "expired" };
     }
     if (input.expectedExchangeMode && input.record.exchangeMode !== input.expectedExchangeMode) {
         return { ok: false, reasonCode: "exchange_mode_mismatch" };
     }
-    if (!hashesMatch(input.record.tokenHash, hashPreviewToken(input.secret, input.rawToken))) {
+    if (!hashesMatch(input.record.tokenHash, hashLocalServicePreviewToken(input.secret, input.rawToken))) {
         return { ok: false, reasonCode: "token_mismatch" };
     }
     return { ok: true };

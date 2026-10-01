@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { SessionReportsToV1Schema, SessionReportsV1Schema } from '../relations/sessionReportsToV1.js';
 import { SessionEffectiveAccessV1Schema, type SessionEffectiveAccessV1 } from '../access/sessionEffectiveAccessV1.js';
 import { SessionAccessAccountSummaryV1Schema } from '../access/sessionAccessPrincipalV1.js';
-import { SessionSummarySchema, SessionListResultSchema } from './listResult.js';
+import { SessionSummarySchema, SessionListResultSchema, SessionListMetadataUpgradeRequiredCountSchema } from './listResult.js';
 export { SessionSummarySchema, type SessionSummary, SessionListResultSchema, type SessionListResult } from './listResult.js';
-import { SessionAwarenessProjectionV1Schema } from '../awareness/projectionV1.js';
+import { SessionAwarenessOriginV1Schema, SessionAwarenessProjectionV1Schema } from '../awareness/projectionV1.js';
+import { SessionWorkDepthV1Schema } from '../creation/sessionCreateOriginV1.js';
 import { SessionViewerProjectionV1Schema } from '../personal/viewer.js';
 
 import {
@@ -55,7 +57,7 @@ import {
   SessionMetadataRecipientProjectionV1Schema,
   SessionOwnerMetadataEnvelopeV1Schema,
   type SessionOwnerMetadataEnvelopeV1,
-} from '../metadata/sessionMetadataEnvelopesV1.js';
+} from '../metadata/sessionMetadataSchemasV1.js';
 import {
   SESSION_RUNNER_RUNTIME_METADATA_KEY,
   SessionRunnerRuntimeStateV1Schema,
@@ -68,6 +70,9 @@ export {
   ExactSessionTurnEndMutationV1Schema,
   ExactSessionTurnMutationPositiveReceiptV1Schema,
   SessionTurnLifecycleStatusV1Schema,
+  SessionTurnInitiatorV1Schema,
+  SessionTurnWorkflowInvocationV1Schema,
+  SessionTurnFactsV1Schema,
   SessionTurnMutationActionV1Schema,
   SessionTurnMutationV1Schema,
   SessionTurnProviderCheckpointV1Schema,
@@ -78,6 +83,7 @@ export {
   type ExactSessionTurnEndMutationV1,
   type ExactSessionTurnMutationPositiveReceiptV1,
   type SessionTurnLifecycleStatusV1,
+  type SessionTurnFactsV1,
   type SessionTurnMutationActionV1,
   type SessionTurnMutationV1,
   type SessionTurnProviderCheckpointV1,
@@ -152,6 +158,8 @@ export {
   type SessionRuntimeUsageLimitDetailsV1,
   type SessionRuntimeIssueSourceV1,
   type SessionRuntimeIssueV1,
+  resolveSessionRuntimeIssueSignInRecovery,
+  type SessionRuntimeIssueSignInRecovery,
   type TurnTerminalStatusV1,
 } from './runtimeIssueV1.js';
 
@@ -400,6 +408,11 @@ function refineV2SessionMetadataRecipientFields(
 export const V2SessionRecordSchema = z
   .object({
     id: z.string().min(1),
+    origin: SessionAwarenessOriginV1Schema.optional(),
+    workDepth: SessionWorkDepthV1Schema.optional(),
+    reportsTo: SessionReportsToV1Schema.optional(),
+    reports: SessionReportsV1Schema.optional(),
+    pendingReviewRuns: z.number().int().nonnegative().optional(),
     seq: z.number().int().nonnegative(),
     createdAt: z.number().int().nonnegative(),
     updatedAt: z.number().int().nonnegative(),
@@ -538,7 +551,7 @@ export const V2SessionListResponseSchema = z
     // Session metadata to the current layout. One unmigrated historical share
     // never refuses the whole page; the refusal stays visible through this
     // count instead of silently shrinking the page.
-    metadataUpgradeRequiredCount: z.number().int().nonnegative().optional(),
+    metadataUpgradeRequiredCount: SessionListMetadataUpgradeRequiredCountSchema.optional(),
   })
   .passthrough();
 export type V2SessionListResponse = z.infer<typeof V2SessionListResponseSchema>;

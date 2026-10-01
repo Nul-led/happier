@@ -20,7 +20,8 @@ const targetedOperation = {
   contributor: {
     pluginId: 'com.acme.provider',
     contributionId: 'github-connection',
-    immutableGenerationId: 'provider-generation-a',
+    occurrenceId: 'provider-occurrence-a',
+    sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
   },
   role: 'setup',
   action: { pluginId: 'com.acme.provider', localId: 'connection/prepare-v1' },
@@ -31,9 +32,16 @@ const selectedActionInput = {
   action: targetedOperation.action,
   input: { repository: 'happier-dev/happier' },
   selection: {
-    target: { pluginId: 'com.acme.fixture', immutableGenerationId: 'generation-1' },
+    target: {
+      pluginId: 'com.acme.fixture',
+      sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
+    },
     point: targetedOperation.point,
-    contributor: targetedOperation.contributor,
+    contributor: {
+      pluginId: targetedOperation.contributor.pluginId,
+      contributionId: targetedOperation.contributor.contributionId,
+      sourceCustody: targetedOperation.contributor.sourceCustody,
+    },
   },
   connectedAccount: {
     kind: 'selected',

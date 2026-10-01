@@ -45,7 +45,6 @@ import {
 } from '../requestInterceptors/v1.js';
 import {
   PluginSettingsContributionV2Schema,
-  readPluginSettingSecretCustody,
 } from './settings.js';
 import {
   PluginExecutionRunProfileContributionV2Schema,
@@ -105,6 +104,7 @@ import {
 import { findAgentResumeOnlyExternalSourceContractIssue } from './agentResumeOnlySources.js';
 import { PluginUiContributionsV2Schema } from './ui/v2.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
+import { PluginRoleDeclarationV1Schema } from './roles.js';
 import {
   PluginAvailabilityDescriptorV2Schema,
   PluginJsonValueV2Schema,
@@ -151,7 +151,6 @@ import {
   AgentSessionStartupInstructionsTextV1Schema,
 } from '../../runtime/agentSessionStartupInstructionsV1.js';
 
-const LEGACY_ACTIVITY_PROVIDER_FAMILY = `activity${'Providers'}`;
 const PluginVoiceModelPackContributionV2Schema = VoiceModelPackContributionV1Schema
   .omit({ id: true })
   .extend({ id: asProtocolZod(PluginContributionLocalIdSchema) })
@@ -166,22 +165,6 @@ const PluginHookRegistrationFilterV1Schema = z.object({
   machineId: z.string().trim().min(1).optional(),
   eventNames: z.array(z.string().trim().min(1)).optional(),
 }).strict();
-
-function hasOwn(value: Readonly<Record<string, unknown>>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function rejectForbiddenKey(
-  ctx: z.RefinementCtx,
-  key: string,
-  message: string,
-): void {
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: [key],
-    message,
-  });
-}
 
 const PluginAgentAcpStderrMatchRuleV2Schema = z.object({
   includes: z.array(z.string().min(1)).min(1),
@@ -212,6 +195,11 @@ const PluginAgentAcpPermissionModeMappingV2Schema = z.object({
   'safe-yolo': z.string().trim().min(1).nullable().optional(),
   yolo: z.string().trim().min(1).nullable().optional(),
   plan: z.string().trim().min(1).nullable().optional(),
+}).strict();
+
+const PluginAgentAcpPermissionModeArgvV2Schema = z.object({
+  flag: z.string().trim().min(1),
+  map: PluginAgentAcpPermissionModeMappingV2Schema,
 }).strict();
 
 const PluginAgentAcpPlatformValueV2Schema = z.object({
@@ -353,6 +341,9 @@ export type PluginAgentAcpModelSuffixOptionV2 =
  * code. Dynamic ACP behavior remains a custom Agent runtime responsibility.
  */
 export const PluginAgentAcpDefinitionV2Schema = z.object({
+  auth: z.object({
+    methodId: z.string().trim().min(1).max(256),
+  }).strict().optional(),
   modelConfigOptionId: z.string().trim().min(1).optional(),
   stderrRules: PluginAgentAcpStderrRulesV2Schema.optional(),
   mcp: z.object({
@@ -363,13 +354,16 @@ export const PluginAgentAcpDefinitionV2Schema = z.object({
     suffixOption: PluginAgentAcpModelSuffixOptionV2Schema,
   }).strict().optional(),
   permissionModeMapping: PluginAgentAcpPermissionModeMappingV2Schema.optional(),
+  permissionModeArgv: PluginAgentAcpPermissionModeArgvV2Schema.optional(),
 }).strict().refine(
   (value) => (
-    value.modelConfigOptionId !== undefined
+    value.auth !== undefined
+    || value.modelConfigOptionId !== undefined
     || value.stderrRules !== undefined
     || value.mcp !== undefined
     || value.models !== undefined
     || value.permissionModeMapping !== undefined
+    || value.permissionModeArgv !== undefined
   ),
   'ACP definitions must declare at least one behavior.',
 ).refine(
@@ -463,9 +457,14 @@ export type PluginAgentCapabilitiesV2 = z.infer<typeof PluginAgentCapabilitiesV2
 export const PluginAgentVendorResumeSupportV2Schema = z.enum(['supported', 'unsupported', 'experimental']);
 export type PluginAgentVendorResumeSupportV2 = z.infer<typeof PluginAgentVendorResumeSupportV2Schema>;
 
+export const AGENT_CODING_PROMPT_BLOCK_V1_MAX_UTF8_BYTES = 2_048;
+
 const PluginAgentCodingPromptBehaviorBlockV1Schema = z.object({
   id: AgentSessionStartupInstructionsIdV1Schema,
-  text: AgentSessionStartupInstructionsTextV1Schema,
+  text: AgentSessionStartupInstructionsTextV1Schema.refine(
+    (value) => new TextEncoder().encode(value).byteLength <= AGENT_CODING_PROMPT_BLOCK_V1_MAX_UTF8_BYTES,
+    'Coding prompt block exceeds the UTF-8 byte limit',
+  ),
   when: z.enum(['disableTodos']).optional(),
 }).strict();
 
@@ -830,6 +829,7 @@ export const PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2 = [
   definePluginContributionFamilyV2({ family: 'settings', schema: PluginSettingsContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'events', schema: PluginEventContributionV1Schema }),
   definePluginContributionFamilyV2({ family: 'executionRunProfiles', schema: PluginExecutionRunProfileContributionV2Schema }),
+  definePluginContributionFamilyV2({ family: 'roles', schema: PluginRoleDeclarationV1Schema }),
   definePluginContributionFamilyV2({ family: 'notifications', schema: PluginNotificationCategoryContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'notificationChannels', schema: PluginNotificationChannelContributionV2Schema }),
   definePluginContributionFamilyV2({ family: 'scmHostingProviders', schema: ScmHostingProviderContributionSchema }),
@@ -868,86 +868,12 @@ const PluginContributesV2SchemaWithoutDefault = PluginContributesV2BaseSchema.ex
   mcp: PluginMcpContributesV1Schema,
   ui: PluginUiContributionsV2Schema,
 }).superRefine((value, ctx) => {
-  if (hasOwn(value, LEGACY_ACTIVITY_PROVIDER_FAMILY)) {
-    rejectForbiddenKey(ctx, LEGACY_ACTIVITY_PROVIDER_FAMILY, 'Activity providers were folded into contributes.notifications; use notification categories instead.');
-  }
   const providerIds = new Set<string>();
   value.providers.forEach((provider, index) => {
     if (providerIds.has(provider.id)) {
       ctx.addIssue({ code: 'custom', path: ['providers', index, 'id'], message: 'Duplicate provider contribution id' });
     }
     providerIds.add(provider.id);
-  });
-  const voiceModelPackIds = new Set<string>();
-  value.voiceModelPacks.forEach((modelPack, index) => {
-    if (voiceModelPackIds.has(modelPack.id)) {
-      ctx.addIssue({ code: 'custom', path: ['voiceModelPacks', index, 'id'], message: 'Duplicate voice model-pack contribution id' });
-    }
-    voiceModelPackIds.add(modelPack.id);
-  });
-  const voiceProviderIds = new Set<string>();
-  value.voiceProviders.forEach((provider, index) => {
-    if (voiceProviderIds.has(provider.id)) {
-      ctx.addIssue({ code: 'custom', path: ['voiceProviders', index, 'id'], message: 'Duplicate voice provider contribution id' });
-    }
-    voiceProviderIds.add(provider.id);
-  });
-  const settingsFieldKeys = new Set<string>();
-  const settingsSecretIds = new Set<string>();
-  value.settings.forEach((settings, settingsIndex) => {
-    settings.fields.forEach((field, fieldIndex) => {
-      const isSecret = readPluginSettingSecretCustody(field.secret) !== null;
-      if (isSecret) {
-        if (settingsSecretIds.has(field.id) || [...settingsFieldKeys].some((key) => key.endsWith(`\u0000${field.id}`))) {
-          ctx.addIssue({
-            code: 'custom',
-            path: ['settings', settingsIndex, 'fields', fieldIndex, 'id'],
-            message: `Plugin secret setting '${field.id}' conflicts with another plugin-global Settings declaration.`,
-          });
-        }
-        settingsSecretIds.add(field.id);
-        return;
-      }
-      if (settingsSecretIds.has(field.id)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['settings', settingsIndex, 'fields', fieldIndex, 'id'],
-          message: `Plugin setting '${field.id}' conflicts with a plugin-global secret Settings declaration.`,
-        });
-        return;
-      }
-      const fieldKey = `${settings.scope}\u0000${field.id}`;
-      if (settingsFieldKeys.has(fieldKey)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['settings', settingsIndex, 'fields', fieldIndex, 'id'],
-          message: `Duplicate Settings field '${field.id}' in scope '${settings.scope}'.`,
-        });
-      }
-      settingsFieldKeys.add(fieldKey);
-    });
-  });
-  const backgroundServiceIds = new Set<string>();
-  value.backgroundServices.forEach((service, index) => {
-    if (backgroundServiceIds.has(service.id)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['backgroundServices', index, 'id'],
-        message: 'Duplicate background service contribution id',
-      });
-    }
-    backgroundServiceIds.add(service.id);
-  });
-  const daemonDatabaseIds = new Set<string>();
-  value.daemonDatabases.forEach((database, index) => {
-    if (daemonDatabaseIds.has(database.id)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['daemonDatabases', index, 'id'],
-        message: 'Duplicate daemon database contribution id',
-      });
-    }
-    daemonDatabaseIds.add(database.id);
   });
   if (value.accountCollections.length > 32) {
     ctx.addIssue({
@@ -956,27 +882,7 @@ const PluginContributesV2SchemaWithoutDefault = PluginContributesV2BaseSchema.ex
       message: 'At most 32 account collection contributions are allowed.',
     });
   }
-  const accountCollectionIds = new Set<string>();
-  value.accountCollections.forEach((collection, index) => {
-    if (accountCollectionIds.has(collection.id)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['accountCollections', index, 'id'],
-        message: 'Duplicate account collection contribution id',
-      });
-    }
-    accountCollectionIds.add(collection.id);
-  });
-  const webhookIds = new Set<string>();
   value.webhooks.forEach((webhook, index) => {
-    if (webhookIds.has(webhook.id)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['webhooks', index, 'id'],
-        message: 'Duplicate webhook contribution id',
-      });
-    }
-    webhookIds.add(webhook.id);
     const action = value.actions.find((candidate) => candidate.id === webhook.handlerAction.localId);
     if (!action) {
       ctx.addIssue({
@@ -1049,6 +955,7 @@ export {
   PluginPromptAssetContributionV1Schema,
   type PluginPromptAssetContributionV1,
 } from './promptAssets.js';
+export { PluginRoleDeclarationV1Schema, type PluginRoleDeclarationV1 } from './roles.js';
 export {
   PluginWebhookContributionV1Schema,
   PluginWebhookVerifierV1Schema,

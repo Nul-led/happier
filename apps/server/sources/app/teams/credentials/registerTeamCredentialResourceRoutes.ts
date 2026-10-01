@@ -32,6 +32,8 @@ import {
     TeamCredentialUsageQueryInputV1Schema,
     TeamCredentialUsageQueryResultV1Schema,
     TeamCredentialExternalApiKeyCreateInputV1Schema,
+    TeamCredentialExternalApiKeyAuthorizeInputV1Schema,
+    TeamCredentialExternalApiKeyAuthorizeOutputV1Schema,
     TeamCredentialExternalApiKeyCreateOutputV1Schema,
     TeamCredentialExternalApiKeyListInputV1Schema,
     TeamCredentialExternalApiKeyListOutputV1Schema,
@@ -49,6 +51,8 @@ import {
     TeamCredentialDirectMaterialCensusOutputV1Schema,
     TeamCredentialDirectMaterialUpsertRequestV1Schema,
     TeamCredentialDirectMaterialUpsertResponseV1Schema,
+    TeamCredentialDirectMaterialWithdrawRequestV1Schema,
+    TeamCredentialDirectMaterialWithdrawResponseV1Schema,
     type TeamCredentialErrorCodeV1,
 } from "@happier-dev/protocol/teams";
 import {
@@ -69,7 +73,7 @@ import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDoma
 import { inTx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
-import { resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
+import { readHomeEffectiveEnv, resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { readTeamOperationAuthenticationFromRequest } from "../actorContext";
 import { publishTeamChangedInTx } from "../teamChanges";
@@ -89,6 +93,7 @@ import { deleteTeamCredentialUsageLimitInTx, listTeamCredentialUsageLimitsInTx, 
 import { queryTeamCredentialUsage } from "./resourceUsage";
 import {
     createTeamCredentialExternalApiKeyInTx,
+    authorizeTeamCredentialExternalApiKeyInTx,
     listTeamCredentialExternalApiKeysInTx,
     revokeAllTeamCredentialExternalApiKeysInTx,
     revokeTeamCredentialExternalApiKeyInTx,
@@ -100,6 +105,7 @@ import {
     readTeamCredentialDirectMaterialCensusInTx,
     readCurrentTeamCredentialRecipientMaterialInTx,
     upsertTeamCredentialRecipientMaterialInTx,
+    withdrawTeamCredentialRecipientMaterialInTx,
 } from "./recipientMaterial";
 import {
     projectTeamCredentialResourceSummaryInTx,
@@ -518,7 +524,10 @@ async function projectTeamCredentialBrokerAdministrationReadiness(
     return resources.map(resource => projectedByResourceId.get(resource.id) ?? resource);
 }
 
-export function registerTeamCredentialResourceRoutes(app: Fastify): void {
+export function registerTeamCredentialResourceRoutes(
+    app: Fastify,
+    env: NodeJS.ProcessEnv = process.env,
+): void {
     // The family gate and the external Provider API readiness gate below both
     // answer their disabled state with the one typed credential error vocabulary
     // these routes declare, so a client decoding any refusal — feature off,
@@ -527,7 +536,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
     const routes = createServerFeatureGatedRouteApp(
         app,
         "teams.credentialResources",
-        process.env,
+        env,
         { error: "feature_disabled" },
         503,
         { allowLegacyHomeToken: false },
@@ -535,10 +544,34 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
     registerTeamCredentialProviderBrokerRoutes(routes);
     const resolveExecutionRunCurrentness = createExecutionRunBrokerCurrentnessResolver({
         app,
-        resolveServerIdentityId: () => getOrCreateServerIdentityId(process.env),
+        resolveServerIdentityId: () => getOrCreateServerIdentityId(env),
         createNonce: () => crypto.randomUUID(),
     });
     const directMaterialPath = "/v2/teams/:teamId/credential-resources/:resourceId/direct-material";
+    routes.delete(directMaterialPath, {
+        preHandler: app.authenticate,
+        attachValidation: true,
+        schema: {
+            params: TeamCredentialDirectMaterialRouteParamsV1Schema,
+            body: TeamCredentialDirectMaterialWithdrawRequestV1Schema,
+            response: { 200: TeamCredentialDirectMaterialWithdrawResponseV1Schema, ...errors },
+        },
+    }, async (request, reply) => {
+        const params = TeamCredentialDirectMaterialRouteParamsV1Schema.safeParse(request.params);
+        const body = TeamCredentialDirectMaterialWithdrawRequestV1Schema.safeParse(request.body);
+        if (request.validationError || !params.success || !body.success) return fail(reply, 'invalid_resource_input');
+        const result = await inTx(async tx => {
+            const withdrawn = await withdrawTeamCredentialRecipientMaterialInTx(tx, {
+                ...params.data, ...body.data, actorAccountId: request.userId,
+                authentication: readTeamOperationAuthenticationFromRequest(request),
+            });
+            if (withdrawn.ok && withdrawn.changed) await publishTeamChangedInTx(tx, { teamId: params.data.teamId });
+            return withdrawn;
+        });
+        if (!result.ok) return fail(reply, result.reason === 'source_changed' || result.reason === 'resource_changed'
+            ? 'source_replaced_or_missing' : result.reason);
+        return reply.send(TeamCredentialDirectMaterialWithdrawResponseV1Schema.parse({ status: 'withdrawn' }));
+    });
     routes.get(directMaterialPath, {
         preHandler: app.authenticate,
         attachValidation: true,
@@ -593,7 +626,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
             return fail(reply, error);
         }
         return reply.send(TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
-            homeServerIdentityId: await getOrCreateServerIdentityId(process.env),
+            homeServerIdentityId: await getOrCreateServerIdentityId(env),
             teamId: result.teamId,
             resourceId: result.resourceId,
             resourceRevision: result.resourceRevision,
@@ -663,7 +696,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
             recipientMode: result.recipientMode,
             stored: result.stored,
             expected: {
-                homeServerIdentityId: await getOrCreateServerIdentityId(process.env),
+                homeServerIdentityId: await getOrCreateServerIdentityId(env),
                 teamId: params.data.teamId,
                 resourceId: params.data.resourceId,
                 resourceRevision: result.resourceRevision,
@@ -695,6 +728,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
                 return { ok: false as const, error: "resource_not_found" as const };
             }
             const itemResults: z.infer<typeof TeamCredentialDirectMaterialUpsertResponseV1Schema>["results"] = [];
+            let changedAnyTuple = false;
             for (const item of body.data.items) {
                 const result = await upsertTeamCredentialRecipientMaterialInTx(tx, {
                     actorAccountId: request.userId,
@@ -706,6 +740,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
                     || result.reason === "team_authentication_policy_unavailable")) {
                     return { ok: false as const, error: result.reason };
                 }
+                if (result.ok && result.changed) changedAnyTuple = true;
                 itemResults.push(result.ok ? {
                     status: "stored" as const,
                     recipientAccountId: result.recipientAccountId,
@@ -725,7 +760,10 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
                             : result.reason,
                 });
             }
-            if (itemResults.some(result => result.status === "stored")) {
+            // Only a changed logical tuple is news to the Team. Waking it for an
+            // idempotent re-upload re-hydrates the source daemon's catalog,
+            // whose settings snapshot starts the next reconciliation.
+            if (changedAnyTuple) {
                 await publishTeamChangedInTx(tx, { teamId: params.data.teamId });
             }
             return { ok: true as const, results: itemResults };
@@ -1312,8 +1350,10 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
     // front of it could answer nothing this one does not, so the family keeps a
     // single decision-maker — the same shape the sibling external Provider API
     // routes use.
-    const requireExternalApiDeploymentReadiness = async (_request: unknown, reply: ErrorReply) => {
-        const availability = resolveTeamCredentialExternalApiAvailability(resolveServerFeaturesForGating(process.env));
+    const requireExternalApiDeploymentReadiness = async (request: object, reply: ErrorReply) => {
+        const availability = resolveTeamCredentialExternalApiAvailability(
+            resolveServerFeaturesForGating(await readHomeEffectiveEnv({ env, request })),
+        );
         if (!availability.available) return reply.code(503).send({ error: "feature_disabled" });
     };
 
@@ -1331,6 +1371,22 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
         }));
         if (!result.ok) return fail(reply, result.error);
         return reply.send(TeamCredentialExternalApiKeyCreateOutputV1Schema.parse({ token: result.token, key: result.key }));
+    });
+
+    routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.authorize", "POST"), {
+        preHandler: [requireExternalApiDeploymentReadiness, app.authenticate], attachValidation: true,
+        schema: { body: TeamCredentialExternalApiKeyAuthorizeInputV1Schema, response: { 200: TeamCredentialExternalApiKeyAuthorizeOutputV1Schema, ...errors } },
+    }, async (request, reply) => {
+        if (request.validationError) return fail(reply, "invalid_resource_input");
+        const body = TeamCredentialExternalApiKeyAuthorizeInputV1Schema.safeParse(request.body);
+        if (!body.success) return fail(reply, "invalid_resource_input");
+        const result = await inTx(tx => authorizeTeamCredentialExternalApiKeyInTx(tx, {
+            actorAccountId: request.userId,
+            authentication: readTeamOperationAuthenticationFromRequest(request),
+            ...body.data,
+        }));
+        if (!result.ok) return fail(reply, result.error);
+        return reply.send(TeamCredentialExternalApiKeyAuthorizeOutputV1Schema.parse({ key: result.key }));
     });
 
     routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.list", "POST"), {

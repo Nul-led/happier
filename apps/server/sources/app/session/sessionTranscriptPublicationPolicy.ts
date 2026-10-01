@@ -757,6 +757,7 @@ export type SessionTranscriptPublicationRealtimeProjection = Readonly<{
     pendingRequestObservedAt?: number | null;
     latestReadyEventSeq?: number | null;
     latestReadyEventAt?: number | null;
+    latestReadyEventLocalId?: string;
     latestTurnId?: string | null;
     latestTurnStatus?: PrimaryTurnStatusV1 | null;
     latestTurnStatusObservedAt?: number | null;
@@ -787,9 +788,10 @@ function projectFiniteSessionTranscriptPublicationRealtimeProjection(
         return projection;
     }
     if (
-        hasOnlyKeys(fields, ["latestReadyEventSeq", "latestReadyEventAt"], ["latestReadyEventSeq", "latestReadyEventAt"])
+        hasOnlyKeys(fields, ["latestReadyEventSeq", "latestReadyEventAt", "latestReadyEventLocalId"], ["latestReadyEventSeq", "latestReadyEventAt"])
         && isPublishedSequence(fields.latestReadyEventSeq, ceiling)
         && readServerTimestamp(fields.latestReadyEventAt) !== null
+        && (fields.latestReadyEventLocalId === undefined || typeof fields.latestReadyEventLocalId === "string")
     ) {
         return projection;
     }

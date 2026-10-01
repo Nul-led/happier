@@ -23,12 +23,25 @@ export * from './surfaceRegistry.js';
 export * from './surfaceTargets.js';
 export * from './tokens.js';
 export type {
+  PluginUiAppPageColumnV1,
+  PluginUiDestinationPlacementV1,
+  PluginUiWidgetHomeV1,
+  PluginUiWidgetPlacementV1,
   PluginUiViewDestinationBindingV2,
   PluginUiViewDestinationBindingInputV2,
   PluginUiViewInlineBindingInputV2,
   PluginUiViewInlineBindingV2,
   PluginUiViewV2,
   PluginUiViewV2Input,
+} from './v2.js';
+export {
+  PluginUiAppPageColumnV1Schema,
+  PluginUiDestinationPlacementV1Schema,
+  PluginUiWidgetHomeV1Schema,
+  PluginUiWidgetPlacementV1Schema,
+  PluginUiWidgetSessionPlacementsV1Schema,
+  PluginUiWidgetAppPlacementsV1Schema,
+  readPluginUiWidgetPlacementsV1,
 } from './v2.js';
 export {
   PLUGIN_TRANSCRIPT_PRESENTATION_NODE_V1_KINDS,

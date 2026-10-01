@@ -4,6 +4,7 @@ import { db, getActivePrismaRuntime } from "@/storage/db";
 import { PushTokenRegisterRequestSchema, DeviceRemoteAlertPolicyV1Schema, resolveAccountRemoteAlertPolicyCurrentness } from '@happier-dev/protocol';
 import { redactSentryLogAttributes } from "@/app/monitoring/sentryLogRedaction";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 function normalizeClientServerUrl(raw: unknown): string | null {
     const value = typeof raw === "string" ? raw.trim() : "";
@@ -37,6 +38,7 @@ export function pushRoutes(app: Fastify) {
         },
         preHandler: app.authenticate
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const { token } = request.body;
         const rawClientServerUrl = request.body.clientServerUrl;
@@ -52,7 +54,7 @@ export function pushRoutes(app: Fastify) {
             }
 
             if (request.body.remoteAlerts !== undefined) {
-                if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+                if (!isServerFeatureEnabledForRequest("sessions.following", requestHomeEnv)) {
                     return reply.code(404).send({ error: 'push_token_not_found' });
                 }
                 const result = await db.accountPushToken.updateMany({
@@ -130,6 +132,7 @@ export function pushRoutes(app: Fastify) {
         schema: { querystring: z.object({ projectionVersion: z.coerce.number().int().optional() }) },
         preHandler: app.authenticate
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
 
         try {
@@ -143,7 +146,7 @@ export function pushRoutes(app: Fastify) {
             });
 
             const projection = request.query.projectionVersion === 2
-                && isServerFeatureEnabledForRequest("sessions.following", process.env);
+                && isServerFeatureEnabledForRequest("sessions.following", requestHomeEnv);
             const account = projection ? await db.account.findUniqueOrThrow({
                 where: { id: userId }, select: { settingsVersion: true, remoteAlertPolicy: true },
             }) : null;

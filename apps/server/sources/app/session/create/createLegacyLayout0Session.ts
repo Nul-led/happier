@@ -5,6 +5,8 @@ import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encry
 import { writeSessionDataKeyEnvelopeInTx } from "@/app/session/encryption/sessionDataKeyEnvelopePersistence";
 import { SessionOwnerEnvelopeError } from "./layout1SessionRowWrite";
 import { publishSessionCreationInTx } from "./publishSessionCreationInTx";
+import type { ExternalActionExecutionAuthorizationBindingV1 } from "@happier-dev/protocol/actions";
+import { readSessionCreationApiTokenIdInTx } from "./apiTokenSessionCreationAuthorization";
 
 /**
  * Writes the released pre-Layout-1 Session row.
@@ -24,6 +26,7 @@ export async function createLegacyLayout0SessionInTx(
         encryptionMode: "e2ee" | "plain";
         requestedStorageState: "machine_only" | undefined;
         dataEncryptionKey: Uint8Array<ArrayBuffer> | null;
+        sessionCreationAuthorization?: ExternalActionExecutionAuthorizationBindingV1;
     }>,
 ) {
     const account = await tx.account.findUniqueOrThrow({
@@ -34,9 +37,11 @@ export async function createLegacyLayout0SessionInTx(
     const accountMode = resolveEffectiveAccountEncryptionModeFromAccountRow(account);
     if (accountMode.status !== "ready") throw new Error("Invalid persisted Account encryption mode");
     const createdAt = new Date();
+    const createdByApiTokenId = await readSessionCreationApiTokenIdInTx(tx, params.accountId, params.sessionCreationAuthorization);
     const session = await tx.session.create({
         data: {
             accountId: params.accountId,
+            createdByApiTokenId,
             tag: params.tag,
             encryptionMode: params.encryptionMode,
             metadata: params.metadata,

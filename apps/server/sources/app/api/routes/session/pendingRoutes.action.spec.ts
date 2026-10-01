@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
+import type { Fastify } from "../../types";
 
 const emitUpdate = vi.fn();
 const buildPendingChangedUpdate = vi.fn(() => ({ type: "pending-changed" }));
@@ -43,6 +44,21 @@ vi.mock("@/app/session/pending/pendingMessageService", async (importOriginal) =>
 });
 
 describe("sessionPendingRoutes requested action", () => {
+    it.each([
+        ["GET", "/v2/sessions/:sessionId/pending", "session.transcript.get"],
+        ["POST", "/v2/sessions/:sessionId/pending", "session.message.send"],
+        ["PATCH", "/v2/sessions/:sessionId/pending/:localId/action", "session.message.send"],
+        ["PATCH", "/v2/sessions/:sessionId/pending/:localId", "session.message.send"],
+        ["DELETE", "/v2/sessions/:sessionId/pending/:localId", "session.message.send"],
+        ["POST", "/v2/sessions/:sessionId/pending/:localId/discard", "session.message.send"],
+    ] as const)("declares token Action and exact Session binding for %s %s", async (method, path, actionId) => {
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({ method, path, registerRoutes(app) { sessionPendingRoutes(app as unknown as Fastify); } });
+        expect(route.app.routes.get(`${method} ${path}`)?.opts.config).toMatchObject({
+            apiTokenSessionAction: actionId,
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
+        });
+    });
     beforeEach(() => {
         vi.resetModules();
         emitUpdate.mockReset();

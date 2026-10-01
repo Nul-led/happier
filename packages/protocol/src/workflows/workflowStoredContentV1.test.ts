@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AccountScopedCryptoMaterial } from '../crypto/accountScopedCipher.js';
+import { sealAccountScopedBlobCiphertext } from '../crypto/accountScopedCipher.js';
+import { createDeepWorkflowDefinition } from './workflowDefinition.testkit.js';
+import { sameStrictJsonValue } from '../json/strictJsonValue.js';
 import {
   openWorkflowAcceptedSnapshotStoredEnvelopeV1,
   openWorkflowCheckpointStoredEnvelopeV1,
@@ -17,6 +20,7 @@ const material: AccountScopedCryptoMaterial = {
   type: 'dataKey',
   machineKey: new Uint8Array(32).fill(7),
 };
+const runDataKey = new Uint8Array(32).fill(7);
 const randomBytes = (length: number) => new Uint8Array(length).fill(3);
 
 const acceptedBinding = {
@@ -50,6 +54,72 @@ const finalResultBinding = {
 };
 
 describe('Workflow stored Account content', () => {
+  it.each(['plain', 'e2ee'] as const)('round-trips final-panel fingerprint under the exact Run binding (%s)', (mode) => {
+    const checkpoint = { kind: 'happier.workflow-checkpoint.v1' as const, rootRecordId: 'row-1',
+      nextSequence: '1', frontier: { nextBlockOrdinal: 1, paused: false }, endFingerprint: 'F-b' };
+    const envelope = mode === 'plain'
+      ? sealWorkflowCheckpointStoredEnvelopeV1({ mode, binding: checkpointBinding, checkpoint })
+      : sealWorkflowCheckpointStoredEnvelopeV1({ mode, binding: checkpointBinding, checkpoint, runDataKey, randomBytes });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode, binding: checkpointBinding, envelope,
+      ...(mode === 'e2ee' ? { runDataKey } : {}) })).toEqual({ kind: 'available', content: checkpoint });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode, binding: { ...checkpointBinding, runId: 'other-run' }, envelope,
+      ...(mode === 'e2ee' ? { runDataKey } : {}) }).kind).toBe('bindingMismatch');
+  });
+  it('refuses pre-cut plain history and never fabricates keys for new plain content', () => {
+    const checkpoint = { kind: 'happier.workflow-checkpoint.v1' as const, rootRecordId: 'row-1',
+      nextSequence: '1', frontier: { nextBlockOrdinal: 0, paused: false } };
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'plain', binding: checkpointBinding,
+      envelope: { t: 'plain', v: { v: 1, binding: checkpointBinding, content: checkpoint } },
+    })).toEqual({ kind: 'contentInvalid' });
+    const envelope = sealWorkflowCheckpointStoredEnvelopeV1({ mode: 'plain', binding: checkpointBinding, checkpoint });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'plain', binding: checkpointBinding, envelope }))
+      .toEqual({ kind: 'available', content: checkpoint });
+  });
+  it('opens only with the run key and authenticates owner binding', () => {
+    const checkpoint = { kind: 'happier.workflow-checkpoint.v1' as const, rootRecordId: 'row-1',
+      nextSequence: '1', frontier: { nextBlockOrdinal: 0, paused: false } };
+    const envelope = sealWorkflowCheckpointStoredEnvelopeV1({ mode: 'e2ee', binding: checkpointBinding,
+      checkpoint, runDataKey, randomBytes });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'e2ee', binding: checkpointBinding, envelope }))
+      .toEqual({ kind: 'materialUnavailable' });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'e2ee', binding: checkpointBinding, envelope,
+      runDataKey: new Uint8Array(32).fill(9) })).toEqual({ kind: 'contentInvalid' });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'e2ee', binding: { ...checkpointBinding, accountId: 'viewer' },
+      envelope, runDataKey })).toEqual({ kind: 'bindingMismatch' });
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'plain', binding: checkpointBinding, envelope }))
+      .toEqual({ kind: 'modeMismatch' });
+  });
+  it('refuses pre-cut Account-derived workflow ciphertext without fallback', () => {
+    const envelope = { t: 'encrypted', c: sealAccountScopedBlobCiphertext({
+      kind: 'workflow_checkpoint', material, randomBytes,
+      payload: { v: 1, binding: checkpointBinding, content: {
+        kind: 'happier.workflow-checkpoint.v1', rootRecordId: 'row-1', nextSequence: '1',
+        frontier: { nextBlockOrdinal: 0, paused: false },
+      } },
+    }) };
+    expect(openWorkflowCheckpointStoredEnvelopeV1({ mode: 'e2ee', binding: checkpointBinding,
+      envelope, runDataKey: new Uint8Array(32).fill(7),
+    }).kind).toBe('contentInvalid');
+  });
+  it('seals and opens a deep accepted definition in plain and E2EE modes', () => {
+    const definition = createDeepWorkflowDefinition();
+    const acceptedSnapshot = {
+      definition, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' as const },
+      workspaceTarget: { project: { machineId: 'machine-1', directory: '/repo', checkoutRootPath: '/repo' } },
+      source: { kind: 'inline' as const }, origin: { kind: 'direct' as const },
+      authorization: { admittedPermissionCeiling: 'default' as const, principal: { kind: 'host' as const } },
+    };
+    for (const mode of ['plain', 'e2ee'] as const) {
+      const envelope = sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+        binding: acceptedBinding, acceptedSnapshot,
+        ...(mode === 'plain' ? { mode } : { mode, runDataKey, randomBytes }),
+      });
+      const opened = openWorkflowAcceptedSnapshotStoredEnvelopeV1({ mode, binding: acceptedBinding, envelope, runDataKey });
+      expect(opened.kind).toBe('available');
+      if (opened.kind !== 'available') throw new Error('expected accepted snapshot');
+      expect(sameStrictJsonValue(opened.content.definition, definition)).toBe(true);
+    }
+  });
   it('round-trips every canonical purpose in plain and E2EE modes', () => {
     const fixtures = [
       {
@@ -65,10 +135,10 @@ describe('Workflow stored Account content', () => {
             source: { kind: 'automation', automationId: 'automation-1' },
             authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
           },
-          ...(mode === 'plain' ? { mode } : { mode, material, randomBytes }),
+          ...(mode === 'plain' ? { mode } : { mode, runDataKey, randomBytes }),
         }),
         open: (mode: 'plain' | 'e2ee', envelope: unknown) => openWorkflowAcceptedSnapshotStoredEnvelopeV1({
-          mode, binding: acceptedBinding, envelope, material,
+          mode, binding: acceptedBinding, envelope, runDataKey,
         }),
       },
       {
@@ -81,10 +151,10 @@ describe('Workflow stored Account content', () => {
             attempt: '0',
             logicalInvocationRecordId: 'row-1',
           },
-          ...(mode === 'plain' ? { mode } : { mode, material, randomBytes }),
+          ...(mode === 'plain' ? { mode } : { mode, runDataKey, randomBytes }),
         }),
         open: (mode: 'plain' | 'e2ee', envelope: unknown) => openWorkflowProgressStoredEnvelopeV1({
-          mode, binding: progressBinding, envelope, material,
+          mode, binding: progressBinding, envelope, runDataKey,
         }),
       },
       {
@@ -96,10 +166,10 @@ describe('Workflow stored Account content', () => {
             nextSequence: '1',
             frontier: { nextBlockOrdinal: 1, paused: false },
           },
-          ...(mode === 'plain' ? { mode } : { mode, material, randomBytes }),
+          ...(mode === 'plain' ? { mode } : { mode, runDataKey, randomBytes }),
         }),
         open: (mode: 'plain' | 'e2ee', envelope: unknown) => openWorkflowCheckpointStoredEnvelopeV1({
-          mode, binding: checkpointBinding, envelope, material,
+          mode, binding: checkpointBinding, envelope, runDataKey,
         }),
       },
       {
@@ -110,10 +180,10 @@ describe('Workflow stored Account content', () => {
             result: { kind: 'text', value: 'done' },
             producerInvocation: { recordId: 'row-1' },
           },
-          ...(mode === 'plain' ? { mode } : { mode, material, randomBytes }),
+          ...(mode === 'plain' ? { mode } : { mode, runDataKey, randomBytes }),
         }),
         open: (mode: 'plain' | 'e2ee', envelope: unknown) => openWorkflowFinalResultStoredEnvelopeV1({
-          mode, binding: finalResultBinding, envelope, material,
+          mode, binding: finalResultBinding, envelope, runDataKey,
         }),
       },
     ];
@@ -126,7 +196,7 @@ describe('Workflow stored Account content', () => {
 
   it('fails a private accepted metadata open closed with the wrong E2EE material', () => {
     const envelope = sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
-      mode: 'e2ee', binding: acceptedBinding, material, randomBytes,
+      mode: 'e2ee', binding: acceptedBinding, runDataKey, randomBytes,
       acceptedSnapshot: {
         definition: { version: 1, inputs: [], defaults: {}, blocks: [{ kind: 'step', id: 'step-1', document: { text: 'Do it', references: [], attachments: [] }, input: [], result: { kind: 'text' } }] },
         metadata: { title: 'Secret title' }, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
@@ -137,7 +207,7 @@ describe('Workflow stored Account content', () => {
     });
     expect(openWorkflowAcceptedSnapshotStoredEnvelopeV1({
       mode: 'e2ee', binding: acceptedBinding, envelope,
-      material: { type: 'dataKey', machineKey: new Uint8Array(32).fill(8) },
+      runDataKey: new Uint8Array(32).fill(8),
     })).toMatchObject({ kind: 'contentInvalid' });
   });
 
@@ -192,7 +262,7 @@ describe('Workflow stored Account content', () => {
 
   it('fails closed for mode, row, Run and purpose replay', () => {
     const encryptedProgress = sealWorkflowProgressStoredEnvelopeV1({
-      mode: 'e2ee', material, randomBytes, binding: progressBinding,
+      mode: 'e2ee', runDataKey, randomBytes, binding: progressBinding,
       progress: {
         kind: 'happier.workflow-progress.v1',
         invocationPath: { blockId: '$root', scope: [] },
@@ -200,15 +270,15 @@ describe('Workflow stored Account content', () => {
       },
     });
     expect(openWorkflowProgressStoredEnvelopeV1({
-      mode: 'e2ee', material, envelope: encryptedProgress,
+      mode: 'e2ee', runDataKey, envelope: encryptedProgress,
       binding: { ...progressBinding, recordId: 'row-2' },
     })).toEqual({ kind: 'bindingMismatch' });
     expect(openWorkflowProgressStoredEnvelopeV1({
-      mode: 'e2ee', material, envelope: encryptedProgress,
+      mode: 'e2ee', runDataKey, envelope: encryptedProgress,
       binding: { ...progressBinding, runId: 'run-2' },
     })).toEqual({ kind: 'bindingMismatch' });
     expect(openWorkflowFinalResultStoredEnvelopeV1({
-      mode: 'e2ee', material, envelope: encryptedProgress, binding: finalResultBinding,
+      mode: 'e2ee', runDataKey, envelope: encryptedProgress, binding: finalResultBinding,
     })).toEqual({ kind: 'contentInvalid' });
     expect(validateWorkflowStoredEnvelopeOuterForModeV1({
       mode: 'plain', envelope: encryptedProgress, binding: progressBinding,

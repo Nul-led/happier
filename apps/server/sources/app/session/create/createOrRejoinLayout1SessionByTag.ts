@@ -27,6 +27,7 @@ import { classifyLayout1SessionCreateThrow } from "./createFreshBoundLayout1Sess
 import type { PreparedLayout1SessionCreate } from "./prepareLayout1SessionCreate";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { restoreSessionTagRejoinInTx } from "./restoreSessionTagRejoinInTx";
+import type { ExternalActionExecutionAuthorizationBindingV1 } from "@happier-dev/protocol/actions";
 
 /**
  * Ordinary released create-or-rejoin identity: `(accountId, tag)` owns
@@ -132,6 +133,7 @@ export async function createOrRejoinLayout1SessionByTagInTx(
     tx: Tx,
     prepared: PreparedLayout1SessionCreate,
     authentication: SessionAccessAuthentication,
+    sessionCreationAuthorization?: ExternalActionExecutionAuthorizationBindingV1,
 ): Promise<Layout1SessionCreateOutcome> {
     const invariants = await ensureLayout1SessionCreateInvariantsInTx(tx, prepared);
     if (!invariants.ok) {
@@ -150,6 +152,7 @@ export async function createOrRejoinLayout1SessionByTagInTx(
         effectiveEncryptionMode: invariants.effectiveEncryptionMode,
         ownerAccountMode: invariants.accountEncryptionMode,
         authentication,
+        sessionCreationAuthorization,
     });
     return {
         kind: "created",
@@ -194,9 +197,10 @@ export async function rejoinLayout1SessionByTagInTx(
 export async function createOrRejoinLayout1SessionByTag(
     prepared: PreparedLayout1SessionCreate,
     authentication: SessionAccessAuthentication,
+    sessionCreationAuthorization?: ExternalActionExecutionAuthorizationBindingV1,
 ): Promise<Layout1SessionCreateOutcome> {
     try {
-        const outcome = await inTx(async (tx) => createOrRejoinLayout1SessionByTagInTx(tx, prepared, authentication));
+        const outcome = await inTx(async (tx) => createOrRejoinLayout1SessionByTagInTx(tx, prepared, authentication, sessionCreationAuthorization));
         if (outcome.kind === "rejoined" && outcome.publication) {
             await publishSessionArchiveTransition(outcome.publication);
         }

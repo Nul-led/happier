@@ -27,7 +27,7 @@ import {
     type ExternalActionDaemonDispatcher,
 } from "@/app/api/socket/externalActionDispatcher";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
-import { auth } from "@/app/auth/auth";
+import { auth, ApiTokenOperationError } from "@/app/auth/auth";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
@@ -170,6 +170,7 @@ function readExternalActionRequestPrincipal(
         accountId: verified.accountId,
         principalId: verified.principalId,
         credentialId: verified.credentialId,
+        grant: verified.grant,
         authority: verified.authority,
     };
 }
@@ -192,7 +193,7 @@ export function registerExternalActionRoutes(
                 + EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_REQUEST_FRAMING_BYTES,
             config: {
                 allowApiToken: true,
-                cors: false,
+                allowScopedApiToken: true,
                 connectionAuthFailureError: "invalid_token",
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "actions"),
             },
@@ -233,18 +234,26 @@ export function registerExternalActionRoutes(
             ) {
                 return sendExternalActionHttpError(reply, "target_unavailable", body.data.envelope.requestId);
             }
-            const authorization = await auth.mintExternalActionExecutionAuthorization({
-                serverIdentityId: await getOrCreateServerIdentityId(),
-                accountId: principal.accountId,
-                principalId: principal.principalId,
-                credentialId: principal.credentialId,
-                machineId: body.data.machineId,
-                actionId: actionId.data,
-                requestId: body.data.envelope.requestId ?? randomUUID(),
-                requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(body.data.envelope),
-                target,
-            });
-            return reply.header("cache-control", "no-store").send(authorization);
+            try {
+                const authorization = await auth.mintExternalActionExecutionAuthorization({
+                    serverIdentityId: await getOrCreateServerIdentityId(),
+                    accountId: principal.accountId,
+                    principalId: principal.principalId,
+                    credentialId: principal.credentialId,
+                    grant: principal.grant,
+                    machineId: body.data.machineId,
+                    actionId: actionId.data,
+                    requestId: body.data.envelope.requestId ?? randomUUID(),
+                    requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(body.data.envelope),
+                    target,
+                }, { ...(body.data.envelope.v === 1 ? { input: body.data.envelope.input } : {}) });
+                return reply.header("cache-control", "no-store").send(authorization);
+            } catch (error) {
+                if (error instanceof ApiTokenOperationError && (error.code === "credential_scope_denied" || error.code === "invalid_token")) {
+                    return sendExternalActionHttpError(reply, error.code, body.data.envelope.requestId);
+                }
+                throw error;
+            }
         },
     );
 
@@ -253,19 +262,12 @@ export function registerExternalActionRoutes(
         {
             config: {
                 allowApiToken: true,
-                cors: false,
                 connectionAuthFailureError: "invalid_token",
             },
             preHandler: app.authenticate,
         },
         verifyExternalActionExecutionAuthorizationRoute,
     );
-
-    // Explicitly shadow global CORS handling: this public Action endpoint is
-    // bearer-only and must not become browser-callable through preflight.
-    app.options<{ Params: ExternalActionRouteParams }>(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, {
-        config: { cors: false },
-    }, async (_request, reply) => reply.header("cache-control", "no-store").code(404).send());
 
     app.post<{
         Params: ExternalActionRouteParams;
@@ -274,7 +276,7 @@ export function registerExternalActionRoutes(
         bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
         config: {
             allowApiToken: true,
-            cors: false,
+            allowScopedApiToken: true,
             connectionAuthFailureError: "invalid_token",
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "actions"),
         },
@@ -338,6 +340,7 @@ export function registerExternalActionRoutes(
                 return sendExternalActionSubmittedUnknown(reply);
             }
             if (result.kind === "placement_error") {
+                if (result.code === "credential_scope_denied") return sendExternalActionHttpError(reply, result.code, envelope.data.requestId);
                 if (envelope.data.v === 2) {
                     return sendExternalActionHttpError(reply, result.code, envelope.data.requestId);
                 }

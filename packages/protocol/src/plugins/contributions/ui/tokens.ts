@@ -23,6 +23,19 @@ export const PLUGIN_UI_ICON_TOKENS_V1 = [
   'search',
   'change-open',
   'change-complete',
+  // Kinds and marks a triage-style list needs to tell entries apart at a
+  // glance: an issue, an error group, and a pinned entry.
+  'issue',
+  'bug',
+  'pin',
+  // A destination about external conversations (two overlapping speech
+  // bubbles, distinct from a Session's single bubble), and a paused state mark.
+  'conversations',
+  'pause',
+  // Whole-surface failures distinguish temporary unavailability from denied access.
+  'failure',
+  'unavailable',
+  'denied',
 ] as const;
 
 export const PluginUiIconTokenV1Schema = z.enum(PLUGIN_UI_ICON_TOKENS_V1);

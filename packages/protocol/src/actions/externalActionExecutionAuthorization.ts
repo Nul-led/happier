@@ -3,11 +3,35 @@ import { computeCanonicalDomainSeparatedDigest, encodeCanonicalLengthDelimited }
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { signEd25519Message, verifyEd25519Signature } from '../crypto/ed25519.js';
 import { MachineInstallationPrivateKeySchema, MachineInstallationPublicKeySchema } from '../machines/identity/installationIdentity.js';
-import { ExternalActionRequestEnvelopeSchema, ExternalActionTargetV1Schema, type ExternalActionTargetV1, type ExternalActionRequestEnvelope } from './externalActionApi.js';
+import { SOCKET_RPC_EVENTS } from '../rpc/socket.js';
+import { SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1 } from '../sessions/messages/sessionPendingMachineAdmissionV1.js';
+import { SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2 } from '../sessions/messages/sessionPendingExecutionRunMachineAdmissionV2.js';
+
+export type ExternalActionMachineRpcEventV1 = typeof SOCKET_RPC_EVENTS.CALL
+  | typeof SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1
+  | typeof SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2;
+import { ExternalActionRequestEnvelopeSchema, ExternalActionRequestIdV1Schema, ExternalActionTargetV1Schema, type ExternalActionTargetV1, type ExternalActionRequestEnvelope } from './externalActionApi.js';
 
 export function computeExternalActionRequestEnvelopeDigestV1(envelope: ExternalActionRequestEnvelope): string {
   return computeCanonicalDomainSeparatedDigest('happier-external-action-envelope-v1', [
     createCanonicalJsonSigningInput(ExternalActionRequestEnvelopeSchema.parse(envelope)),
+  ]);
+}
+
+/** Binds the real Session RPC carrier without reinterpreting its ciphertext as an Action envelope. */
+export function computeExternalActionSocketRpcRequestDigestV1(request: Readonly<{
+  method: string;
+  requestId: string;
+  params?: unknown;
+  target: Extract<ExternalActionTargetV1, { kind: 'session' }>;
+}>): string {
+  const target = ExternalActionTargetV1Schema.parse(request.target);
+  if (target.kind !== 'session') throw new TypeError('Session input RPC authorization requires a Session target');
+  return computeCanonicalDomainSeparatedDigest('happier-external-action-session-rpc-v1', [
+    request.method, ExternalActionRequestIdV1Schema.parse(request.requestId),
+    createCanonicalJsonSigningInput(target),
+    request.params === undefined ? 'absent' : 'json',
+    createCanonicalJsonSigningInput(request.params === undefined ? null : request.params),
   ]);
 }
 
@@ -50,18 +74,23 @@ type MachineRpcRequest = Readonly<{
   effectActionId: string;
   target: ExternalActionTargetV1;
   installationId: string;
-  /** Caller supplies the carrier identity; production binds SOCKET_RPC_EVENTS.CALL. */
-  event: string;
+  /** The transport owner supplies its finite carrier; omission retains the released CALL bytes. */
+  event?: string;
   method: string;
   requestId: string;
   params?: unknown;
 }>;
 
 function machineRpcRequestBytes(request: MachineRpcRequest): Uint8Array {
+  const event = request.event ?? SOCKET_RPC_EVENTS.CALL;
+  if (event !== SOCKET_RPC_EVENTS.CALL && event !== SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1
+    && event !== SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2) {
+    throw new TypeError('Unsupported external Action Machine carrier');
+  }
   return encodeCanonicalLengthDelimited([
     'happier-external-action-machine-rpc-v1', request.authorizationToken,
     request.effectActionId, request.installationId,
-    request.event,
+    event,
     createCanonicalJsonSigningInput(ExternalActionTargetV1Schema.parse(request.target)),
     request.method, request.requestId,
     request.params === undefined ? 'absent' : 'json',

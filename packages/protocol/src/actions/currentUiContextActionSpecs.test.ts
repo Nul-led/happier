@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { getActionSpec } from './actionSpecs.js';
 
 describe('current UI context host ActionSpecs', () => {
+  it('exposes mounted palette commands to client-backed agent, MCP, and CLI callers', () => {
+    for (const actionId of ['ui.command_palette.list', 'ui.command_palette.invoke'] as const) {
+      const spec = getActionSpec(actionId);
+      expect(spec.executionPlacement).toBe('client');
+      expect(spec.surfaces).toMatchObject({ ui: true, agent: true, mcp: true, cli: true, rpc: false });
+      expect(spec.inputSchema.safeParse(actionId.endsWith('.list') ? {} : { commandId: 'account' }).success).toBe(true);
+    }
+    expect(getActionSpec('ui.command_palette.invoke').inputSchema.safeParse({ commandId: 'account', href: '/dev' }).success).toBe(false);
+  });
+
   it('publishes the stable read, opaque-command, and generic Action bindings', () => {
     const read = getActionSpec('ui.current_context.read' as never);
     const invoke = getActionSpec('ui.current_context.command.invoke' as never);

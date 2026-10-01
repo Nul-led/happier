@@ -1,4 +1,7 @@
-import { resolveAuthMethodIdForAccountIdentityProvider } from "@/app/auth/methods/registry";
+import {
+    isAccountIdentityEligibleForGenericPresentation,
+    resolveAuthMethodIdForAccountIdentityProvider,
+} from "@/app/auth/methods/registry";
 import type { Tx } from "@/storage/inTx";
 
 import type { EffectiveAuthMethodDecision } from "@/app/auth/methods/effectiveAuthMethods";
@@ -212,6 +215,11 @@ export type AccountLoginViability = Readonly<{
 export type AccountAdministrationAuthenticationProjection = Readonly<{
     signInEmail: string | null;
     usableMethodIds: readonly string[];
+    /**
+     * Provider ids of the Account's linked identities (GitHub, an OIDC provider), never the
+     * provider's user id or login. Native email locators are Account Security's, not providers.
+     */
+    linkedProviderIds: readonly string[];
 }>;
 
 /**
@@ -265,7 +273,11 @@ export async function readAccountAdministrationAuthenticationByIdInTx(
         const signInEmail = account.AccountIdentity.find((identity) =>
             resolveAuthMethodIdForAccountIdentityProvider(input.env, identity.provider) === "email_password")
             ?.providerUserId ?? null;
-        return [account.id, Object.freeze({ signInEmail, usableMethodIds })] as const;
+        const linkedProviderIds = [...new Set(account.AccountIdentity
+            .map((identity) => identity.provider)
+            .filter((provider) => isAccountIdentityEligibleForGenericPresentation(input.env, provider)))]
+            .sort();
+        return [account.id, Object.freeze({ signInEmail, usableMethodIds, linkedProviderIds })] as const;
     }));
 }
 

@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { createFakeRouteApp, getRouteEntry } from "../../testkit/routeHarness";
+import { registerAccountAuthRoutes } from "./registerAccountAuthRoutes";
+import { registerTerminalAuthRequestRoutes } from "./registerTerminalAuthRequestRoutes";
+import { registerHomeLoginApprovalRoutes } from "./homeApprovalGate";
 import { resolveTerminalAuthRequestPolicyFromEnv } from "./terminalAuthRequestPolicy";
 
 describe("enrollment auth route rate limits", () => {
-    it("registers account, terminal, and Home approval endpoints with canonical rate limits", async () => {
-        const [
-            { registerAccountAuthRoutes },
-            { registerTerminalAuthRequestRoutes },
-            { registerHomeLoginApprovalRoutes },
-        ] = await Promise.all([
-            import("./registerAccountAuthRoutes"),
-            import("./registerTerminalAuthRequestRoutes"),
-            import("./homeApprovalGate"),
-        ]);
+    it("registers account, terminal, and Home approval endpoints with canonical rate limits", () => {
         const app = createFakeRouteApp();
         registerAccountAuthRoutes(app as any);
         const terminalAuthPolicy = resolveTerminalAuthRequestPolicyFromEnv({});
@@ -22,6 +16,12 @@ describe("enrollment auth route rate limits", () => {
             isTerminalAuthExpired: (createdAt) => Date.now() - createdAt.getTime() > terminalAuthPolicy.ttlMs,
         });
         registerHomeLoginApprovalRoutes(app as any);
+
+        for (const path of ["/v1/auth/account/request", "/v2/auth/account/request"]) {
+            expect(getRouteEntry(app, "POST", path).opts.config?.rateLimit).toEqual(
+                expect.objectContaining({ max: 240, timeWindow: "1 minute" }),
+            );
+        }
 
         for (const key of [
             "POST /v1/auth/account/request",

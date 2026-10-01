@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     signAccountContentKeyBindingV1,
-    ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     encodePlainArtifactStoredContent,
 } from "@happier-dev/protocol";
@@ -12,35 +11,19 @@ import { createDbMocks, installDbModuleMock } from "../testkit/dbMocks";
 import { createInTxHarness } from "../testkit/txHarness";
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 
-const emitUpdate = vi.fn();
-const buildNewArtifactUpdate = vi.fn((_artifact: any, updSeq: number, updId: string) => ({
-    id: updId,
-    seq: updSeq,
-    body: { t: "new-artifact" },
-}));
-const buildUpdateArtifactUpdate = vi.fn((_artifactId: string, updSeq: number, updId: string) => ({
-    id: updId,
-    seq: updSeq,
-    body: { t: "update-artifact" },
-}));
-const buildDeleteArtifactUpdate = vi.fn((_artifactId: string, updSeq: number, updId: string) => ({
-    id: updId,
-    seq: updSeq,
-    body: { t: "delete-artifact" },
-}));
+vi.mock("@/app/api/socket/socketCredentialCurrentness", async () => (
+    await import("../testkit/socketHarness")
+).createCurrentSocketCredentialModuleMock());
 
-vi.mock("@/app/events/eventRouter", () => ({
+const emitUpdate = vi.fn();
+vi.mock("@/app/events/eventRouter", async () => ({
+    ...await import("@/app/events/eventPayloadBuilders"),
     eventRouter: { emitUpdate },
-    buildNewArtifactUpdate,
-    buildUpdateArtifactUpdate,
-    buildDeleteArtifactUpdate,
 }));
+vi.mock("@/app/events/connectionEventRouter", () => ({ eventRouter: { emitUpdate } }));
 
 const randomKeyNaked = vi.fn(() => "upd-id");
 vi.mock("@/utils/keys/randomKeyNaked", () => ({ randomKeyNaked }));
-
-const markAccountChanged = vi.fn(async () => 555);
-vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
 
 const testAccountSigningKeyPair = tweetnacl.sign.keyPair();
 const testAccountContentKeyPair = tweetnacl.box.keyPair();
@@ -62,40 +45,46 @@ vi.mock("@/app/monitoring/metrics/index", () => ({
 vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
 
 const txDbMocks = createDbMocks({
-    account: ["findUnique"],
+    account: ["findUnique", "update"],
+    accountChange: ["upsert"],
     artifact: ["findFirst", "findUnique", "updateMany", "create", "delete"],
 } as const);
 
 vi.mock("@/storage/inTx", () => {
     const { inTx, afterTx } = createInTxHarness(() => ({
         account: txDbMocks.db.account,
-        artifact: txDbMocks.db.artifact,
+        accountChange: txDbMocks.db.accountChange,
+        // The persistent boundary returns joined owner/grant facts when selected.
+        artifact: { ...txDbMocks.db.artifact, findFirst: async (...args: unknown[]) => {
+            const row = await txDbMocks.db.artifact.findFirst(...args);
+            if (!row) return row;
+            const accountId = row.accountId ?? "u1";
+            return { ...row, accountId, account: row.account ?? await txDbMocks.db.account.findUnique({ where: { id: accountId } }),
+                accountGrants: row.accountGrants ?? [], teamGrants: row.teamGrants ?? [], groupGrants: row.groupGrants ?? [] };
+        } },
     }));
 
     return { afterTx, inTx };
 });
 
-const dbMocks = createDbMocks({
-    account: ["findUnique"],
-    artifact: ["findFirst", "findUnique"],
-} as const);
-const dbAccountFindUnique = dbMocks.db.account.findUnique;
-const dbArtifactFindUnique = dbMocks.db.artifact.findUnique;
-const dbArtifactFindFirst = dbMocks.db.artifact.findFirst;
+const dbAccountFindUnique = txDbMocks.db.account.findUnique;
+const dbArtifactFindUnique = txDbMocks.db.artifact.findUnique;
+const dbArtifactFindFirst = txDbMocks.db.artifact.findFirst;
 installDbModuleMock(() => ({
-    db: dbMocks.db,
+    db: txDbMocks.db,
 }));
 
 describe("artifactUpdateHandler (AccountChange integration)", () => {
     beforeEach(() => {
         process.env.HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST = "none";
         vi.clearAllMocks();
-        dbMocks.reset();
         txDbMocks.reset();
 
         dbArtifactFindUnique.mockResolvedValue(null);
         dbAccountFindUnique.mockResolvedValue(readyE2eeAccount);
         txDbMocks.db.account.findUnique.mockResolvedValue(readyE2eeAccount);
+        txDbMocks.db.account.update.mockResolvedValue({ seq: 555 });
+        txDbMocks.db.accountChange.upsert.mockResolvedValue({});
     });
 
     const currentSocket = () => createFakeSocket({
@@ -109,17 +98,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         },
     });
 
-    const upgradeRequired = {
-        error: "client-upgrade-required",
-        requirement: {
-            v: 1,
-            kind: "account-stored-content",
-            minimumProtocolVersion:
-                ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
-        },
-    };
-
-    it("requires current stored-content support before reading a marked artifact", async () => {
+    it("reads a marked Artifact without a component-version declaration", async () => {
         dbAccountFindUnique.mockResolvedValue({ encryptionMode: "plain" });
         dbArtifactFindFirst.mockResolvedValue({
             id: "plain-read",
@@ -144,10 +123,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             callback,
         );
 
-        expect(callback).toHaveBeenCalledWith(upgradeRequired);
-        expect(callback).not.toHaveBeenCalledWith(
-            expect.objectContaining({ result: "success" }),
-        );
+        expect(callback).toHaveBeenCalledWith(expect.objectContaining({ result: "success" }));
 
         const socket = currentSocket();
         artifactUpdateHandler("u1", socket as any);
@@ -235,18 +211,13 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             callback,
         );
 
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a1" }),
-        );
-        expect(buildUpdateArtifactUpdate).toHaveBeenCalledWith(
-            "a1",
-            555,
-            expect.any(String),
-            { value: "aGVsbG8=", version: 2 },
-            { value: "d29ybGQ=", version: 3 },
-        );
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a1", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ userId: "u1", payload: expect.objectContaining({
+            seq: 555, body: { t: "update-artifact", artifactId: "a1",
+                header: { value: "aGVsbG8=", version: 2 }, body: { value: "d29ybGQ=", version: 3 } },
+        }) }));
         expect(callback).toHaveBeenCalledWith(
             expect.objectContaining({
                 result: "success",
@@ -256,7 +227,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         );
     });
 
-    it("requires current stored-content support for a marked update, then updates once for a current socket", async () => {
+    it("updates a marked Artifact without a component-version declaration", async () => {
         txDbMocks.db.account.findUnique.mockResolvedValue({
             encryptionMode: "plain",
             publicKey: null,
@@ -295,10 +266,8 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             header: { data: nextHeader, expectedVersion: 1 },
         }, legacyCallback);
 
-        expect(legacyCallback).toHaveBeenCalledWith(upgradeRequired);
-        expect(txDbMocks.db.artifact.updateMany).not.toHaveBeenCalled();
-        expect(markAccountChanged).not.toHaveBeenCalled();
-        expect(emitUpdate).not.toHaveBeenCalled();
+        expect(legacyCallback).toHaveBeenCalledWith(expect.objectContaining({ result: "success" }));
+        txDbMocks.db.artifact.updateMany.mockClear();
 
         const socket = currentSocket();
         artifactUpdateHandler("u1", socket as any);
@@ -309,8 +278,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         }, callback);
 
         expect(txDbMocks.db.artifact.updateMany).toHaveBeenCalledOnce();
-        expect(markAccountChanged).toHaveBeenCalledOnce();
-        expect(emitUpdate).toHaveBeenCalledOnce();
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ entityId: "plain-update", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
+            seq: 555, body: expect.objectContaining({ t: "update-artifact", artifactId: "plain-update" }),
+        }) }));
         expect(callback).toHaveBeenCalledWith({
             result: "success",
             header: { version: 2, data: nextHeader },
@@ -341,12 +314,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         const callback = vi.fn();
         await handler({ id: "a2", header: "aGVhZA==", body: "Ym9keQ==", dataEncryptionKey: "a2V5" }, callback);
 
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a2" }),
-        );
-        expect(buildNewArtifactUpdate).toHaveBeenCalledWith(expect.anything(), 555, expect.any(String));
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a2", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
+            seq: 555, body: expect.objectContaining({ t: "new-artifact", artifactId: "a2" }),
+        }) }));
         expect(callback).toHaveBeenCalledWith(
             expect.objectContaining({
                 result: "success",
@@ -374,9 +347,8 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
         }, callback);
 
-        expect(callback).toHaveBeenCalledWith(upgradeRequired);
         expect(txDbMocks.db.artifact.create).not.toHaveBeenCalled();
-        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
         expect(emitUpdate).not.toHaveBeenCalled();
 
         txDbMocks.db.artifact.create.mockResolvedValue({
@@ -410,8 +382,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         }, currentCallback);
 
         expect(txDbMocks.db.artifact.create).toHaveBeenCalledOnce();
-        expect(markAccountChanged).toHaveBeenCalledOnce();
-        expect(emitUpdate).toHaveBeenCalledOnce();
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ entityId: "plain-create", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
+            seq: 555, body: expect.objectContaining({ t: "new-artifact", artifactId: "plain-create" }),
+        }) }));
         expect(currentCallback).toHaveBeenCalledWith({
             result: "success",
             artifact: expect.objectContaining({ id: "plain-create" }),
@@ -434,12 +410,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         const callback = vi.fn();
         await handler({ artifactId: "a3" }, callback);
 
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a3" }),
-        );
-        expect(buildDeleteArtifactUpdate).toHaveBeenCalledWith("a3", 555, expect.any(String));
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ accountId: "u1", kind: "artifact", entityId: "a3", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
+            seq: 555, body: { t: "delete-artifact", artifactId: "a3" },
+        }) }));
         expect(callback).toHaveBeenCalledWith({ result: "success" });
     });
 
@@ -465,11 +441,14 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             message: "Internal error",
         });
         expect(txDbMocks.db.artifact.delete).not.toHaveBeenCalled();
-        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 
     it("preserves a marked artifact for a legacy delete and deletes once for a current socket", async () => {
+        txDbMocks.db.account.findUnique.mockResolvedValue({
+            encryptionMode: "plain", publicKey: null, contentPublicKey: null, contentPublicKeySig: null,
+        });
         txDbMocks.db.artifact.findFirst.mockResolvedValue({
             id: "plain-delete",
             dataEncryptionKey: privacyKit.decodeBase64(ARTIFACT_PLAIN_DATA_KEY_MARKER),
@@ -485,9 +464,8 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
             legacyCallback,
         );
 
-        expect(legacyCallback).toHaveBeenCalledWith(upgradeRequired);
         expect(txDbMocks.db.artifact.delete).not.toHaveBeenCalled();
-        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(txDbMocks.db.accountChange.upsert).not.toHaveBeenCalled();
         expect(emitUpdate).not.toHaveBeenCalled();
 
         const socket = currentSocket();
@@ -499,8 +477,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         );
 
         expect(txDbMocks.db.artifact.delete).toHaveBeenCalledOnce();
-        expect(markAccountChanged).toHaveBeenCalledOnce();
-        expect(emitUpdate).toHaveBeenCalledOnce();
+        expect(txDbMocks.db.accountChange.upsert).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({ entityId: "plain-delete", cursor: 555 }),
+        }));
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({
+            seq: 555, body: { t: "delete-artifact", artifactId: "plain-delete" },
+        }) }));
         expect(callback).toHaveBeenCalledWith({ result: "success" });
     });
 

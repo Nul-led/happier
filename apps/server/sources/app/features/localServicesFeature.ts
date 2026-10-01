@@ -1,4 +1,5 @@
 import type { FeaturesPayloadDelta } from "./types";
+import { resolveLocalServiceHostOrigin } from "@/app/local/services/preview/origin";
 import {
     readLocalServicesFeatureEnv,
     readMachineTunnelFeatureEnv,
@@ -11,15 +12,6 @@ import {
 
 function resolvePublicBaseUrl(env: NodeJS.ProcessEnv): string | null {
     return resolveConfiguredPublicServerUrl(env) ?? normalizeHttpUrl(String(env.PUBLIC_URL ?? ""));
-}
-
-function isHttpsUrl(value: string | null): boolean {
-    if (!value) return false;
-    try {
-        return new URL(value).protocol === "https:";
-    } catch {
-        return false;
-    }
 }
 
 export function resolveLocalServicesFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
@@ -47,8 +39,11 @@ export function resolveLocalServicesFeature(env: NodeJS.ProcessEnv): FeaturesPay
         if (!peerMediationConfig.substrateEnabled) return ["peer_mediation_grant_signing_unavailable"];
         return [];
     })();
-    const publicDnsTlsHostModeAvailable = Boolean(featureConfig.previewHostOriginBaseDomain)
-        && isHttpsUrl(resolvePublicBaseUrl(env));
+    const publicDnsTlsHostModeAvailable = resolveLocalServiceHostOrigin({
+        publicBaseUrl: resolvePublicBaseUrl(env) ?? '',
+        hostOriginBaseDomain: featureConfig.previewHostOriginBaseDomain,
+        resourceId: 'preview',
+    }).ok;
     const publicAllowedModesConfigured = featureConfig.publicPolicy.allowedModes.length > 0;
     const publicMaxTtlConfigured = typeof featureConfig.publicPolicy.maxTtlMs === "number";
     const publicAuditSinkAvailable = featureConfig.publicAuditDependency.kind !== "none";
@@ -137,8 +132,8 @@ export function resolveLocalServicesFeature(env: NodeJS.ProcessEnv): FeaturesPay
             localServices: {
                 preview: {
                     enabled: featureConfig.previewEnabled,
-                    hostOriginAvailable: Boolean(featureConfig.previewHostOriginBaseDomain),
-                    pathModeAvailable: featureConfig.previewEnabled,
+                    hostOriginAvailable: publicDnsTlsHostModeAvailable,
+                    pathModeAvailable: false,
                     pmsRelayReady: pmsPreviewReady,
                     pmsStreamingReady: pmsPreviewReady,
                     webSocketSupport: pmsPreviewReady,

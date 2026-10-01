@@ -120,6 +120,25 @@ describe("directory source administration", () => {
 
     it("authorizes through manageAuthentication and returns bounded safe projections", async () => {
         const f = await createFixture();
+        await db.teamProvisionedIdentity.createMany({ data: [
+            {
+                directorySourceId: f.source.id,
+                teamId: f.team.id,
+                externalUserId: "another-bound-person",
+                state: "active",
+                boundAccountId: f.managed.id,
+            },
+            {
+                directorySourceId: f.source.id,
+                teamId: f.team.id,
+                externalUserId: "unbound-person",
+                state: "active",
+            },
+        ] });
+        await db.teamDirectoryGroupMember.createMany({ data: [
+            { directorySourceId: f.source.id, externalGroupId: f.group.externalGroupId, externalUserId: "another-bound-person" },
+            { directorySourceId: f.source.id, externalGroupId: f.group.externalGroupId, externalUserId: "unbound-person" },
+        ] });
         await db.account.update({ where: { id: f.outsider.id }, data: { homeRole: "owner" } });
         await expect(listDirectorySourcesForActor({
             v: 1, teamId: f.team.id, actorAccountId: f.outsider.id,
@@ -150,7 +169,10 @@ describe("directory source administration", () => {
             actorAccountId: f.owner.id,
         })).resolves.toMatchObject({
             ok: true,
-            value: { items: [{ id: f.person.id, accountBinding: { state: "bound", accountId: f.managed.id } }] },
+            value: { items: expect.arrayContaining([expect.objectContaining({
+                id: f.person.id,
+                accountBinding: { state: "bound", accountId: f.managed.id, teamMembershipId: null },
+            })]) },
         });
         await expect(listDirectoryGroupsForActor({
             v: 1,
@@ -159,7 +181,7 @@ describe("directory source administration", () => {
             actorAccountId: f.owner.id,
         })).resolves.toMatchObject({
             ok: true,
-            value: { items: [{ id: f.group.id, memberCount: 1, mapping: { state: "unbound" } }] },
+            value: { items: [{ id: f.group.id, memberCount: 3, boundAccountCount: 1, unboundPeopleCount: 1, mapping: { state: "unbound" } }] },
         });
 
         await db.teamDirectorySource.update({
@@ -194,8 +216,46 @@ describe("directory source administration", () => {
             actorAccountId: f.owner.id,
         })).resolves.toMatchObject({
             ok: true,
-            value: { items: [{ id: f.group.id, memberCount: null }] },
+            value: { items: [{ id: f.group.id, memberCount: null, boundAccountCount: null, unboundPeopleCount: null }] },
         });
+    });
+
+    it("projects the bound Account's same-Team membership without claiming its management", async () => {
+        const f = await createFixture();
+        const nativeMembership = await db.teamMembership.findUniqueOrThrow({
+            where: { teamId_accountId: { teamId: f.team.id, accountId: f.member.id } },
+        });
+        const nativePerson = await db.teamProvisionedIdentity.create({
+            data: {
+                directorySourceId: f.source.id,
+                teamId: f.team.id,
+                externalUserId: "native-person",
+                state: "active",
+                boundAccountId: f.member.id,
+            },
+        });
+        const otherTeam = await db.team.create({ data: { name: "Other Team" } });
+        await db.teamMembership.create({
+            data: { teamId: otherTeam.id, accountId: f.managed.id, role: "member" },
+        });
+
+        await expect(listDirectoryPeopleForActor({
+            v: 1, teamId: f.team.id, sourceId: f.source.id, actorAccountId: f.owner.id,
+        })).resolves.toMatchObject({
+            ok: true,
+            value: { items: expect.arrayContaining([
+                expect.objectContaining({
+                    id: nativePerson.id,
+                    accountBinding: { state: "bound", accountId: f.member.id, teamMembershipId: nativeMembership.id },
+                }),
+                expect.objectContaining({
+                    id: f.person.id,
+                    accountBinding: { state: "bound", accountId: f.managed.id, teamMembershipId: null },
+                }),
+            ]) },
+        });
+        await expect(db.teamProvisionedIdentity.findUniqueOrThrow({ where: { id: nativePerson.id } }))
+            .resolves.toMatchObject({ teamMembershipId: null, teamMembershipTeamId: null });
     });
 
     it("keeps public removal automation behind current Team authority and credential qualification", async () => {

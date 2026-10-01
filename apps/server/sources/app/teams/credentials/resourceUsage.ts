@@ -228,16 +228,18 @@ function buildSeries(
  *
  * The codec only ever compares this value for equality, so a digest binds the
  * cursor to exactly the same query the literal identity did. Width matters:
- * the identity carries a caller-chosen resource id and the cursor carries a
- * caller-shaped breakdown key, so spelling both out let ordinary data — a
- * vendor-prefixed model id, an Account id — mint a cursor past the codec's own
- * bound, and page one of a wide breakdown could not be delivered at all.
+ * both the query identity and its breakdown anchor must fit the shared codec
+ * without limiting the resource or model identities returned in the page.
  */
 function usageBreakdownCursorQueryKey(input: TeamCredentialUsageQueryInputV1): string {
     return createHash('sha256').update(JSON.stringify([
-        'team-credential-usage-breakdown:v1', input.resourceId, input.startMs, input.endMs,
+        'team-credential-usage-breakdown:v2', input.resourceId, input.startMs, input.endMs,
         input.granularity, input.costMode, input.breakdown ?? null,
     ]), 'utf8').digest('base64url');
+}
+
+function usageBreakdownCursorAnchor(key: string): string {
+    return createHash('sha256').update(key, 'utf8').digest('base64url');
 }
 
 /**
@@ -403,20 +405,20 @@ export async function queryTeamCredentialUsage(
             : undefined;
         const cursorQueryKey = usageBreakdownCursorQueryKey(input);
         const decodedCursor = input.cursor ? decodeTeamKeysetCursorV1(input.cursor, cursorQueryKey) : null;
-        const afterKey = decodedCursor?.status === 'ok' ? readTeamKeysetTextV1(decodedCursor.parts[0]) : null;
-        if (input.cursor && (decodedCursor?.status !== 'ok' || afterKey === null)) {
+        const afterAnchor = decodedCursor?.status === 'ok' ? readTeamKeysetTextV1(decodedCursor.parts[0]) : null;
+        if (input.cursor && (decodedCursor?.status !== 'ok' || afterAnchor === null)) {
             return { ok: false as const, error: 'invalid_resource_input' as const };
         }
-        const pageStart = afterKey === null || !rankedBreakdown
+        const pageStart = afterAnchor === null || !rankedBreakdown
             ? 0
-            : rankedBreakdown.findIndex((entry) => entry.key === afterKey) + 1;
-        if (afterKey !== null && (!rankedBreakdown || pageStart === 0)) {
+            : rankedBreakdown.findIndex((entry) => usageBreakdownCursorAnchor(entry.key) === afterAnchor) + 1;
+        if (afterAnchor !== null && (!rankedBreakdown || pageStart === 0)) {
             return { ok: false as const, error: 'invalid_resource_input' as const };
         }
         const grouped = rankedBreakdown?.slice(pageStart, pageStart + 50);
         const lastBreakdown = grouped?.[grouped.length - 1];
         const nextCursor = rankedBreakdown && pageStart + 50 < rankedBreakdown.length && lastBreakdown
-            ? encodeTeamKeysetCursorV1({ queryKey: cursorQueryKey, parts: [lastBreakdown.key] })
+            ? encodeTeamKeysetCursorV1({ queryKey: cursorQueryKey, parts: [usageBreakdownCursorAnchor(lastBreakdown.key)] })
             : null;
         const breakdownLabels = grouped && authorizedBreakdown
             ? await resolveBreakdownLabelsInTx(tx, {

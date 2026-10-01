@@ -87,7 +87,11 @@ async function createDiscussion(params: Readonly<{
 describe('Account Follow service', () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => { harness = await createLightSqliteHarness({ tempDirPrefix: 'happier-follow-service-',
-        env: { HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true' } }); }, 180_000);
+        env: {
+            HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true',
+            HAPPIER_FEATURE_SHARING_SESSION__ENABLED: 'true',
+        },
+    }); }, 180_000);
     afterEach(async () => {
         await db.accountPushToken.deleteMany();
         await db.accountSessionReadState.deleteMany();
@@ -845,5 +849,44 @@ describe('Account Follow service', () => {
         expect(await db.accountSessionFollow.findUnique({ where: { accountId_sessionId: key } })).toMatchObject({
             following: false, notificationLevel: 'none', includeInVoice: false, voiceDeliveredFrontier: null,
         });
+    });
+
+    it('qualifies restricted Team auto-follow through the canonical access owner', async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: 'plain' } });
+        const viewer = await db.account.create({ data: {
+            publicKey: randomUUID(), encryptionMode: 'plain',
+            sessionAutoFollowDirect: true, sessionAutoFollowTeam: true,
+        } });
+        const session = await db.session.create({
+            data: { accountId: owner.id, tag: randomUUID(), metadata: '{}', encryptionMode: 'plain', seq: 10 },
+        });
+        const team = await db.team.create({ data: {
+            name: `restricted-follow-${randomUUID()}`,
+            authenticationPolicy: { v: 1, mode: 'restricted', accepted: [{ kind: 'home_method', methodId: 'github' }] },
+        } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: viewer.id, role: 'member' } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id, teamId: team.id, accessLevel: 'view', effectiveAt: new Date(0),
+        } });
+
+        await expect(inTx(tx => applySessionAutoFollowForRelationshipChangeInTx(tx, {
+            sessionId: session.id, accountIds: [viewer.id], relationship: 'team',
+        }))).resolves.toBe(0);
+        expect(await db.accountSessionFollow.findUnique({ where: {
+            accountId_sessionId: { accountId: viewer.id, sessionId: session.id },
+        } })).toBeNull();
+
+        // A separate direct-share arm qualifies the same Account even while the
+        // restricted Team remains unqualified; this is the canonical access
+        // composition, not a Team-policy bypass.
+        await db.sessionShare.create({ data: {
+            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: viewer.id, accessLevel: 'view',
+        } });
+        await expect(inTx(tx => applySessionAutoFollowForRelationshipChangeInTx(tx, {
+            sessionId: session.id, accountIds: [viewer.id], relationship: 'direct',
+        }))).resolves.toBe(1);
+        expect(await db.accountSessionFollow.findUnique({ where: {
+            accountId_sessionId: { accountId: viewer.id, sessionId: session.id },
+        } })).toMatchObject({ following: true, notificationLevel: 'important' });
     });
 });

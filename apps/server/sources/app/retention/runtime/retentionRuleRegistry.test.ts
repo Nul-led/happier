@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    createRetentionRuleRegistry,
-    readRetentionDomainDefinitions,
-} from './retentionRuleRegistry';
+import { readRetentionDomainDefinitions } from '@/app/retention/config/retentionDomains';
+
+import { createRetentionRuleRegistry } from './retentionRuleRegistry';
 
 describe('retention/createRetentionRuleRegistry', () => {
     it('registers one rule per supported v1 retention domain', () => {
@@ -25,6 +24,7 @@ describe('retention/createRetentionRuleRegistry', () => {
             'globalLocks',
             'automationRuns',
             'automationRunEvents',
+            'homeAdministrationEvents',
         ]);
     });
 

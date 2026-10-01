@@ -305,6 +305,21 @@ export type TeamCredentialDirectMaterialUpsertRequestV1 = z.infer<
   typeof TeamCredentialDirectMaterialUpsertRequestV1Schema
 >;
 
+export const TeamCredentialDirectMaterialWithdrawRequestV1Schema = z.object({
+  sourceMemberKey: SourceVersionSchema,
+  expectedResourceRevision: z.number().int().nonnegative(),
+  expectedPublishedSourceVersion: SourceVersionSchema,
+}).strict();
+export type TeamCredentialDirectMaterialWithdrawRequestV1 = z.infer<
+  typeof TeamCredentialDirectMaterialWithdrawRequestV1Schema
+>;
+export const TeamCredentialDirectMaterialWithdrawResponseV1Schema = z.object({
+  status: z.literal('withdrawn'),
+}).strict();
+export type TeamCredentialDirectMaterialWithdrawResponseV1 = z.infer<
+  typeof TeamCredentialDirectMaterialWithdrawResponseV1Schema
+>;
+
 export const TeamCredentialDirectMaterialUpsertResponseV1Schema = z.object({
   results: z.array(z.discriminatedUnion('status', [
     z.object({
@@ -366,6 +381,46 @@ export function computeTeamCredentialSourceMemberKeyV1(member: TeamCredentialSou
   );
 }
 
+const CompoundSourceVersionPrefix = 'v1:';
+const CompoundSourceVersionPartsSchema = z.tuple([SourceVersionSchema, SourceVersionSchema]);
+
+/** Home verifies the basis; only the source materializer can verify private configuration. */
+export function composeTeamCredentialSourceVersionV1(input: Readonly<{
+  sourceBasisVersion: string;
+  privateConfigurationFingerprint?: string | null;
+}>): string {
+  const basis = SourceVersionSchema.parse(input.sourceBasisVersion);
+  if (input.privateConfigurationFingerprint == null) return basis;
+  return SourceVersionSchema.parse(CompoundSourceVersionPrefix + JSON.stringify(
+    CompoundSourceVersionPartsSchema.parse([basis, input.privateConfigurationFingerprint]),
+  ));
+}
+
+export function parseTeamCredentialSourceVersionV1(version: string): Readonly<{
+  sourceBasisVersion: string;
+  privateConfigurationFingerprint: string | null;
+}> {
+  const parsed = SourceVersionSchema.parse(version);
+  if (!parsed.startsWith(CompoundSourceVersionPrefix)) {
+    return { sourceBasisVersion: parsed, privateConfigurationFingerprint: null };
+  }
+  const [sourceBasisVersion, privateConfigurationFingerprint] = CompoundSourceVersionPartsSchema.parse(
+    JSON.parse(parsed.slice(CompoundSourceVersionPrefix.length)),
+  );
+  if (composeTeamCredentialSourceVersionV1({ sourceBasisVersion, privateConfigurationFingerprint }) !== parsed) {
+    throw new Error('Noncanonical Team credential source version');
+  }
+  return { sourceBasisVersion, privateConfigurationFingerprint };
+}
+
+export function matchesTeamCredentialSourceVersionBasisV1(version: string, sourceBasisVersion: string): boolean {
+  try {
+    return parseTeamCredentialSourceVersionV1(version).sourceBasisVersion === sourceBasisVersion;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Complete currentness for one Connected Account snapshot. Configuration
  * and authentication-only changes deliberately invalidate material even when
@@ -379,10 +434,11 @@ export function computeTeamCredentialConnectedAccountSourceVersionV1(input: Read
   configurationRevision: string | null;
   authenticationModeId: string;
   contributionContractVersion: string;
+  privateConfigurationFingerprint?: string | null;
 }>): string {
   const member = TeamCredentialSourceMemberV1Schema.parse(input.sourceMember);
   if (member.kind !== 'connected_account') throw new Error('Expected a Connected Account source member');
-  return computeCanonicalDomainSeparatedDigest(
+  const sourceBasisVersion = computeCanonicalDomainSeparatedDigest(
     'happier.team-credential-connected-account-source-version.v1',
     [
       input.sourceAccountId,
@@ -394,6 +450,7 @@ export function computeTeamCredentialConnectedAccountSourceVersionV1(input: Read
       input.contributionContractVersion,
     ],
   );
+  return composeTeamCredentialSourceVersionV1({ sourceBasisVersion, privateConfigurationFingerprint: input.privateConfigurationFingerprint });
 }
 
 export function computeTeamCredentialPoolMemberSourceVersionV1(input: Readonly<{
@@ -401,14 +458,16 @@ export function computeTeamCredentialPoolMemberSourceVersionV1(input: Readonly<{
   poolIncarnation: string;
   memberEnabled: boolean;
 }>): string {
-  return computeCanonicalDomainSeparatedDigest(
+  const connected = parseTeamCredentialSourceVersionV1(input.connectedAccountSourceVersion);
+  const sourceBasisVersion = computeCanonicalDomainSeparatedDigest(
     'happier.team-credential-pool-member-source-version.v1',
     [
-      SourceVersionSchema.parse(input.connectedAccountSourceVersion),
+      connected.sourceBasisVersion,
       BoundedIdentitySchema.parse(input.poolIncarnation),
       input.memberEnabled ? 'enabled' : 'disabled',
     ],
   );
+  return composeTeamCredentialSourceVersionV1({ sourceBasisVersion, privateConfigurationFingerprint: connected.privateConfigurationFingerprint });
 }
 
 export function computeTeamCredentialProviderCredentialSlotSourceVersionV1(input: Readonly<{

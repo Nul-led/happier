@@ -4,3 +4,8 @@ export * from './proposals.js';
 export * from './snapshots.js';
 export * from './content.js';
 export * from './publicationTransport.js';
+export * from './findingIdentity.js';
+export * from './triageTransition.js';
+export * from './mutation.js';
+export * from './transport.js';
+export * from './queries.js';

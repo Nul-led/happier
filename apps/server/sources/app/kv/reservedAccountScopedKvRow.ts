@@ -166,6 +166,37 @@ export async function readReservedAccountScopedKvRowInTx<TEnvelope>(
     return { status: "present", revision: row.version, envelope };
 }
 
+/** Lists one reserved domain with the same Account and stored-envelope admission. */
+export async function listReservedAccountScopedKvRowsInTx<TEnvelope>(
+    tx: Tx,
+    input: Readonly<{
+        accountId: string;
+        physicalPrefix: string;
+        domain: ReservedAccountScopedKvRowDomain<TEnvelope>;
+    }>,
+): Promise<Readonly<{
+    status: "listed";
+    rows: readonly Readonly<{ physicalKey: string; revision: number; envelope: TEnvelope | null }>[];
+}> | ReservedAccountScopedKvRowFailure> {
+    const scope = await resolveAccountScopeInTx(tx, input.accountId);
+    if (scope.status !== "ready") return scope;
+    const storedRows = await tx.userKVStore.findMany({
+        where: { accountId: input.accountId, key: { startsWith: input.physicalPrefix } },
+        select: { key: true, version: true, value: true },
+        orderBy: { key: "asc" },
+    });
+    const rows: Array<{ physicalKey: string; revision: number; envelope: TEnvelope | null }> = [];
+    for (const row of storedRows) {
+        const envelope = row.value === null ? null : decodeStoredEnvelope(row.value, input.domain);
+        if (row.value !== null && envelope === null) return { status: "invalid-stored-content" };
+        if (envelope !== null && !envelopeMatchesMode(envelope, scope.mode, input.domain)) {
+            return { status: "account-mode-mismatch" };
+        }
+        rows.push({ physicalKey: row.key, revision: row.version, envelope });
+    }
+    return { status: "listed", rows };
+}
+
 /**
  * `null` content writes a versioned tombstone without disclosing prior
  * content. The Account encryption transition fence is acquired first so a

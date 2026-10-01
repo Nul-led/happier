@@ -35,7 +35,7 @@ export async function resolveTeamAdmissionModeApplicabilityInTx(
         readHomeGovernancePolicyInTx(input.tx),
         input.tx.teamDirectorySource.findMany({
             where: { teamId: input.teamId },
-            select: { kind: true, state: true, activeReconcileRunId: true },
+            select: { id: true, kind: true, state: true, activeReconcileRunId: true },
         }),
         input.tx.teamIdentityConnection.count({ where: { teamId: input.teamId } }),
         listTeamIdentityConnectionsInTx(input.tx, { teamId: input.teamId }),
@@ -62,7 +62,7 @@ export async function resolveTeamAdmissionModeApplicabilityInTx(
         if (directorySources.some((source) => !isDirectorySourceProjectionComplete(source))) {
             return { status: "unavailable", reason: "directory_projection_required" };
         }
-        return { status: "unavailable", reason: "home_policy_prohibited" };
+        return { status: "unavailable", reason: "team_connection_unavailable" };
     })();
 
     const jit = await (async (): Promise<TeamAdmissionModeApplicabilityV1["modes"]["jit"]> => {

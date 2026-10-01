@@ -23,6 +23,8 @@ import { DaemonPluginReactNativeBundleCacheIdentityV1Schema } from './contributi
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
 
 export const DaemonVoiceClientCredentialSelectionV1Schema = z.object({
+  contribution: asProtocolZod(PluginContributionIdentityV1Schema),
+  platform: z.enum(['web', 'ios', 'android']),
   cacheIdentity: DaemonPluginReactNativeBundleCacheIdentityV1Schema,
 }).strict();
 export type DaemonVoiceClientCredentialSelectionV1 = z.infer<
@@ -30,6 +32,8 @@ export type DaemonVoiceClientCredentialSelectionV1 = z.infer<
 >;
 
 export const DaemonVoiceClientRawCredentialMaterializeRequestV1Schema = z.object({
+  contribution: asProtocolZod(PluginContributionIdentityV1Schema),
+  platform: z.enum(['web', 'ios', 'android']),
   cacheIdentity: DaemonPluginReactNativeBundleCacheIdentityV1Schema,
   phase: z.enum(['settings', 'prepare', 'connection']),
   /**

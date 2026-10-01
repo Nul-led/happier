@@ -6,7 +6,7 @@ import {
     MACHINE_LIVE_STREAM_SOCKET_EVENT,
     MachineLiveStreamRelayAuthorizationV1Schema,
     createMachineLiveStreamRelayAuthorizationSigningInputV1,
-    type MachineLiveStreamFrameV1,
+    type MachineLiveStreamWireFrameV1 as MachineLiveStreamFrameV1,
 } from "@happier-dev/protocol";
 import { machineLiveStreamRelayHandler } from "../../../../socket/machineLiveStreamRelayHandler";
 import { createFakeSocket, getSocketHandler } from "../../../../testkit/socketHarness";
@@ -35,6 +35,7 @@ function createRelayRoute(
         "available" | "revoked" | "replaced" | "missing"
     > = async () => "available",
     verifyViewerSocketOwnership?: (params: Readonly<{ accountId: string; socketId: string }>) => boolean | Promise<boolean>,
+    envOverrides: NodeJS.ProcessEnv = {},
 ) {
     return createRouteTestBuilder({
         method: "POST",
@@ -72,6 +73,7 @@ function createRelayRoute(
                 [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxConcurrentStreamsPerMachine]: "1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
+                ...envOverrides,
             },
             nowMs: () => 1_000,
             readMachineOwnershipState,
@@ -89,17 +91,57 @@ function liveStreamFrame(sequence: number): MachineLiveStreamFrameV1 {
         timestampMs: 2_000 + sequence,
         payloadKind: sequence === 1 ? "image_keyframe" : "image_delta",
         payloadEncoding: "binary_base64",
-        payloadBase64,
+        payload: { t: "plain", v: payloadBase64 },
         payloadSizeBytes: 3,
     };
 }
 
 describe("live-stream peer mediation grant route", () => {
-    it("issues signed relay authorization that the socket relay accepts", async () => {
+    it('signs explicit Home limits when the viewer does not impose quality or lifetime ceilings', async () => {
+        const route = createRelayRoute(tweetnacl.sign.keyPair());
+        const { response } = await route.invoke({ userId: 'account_1', body: {
+            machineId: 'machine-source', targetMachineId: 'machine-target', flowKind: 'live_stream',
+            routeKind: 'server_relay', ttlMs: 60_000,
+            scope: { kind: 'live_stream', streamId: 'stream_1', streamFamily: 'screen' },
+        } });
+        expect(response).toMatchObject({ ok: true, relayAuthorization: { payload: {
+            maxBitrateBps: 64_000, maxFramesPerSecond: 12, maxFrameBytes: 32_000,
+            maxDurationMs: 60_000, maxTotalBytes: 128_000,
+        } } });
+    });
+
+    it('mints a relay grant without requiring viewer quality ceilings or eight Home caps', async () => {
+        const route = createRelayRoute(tweetnacl.sign.keyPair(), undefined, undefined, {
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxFramesPerSecond]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxFrameBytes]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxDurationMs]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxTotalBytes]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxConcurrentStreamsPerAccount]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxConcurrentStreamsPerSocket]: undefined,
+            [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxConcurrentStreamsPerMachine]: undefined,
+        });
+        const { response } = await route.invoke({ userId: 'account_1', body: {
+            machineId: 'machine-source', targetMachineId: 'machine-target', flowKind: 'live_stream',
+            routeKind: 'server_relay', ttlMs: 60_000, codecId: 'image.mjpeg', viewerCodecs: ['image.mjpeg'],
+            scope: { kind: 'live_stream', streamId: 'stream_1', streamFamily: 'screen' },
+        } });
+        expect(response).toMatchObject({ ok: true, relayAuthorization: { payload: {
+            sourceMachineId: 'machine-source', streamId: 'stream_1', exp: 61_000,
+            codecId: 'image.mjpeg', viewerCodecs: ['image.mjpeg'],
+        } } });
+    });
+
+    it("issues exact browser-source authorization that the socket relay accepts", async () => {
         const keyPair = tweetnacl.sign.keyPair();
         const route = createRelayRoute(keyPair);
 
-        const { response } = await route.invoke({ userId: "account_1" });
+        const { response } = await route.invoke({ userId: "account_1", body: {
+            machineId: "machine-source", targetMachineId: "machine-target", flowKind: "live_stream",
+            routeKind: "server_relay", ttlMs: 900_000, maxFramesPerSecond: 12, maxFrameBytes: 32_000,
+            scope: { kind: "live_stream", streamId: "stream_1", streamFamily: "browser.streamed",
+                sourceId: "browser-view-a", maxBitrateBps: 64_000, maxDurationMs: 60_000, maxTotalBytes: 128_000 },
+        } });
 
         expect(route.app.authenticate).toHaveBeenCalledTimes(1);
         expect(response).toMatchObject({
@@ -113,7 +155,8 @@ describe("live-stream peer mediation grant route", () => {
                     flowKind: "live_stream",
                     routeKind: "server_relay",
                     streamId: "stream_1",
-                    streamFamily: "screen",
+                    streamFamily: "browser.streamed",
+                    sourceId: "browser-view-a",
                     maxBitrateBps: 64_000,
                     maxFramesPerSecond: 12,
                     maxFrameBytes: 32_000,
@@ -137,6 +180,11 @@ describe("live-stream peer mediation grant route", () => {
             signature,
             keyPair.publicKey,
         )).toBe(true);
+        expect(tweetnacl.sign.detached.verify(
+            Buffer.from(createMachineLiveStreamRelayAuthorizationSigningInputV1({
+                ...parsedAuthorization.data.payload, sourceId: "browser-view-b",
+            }), "utf8"), signature, keyPair.publicKey,
+        )).toBe(false);
 
         const emittedToTarget = vi.fn();
         const socket = createFakeSocket({
@@ -147,6 +195,7 @@ describe("live-stream peer mediation grant route", () => {
         });
         machineLiveStreamRelayHandler("account_1", socket as never, {
             io: { to: vi.fn(() => ({ emit: emittedToTarget })) },
+            resolveAccountEncryptionMode: async (): Promise<"plain"> => "plain",
             serverRoutedLiveStreamEnabled: true,
             relayCaps: liveStreamRelayCaps,
             relayAuthorizationTrustRoots: [{
@@ -166,7 +215,8 @@ describe("live-stream peer mediation grant route", () => {
                 startRequest: {
                     v: 1,
                     streamId: "stream_1",
-                    streamFamily: "screen",
+                    streamFamily: "browser.streamed",
+                    sourceId: "browser-view-a",
                     routeKind: "server_relay",
                     sourceMachineId: "machine-source",
                     targetMachineId: "machine-target",
@@ -255,6 +305,7 @@ describe("live-stream peer mediation grant route", () => {
         });
         machineLiveStreamRelayHandler("account_view", socket as never, {
             io,
+            resolveAccountEncryptionMode: async (): Promise<"plain"> => "plain",
             serverRoutedLiveStreamEnabled: true,
             relayCaps: liveStreamRelayCaps,
             relayAuthorizationTrustRoots: [{

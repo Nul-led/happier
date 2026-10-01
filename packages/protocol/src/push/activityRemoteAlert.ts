@@ -58,6 +58,12 @@ const DiscussionSequenceV2Schema = z.object({
   messageSeq: z.number().int().positive().max(2_147_483_647),
 });
 
+/** Content-free committed message reference shared by Activity transports. */
+export const ActivityMessageReferenceV2Schema = z.discriminatedUnion('sequenceDomain', [
+  SessionTranscriptSequenceV2Schema.strict(),
+  DiscussionSequenceV2Schema.strict(),
+]);
+
 /**
  * Current closed event epoch.
  *
@@ -159,7 +165,11 @@ export function resolveActivityRemoteAlertEventIdentity(
     }
     return undefined;
   }
-  const event = alert.event;
+  return resolveActivityEventIdentityV2(alert.event);
+}
+
+/** One identity projection shared by Home, rich and device-local V2 event references. */
+export function resolveActivityEventIdentityV2(event: ActivityRemoteAlertEventV2): string | undefined {
   if ('sequenceDomain' in event) {
     return resolveActivitySequenceEventIdentityV1(event.sequenceDomain === 'discussion'
       ? {

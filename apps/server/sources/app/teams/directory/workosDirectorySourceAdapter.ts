@@ -4,10 +4,15 @@ import { inTx } from "@/storage/inTx";
 import type { DirectoryProjectionScanFailureCode } from "./directoryReconciler";
 import { parseTeamDirectoryBindingConfigV1 } from "./directorySourceBinding";
 import type { ActiveWorkosDirectorySource, ClaimedDirectorySource } from "./directorySourceService";
+import type { ExpectedDirectorySourceCurrentness } from "./directorySourcePolicy";
 import type { WorkosDirectoryReadContext } from "./workosDirectoryReader";
 
 export type BeginWorkosDirectoryReadResult =
-    | Readonly<{ ok: true; context: WorkosDirectoryReadContext }>
+    | Readonly<{
+        ok: true;
+        context: WorkosDirectoryReadContext;
+        expectedCurrentness: Extract<ExpectedDirectorySourceCurrentness, { kind: "workos_directory_read" }>;
+    }>
     | Readonly<{ ok: false; code: DirectoryProjectionScanFailureCode }>;
 
 /**
@@ -83,6 +88,14 @@ export async function beginWorkosDirectoryRead(params: Readonly<{
     const { client } = resolved.runtime.platform;
     return {
         ok: true,
+        expectedCurrentness: {
+            kind: "workos_directory_read",
+            directorySourceId: params.source.id,
+            teamIdentityConnectionId: resolved.runtime.connection.id,
+            workosDirectoryId: resolved.directoryId,
+            organizationId: resolved.runtime.connection.externalReference.organizationId,
+            runtimeFingerprint: resolved.runtime.runtimeFingerprint,
+        },
         context: {
             organizationId: resolved.runtime.connection.externalReference.organizationId,
             directoryId: resolved.directoryId,

@@ -16,6 +16,25 @@ import {
 
 export type ConnectedAccountAttemptTransactionKind = "oauth" | "device";
 
+export interface ConnectedAccountAttemptTransactionScope {
+    machineId: string;
+    service: Readonly<{ pluginId: string; localId: string }>;
+    modeId: string;
+    intent: "connect" | "reconnect";
+    phase: "starting" | "awaitingOAuth" | "awaitingDeviceAuthorization" | "outcomeUnknown";
+    createdAtMs: number;
+}
+
+export interface PendingConnectedAccountAttemptTransaction {
+    attemptId: string;
+    kind: ConnectedAccountAttemptTransactionKind;
+    modeId: string;
+    intent: ConnectedAccountAttemptTransactionScope["intent"];
+    phase: Exclude<ConnectedAccountAttemptTransactionScope["phase"], "starting">;
+    createdAtMs: number;
+    expiresAtMs: number;
+}
+
 export interface ConnectedAccountAttemptTransactionRecord {
     revision: number;
     content: StoredJsonContentEnvelope;
@@ -45,10 +64,30 @@ export type ConnectedAccountAttemptTransactionReadResult =
     }>;
 
 const StoredConnectedAccountAttemptTransactionSchema = z.object({
-    version: z.literal(1),
+    version: z.literal(2),
     revision: z.number().int().min(1),
+    attemptId: z.string().min(1).max(160),
+    kind: z.enum(["oauth", "device"]),
+    scope: z.object({
+        machineId: z.string().min(1).max(256),
+        service: z.object({
+            pluginId: z.string().min(1).max(256),
+            localId: z.string().min(1).max(256),
+        }).strict(),
+        modeId: z.string().min(1).max(256),
+        intent: z.enum(["connect", "reconnect"]),
+        phase: z.enum(["starting", "awaitingOAuth", "awaitingDeviceAuthorization", "outcomeUnknown"]),
+        createdAtMs: z.number().int().nonnegative(),
+    }).strict(),
     content: z.string().min(1),
 }).strict();
+
+function accountTransactionPrefix(accountId: string): string {
+    const accountDigest = createHash("sha256")
+        .update(JSON.stringify(["connected-account-attempt-account-v2", accountId]))
+        .digest("base64url");
+    return `caat_v2_${accountDigest}_`;
+}
 
 /**
  * Persisted `Account.encryptionMode` is the sole representation authority for this
@@ -95,13 +134,12 @@ function transactionKey(input: Readonly<{
 }>): string {
     const digest = createHash("sha256")
         .update(JSON.stringify([
-            "connected-account-attempt-transaction-v1",
-            input.accountId,
+            "connected-account-attempt-transaction-v2",
             input.kind,
             input.attemptId,
         ]))
         .digest("base64url");
-    return `caat_v1_${digest}`;
+    return `${accountTransactionPrefix(input.accountId)}${digest}`;
 }
 
 /**
@@ -126,10 +164,18 @@ function transactionStorageKeyPath(input: Readonly<{
 function encodeStored(
     revision: number,
     atRestContent: string,
+    identity: Readonly<{
+        kind: ConnectedAccountAttemptTransactionKind;
+        attemptId: string;
+        scope: ConnectedAccountAttemptTransactionScope;
+    }>,
 ): string {
     return JSON.stringify({
-        version: 1,
+        version: 2,
         revision,
+        attemptId: identity.attemptId,
+        kind: identity.kind,
+        scope: identity.scope,
         content: atRestContent,
     });
 }
@@ -141,6 +187,11 @@ function parseRecord(
 ):
     | Readonly<{
         status: "ok";
+        identity: Readonly<{
+            kind: ConnectedAccountAttemptTransactionKind;
+            attemptId: string;
+            scope: ConnectedAccountAttemptTransactionScope;
+        }>;
         record: ConnectedAccountAttemptTransactionRecord;
     }>
     | Readonly<{ status: "unreadable" }> {
@@ -165,6 +216,11 @@ function parseRecord(
     }
     return Object.freeze({
         status: "ok" as const,
+        identity: Object.freeze({
+            kind: parsed.data.kind,
+            attemptId: parsed.data.attemptId,
+            scope: parsed.data.scope,
+        }),
         record: Object.freeze({
             revision: parsed.data.revision,
             content,
@@ -179,11 +235,16 @@ async function readCurrent(
     key: string,
     nowMs: number,
     keyPath: string[],
+    identity: Readonly<{
+        kind: ConnectedAccountAttemptTransactionKind;
+        attemptId: string;
+    }>,
 ): Promise<
     | Readonly<{
         status: "ok";
         row: Readonly<{ value: string; expiresAt: Date }>;
         record: ConnectedAccountAttemptTransactionRecord;
+        scope: ConnectedAccountAttemptTransactionScope;
     }>
     | Readonly<{
         status: "not_found" | "storage_mode_mismatch" | "unreadable";
@@ -199,6 +260,9 @@ async function readCurrent(
     }
     const parsed = parseRecord(row.value, row.expiresAt, keyPath);
     if (parsed.status !== "ok") return parsed;
+    if (parsed.identity.kind !== identity.kind || parsed.identity.attemptId !== identity.attemptId) {
+        return Object.freeze({ status: "unreadable" as const });
+    }
     const admission = await readAccountEnvelopeAdmission(
         tx,
         accountId,
@@ -209,6 +273,7 @@ async function readCurrent(
         status: "ok" as const,
         row: Object.freeze({ value: row.value, expiresAt: row.expiresAt }),
         record: parsed.record,
+        scope: parsed.identity.scope,
     });
 }
 
@@ -221,6 +286,7 @@ export async function createConnectedAccountAttemptTransaction(input: Readonly<{
     kind: ConnectedAccountAttemptTransactionKind;
     attemptId: string;
     content: StoredJsonContentEnvelope;
+    scope: ConnectedAccountAttemptTransactionScope;
     expiresAtMs: number;
 }>): Promise<ConnectedAccountAttemptTransactionMutationResult> {
     const key = transactionKey(input);
@@ -240,7 +306,7 @@ export async function createConnectedAccountAttemptTransaction(input: Readonly<{
                         accountMode: result.accountMode,
                         keyPath,
                         content: input.content,
-                    })),
+                    }), input),
                     expiresAt: new Date(input.expiresAtMs),
                 },
             });
@@ -281,10 +347,89 @@ export async function readConnectedAccountAttemptTransaction(input: Readonly<{
             transactionKey(input),
             input.nowMs,
             transactionStorageKeyPath(input),
+            input,
         );
         return current.status === "ok"
             ? Object.freeze({ status: "ok" as const, record: current.record })
             : current;
+    });
+}
+
+/** Finds this Account's current transactions, then projects only non-secret resume facts. */
+export async function listPendingConnectedAccountAttemptTransactions(input: Readonly<{
+    accountId: string;
+    machineId: string;
+    service: Readonly<{ pluginId: string; localId: string }>;
+    nowMs: number;
+}>): Promise<
+    | Readonly<{ status: "ok"; attempts: readonly PendingConnectedAccountAttemptTransaction[] }>
+    | Readonly<{ status: "unreadable" | "storage_mode_mismatch" }>
+> {
+    return await inTx(async (tx) => {
+        const rows = await tx.repeatKey.findMany({
+            where: {
+                key: { startsWith: accountTransactionPrefix(input.accountId) },
+                expiresAt: { gt: new Date(input.nowMs) },
+            },
+            select: { key: true, value: true, expiresAt: true },
+        });
+        const attempts: PendingConnectedAccountAttemptTransaction[] = [];
+        for (const row of rows) {
+            let outer: unknown;
+            try {
+                outer = JSON.parse(row.value);
+            } catch {
+                return Object.freeze({ status: "unreadable" as const });
+            }
+            const stored = StoredConnectedAccountAttemptTransactionSchema.safeParse(outer);
+            if (!stored.success) {
+                return Object.freeze({ status: "unreadable" as const });
+            }
+            const identity = stored.data;
+            if (row.key !== transactionKey({
+                accountId: input.accountId,
+                kind: identity.kind,
+                attemptId: identity.attemptId,
+            })) {
+                return Object.freeze({ status: "unreadable" as const });
+            }
+            const parsed = parseRecord(
+                row.value,
+                row.expiresAt,
+                transactionStorageKeyPath({
+                    accountId: input.accountId,
+                    kind: identity.kind,
+                    attemptId: identity.attemptId,
+                }),
+            );
+            if (parsed.status !== "ok") return parsed;
+            const admission = await readAccountEnvelopeAdmission(
+                tx,
+                input.accountId,
+                parsed.record.content,
+            );
+            if (admission.status !== "ok") return admission;
+            const scope = identity.scope;
+            if (
+                scope.machineId !== input.machineId
+                || scope.service.pluginId !== input.service.pluginId
+                || scope.service.localId !== input.service.localId
+                || scope.phase === "starting"
+            ) continue;
+            attempts.push(Object.freeze({
+                attemptId: identity.attemptId,
+                kind: identity.kind,
+                modeId: scope.modeId,
+                intent: scope.intent,
+                phase: scope.phase,
+                createdAtMs: scope.createdAtMs,
+                expiresAtMs: row.expiresAt.getTime(),
+            }));
+        }
+        return Object.freeze({
+            status: "ok" as const,
+            attempts: Object.freeze(attempts.sort((a, b) => b.createdAtMs - a.createdAtMs)),
+        });
     });
 }
 
@@ -298,6 +443,7 @@ export async function replaceConnectedAccountAttemptTransaction(input: Readonly<
     attemptId: string;
     expectedRevision: number;
     content: StoredJsonContentEnvelope;
+    scope: ConnectedAccountAttemptTransactionScope;
     expiresAtMs: number;
     nowMs: number;
 }>): Promise<ConnectedAccountAttemptTransactionMutationResult> {
@@ -318,11 +464,22 @@ export async function replaceConnectedAccountAttemptTransaction(input: Readonly<
             key,
             input.nowMs,
             keyPath,
+            input,
         );
         if (current.status !== "ok") {
             return Object.freeze({ status: current.status });
         }
         if (current.record.revision !== input.expectedRevision) {
+            return Object.freeze({ status: "conflict" as const });
+        }
+        if (
+            current.scope.machineId !== input.scope.machineId
+            || current.scope.service.pluginId !== input.scope.service.pluginId
+            || current.scope.service.localId !== input.scope.service.localId
+            || current.scope.modeId !== input.scope.modeId
+            || current.scope.intent !== input.scope.intent
+            || current.scope.createdAtMs !== input.scope.createdAtMs
+        ) {
             return Object.freeze({ status: "conflict" as const });
         }
         const revision = current.record.revision + 1;
@@ -333,6 +490,7 @@ export async function replaceConnectedAccountAttemptTransaction(input: Readonly<
                 keyPath,
                 content: input.content,
             }),
+            input,
         );
         const updated = await tx.repeatKey.updateMany({
             where: {
@@ -385,6 +543,7 @@ export async function deleteConnectedAccountAttemptTransaction(input: Readonly<{
             key,
             input.nowMs,
             transactionStorageKeyPath(input),
+            input,
         );
         if (current.status !== "ok") {
             return Object.freeze({ status: current.status });

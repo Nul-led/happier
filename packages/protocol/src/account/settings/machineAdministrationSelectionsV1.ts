@@ -29,16 +29,13 @@ function boundedRecord<T extends z.ZodType>(valueSchema: T) {
   });
 }
 
-/**
- * Settings owns this versioned Account preference container. Administration
- * owns the meaning of each key and supplies exact validated values.
- *
- * Administration supplies the execution-origin value schema; Settings owns
- * its bounded container and persists values without interpreting selection.
- */
+/** Device-local Administration memory; never part of the Account policy document. */
+export const MachineAdministrationTargetsV1Schema = boundedRecord(MachineAdministrationTargetV1Schema).default({});
+export type MachineAdministrationTargetsV1 = z.infer<typeof MachineAdministrationTargetsV1Schema>;
+
+/** Portable execution-origin policy, distinct from device target memory. */
 export const MachineAdministrationSelectionsV1Schema = z.object({
   v: z.literal(1).default(1),
-  targetsByKey: boundedRecord(MachineAdministrationTargetV1Schema).default({}),
   pluginExecutionOriginsByPluginId: boundedRecord(PluginMachineExecutionOriginV1Schema).default({}),
 }).strict();
 

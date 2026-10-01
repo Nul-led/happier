@@ -20,6 +20,7 @@ import {
 } from "@happier-dev/protocol";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { recordAuthEnrollmentOutcome } from "@/app/monitoring/metrics/authMetrics";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 const MAX_PERSISTED_ENCRYPTED_TOKEN_CHARS = 16_384;
 const EXPIRED_ACCOUNT_AUTH_CLEANUP_LIMIT = 32;
@@ -283,6 +284,7 @@ export function registerAccountAuthRoutes(app: Fastify): void {
             },
         }
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const tweetnacl = (await import("tweetnacl")).default;
         const publicKey = decodeCanonicalRequesterPublicKey(String(request.body.publicKey));
         if (!publicKey || tweetnacl.box.publicKeyLength !== publicKey.length) {
@@ -306,7 +308,7 @@ export function registerAccountAuthRoutes(app: Fastify): void {
         }
 
         const publicKeyHex = privacyKit.encodeHex(publicKey);
-        const accountAuthPolicy = resolveAccountAuthRequestPolicyFromEnv(process.env);
+        const accountAuthPolicy = resolveAccountAuthRequestPolicyFromEnv(requestHomeEnv);
         const classifyCurrentCompletion = async () => await inTx(async (tx) => {
             const now = new Date();
             const pairing = await tx.authPairingSession.findFirst({

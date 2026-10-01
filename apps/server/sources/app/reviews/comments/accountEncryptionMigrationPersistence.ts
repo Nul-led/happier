@@ -43,7 +43,12 @@ export const REVIEW_COMMENT_CANONICAL_SENSITIVE_LAYOUT_MARKER_JSON =
 export type ReviewCommentMigrationStorageCommentRow = {
     id: string;
     account_id: string;
-    project_id: string;
+    project_id: string | null;
+    workspace_json?: string | null;
+    finding_identity?: string | null;
+    finding_severity?: string | null;
+    reviewed_fingerprint?: string | null;
+    review_triage_status?: string | null;
     workspace_id: string | null;
     session_id: string | null;
     run_id: string | null;
@@ -76,7 +81,8 @@ export type ReviewCommentMigrationStorageEventRow = {
     event_id: string;
     comment_id: string;
     account_id: string;
-    project_id: string;
+    project_id: string | null;
+    workspace_json?: string | null;
     event_kind: string;
     event_envelope_json: string;
     bulk_action_id: string | null;
@@ -141,8 +147,6 @@ function anchorIndexFromLegacy(value: unknown): ReviewCommentAnchorIndexV1 {
     const anchor = ReviewCommentAnchorV1Schema.parse(value);
     return ReviewCommentAnchorIndexV1Schema.parse({
         kind: anchor.kind,
-        ...("filePath" in anchor ? { filePath: anchor.filePath } : {}),
-        ...("folderPath" in anchor ? { folderPath: anchor.folderPath } : {}),
     });
 }
 
@@ -201,7 +205,12 @@ export function buildReviewCommentStructuralFromStorageRow(
         v: 1,
         id: row.id,
         accountId: row.account_id,
-        projectId: row.project_id,
+        projectId: row.project_id ?? undefined,
+        workspace: row.workspace_json ? parseJson(row.workspace_json) : undefined,
+        findingIdentity: row.finding_identity ?? undefined,
+        findingSeverity: row.finding_severity ?? undefined,
+        reviewedFingerprint: row.reviewed_fingerprint ?? undefined,
+        reviewTriageStatus: row.review_triage_status ?? undefined,
         workspaceId: row.workspace_id ?? undefined,
         sessionId: row.session_id ?? undefined,
         runId: row.run_id ?? undefined,
@@ -222,9 +231,7 @@ export function buildReviewCommentStructuralFromStorageRow(
         tombstone: row.tombstone_json
             ? structuralTombstone(parseJson(row.tombstone_json))
             : undefined,
-        fingerprintIndex: row.fingerprint_json
-            ? fingerprintIndex(parseJson(row.fingerprint_json))
-            : undefined,
+        fingerprintIndex: row.fingerprint_json ? fingerprintIndex(parseJson(row.fingerprint_json)) : undefined,
         createdAt: toNumber(row.created_at),
         updatedAt: toNumber(row.updated_at),
         serverRevision: toNumber(row.server_revision),
@@ -286,7 +293,8 @@ function eventFromStorageRow(
         eventId: row.event_id,
         commentId: row.comment_id,
         accountId: row.account_id,
-        projectId: row.project_id,
+        projectId: row.project_id ?? undefined,
+        workspace: row.workspace_json ? parseJson(row.workspace_json) : undefined,
         eventKind: row.event_kind,
         actor: parseJson(row.actor_json),
         createdAt: toNumber(row.created_at),
@@ -425,10 +433,9 @@ export function buildReviewCommentAccountEncryptionMigrationInventoryResponse(
 }
 
 export function buildReviewCommentCanonicalStorageValues(params: Readonly<{
-    row: ReviewCommentMigrationStorageCommentRow;
     targetSensitiveEnvelope: StoredJsonContentEnvelope;
-}>): ReviewCommentCanonicalStorageValues {
-    const structural = buildReviewCommentStructuralFromStorageRow(params.row);
+}> & (Readonly<{ row: ReviewCommentMigrationStorageCommentRow }> | Readonly<{ structural: ReviewCommentStructuralV1 }>)): ReviewCommentCanonicalStorageValues {
+    const structural = "structural" in params ? ReviewCommentStructuralV1Schema.parse(params.structural) : buildReviewCommentStructuralFromStorageRow(params.row);
     const target = StoredJsonContentEnvelopeSchema.parse(params.targetSensitiveEnvelope);
     if (
         target.t === "plain"
@@ -463,6 +470,11 @@ const COMMENT_MIGRATION_SELECT_COLUMNS = Prisma.raw([
     "id",
     "account_id",
     "project_id",
+    "workspace_json",
+    "finding_identity",
+    "finding_severity",
+    "reviewed_fingerprint",
+    "review_triage_status",
     "workspace_id",
     "session_id",
     "run_id",
@@ -496,6 +508,7 @@ const EVENT_MIGRATION_SELECT_COLUMNS = Prisma.raw([
     "comment_id",
     "account_id",
     "project_id",
+    "workspace_json",
     "event_kind",
     "event_envelope_json",
     "bulk_action_id",

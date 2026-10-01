@@ -1,6 +1,11 @@
+import { SERVER_CONFIG, readServerConfig } from "@happier-dev/protocol";
+
+import { readHomeConfigValueSource } from "@/app/home/settings/homeConfigProvenance";
+
 import { resolveUiConfig } from "../api/uiConfig";
 
-export const DEFAULT_WEBAPP_URL = "https://app.happier.dev";
+/** Last resort when neither `HAPPIER_WEBAPP_URL` nor a bundled UI at the public address applies. */
+export const DEFAULT_WEBAPP_URL = "https://cloud.happier.dev";
 
 export function normalizeHttpUrl(raw: string): string | null {
     const value = String(raw ?? "").trim();
@@ -38,24 +43,26 @@ function appendUiPrefix(baseUrl: string, prefix: string): string {
 }
 
 export function resolveConfiguredCanonicalServerUrl(env: NodeJS.ProcessEnv): string | undefined {
-    const configured = normalizeHttpUrl(String(env.HAPPIER_CANONICAL_SERVER_URL ?? ""));
+    const configured = normalizeHttpUrl(readServerConfig(env, SERVER_CONFIG.HAPPIER_CANONICAL_SERVER_URL) ?? "");
     if (configured) return configured;
 
     // Bounded 0.3 transition: historical deployments used the explicitly
-    // configured public URL as both profile identity and ingress. Inference
-    // marks its writes so mutable ingress can never establish auth identity.
-    if (String(env.HAPPIER_PUBLIC_SERVER_URL_INFERRED ?? "").trim() === "1") {
+    // configured public URL as both profile identity and ingress. Only the
+    // deployment's own value qualifies: an address the owner stored or the
+    // hosting computer inferred is mutable ingress and never becomes the
+    // sign-in audience (invariant I1).
+    if (readHomeConfigValueSource(env, SERVER_CONFIG.HAPPIER_PUBLIC_SERVER_URL.key) !== "deployment") {
         return undefined;
     }
     return resolveConfiguredPublicServerUrl(env);
 }
 
 export function resolveConfiguredPublicServerUrl(env: NodeJS.ProcessEnv): string | undefined {
-    return normalizeHttpUrl(String(env.HAPPIER_PUBLIC_SERVER_URL ?? "")) ?? undefined;
+    return normalizeHttpUrl(readServerConfig(env, SERVER_CONFIG.HAPPIER_PUBLIC_SERVER_URL) ?? "") ?? undefined;
 }
 
 export function resolveExplicitWebappUrl(env: NodeJS.ProcessEnv): string | undefined {
-    return normalizeHttpUrl(String(env.HAPPIER_WEBAPP_URL ?? env.HAPPY_WEBAPP_URL ?? "")) ?? undefined;
+    return normalizeHttpUrl(readServerConfig(env, SERVER_CONFIG.HAPPIER_WEBAPP_URL) ?? "") ?? undefined;
 }
 
 export function resolveDerivedLocalUiWebappUrl(env: NodeJS.ProcessEnv): string | undefined {

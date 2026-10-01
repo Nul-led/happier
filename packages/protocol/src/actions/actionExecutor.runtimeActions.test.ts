@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ActionId } from './actionIds.js';
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
+import { ApprovalRequestV2Schema } from '../approvals/approvalRequestV1.js';
+import { isApprovalRequiredByActionsSettings } from './actionApprovalPolicy.js';
+import { ActionsSettingsV1Schema } from './actionSettings.js';
 
 function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutorDeps {
   return {
@@ -40,6 +43,86 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
 }
 
 describe('createActionExecutor (runtime-unification actions)', () => {
+  it('preserves the approval bypass but returns the picker requirement without selecting a target', async () => {
+    const runtimeActionExecute = vi.fn(async () => ({ consentGranted: false,
+      approvalDisplay: { machineDisplayName: 'Workstation', requiresTargetSelection: true } }));
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-create' }));
+    const executor = createActionExecutor(createDeps({ runtimeActionExecute, approvalsCreate }));
+    expect(await executor.execute('computer.capture', { machineId: 'native-machine' }, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 'session', bypassApprovals: true,
+    })).toMatchObject({ ok: true, result: { status: 'target_selection_required',
+      approvalDisplay: { requiresTargetSelection: true } } });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+  });
+  it('preserves the existing bypass for a selected target without prior computer consent', async () => {
+    const target = { kind: 'window', displayId: ':77', pid: 123, windowId: 456 } as const;
+    const runtimeActionExecute = vi.fn<NonNullable<ActionExecutorDeps['runtimeActionExecute']>>(async ({ actionId }) =>
+      actionId === 'computer.target.get' ? { consentGranted: false, selectedTarget: target, sourceId: 'source_1',
+        approvalDisplay: { machineDisplayName: 'Workstation', requiresTargetSelection: false,
+          target: { kind: 'window', title: 'Editor' } } }
+        : { status: 'dispatched', target, sourceId: 'source_1' });
+    const approvalsCreate = vi.fn(async () => ({ artifactId: 'must-not-create' }));
+    const settings = ActionsSettingsV1Schema.parse({ v: 1 });
+    const executor = createActionExecutor(createDeps({ runtimeActionExecute, approvalsCreate,
+      isActionApprovalRequired: (actionId, context) => isApprovalRequiredByActionsSettings(actionId, settings, context) }));
+    expect(await executor.execute('computer.input', {
+      machineId: 'machine_1', captureId: 'capture_1', operation: { kind: 'press', key: 'Return' },
+    }, { surface: 'agent', authority: 'account_automation', defaultSessionId: 'session_1', bypassApprovals: true }))
+      .toMatchObject({ ok: true, result: { status: 'dispatched', target } });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+  });
+  it('binds native capture approval to the explicitly selected machine before any capture effect', async () => {
+    // This fixture represents the machine IPC boundary, not the computer owner's logic.
+    const runtimeActionExecute = vi.fn(async () => ({ consentGranted: false,
+      approvalDisplay: { machineDisplayName: 'Workstation', requiresTargetSelection: true } }));
+    const approvalsCreate = vi.fn(async (_args: Parameters<NonNullable<ActionExecutorDeps['approvalsCreate']>>[0]) => ({ artifactId: 'native-capture-approval' }));
+    const settings = ActionsSettingsV1Schema.parse({ v: 1 });
+    const executor = createActionExecutor(createDeps({
+      runtimeActionExecute,
+      approvalsCreate,
+      approvalsWaitForDecision: async ({ request }) => ({
+        decision: 'reject',
+        request: { ...request, status: 'rejected', decision: { kind: 'reject', decidedAtMs: 2 } },
+      }),
+      approvalsUpdate: async () => ({ ok: true }),
+      isActionApprovalRequired: (actionId, context) => isApprovalRequiredByActionsSettings(actionId, settings, context),
+    }));
+    const result = await executor.execute('computer.capture', { machineId: 'native-machine' }, {
+      surface: 'agent', authority: 'account_automation', serverId: 'home-1',
+      defaultSessionId: 'agent-session', defaultSessionMachineId: 'agent-machine',
+      actionRequestId: 'native-capture-request',
+    });
+
+    expect(result).toEqual({ ok: false, errorCode: 'approval_rejected', error: 'approval_rejected' });
+    expect(ApprovalRequestV2Schema.parse(approvalsCreate.mock.calls[0]?.[0].request)).toMatchObject({
+      actionArgs: { machineId: 'native-machine' },
+      preview: { computerApprovalDisplay: { machineDisplayName: 'Workstation', requiresTargetSelection: true } },
+      executionOriginV1: { machineId: 'native-machine', sessionId: 'agent-session' },
+    });
+    expect(runtimeActionExecute.mock.calls).toHaveLength(1);
+  });
+
+  it('dispatches native input and policy-admitted interruption without substituting human authority', async () => {
+    const target = { kind: 'window', displayId: ':77', pid: 123, windowId: 456 } as const;
+    const runtimeActionExecute = vi.fn<NonNullable<ActionExecutorDeps['runtimeActionExecute']>>(async ({ actionId }) => actionId === 'computer.target.get'
+      ? { consentGranted: true, selectedTarget: target, sourceId: 'source_1',
+        approvalDisplay: { machineDisplayName: 'Workstation', requiresTargetSelection: false, target: { kind: 'window', title: 'Editor' } } }
+      : { status: 'dispatched' as const, target, sourceId: 'source_1' });
+    const executor = createActionExecutor(createDeps({ runtimeActionExecute }));
+    const input = { machineId: 'machine_1', target, captureId: 'capture_1', operation: { kind: 'click', x: 30, y: 20 } };
+    const result = await executor.execute('computer.input', input,
+      { surface: 'agent', authority: 'account_automation', defaultSessionId: 'session_1' });
+    expect(result).toEqual({ ok: true, result: { status: 'dispatched', target, sourceId: 'source_1' } });
+    expect(runtimeActionExecute).toHaveBeenCalledWith({ actionId: 'computer.input', input: { ...input, sourceId: 'source_1' },
+      context: { surface: 'agent', authority: 'account_automation', defaultSessionId: 'session_1', bypassApprovals: true } });
+    const admitted = await executor.execute('computer.control.interrupt', { machineId: 'machine_1', target },
+      { surface: 'ui', authority: 'account_automation' });
+    expect(admitted).toEqual({ ok: true, result: { status: 'dispatched', target, sourceId: 'source_1' } });
+    const interrupted = await executor.execute('computer.control.interrupt', { machineId: 'machine_1', target },
+      { surface: 'ui', authority: 'present_user' });
+    expect(interrupted).toEqual({ ok: true, result: { status: 'dispatched', target, sourceId: 'source_1' } });
+  });
+
   it('returns unsupported_action until the runtime action executor is wired', async () => {
     const executor = createActionExecutor(createDeps());
 

@@ -21,6 +21,8 @@ export const TeamCredentialExternalApiKeySummaryV1Schema = z.object({
   createdAt: ExternalApiKeyInstantV1Schema,
   lastUsedAt: ExternalApiKeyInstantV1Schema.nullable(),
   expiresAt: ExternalApiKeyInstantV1Schema.nullable(),
+  authenticationStatus: z.enum(['satisfied', 'authentication_required', 'unavailable']),
+  canAuthorize: z.boolean(),
 }).strict();
 export type TeamCredentialExternalApiKeySummaryV1 = z.infer<typeof TeamCredentialExternalApiKeySummaryV1Schema>;
 
@@ -54,6 +56,14 @@ export const TeamCredentialExternalApiKeyRevokeInputV1Schema = z.object({
   keyId: ExternalApiKeyIdV1Schema,
 }).strict();
 export type TeamCredentialExternalApiKeyRevokeInputV1 = z.infer<typeof TeamCredentialExternalApiKeyRevokeInputV1Schema>;
+
+/** Only the assigned authenticated Account may authorize this exact key. */
+export const TeamCredentialExternalApiKeyAuthorizeInputV1Schema = TeamCredentialExternalApiKeyRevokeInputV1Schema;
+export type TeamCredentialExternalApiKeyAuthorizeInputV1 = z.infer<typeof TeamCredentialExternalApiKeyAuthorizeInputV1Schema>;
+export const TeamCredentialExternalApiKeyAuthorizeOutputV1Schema = z.object({
+  key: TeamCredentialExternalApiKeySummaryV1Schema,
+}).strict();
+export type TeamCredentialExternalApiKeyAuthorizeOutputV1 = z.infer<typeof TeamCredentialExternalApiKeyAuthorizeOutputV1Schema>;
 
 export const TeamCredentialExternalApiKeyRevokeOutputV1Schema = z.object({
   keyId: ExternalApiKeyIdV1Schema,

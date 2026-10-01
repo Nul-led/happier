@@ -87,16 +87,23 @@ export type TeamCredentialResourceTestBrokerDispatch = (input: Readonly<{
     signal: AbortSignal;
 }>) => Promise<Awaited<ReturnType<ExternalProviderBrokerDispatch>>>;
 
+/**
+ * `enabled` is asked on every dispatch: the relay's feature decision reads the Home-effective
+ * configuration at the time of the request, not the configuration the process started with.
+ */
+type ProviderBrokerRelayEnabled = () => boolean | Promise<boolean>;
+
 function createProviderBrokerCarrierDispatch(input: Readonly<{
     env: NodeJS.ProcessEnv;
     createRelayTransport: PeerTcpTunnelRelayTransportFactory;
-    enabled: boolean;
+    enabled: ProviderBrokerRelayEnabled;
 }>): ProviderBrokerCarrierDispatch {
     return async ({ request: rawRequest, binding, target, signal }) => {
         const request = TeamCredentialProviderBrokerApplicationCarrierRequestV1Schema.parse(rawRequest);
         const config = readMachineTunnelFeatureEnv(input.env);
         const signing = resolvePeerMediationGrantSigningConfig(input.env);
-        if (!input.enabled || !signing.ok) return { ok: false, error: 'broker_unavailable' };
+        const enabled = await input.enabled() === true;
+        if (!enabled || !signing.ok) return { ok: false, error: 'broker_unavailable' };
         const transport = input.createRelayTransport({ accountId: target.custodianAccountId });
         const tunnelId = `provider_broker_${randomUUID()}`;
         const substreamId = `provider_request_${randomUUID()}`;
@@ -108,10 +115,9 @@ function createProviderBrokerCarrierDispatch(input: Readonly<{
             tunnelId,
             nowMs: Date.now(),
             ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.serverRelayedTcpTunnel,
-            serverGateEnabled: input.enabled,
+            serverGateEnabled: enabled,
             serverCaps: {
-                maxBytes: config.serverRoutedMaxBytes, maxFrameBytes: config.serverRoutedMaxFrameBytes,
-                maxIdleMs: config.maxIdleMs, maxDurationMs: config.maxDurationMs,
+                maxFrameBytes: config.serverRoutedMaxFrameBytes,
             },
             signingKey: { keyId: signing.keyId, secretKey: signing.secretKey },
         });
@@ -247,7 +253,7 @@ function createProviderBrokerCarrierDispatch(input: Readonly<{
 export function createExternalProviderBrokerDispatcher(input: Readonly<{
     env: NodeJS.ProcessEnv;
     createRelayTransport: PeerTcpTunnelRelayTransportFactory;
-    enabled: boolean;
+    enabled: ProviderBrokerRelayEnabled;
 }>): ExternalProviderBrokerDispatch {
     const dispatch = createProviderBrokerCarrierDispatch(input);
     return async ({ request: rawRequest, target, signal }) => {
@@ -263,6 +269,8 @@ export function createExternalProviderBrokerDispatcher(input: Readonly<{
                 resourceId: request.resourceId,
                 requestId: request.requestId,
                 externalApiKeyId: request.caller.keyId,
+                operationId: target.operationId,
+                brokerPlacementFingerprint: target.brokerPlacementFingerprint,
                 assignedAccountId: request.caller.assignedAccountId,
                 assignedTeamMembershipId: request.caller.assignedTeamMembershipId,
             },
@@ -273,7 +281,7 @@ export function createExternalProviderBrokerDispatcher(input: Readonly<{
 export function createTeamCredentialResourceTestBrokerDispatcher(input: Readonly<{
     env: NodeJS.ProcessEnv;
     createRelayTransport: PeerTcpTunnelRelayTransportFactory;
-    enabled: boolean;
+    enabled: ProviderBrokerRelayEnabled;
 }>): TeamCredentialResourceTestBrokerDispatch {
     const dispatch = createProviderBrokerCarrierDispatch(input);
     return async ({ actorAccountId, resourceId, expectedResourceRevision, brokerMachineId, application, source, verifiedCredentialEvidence, request: rawRequest, signal }) => {

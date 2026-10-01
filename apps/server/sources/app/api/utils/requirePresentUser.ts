@@ -36,7 +36,7 @@ export async function requirePresentUser(
     // restricted, and unknown provenance all fail closed.
     if (
         request.authAuthority === "present_user"
-        && request.authTokenKind === "account"
+        && (request.authTokenKind === "account" || request.authTokenKind === "terminal")
     ) return undefined;
     return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
 }

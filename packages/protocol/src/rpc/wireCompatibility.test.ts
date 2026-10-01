@@ -78,9 +78,6 @@ describe('rpc wire compatibility', () => {
     expect(RPC_METHODS.DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH).toBe(
       'daemon.plugins.composerReferences.search',
     );
-    expect(RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT).toBe(
-      'daemon.plugins.ui.reactNativeCrashReports.submit',
-    );
     expect(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT).toBe(
       'daemon.localServices.inventory.snapshot',
     );

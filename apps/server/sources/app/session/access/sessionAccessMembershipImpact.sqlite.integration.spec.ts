@@ -12,7 +12,6 @@ describe("Membership Session access effects (SQLite integration)", () => {
             tempDirPrefix: "happier-membership-impact-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });

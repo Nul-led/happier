@@ -16,6 +16,8 @@ import {
   PluginSessionInputAttachmentsV1Schema,
   requireSessionInputContent,
 } from '../messages/sessionInputAuthoringV1.js';
+import { RawIngressStructuredInputV1Schema } from '../../runtime/input/structuredInputV1.js';
+import { ReviewCommentDraftMessageV1Schema } from '../../messages/structured/reviewCommentsV1.js';
 import {
   SessionAuthoringCheckoutCreationDraftV1Schema,
   SessionAuthoringTerminalV1Schema,
@@ -28,8 +30,10 @@ import { SessionExecutionTargetV1Schema } from './sessionExecutionTargetV1.js';
 import { SessionOrganizationPlacementV1Schema } from './sessionSpawnNewResultV1.js';
 import { MachinePoolSelectionOriginV1Schema } from '../../machines/pools/v1.js';
 import { SessionInitialAccessDraftV1Schema } from '../access/sessionInitialAccessDraftV1.js';
+import { SessionReportsToV1Schema } from '../relations/sessionReportsToV1.js';
 import { SessionTeamCredentialBindingIntentsV1Schema } from '../../teams/credentials/sessionBindingIntentV1.js';
 import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
+import { SessionDirectoryIntentV1Schema, refineSessionDirectoryIntentCheckoutV1 } from './sessionDirectoryIntentV1.js';
 
 /**
  * One Message-owned input admitted before the new Session runtime may start.
@@ -39,6 +43,13 @@ import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOv
 export const SessionSpawnNewInitialInputV1Schema = z.object({
   text: z.string().optional(),
   attachments: PluginSessionInputAttachmentsV1Schema.optional(),
+  /** Composer references and semantic attachments before a Session exists. */
+  structuredInput: RawIngressStructuredInputV1Schema.optional(),
+  /** Session-independent drafts; spawn settlement adds the new Session ID. */
+  reviewComments: z.object({
+    comments: z.array(ReviewCommentDraftMessageV1Schema),
+    displayText: z.string().min(1),
+  }).strict().optional(),
 }).strict().superRefine(requireSessionInputContent);
 export type SessionSpawnNewInitialInputV1 = z.infer<typeof SessionSpawnNewInitialInputV1Schema>;
 
@@ -47,13 +58,14 @@ export type SessionSpawnNewInitialInputV1 = z.infer<typeof SessionSpawnNewInitia
  * spawn fields are normalized before this boundary and are never accepted as a
  * second canonical creation vocabulary.
  */
-export const SessionSpawnNewInputV2Schema = z.object({
+export const SessionSpawnNewInputV2BaseSchema = z.object({
   creationKey: SessionCreationKeyV1Schema.optional(),
   executionTarget: SessionExecutionTargetV1Schema,
   placementOrigin: MachinePoolSelectionOriginV1Schema.optional(),
-  directory: z.string().trim().min(1),
+  directory: SessionDirectoryIntentV1Schema,
   organizationPlacement: SessionOrganizationPlacementV1Schema.optional(),
   agentTarget: AgentExecutionTargetV1Schema,
+  roleId: z.string().trim().min(1).optional(),
   modelSelection: SessionModelSelectionV1Schema.optional(),
   profileId: z.string().trim().min(1).optional(),
   /** Value-free Saved Secret binding overrides for this launch only. */
@@ -69,6 +81,7 @@ export const SessionSpawnNewInputV2Schema = z.object({
   title: z.string().trim().min(1).optional(),
   initialInput: SessionSpawnNewInitialInputV1Schema.optional(),
   initialAccess: SessionInitialAccessDraftV1Schema.optional(),
+  reportsTo: SessionReportsToV1Schema.optional(),
   primaryTeamId: z.string().min(1).nullable().optional(),
   /** Complete slot-keyed Team credential selection batch for the fresh Session commit. */
   teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.optional(),
@@ -89,6 +102,9 @@ export const SessionSpawnNewInputV2Schema = z.object({
   environmentVariables: z.record(z.string().min(1).max(128), z.string().max(16 * 1024)).optional(),
 }).strict();
 
+export const SessionSpawnNewInputV2Schema = SessionSpawnNewInputV2BaseSchema
+  .superRefine(refineSessionDirectoryIntentCheckoutV1);
+
 export type SessionSpawnNewInputV2 = z.infer<typeof SessionSpawnNewInputV2Schema>;
 
 /**
@@ -96,11 +112,11 @@ export type SessionSpawnNewInputV2 = z.infer<typeof SessionSpawnNewInputV2Schema
  * server-start transport consumes this exact projection without owning a
  * second Session input schema.
  */
-export const SessionServerStartSpawnDraftV1Schema = SessionSpawnNewInputV2Schema.omit({
+export const SessionServerStartSpawnDraftV1Schema = SessionSpawnNewInputV2BaseSchema.omit({
   creationKey: true,
   initialInput: true,
   environmentVariables: true,
-}).strict();
+}).strict().superRefine(refineSessionDirectoryIntentCheckoutV1);
 
 export type SessionServerStartSpawnDraftV1 = Omit<
   SessionSpawnNewInputV2,

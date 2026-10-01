@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import { actionSpecToActionDefinitionV1, serializeActionSpec } from './actionCatalog.js';
+import { actionCliDerivedDefault } from './actionCliProjection.js';
 import {
   ActionSpecSchema,
   getActionSpec,
@@ -215,10 +216,12 @@ describe('ActionSpec.cli declaration', () => {
       sessionId: 'session-prefix',
       intent: 'review',
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-      permissionMode: 'read_only',
-      retentionPolicy: 'ephemeral',
-      runClass: 'bounded',
-      ioMode: 'request_response',
+      // Intent-derived run shape is the binder's own default, stated as such so a
+      // canonical whole-input JSON value for the same field is preserved.
+      permissionMode: actionCliDerivedDefault('read_only'),
+      retentionPolicy: actionCliDerivedDefault('ephemeral'),
+      runClass: actionCliDerivedDefault('bounded'),
+      ioMode: actionCliDerivedDefault('request_response'),
     });
 
     const external = callerSchema!.parse({
@@ -236,7 +239,7 @@ describe('ActionSpec.cli declaration', () => {
         backendId: 'com.acme.review/review-bot',
         sourceKind: 'built_in',
       },
-      permissionMode: 'workspace_write',
+      permissionMode: actionCliDerivedDefault('workspace_write'),
     }));
 
     // This friendly command selects one execution target. The comma grammar

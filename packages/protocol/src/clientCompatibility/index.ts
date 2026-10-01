@@ -51,6 +51,7 @@ export {
   CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
   AccountStoredContentUpgradeRequiredRequirementV1Schema,
   AccountStoredContentUpgradeRequiredV1Schema,
+  SessionOrganizationUpgradeRequiredV1Schema,
   AnyClientUpgradeRequiredV1Schema,
   type AccountStoredContentUpgradeRequiredV1,
   type AnyClientUpgradeRequiredV1,

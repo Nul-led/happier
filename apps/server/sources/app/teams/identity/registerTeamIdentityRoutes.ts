@@ -28,6 +28,7 @@ import type { FastifyReply } from "fastify";
 
 import type { Fastify } from "@/app/api/types";
 import { readTeamOperationAuthenticationFromRequest } from "../actorContext";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 import {
     consumeTeamIdentityConnectionTestForActor,
     createTeamIdentityConnectionForActor,
@@ -114,7 +115,7 @@ export function registerTeamIdentityRoutes(
         const result = await listTeamIdentityConnectionsForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         if (!result.ok) return sendError(reply, result.error);
         return reply.send({
@@ -133,7 +134,7 @@ export function registerTeamIdentityRoutes(
         const result = await createTeamIdentityConnectionForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         return result.ok ? reply.send({ connection: result.value }) : sendError(reply, result.error);
     });
@@ -148,7 +149,7 @@ export function registerTeamIdentityRoutes(
         const result = await updateTeamIdentityConnectionSettingsForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         return result.ok ? reply.send({ connection: result.value }) : sendError(reply, result.error);
     });
@@ -168,7 +169,7 @@ export function registerTeamIdentityRoutes(
                 ...request.body,
                 actorAccountId: request.userId,
                 enabled,
-                ...readTeamOperationAuthenticationFromRequest(request),
+                ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
             }, workosDependencies);
             return result.ok ? reply.send({ connection: result.value }) : sendError(reply, result.error);
         });
@@ -184,7 +185,7 @@ export function registerTeamIdentityRoutes(
         const result = await removeTeamIdentityConnectionForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         }, workosDependencies);
         return result.ok ? reply.send(result.value) : sendError(reply, result.error);
     });
@@ -199,7 +200,7 @@ export function registerTeamIdentityRoutes(
         const result = await preflightTeamIdentityConnectionRemovalForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         return result.ok ? reply.send(result.value) : sendError(reply, result.error);
     });
@@ -214,7 +215,7 @@ export function registerTeamIdentityRoutes(
         const result = await consumeTeamIdentityConnectionTestForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         reply.header("Cache-Control", "no-store");
         return result.ok ? reply.send(result.value) : sendError(reply, result.error);
@@ -230,7 +231,7 @@ export function registerTeamIdentityRoutes(
         const result = await startTeamIdentityConnectionTestForActor({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         });
         reply.header("Cache-Control", "no-store");
         return result.ok ? reply.send(result.value) : sendError(reply, result.error);
@@ -246,7 +247,7 @@ export function registerTeamIdentityRoutes(
         const result = await createTeamWorkosAdminPortalLink({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         }, workosDependencies);
         if (!result.ok) return sendError(reply, result.error);
         reply.header("Cache-Control", "no-store");
@@ -263,7 +264,7 @@ export function registerTeamIdentityRoutes(
         const result = await createTeamWorkosConnection({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         }, workosDependencies);
         return result.ok ? reply.send({ connection: result.value }) : sendError(reply, result.error);
     });
@@ -278,7 +279,7 @@ export function registerTeamIdentityRoutes(
         const result = await reconcileTeamWorkosConnection({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         }, workosDependencies);
         return result.ok ? reply.send(result.value) : sendError(reply, result.error);
     });
@@ -293,7 +294,7 @@ export function registerTeamIdentityRoutes(
         const result = await setTeamWorkosConnection({
             ...request.body,
             actorAccountId: request.userId,
-            ...readTeamOperationAuthenticationFromRequest(request),
+            ...readTeamOperationAuthenticationFromRequest(request, await readRequestHomeEnv(request)),
         }, workosDependencies);
         return result.ok ? reply.send({ connection: result.value }) : sendError(reply, result.error);
     });

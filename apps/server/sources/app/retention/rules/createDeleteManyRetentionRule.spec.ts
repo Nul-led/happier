@@ -38,6 +38,7 @@ function createPolicy(): RetentionPolicy {
             globalLocks: { mode: 'delete_older_than', days: 7 },
             automationRuns: { mode: 'keep_forever' },
             automationRunEvents: { mode: 'keep_forever' },
+            homeAdministrationEvents: { mode: 'keep_forever' },
         },
     };
 }

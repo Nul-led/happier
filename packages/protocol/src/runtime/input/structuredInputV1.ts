@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BrowserContextMessageMetaV1Schema, BrowserContextMessagePayloadV1Schema } from '../../browser/context/v1.js';
 
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { ExecutionRunCompletionV1Schema } from '../../execution/runs/completionInputV1.js';
@@ -377,6 +378,7 @@ const HappierStructuredInputV1ObjectSchema = z.object({
   vendorPluginMentions: z.array(VendorPluginMentionV1Schema).optional(),
   skillMentions: z.array(SkillMentionV1Schema).optional(),
   imageInputs: z.array(StructuredImageInputV1Schema).optional(),
+  browserContext: BrowserContextMessagePayloadV1Schema.optional(),
   composerAttachments: z.array(ComposerAttachmentInputV1Schema).max(MAX_COMPOSER_ATTACHMENT_INSTANCES_V1).optional(),
   executionRunCompletion: ExecutionRunCompletionV1Schema.optional(),
   sessionDiscussionSelectionSourceV1: SessionDiscussionSelectionSourceV1Schema
@@ -481,6 +483,7 @@ export type StructuredInputDispatchContextV1 = Readonly<{
   structuredInput: AgentDispatchStructuredInputV1 | null | undefined;
   promptContext: Readonly<{
     sessionReferenceBlock: string;
+    browserContext?: HappierStructuredInputV1['browserContext'];
     composerReferences: readonly ComposerReferenceContextBlockEntryV1[];
     composerAttachments: readonly ComposerAttachmentContextBlockEntryV1[];
   }>;
@@ -705,6 +708,13 @@ export function readHappierStructuredInputV1FromMeta(
     metadata[HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1],
     options,
   );
+  const browserMetadata = metadata.happierBrowserContext;
+  let browserContext = structuredInput?.browserContext;
+  if (browserMetadata !== undefined) {
+    const parsed = BrowserContextMessageMetaV1Schema.parse(browserMetadata);
+    // A canonical envelope wins; a duplicate UI arm must not introduce a second selection.
+    if (!browserContext) browserContext = parsed.payload;
+  }
   // The meta-root aliases are a legacy write shape, so they are folded into the envelope
   // here — but only when the envelope carries no `mentions`. With `mentions` present the
   // aliases are ignored entirely (D-4), which is what stops a dual-written message from
@@ -712,7 +722,7 @@ export function readHappierStructuredInputV1FromMeta(
   const mentions = structuredInput?.mentions ?? [];
   const readsLegacyAliases = mentions.length === 0;
   return buildStructuredInputEnvelope({
-    base: structuredInput,
+    base: browserContext ? { ...structuredInput, browserContext } : structuredInput,
     mentions,
     vendorPluginMentions: [
       ...(structuredInput?.vendorPluginMentions ?? []),
@@ -756,6 +766,7 @@ export function sanitizeSessionStructuredInputMeta(
   }
   delete meta[HAPPIER_VENDOR_PLUGIN_MENTIONS_METADATA_KEY];
   delete meta[HAPPIER_SKILL_MENTIONS_METADATA_KEY];
+  delete meta.happierBrowserContext;
   return meta;
 }
 

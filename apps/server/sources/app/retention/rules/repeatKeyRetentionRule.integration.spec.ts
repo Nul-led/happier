@@ -37,6 +37,7 @@ function createPolicy(input: Readonly<{
             globalLocks: keepForever,
             automationRuns: keepForever,
             automationRunEvents: keepForever,
+            homeAdministrationEvents: keepForever,
         },
     };
 }

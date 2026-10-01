@@ -748,7 +748,7 @@ describe('protocol package root exports', () => {
     });
 
     it('exports the generated plugin UI artifact manifest owner', () => {
-        expect(typeof (protocol as any).PluginUiArtifactsManifestV1Schema?.safeParse).toBe('function');
+        expect((protocol as Record<string, unknown>).PluginUiArtifactsManifestV1Schema).toBeUndefined();
     });
 
     it('exports Live Activity remote update schemas', () => {

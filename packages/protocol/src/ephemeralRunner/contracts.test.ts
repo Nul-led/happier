@@ -3,6 +3,7 @@ import tweetnacl from 'tweetnacl';
 
 import { encodeBase64 } from '../crypto/base64.js';
 import { RunnerRuntimeBootstrapV1Schema } from './bootstrap.js';
+import { RunnerServerErrorV1Schema } from './errors.js';
 import {
   computeRunnerMachineContentKeyFingerprintV1,
   openRunnerMachineContentKeyVerifierFactV1,
@@ -19,6 +20,12 @@ import {
 } from '../machines/machineStoredContent.js';
 
 describe('Runner authority contracts', () => {
+  it('admits the server error for a declared but invalid Runner publication', () => {
+    expect(RunnerServerErrorV1Schema.safeParse({
+      error: 'runner_artifact_publication_invalid',
+    }).success).toBe(true);
+  });
+
   it('requires the canonical Plain Machine marker or a bound encrypted envelope', () => {
     const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(3));
     const binding = signRunnerMachineContentKeyBindingV1({

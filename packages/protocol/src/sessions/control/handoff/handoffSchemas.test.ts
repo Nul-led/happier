@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeWorkspaceSyncPolicyDigest } from './workspaceSyncSchemas.js';
+import { SessionHandoffPrepareTargetRequestSchema, SessionHandoffStartRequestSchema } from './handoffSchemas.js';
 
 const gitWorktreePolicyDigest = computeWorkspaceSyncPolicyDigest({
   v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [],
@@ -10,6 +11,63 @@ async function loadHandoffModule() {
 }
 
 describe('session handoff schemas', () => {
+  it('requires managed target identity while accepting daemon-selected paths', () => {
+    const request = {
+      handoffId: 'handoff_managed', operationId: 'operation_managed', sessionId: 'session_managed',
+      sourceMachineId: 'source', targetMachineId: 'target',
+      negotiatedTransportStrategy: 'server_routed_stream', sourceSessionStorageMode: 'persisted',
+      targetDirectory: { kind: 'managed' }, endpointCandidates: [],
+    };
+    expect(SessionHandoffPrepareTargetRequestSchema.safeParse(request).success).toBe(true);
+    expect(SessionHandoffPrepareTargetRequestSchema.safeParse({ ...request, sessionId: undefined }).success).toBe(false);
+    expect(SessionHandoffPrepareTargetRequestSchema.safeParse({ ...request, operationId: undefined }).success).toBe(false);
+    expect(SessionHandoffStartRequestSchema.safeParse({ ...request, sessionStorageMode: 'persisted', preferredTransportStrategies: ['server_routed_stream'] }).success).toBe(true);
+    expect(SessionHandoffStartRequestSchema.safeParse({ ...request, operationId: undefined, sessionStorageMode: 'persisted', preferredTransportStrategies: ['server_routed_stream'] }).success).toBe(false);
+  });
+  it('preserves every advertised endpoint in current and predecessor handoffs', async () => {
+    const mod = await loadHandoffModule();
+    expect(mod).not.toHaveProperty('error');
+    if ('error' in mod) return;
+
+    // The prospective 0.2 source advertised 21 addresses on a multi-interface Mac.
+    const endpointCandidates = Array.from({ length: 21 }, (_, index) => ({
+      kind: 'http' as const,
+      url: `http://10.0.0.${index + 1}:46001/machine-transfers/direct/bundle`,
+      authorizationToken: 'test-token',
+      expiresAt: 1,
+    }));
+    const publication = {
+      transferId: 'agent-bundle', sizeBytes: 1, manifestHash: 'manifest-hash', endpointCandidates,
+    };
+    const response = {
+      handoffId: 'handoff_1',
+      status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing' },
+      targetPath: '/repo',
+      endpointCandidates,
+      handoffMetadataV2: { agentBundleTransferPublication: publication },
+    };
+    const started = mod.SessionHandoffStartResponseSchema.parse(response);
+    const predecessor = mod.SessionHandoffStartResponseSchema.parse({
+      ...response,
+      handoffMetadataV2: { providerBundleTransferPublication: publication },
+    });
+    expect(predecessor).toEqual(started);
+    const prepared = mod.SessionHandoffPrepareTargetRequestSchema.parse({
+      handoffId: started.handoffId,
+      sourceMachineId: 'source', targetMachineId: 'target',
+      negotiatedTransportStrategy: 'direct_peer', sourceSessionStorageMode: 'persisted',
+      targetPath: '/target',
+      endpointCandidates: started.endpointCandidates,
+      handoffMetadataV2: started.handoffMetadataV2,
+    });
+    expect(prepared.endpointCandidates).toEqual(endpointCandidates);
+    expect(prepared.handoffMetadataV2?.agentBundleTransferPublication).toEqual(publication);
+    expect(mod.SessionHandoffStartResponseSchema.safeParse({
+      ...response,
+      endpointCandidates: [...endpointCandidates, { ...endpointCandidates[0], url: 'invalid' }],
+    }).success).toBe(false);
+  });
+
   it('binds a workspace handoff repository root to its session-relative cwd', async () => {
     const mod = await loadHandoffModule();
     expect(mod).not.toHaveProperty('error');
@@ -911,7 +969,7 @@ describe('session handoff schemas', () => {
 	    ).toBe(false);
 	  });
 
-  it('rejects unbounded transfer metadata (ids, candidate lists, open payloads)', async () => {
+  it('rejects oversized transfer ids and open payloads', async () => {
     const mod = await loadHandoffModule();
     expect(mod).not.toHaveProperty('error');
     if ('error' in mod) return;
@@ -945,21 +1003,6 @@ describe('session handoff schemas', () => {
       }).success,
     ).toBe(false);
 
-    expect(
-      mod.SessionHandoffPrepareTargetRequestSchema.safeParse({
-        handoffId: 'handoff_1',
-        sourceMachineId: 'machine_source',
-        targetMachineId: 'machine_target',
-        negotiatedTransportStrategy: 'direct_peer',
-        sourceSessionStorageMode: 'persisted',
-        targetPath: '/repo',
-        endpointCandidates: Array.from({ length: 200 }, (_, index) => ({
-          kind: 'http',
-          url: `http://127.0.0.1:46001/machine-transfers/direct/transfer_${index}`,
-          expiresAt: 1,
-        })),
-      }).success,
-    ).toBe(false);
   });
 
   it('rejects legacy inline prepare-target transfer fields', async () => {

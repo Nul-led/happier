@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
 import {
   ACCOUNT_SETTING_DEFINITIONS,
+  clearRetainedMachineTerminalHostAliases,
   type AccountSettingKey,
   type AccountSettings,
   type AccountSettingsPersistedObject,
@@ -200,6 +201,7 @@ export function applyAccountSettingMutationV1(
 
     if (operation.op === 'reset') {
       delete next[operation.key];
+      if (operation.key === 'sessionTerminalHostByMachineId') clearRetainedMachineTerminalHostAliases(next);
       continue;
     }
 

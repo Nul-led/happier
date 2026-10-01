@@ -1,3 +1,4 @@
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import { PluginIdSchema } from "@happier-dev/protocol";
 import { buildPluginDomainAccountChangeEntityId } from "@happier-dev/protocol/changes";
 
@@ -433,6 +434,7 @@ export type DeleteAccountForErasureResult =
     | Readonly<{
         status: "failed";
         code:
+            | "account_erasure_transition_cleanup_pending"
             | "account_erasure_blob_delete_failed"
             | "account_erasure_locator_mismatch"
             // The Account was reactivated after Phase A retired it, so this
@@ -464,25 +466,6 @@ export type AccountErasureActor =
 type AccountErasureActorRejection = "home_governance_forbidden" | "home_account_not_found";
 
 /**
- * The independent administrator whose current authority this erasure must
- * recheck, or `null` when the invocation erases the Account that asked for it.
- *
- * Home People always names the verified actor, including when that actor is the
- * target, so an owner deleting their own People row arrives here as
- * `home_administration` pointing at itself. That is the same erasure the
- * released present-user route performs, and it must be admitted the same way:
- * self-targeted, never rechecked. Deciding it once, here, is what keeps the two
- * entry points from disagreeing about who admitted an erasure.
- */
-function resolveAccountErasureAdministrator(
-    actor: AccountErasureActor,
-    accountId: string,
-): Extract<AccountErasureActor, { kind: "home_administration" }> | null {
-    if (actor.kind === "self" || actor.actorAccountId === accountId) return null;
-    return actor;
-}
-
-/**
  * Rereads an administrative actor's current `eraseAccounts` authority inside
  * the deciding transaction.
  *
@@ -496,10 +479,9 @@ async function admitAccountErasureActorInTx(tx: Tx, input: Readonly<{
     actor: AccountErasureActor;
     accountId: string;
 }>): Promise<AccountErasureActorRejection | null> {
-    const administrator = resolveAccountErasureAdministrator(input.actor, input.accountId);
-    if (administrator === null) return null;
+    if (input.actor.kind === "self") return null;
     const admission = await authorizeHomeGovernanceMutationInTx(tx, {
-        actorAccountId: administrator.actorAccountId,
+        actorAccountId: input.actor.actorAccountId,
         request: { operation: "erase_account", targetAccountId: input.accountId },
     });
     return admission.status === "authorized" ? null : admission.code;
@@ -508,11 +490,9 @@ async function admitAccountErasureActorInTx(tx: Tx, input: Readonly<{
 async function admitAccountErasureActorForAbsentTargetInTx(
     tx: Tx,
     actor: AccountErasureActor,
-    accountId: string,
 ): Promise<"home_governance_forbidden" | null> {
-    const administrator = resolveAccountErasureAdministrator(actor, accountId);
-    if (administrator === null) return null;
-    const admission = await authorizeHomeAccountErasureActorInTx(tx, administrator.actorAccountId);
+    if (actor.kind === "self") return null;
+    const admission = await authorizeHomeAccountErasureActorInTx(tx, actor.actorAccountId);
     return admission.status === "authorized" ? null : admission.code;
 }
 
@@ -600,7 +580,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             input.accountId,
         );
         if (fence.status === "account_not_found") {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
             return actorRejection
                 ? { status: "rejected" as const, code: actorRejection }
                 : { status: "already-deleted" as const };
@@ -634,6 +614,22 @@ export async function deleteAccountForErasure(input: Readonly<{
             return { status: "rejected" as const, code: teamOwnership.code };
         }
 
+        // Reuse the transition owner's bounded cancellation before revoking
+        // the caller or deleting source data. A pending chunk commits its
+        // progress and leaves the Account available for the same request's retry.
+        const transitionAdmission = await admitAccountDataEraseThroughEncryptionTransitionInTx({
+            tx,
+            accountId: input.accountId,
+            ...(input.now ? { now: input.now } : {}),
+        });
+        if (transitionAdmission.status === "transition_cleanup_pending") {
+            return { status: "rejected" as const, code: "account_erasure_transition_cleanup_pending" as const };
+        }
+        if (transitionAdmission.status === "account_not_found") return { status: "already-deleted" as const };
+        if (transitionAdmission.status === "account_inconsistent") {
+            throw new Error("Account deletion requires a consistent Account encryption mode.");
+        }
+
         // Terminal disable and credential revocation commit before the first
         // irreversible external delete. This is what makes the final deletion
         // safe to attempt: once the Account is inactive it can no longer be
@@ -652,6 +648,15 @@ export async function deleteAccountForErasure(input: Readonly<{
                 ? { status: "rejected" as const, code: "home_owner_transfer_required" as const }
                 : { status: "already-deleted" as const };
         }
+        // An administrator's erasure is audited when access is revoked and again when the
+        // Account is gone, so an erasure that stops in between still has its row (§3.9).
+        if (actor.kind === "home_administration" && retired.status === "applied") {
+            await recordHomeAdministrationEventInTx(tx, {
+                actor: { kind: "account", accountId: actor.actorAccountId },
+                target: { kind: "account", id: input.accountId },
+                detail: { action: "account.delete", summary: { outcome: "disabled_pending_completion" } },
+            });
+        }
         await erasePrematerializedEphemeralRunnerActivationsForAccountInTx(tx, {
             creatorAccountId: input.accountId,
         });
@@ -663,6 +668,11 @@ export async function deleteAccountForErasure(input: Readonly<{
     if (preflight.status === "already-deleted") return { status: "already-deleted" };
     if (preflight.status === "rejected") return { status: "failed", code: preflight.code };
     const capturedLocators = preflight.locators;
+    // Initial administrative admission has succeeded. Only this invocation's
+    // exact self-target may now continue through its own deliberate revocation;
+    // an independent administrator keeps current-authority checks in Phase C.
+    const continuationActor: AccountErasureActor = actor.kind === "home_administration"
+        && actor.actorAccountId === input.accountId ? { kind: "self" } : actor;
 
     const blobsDeleted = await deleteAccountErasureBlobLocators(capturedLocators);
     if (!blobsDeleted) {
@@ -675,7 +685,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             input.accountId,
         );
         if (fence.status === "account_not_found") {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, continuationActor);
             return actorRejection
                 ? { status: "failed", code: actorRejection }
                 : { status: "already-deleted" };
@@ -692,7 +702,7 @@ export async function deleteAccountForErasure(input: Readonly<{
             select: { status: true },
         });
         if (!lifecycle) {
-            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor, input.accountId);
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, continuationActor);
             return actorRejection
                 ? { status: "failed", code: actorRejection }
                 : { status: "already-deleted" };
@@ -703,7 +713,7 @@ export async function deleteAccountForErasure(input: Readonly<{
         // This transaction is the one that destroys rows, so an independent
         // administrative actor must still hold `eraseAccounts` right now. The
         // target stays terminally retired for a currently authorized retry.
-        const actorRejection = await admitAccountErasureActorInTx(tx, { actor, accountId: input.accountId });
+        const actorRejection = await admitAccountErasureActorInTx(tx, { actor: continuationActor, accountId: input.accountId });
         if (actorRejection) return { status: "failed", code: actorRejection };
         // Ownership is rechecked defensively: another transaction may have
         // demoted or retired the remaining owners while the external objects
@@ -771,6 +781,13 @@ export async function deleteAccountForErasure(input: Readonly<{
             accountId: input.accountId,
             excludeAccountIds: [input.accountId],
         });
+        if (actor.kind === "home_administration") {
+            await recordHomeAdministrationEventInTx(tx, {
+                actor: { kind: "account", accountId: actor.actorAccountId },
+                target: { kind: "account", id: input.accountId },
+                detail: { action: "account.delete", summary: { outcome: "deleted" } },
+            });
+        }
         await tx.account.delete({ where: { id: input.accountId } });
         return { status: "deleted" };
     }, { isolationLevel: "Serializable" });

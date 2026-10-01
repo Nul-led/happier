@@ -1,19 +1,35 @@
 import { z } from 'zod';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
 import {
   WorkflowDefinitionV1Schema,
   type WorkflowBlock,
   type WorkflowDefinitionV1,
+  WorkflowStepExecutionSelectionSchema,
 } from './workflowV1.js';
 import { WorkflowDefinitionIdV1Schema } from './workflowIdsV1.js';
 import { preservedBoundedNfcString } from '../strings/preservedBoundedNfcString.js';
 import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
-import { AgentPermissionIntentV1Schema } from '../runtime/permissionIntentV1.js';
+import { AgentPermissionIntentV1Schema, type AgentPermissionIntentV1 } from '../runtime/permissionIntentV1.js';
 import { resolvePermissionPrivilegeOrdinal } from '../actions/permissionPrivilege.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 import { SessionInputSourceAuthorityV1Schema } from '../sessions/messages/sessionInputAdmission.js';
 import { WorkflowInputNameSchema } from './workflowReferenceV1.js';
 import { WorkflowAcceptedWorkspaceTargetV1Schema } from './workflowWorkspaceV1.js';
+import { resolveWorkflowStepSelectionV1 } from './workflowStepSelectionV1.js';
+import { RoleOverrideV1Schema, ResolvedRoleV1Schema } from '../prompts/roles/rolesV1.js';
+import { WorkflowDefinitionRefV1StringSchema } from './workflowDefinitionRefV1.js';
+
+export const WorkflowRoleOverridesV1Schema = z.array(RoleOverrideV1Schema).superRefine((overrides, context) => {
+  const seen = new Set<string>();
+  overrides.forEach((override, index) => {
+    if (seen.has(override.roleId)) context.addIssue({
+      code: 'custom', path: [index, 'roleId'], message: 'Workflow role overrides must be unique by role id',
+    });
+    seen.add(override.roleId);
+  });
+});
+export type WorkflowRoleOverridesV1 = z.infer<typeof WorkflowRoleOverridesV1Schema>;
 
 export const WorkflowArtifactRevisionV1Schema = z.object({
   headerVersion: z.number().int().nonnegative().safe(),
@@ -27,11 +43,19 @@ export const WorkflowDefinitionMetadataV1Schema = z.object({
 }).strict();
 export type WorkflowDefinitionMetadataV1 = z.infer<typeof WorkflowDefinitionMetadataV1Schema>;
 
+export const WorkflowDefinitionSavedByV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('person'), accountId: preservedBoundedNfcString(191, 'Account ids') }).strict(),
+  z.object({ kind: z.literal('agent'), accountId: preservedBoundedNfcString(191, 'Account ids'),
+    sessionId: preservedBoundedNfcString(191, 'Session ids').optional() }).strict(),
+]);
+export type WorkflowDefinitionSavedByV1 = z.infer<typeof WorkflowDefinitionSavedByV1Schema>;
+
 export const WorkflowDefinitionArtifactHeaderV1Schema = z.object({
   kind: z.literal('workflow-definition.v1'),
   definitionId: WorkflowDefinitionIdV1Schema,
   revision: WorkflowArtifactRevisionV1Schema,
   metadata: WorkflowDefinitionMetadataV1Schema,
+  savedBy: WorkflowDefinitionSavedByV1Schema.optional(),
 }).strict();
 export type WorkflowDefinitionArtifactHeaderV1 = z.infer<typeof WorkflowDefinitionArtifactHeaderV1Schema>;
 
@@ -57,39 +81,70 @@ export const WorkflowResolvedInputsV1Schema = z.record(z.string(), StrictJsonVal
 export type WorkflowResolvedInputsV1 = z.infer<typeof WorkflowResolvedInputsV1Schema>;
 
 /**
- * Execution runtime selected once for the admitted Run. Definitions and
- * individual steps never carry this selector, and the accepted snapshot stores
- * no runtime identity beyond the selected kind.
+ * Default execution class frozen for the admitted Run. Workflow-only attached
+ * Runs are retired; Session-attached Execution Runs outside Workflows are not.
  */
 export const WorkflowRunExecutionTargetV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session') }).strict(),
-  z.object({ kind: z.literal('attached_run') }).strict(),
   z.object({ kind: z.literal('detached_run') }).strict(),
 ]);
 export type WorkflowRunExecutionTargetV1 = z.infer<typeof WorkflowRunExecutionTargetV1Schema>;
 
+export const WorkflowMaterializedLeafV1Schema = z.object({
+  sourceKey: z.string().min(1), blockId: z.string().min(1),
+  kind: z.enum(['step', 'action', 'workflow', 'wait']),
+  selection: WorkflowStepExecutionSelectionSchema,
+  /** Lexical workspace intent before defaults are flattened into selection. */
+  authoredWorkspace: WorkflowStepExecutionSelectionSchema.shape.workspace.unwrap(),
+  executionTarget: WorkflowRunExecutionTargetV1Schema,
+  role: ResolvedRoleV1Schema.optional(),
+  childRef: WorkflowDefinitionRefV1StringSchema.optional(),
+  actionId: z.string().min(1).optional(),
+  actionContract: z.object({ inputSchema: StrictJsonValueSchema, outputSchema: StrictJsonValueSchema,
+    completion: StrictJsonValueSchema.optional() }).strict().optional(),
+  actionInput: z.record(z.string(), StrictJsonValueSchema).optional(),
+}).strict();
+export type WorkflowMaterializedLeafV1 = z.infer<typeof WorkflowMaterializedLeafV1Schema>;
+const workflowMaterializationFields = {
+  workDepth: z.number().int().nonnegative().safe(),
+  roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
+  authoredDefinition: WorkflowDefinitionV1Schema,
+  materializedLeaves: z.array(WorkflowMaterializedLeafV1Schema),
+  frozenChildren: z.record(WorkflowDefinitionRefV1StringSchema, WorkflowDefinitionV1Schema),
+};
+
 const WorkflowAcceptedSnapshotAutomationV1Schema = z.object({
+  ...workflowMaterializationFields,
   definition: WorkflowDefinitionV1Schema,
   /** Account-private display metadata frozen with the accepted program. */
-  metadata: WorkflowDefinitionMetadataV1Schema.optional(),
+  metadata: WorkflowDefinitionMetadataV1Schema.nullable(),
   inputs: WorkflowResolvedInputsV1Schema,
   machineId: preservedBoundedNfcString(191, 'Machine ids'),
   executionTarget: WorkflowRunExecutionTargetV1Schema,
   workspaceTarget: WorkflowAcceptedWorkspaceTargetV1Schema,
+  origin: z.object({ kind: z.literal('direct'), originSessionId: preservedBoundedNfcString(191, 'Session ids').optional() }).strict().optional(),
+  resultDelivery: z.object({ kind: z.literal('originating_session'), originSessionId: preservedBoundedNfcString(191, 'Session ids') }).strict().optional(),
   authorization: z.lazy((): typeof WorkflowAcceptedAuthorizationV1Schema => WorkflowAcceptedAuthorizationV1Schema),
   source: z.object({
     kind: z.literal('automation'),
     automationId: preservedBoundedNfcString(191, 'Automation ids'),
     definitionId: WorkflowDefinitionIdV1Schema.optional(),
     revision: WorkflowArtifactRevisionV1Schema.optional(),
+    savedBy: WorkflowDefinitionSavedByV1Schema.nullable().optional(),
   }).strict(),
 }).strict().superRefine((value, context) => {
+  if (value.source.definitionId !== undefined && value.source.savedBy === undefined) {
+    context.addIssue({ code: 'custom', path: ['source', 'savedBy'], message: 'Saved sources must freeze the authorship observation' });
+  }
   if (value.workspaceTarget.project.machineId !== value.machineId) {
     context.addIssue({
       code: 'custom',
       path: ['workspaceTarget', 'project', 'machineId'],
       message: 'Project workspace must use the immutable Run Machine',
     });
+  }
+  if (value.resultDelivery && value.resultDelivery.originSessionId !== value.origin?.originSessionId) {
+    context.addIssue({ code: 'custom', path: ['resultDelivery', 'originSessionId'], message: 'Delivery must use the frozen origin Session' });
   }
 });
 
@@ -101,7 +156,7 @@ export const WorkflowAcceptedAuthorizationV1Schema = z.object({
       kind: z.literal('plugin'),
       pluginId: preservedBoundedNfcString(191, 'Plugin ids'),
       contributionLocalId: preservedBoundedNfcString(191, 'Plugin contribution ids').optional(),
-      immutableGenerationId: preservedBoundedNfcString(191, 'Plugin generation ids').optional(),
+      sourceCustody: PluginSourceCustodyV1Schema,
     }).strict(),
     z.object({
       kind: z.literal('api'),
@@ -130,41 +185,44 @@ const WORKFLOW_PERMISSION_CEILING_BY_ORDINAL = [
  */
 export function deriveWorkflowAcceptedPermissionCeilingV1(
   definition: WorkflowDefinitionV1,
-): z.infer<typeof AgentPermissionIntentV1Schema> {
-  const defaultOrdinal = resolvePermissionPrivilegeOrdinal(
-    definition.defaults.permissionMode ?? 'default',
-  );
-  if (defaultOrdinal === null) {
-    throw new TypeError('Workflow default permission mode is invalid');
+  additionalDefinitions: readonly WorkflowDefinitionV1[] = [],
+  additionalPermissions: readonly AgentPermissionIntentV1[] = [],
+): AgentPermissionIntentV1 {
+  let maximumOrdinal = 0;
+  for (const permission of additionalPermissions) {
+    const ordinal = resolvePermissionPrivilegeOrdinal(permission);
+    if (ordinal === null) throw new TypeError('Workflow permission mode is invalid');
+    maximumOrdinal = Math.max(maximumOrdinal, ordinal);
   }
-  let maximumOrdinal: number = defaultOrdinal;
-
-  const visit = (blocks: readonly WorkflowBlock[]): void => {
-    for (const block of blocks) {
+  for (const program of [definition, ...additionalDefinitions]) {
+    const pending: WorkflowBlock[] = [...program.blocks];
+    while (pending.length > 0) {
+      const block = pending.pop()!;
       if (block.kind === 'step') {
         const ordinal = resolvePermissionPrivilegeOrdinal(
-          block.execution?.permissionMode
-            ?? definition.defaults.permissionMode
-            ?? 'default',
+          resolveWorkflowStepSelectionV1({ defaults: program.defaults, step: block.execution }).selection.permissionMode ?? 'default',
         );
         if (ordinal === null) throw new TypeError('Workflow step permission mode is invalid');
         maximumOrdinal = Math.max(maximumOrdinal, ordinal);
         continue;
       }
       if (block.kind === 'parallel') {
-        for (const branch of block.branches) visit(branch.blocks);
+        for (const branch of block.branches) {
+          for (const child of branch.blocks) pending.push(child);
+        }
         continue;
       }
       if (block.kind === 'if') {
-        visit(block.then);
-        visit(block.otherwise);
+        for (const child of block.then) pending.push(child);
+        for (const child of block.otherwise) pending.push(child);
         continue;
       }
-      visit(block.body);
-      if (block.repetition.kind === 'evaluate') visit([block.repetition.evaluator]);
+      if (block.kind === 'loop') {
+        for (const child of block.body) pending.push(child);
+        if (block.repetition.kind === 'evaluate') pending.push(block.repetition.evaluator);
+      }
     }
-  };
-  visit(definition.blocks);
+  }
   return WORKFLOW_PERMISSION_CEILING_BY_ORDINAL[maximumOrdinal];
 }
 
@@ -174,13 +232,17 @@ const WorkflowAcceptedDirectSourceV1Schema = z.discriminatedUnion('kind', [
     kind: z.literal('saved'),
     definitionId: WorkflowDefinitionIdV1Schema,
     revision: WorkflowArtifactRevisionV1Schema,
+    savedBy: WorkflowDefinitionSavedByV1Schema.nullable(),
   }).strict(),
+  z.object({ kind: z.literal('catalog'), ref: WorkflowDefinitionRefV1StringSchema,
+    version: z.union([z.number().int().nonnegative().safe(), z.string().min(1)]) }).strict(),
 ]);
 
 const WorkflowAcceptedSnapshotDirectV1Schema = z.object({
+  ...workflowMaterializationFields,
   definition: WorkflowDefinitionV1Schema,
-  /** Optional only so current readers can open snapshots admitted before this field existed. */
-  metadata: WorkflowDefinitionMetadataV1Schema.optional(),
+  /** Inline sources may have no display metadata; admission freezes that absence. */
+  metadata: WorkflowDefinitionMetadataV1Schema.nullable(),
   source: WorkflowAcceptedDirectSourceV1Schema,
   inputs: WorkflowResolvedInputsV1Schema,
   machineId: preservedBoundedNfcString(191, 'Machine ids'),
@@ -194,7 +256,6 @@ const WorkflowAcceptedSnapshotDirectV1Schema = z.object({
   resultDelivery: z.object({
     kind: z.literal('originating_session'),
     originSessionId: preservedBoundedNfcString(191, 'Session ids'),
-    localInputId: preservedBoundedNfcString(191, 'Session input local ids'),
   }).strict().optional(),
 }).strict().superRefine((value, context) => {
   if (value.workspaceTarget.project.machineId !== value.machineId) {

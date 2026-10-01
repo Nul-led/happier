@@ -2,9 +2,35 @@ import { describe, expect, it } from 'vitest';
 
 import { createPluginInstallationReviewFixture } from '../testing/pluginInstallationReviewFixture.js';
 
-import { PluginInstallationReviewSchema } from './pluginInstallationReviewV1.js';
+import {
+  PluginChangePendingReviewResultSchema,
+  PluginInstallationReviewSchema,
+} from './pluginInstallationReviewV1.js';
 
 describe('PluginInstallationReviewSchema', () => {
+  it('carries one closed, duplicate-free authority delta for update decisions', () => {
+    const review = createPluginInstallationReviewFixture();
+    const result = {
+      kind: 'reviewRequired',
+      reviewKind: 'installation',
+      pendingChangeId: 'pending-authority-delta',
+      reason: 'authorityExpansion',
+      currentVersion: '1.0.0',
+      authorityExpansion: ['requiredHostAccess', 'requestInterceptor'],
+      review,
+    };
+
+    expect(PluginChangePendingReviewResultSchema.safeParse(result).success).toBe(true);
+    expect(PluginChangePendingReviewResultSchema.safeParse({
+      ...result,
+      authorityExpansion: ['requiredHostAccess', 'requiredHostAccess'],
+    }).success).toBe(false);
+    expect(PluginChangePendingReviewResultSchema.safeParse({
+      ...result,
+      authorityExpansion: ['packageBytesChanged'],
+    }).success).toBe(false);
+  });
+
   it('keeps content integrity at the external source boundary rather than in path or review facts', () => {
     const pathReview = createPluginInstallationReviewFixture();
 

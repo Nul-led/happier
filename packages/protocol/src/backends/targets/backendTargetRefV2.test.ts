@@ -41,7 +41,18 @@ describe('BackendTargetRefV2 compatibility', () => {
       kind: 'backend',
       backendId: 'claude',
     });
-    expect((protocol as any).buildBackendTargetKeyV2(direct)).toBe('backend:claude');
+    // One bundled Agent has exactly one key: its qualified contribution identity,
+    // whether a writer holds the routing ref or the Agent execution target.
+    expect((protocol as any).buildBackendTargetKeyV2(direct)).toBe('agent:happier.agent.claude/claude');
+    expect((protocol as any).buildBackendTargetKeyV2({
+      kind: 'agent',
+      identity: { pluginId: 'happier.agent.claude', localId: 'claude' },
+    })).toBe('agent:happier.agent.claude/claude');
+    expect((protocol as any).readBackendTargetRefV2('agent:happier.agent.claude/claude')).toEqual({
+      kind: 'backend',
+      backendId: 'claude',
+      sourceKind: 'built_in',
+    });
     expect(builtInFromKey).toEqual({
       kind: 'backend',
       backendId: 'claude',
@@ -90,8 +101,11 @@ describe('BackendTargetRefV2 compatibility', () => {
       configuredBackendId: 'review-bot',
       sourceKind: 'configured',
     });
+    // `agent:claude` is the key 0.2's `buildBackendTargetKey` writes for a
+    // built-in Agent (produced by ../0.2 packages/protocol dist at ff95c165);
+    // it reads as the same Agent's canonical key.
     expect((protocol as any).BackendTargetKeyV2InputSchema.parse('agent:claude')).toBe(
-      'backend:claude',
+      'agent:happier.agent.claude/claude',
     );
     expect((protocol as any).BackendTargetKeyV2InputSchema.parse('acpBackend:claude')).toBe(
       'backend:claude:configured:claude',

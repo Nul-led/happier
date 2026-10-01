@@ -14,6 +14,8 @@ import {
     txMachineFindFirst,
     txSessionFindFirst,
     txSessionFindUnique,
+    txSessionMessageFindFirst,
+    txSessionMessageFindMany,
     sessionShareFindMany,
     sessionDiscussionFindMany,
     txSessionFindMany,
@@ -120,11 +122,73 @@ describe("sessionRoutes v2 session by id", () => {
         txSessionFindUnique.mockReset();
     });
 
+    it("preserves the server receipt on message lookup and reconnect catch-up", async () => {
+        const inputAdmissionReceipt = { v: 1, issuer: "authenticatedAccount", actorAccountId: "u1", sessionRelationship: "owner" };
+        const message = { id: "m1", seq: 1, localId: "l1", sidechainId: null, messageRole: "user",
+            content: { t: "encrypted", c: "ciphertext" }, createdAt: new Date(1), updatedAt: new Date(1), inputAdmissionReceipt };
+        txSessionMessageFindFirst.mockResolvedValue(message);
+        txSessionMessageFindMany.mockResolvedValue([message]);
+        txSessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(),
+            id: "s1", accountId: "u1", seq: 1, currentStorageState: "hosted",
+            acceptedThroughServerSeq: null, materializationPublicationId: null,
+            materializedThroughSourceAt: null, publishedThroughServerSeq: null,
+        });
+        const lookup = await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId/messages/by-local-id/:localId");
+        expect((await lookup.invoke({ params: { sessionId: "s1", localId: "l1" } })).response)
+            .toMatchObject({ message: { inputAdmissionReceipt } });
+        const catchup = await createSessionRouteTestBuilder("GET", "/v1/sessions/:sessionId/messages");
+        expect((await catchup.invoke({ params: { sessionId: "s1" }, query: { afterSeq: 0 } })).response)
+            .toMatchObject({ messages: [{ inputAdmissionReceipt }] });
+    });
+
+    it.each([
+        ["GET", "/v2/sessions/:sessionId", "session.transcript.get"],
+        ["GET", "/v1/sessions/:sessionId/messages", "session.transcript.get"],
+        ["GET", "/v2/sessions/:sessionId/messages/by-local-id/:localId", "session.transcript.get"],
+        ["GET", "/v1/sessions/:sessionId/turns", "session.transcript.get"],
+        ["POST", "/v2/sessions/:sessionId/messages", "session.message.send"],
+    ] as const)("declares token Action and exact Session binding for %s %s", async (method, path, actionId) => {
+        const route = await createSessionRouteTestBuilder(method, path);
+        expect(route.app.routes.get(`${method} ${path}`)?.opts.config).toMatchObject({
+            apiTokenSessionAction: actionId,
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
+        });
+    });
+
+    it.each([undefined, 1] as const)("projects view-only token capabilities on detail (projection %s)", async (accessProjectionVersion) => {
+        const now = new Date(1);
+        mockSessionByIdRow({
+            id: "s1", accountId: "u1", seq: 1, encryptionMode: "e2ee",
+            createdAt: now, updatedAt: now, metadata: "metadata", metadataVersion: 1,
+            metadataLayoutVersion: 1, ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
+            agentState: null, agentStateVersion: 0, active: true, lastActiveAt: now,
+            pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0,
+            pendingCount: 0, pendingVersion: 0, latestTurnId: null, latestTurnStatus: null,
+            latestTurnStatusObservedAt: null, lastRuntimeIssue: null, turns: [],
+            dataEncryptionKey: Buffer.from([1, 2, 3]), shares: [],
+        });
+        const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId");
+        const { response } = await route.invoke({
+            authTokenKind: "api_token", authAuthority: "account_automation",
+            apiTokenPrincipal: { grant: {
+                v: 1, actions: { families: ["session_transcripts"], ids: [] },
+                targets: { sessions: ["s1"], machines: [] }, approve: false,
+                origins: [], models: null, permissionModes: null, create: null,
+            } },
+            params: { sessionId: "s1" },
+            query: accessProjectionVersion === undefined ? {} : { accessProjectionVersion },
+        });
+        expect(response).toMatchObject({ session: { effectiveAccess: { capabilities: {
+            readTranscript: true, submitAgentInput: false, approveRuntimePermissions: false,
+            manageAccess: false,
+        } } } });
+    });
+
     it("admits Runner credentials only for their exact materialized Session", async () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId");
         const entry = route.app.routes.get("GET /v2/sessions/:sessionId");
         expect(entry?.opts.config)
-            .toMatchObject({ ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } });
+            .toMatchObject({ restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } });
         expect(entry?.opts.config?.allowApiToken).toBeUndefined();
         expect(entry?.opts.preHandler).toBe(route.app.authenticate);
     });

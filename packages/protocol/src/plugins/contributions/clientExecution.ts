@@ -24,16 +24,8 @@ export const PluginClientExecutionPlatformsV1Schema = z.array(PluginClientExecut
   });
 export type PluginClientExecutionPlatformsV1 = z.infer<typeof PluginClientExecutionPlatformsV1Schema>;
 
-export const PluginClientExecutionModulePathV1Schema = z.string().trim().min(3).max(256).startsWith('./')
-  .refine(
-    (path) => !path.split(/[\\/]/u).includes('..'),
-    'Client execution module paths must not traverse parents.',
-  );
-export type PluginClientExecutionModulePathV1 = z.infer<typeof PluginClientExecutionModulePathV1Schema>;
-
 export const PluginClientExecutionReferenceV1Schema = z.object({
   artifactId: asProtocolZod(PluginContributionLocalIdSchema),
-  modulePath: PluginClientExecutionModulePathV1Schema,
   exportName: z.string().trim().min(1).max(256),
 }).strict();
 export type PluginClientExecutionReferenceV1 = z.infer<typeof PluginClientExecutionReferenceV1Schema>;

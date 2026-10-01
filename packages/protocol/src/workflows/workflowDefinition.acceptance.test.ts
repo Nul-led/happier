@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { WorkflowDefinitionArtifactBodyV1Schema, WorkflowAcceptedSnapshotV1Schema } from './workflowDefinitionV1.js';
+import { AutomationStoredWorkflowDefinitionV2Schema } from '../automations/automationWorkflowRecipeV2.js';
+import { createDeepWorkflowDefinition } from './workflowDefinition.testkit.js';
+import { sameStrictJsonValue } from '../json/strictJsonValue.js';
 
 import {
   WORKFLOW_SESSION_AUTHORING_SELECTION_FIELD_IDS,
@@ -12,6 +16,20 @@ const AGENT_TARGET = {
 };
 
 describe('workflow definition acceptance contract', () => {
+  it('accepts deep canonical definitions at Artifact, Automation and accepted-snapshot boundaries', () => {
+    const definition = createDeepWorkflowDefinition();
+    const artifact = WorkflowDefinitionArtifactBodyV1Schema.parse({ kind: 'workflow-definition.v1', definition });
+    const project = { machineId: 'machine-1', directory: '/repo' };
+    const automation = AutomationStoredWorkflowDefinitionV2Schema.parse({ inlineDefinition: definition, workspace: { directory: project.directory }, executionTarget: { kind: 'session' } });
+    const snapshot = WorkflowAcceptedSnapshotV1Schema.parse({
+      authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, workDepth: 0, metadata: null,
+      definition, inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' },
+      workspaceTarget: { project: { ...project, checkoutRootPath: '/repo' } }, source: { kind: 'inline' }, origin: { kind: 'direct' },
+      authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
+    });
+    for (const value of [artifact, snapshot]) expect(sameStrictJsonValue(value.definition, definition)).toBe(true);
+    expect(sameStrictJsonValue(automation.inlineDefinition, definition)).toBe(true);
+  });
   it('round-trips a two-step result pipeline and its explicit final output through JSON storage', () => {
     const accepted = validateWorkflowDefinition({
       version: 1,

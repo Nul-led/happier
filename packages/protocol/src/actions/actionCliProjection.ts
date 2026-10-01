@@ -60,6 +60,33 @@ export type ActionCliBindInput = (
   context: ActionCliBindContext,
 ) => unknown;
 
+const ACTION_CLI_DERIVED_DEFAULT = Symbol.for('happier.actionCli.derivedDefault');
+
+/**
+ * A value a binder supplies on the caller's behalf — an intent-derived run shape,
+ * a generated local id, a presentation default — rather than one the caller typed.
+ * The binder is the only owner that knows this provenance, so it states it here
+ * instead of the composer guessing it from field spelling. When canonical
+ * whole-input JSON already carries the field, the JSON value is kept; a value the
+ * caller actually typed for that field is still a duplicate source and is refused.
+ */
+export type ActionCliDerivedDefault<T = unknown> = Readonly<{
+  [ACTION_CLI_DERIVED_DEFAULT]: true;
+  value: T;
+}>;
+
+export function actionCliDerivedDefault<T>(value: T): ActionCliDerivedDefault<T> {
+  return Object.freeze({ [ACTION_CLI_DERIVED_DEFAULT]: true as const, value });
+}
+
+export function readActionCliDerivedDefault(value: unknown): Readonly<{ value: unknown }> | null {
+  return typeof value === 'object'
+    && value !== null
+    && (value as Partial<ActionCliDerivedDefault>)[ACTION_CLI_DERIVED_DEFAULT] === true
+    ? { value: (value as ActionCliDerivedDefault).value }
+    : null;
+}
+
 const ActionCliBindInputSchema = z.custom<ActionCliBindInput>(
   (value) => typeof value === 'function',
   { message: 'Expected an Action CLI input binder' },

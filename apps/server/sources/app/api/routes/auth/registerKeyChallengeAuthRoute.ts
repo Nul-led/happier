@@ -8,9 +8,11 @@ import {
     resolveAuthPolicyFromEnv,
 } from "@/app/auth/authPolicy";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
+import type { LoginEligibilityResult } from "@/app/auth/loginEligibilityResult";
 import { type Fastify } from "../../types";
-import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import { readAuthFeatureEnv, readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
+    AUTH_TOKEN_KIND_AUTHORITIES,
     AUTH_KEY_CHALLENGE_V2_ERROR_CODES,
     createKeyChallengeV2SigningInput,
     KeyChallengeAuthRequestSchema,
@@ -39,6 +41,7 @@ import { provisionFreshAccountInTx } from "@/app/auth/provisionFreshAccountInTx"
 import {
     isEffectiveHomeAuthMethodActionEnabled,
     isEffectiveHomeAuthMethodActionEnabledInTx,
+    resolveEffectiveHomeAuthMethodsInTx,
 } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import {
     TeamInvitationAcceptanceAbort,
@@ -54,9 +57,12 @@ import {
     readKeyChallengeV2ForLogin,
     consumeLoginKeyChallengeV2,
     decodeVerifiedNativePasswordEvidenceV1,
+    type VerifiedNativePasswordEvidenceV1,
     verifyKeyChallengeSignature,
 } from "@/app/auth/keyChallengeV2";
 import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
+import { readHomeGovernancePolicyInTx } from "@/app/home/governance/governancePolicy";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 export { resolveStableKeyChallengeV2AudienceOrigin } from "@/app/auth/keyChallengeV2";
 
 const KeyChallengeV2UnavailableResponseSchema = z.object({
@@ -85,6 +91,27 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
         );
 }
 
+/**
+ * The one answer this route gives to a refused login-eligibility verdict.
+ *
+ * Both arms of `/v1/auth` — the incumbent device signing for its expected
+ * Account and the keyless arm — reach the same enforcement owner, so they must
+ * report it identically. Only the `401` verdict is flattened into the neutral
+ * invalid-token message; a retryable `503 upstream_error` reaches the client as
+ * itself, because a transient provider/catalog outage must not send a proven
+ * device through its sign-out and recovery owner.
+ */
+function sendLoginEligibilityFailure<Sent>(
+    reply: Readonly<{ code: (statusCode: number) => { send: (payload: unknown) => Sent } }>,
+    eligibility: Extract<LoginEligibilityResult, { ok: false }>,
+): Sent {
+    if (eligibility.statusCode === 401) return reply.code(401).send({ error: "Invalid token" });
+    if (eligibility.statusCode === 403 && eligibility.error === "provider-required") {
+        return reply.code(403).send({ error: "provider-required", provider: eligibility.provider });
+    }
+    return reply.code(eligibility.statusCode).send({ error: eligibility.error });
+}
+
 export function registerKeyChallengeAuthRoute(app: Fastify): void {
     const ordinaryHomeRequiresKeyChallengeV2 =
         resolveAuthKeyChallengeV2Requirement(process.env);
@@ -94,12 +121,17 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
         tokenKind: "account",
         requireKeyChallengeV2: ordinaryHomeRequiresKeyChallengeV2,
     });
-    registerKeyChallengeAuthRoutesForPurpose(app, {
-        challengePath: "/v1/auth/account-directory/challenge",
-        redeemPath: "/v1/auth/account-directory",
-        tokenKind: "account_directory",
-        requireKeyChallengeV2: true,
-    });
+    // Directory recovery-key admission is not the native Home password
+    // finalizer. Retain its deployment restriction while the shared Home
+    // protocol remains reachable for independently enabled native admission.
+    if (readAuthFeatureEnv(process.env).loginKeyChallengeEnabled) {
+        registerKeyChallengeAuthRoutesForPurpose(app, {
+            challengePath: "/v1/auth/account-directory/challenge",
+            redeemPath: "/v1/auth/account-directory",
+            tokenKind: "account_directory",
+            requireKeyChallengeV2: true,
+        });
+    }
 }
 
 type KeyChallengeRoutePurpose = Readonly<{
@@ -125,10 +157,11 @@ function registerKeyChallengeAuthRoutesForPurpose(
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const challenge = await issueKeyChallengeV2({
             purpose: purpose.tokenKind,
             expectedAccountId: request.body.expectedAccountId,
-            env: process.env,
+            env: requestHomeEnv,
         });
         if (!challenge) {
             return reply.code(503).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable });
@@ -146,8 +179,11 @@ function registerKeyChallengeAuthRoutesForPurpose(
         },
         errorHandler: accountDirectoryAuthErrorHandler,
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const authRequest = request.body;
         const isV2AuthRequest = isKeyChallengeV2AuthRequest(authRequest);
+        const tokenKind = purpose.tokenKind === "account" && isV2AuthRequest && authRequest.credentialKind === "terminal"
+            ? "terminal" : purpose.tokenKind;
         if (!isV2AuthRequest && purpose.tokenKind === "account_directory") {
             return reply.code(426).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required });
         }
@@ -182,14 +218,14 @@ function registerKeyChallengeAuthRoutesForPurpose(
         // Server-owned evidence written by a native verifier when it issued this
         // exact Account-bound challenge. It is not request input, so a caller
         // holding only the recovery secret cannot mint password provenance.
-        let verifiedNativePasswordCredentialRevision: number | null = null;
+        let verifiedNativePasswordEvidence: VerifiedNativePasswordEvidenceV1 | null = null;
         let challengeExpectedAccountId: string | null = null;
         if (isV2AuthRequest) {
             const challenge = await readKeyChallengeV2ForLogin({
                 challengeId: authRequest.challengeId,
                 expectedAccountId: authRequest.expectedAccountId,
                 purpose: purpose.tokenKind,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (!challenge) {
                 return reply.code(401).send({ error: 'Invalid signature' });
@@ -211,7 +247,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
                     : {}),
             });
             v2ChallengeId = challenge.id;
-            verifiedNativePasswordCredentialRevision =
+            verifiedNativePasswordEvidence =
                 decodeVerifiedNativePasswordEvidenceV1(challenge.verifiedNativeMethodId);
             challengeExpectedAccountId = challenge.expectedAccountId;
         } else {
@@ -246,27 +282,37 @@ function registerKeyChallengeAuthRoutesForPurpose(
         if (!isValid) {
             return reply.code(401).send({ error: 'Invalid signature' });
         }
-        if (v2ChallengeId) {
+        const publicKeyHex = privacyKit.encodeHex(publicKey);
+        const signingAccount = !authRequest.expectedAccountId
+            ? await db.account.findUnique({
+                where: { publicKey: publicKeyHex },
+                select: {
+                    id: true,
+                    publicKey: true,
+                    encryptionMode: true,
+                    contentPublicKey: true,
+                    contentPublicKeySig: true,
+                },
+            })
+            : null;
+        // A fresh invitation must retain its one-time proof if any part of
+        // provisioning, admission or credential creation rolls back.
+        const consumeChallengeWithFreshAdmission = purpose.tokenKind === "account"
+            && !authRequest.expectedAccountId
+            && !signingAccount
+            && !(isV2AuthRequest && authRequest.requireExistingAccount)
+            && request.body.admission?.kind === "team_invitation";
+        if (v2ChallengeId && !consumeChallengeWithFreshAdmission) {
             if (!await consumeLoginKeyChallengeV2(db, v2ChallengeId)) {
                 return reply.code(401).send({ error: 'Invalid signature' });
             }
         }
 
-        const publicKeyHex = privacyKit.encodeHex(publicKey);
         const requiredExistingAccount =
             isV2AuthRequest
             && authRequest.requireExistingAccount
             && !authRequest.expectedAccountId
-                ? await db.account.findUnique({
-                    where: { publicKey: publicKeyHex },
-                    select: {
-                        id: true,
-                        publicKey: true,
-                        encryptionMode: true,
-                        contentPublicKey: true,
-                        contentPublicKeySig: true,
-                    },
-                })
+                ? signingAccount
                 : null;
         if (
             isV2AuthRequest
@@ -282,7 +328,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
         // Ensure auth is initialized before issuing tokens.
         await auth.init();
 
-        const authPolicy = resolveAuthPolicyFromEnv(process.env);
+        const authPolicy = resolveAuthPolicyFromEnv(requestHomeEnv);
 
         let contentKeyBinding: VerifiedAccountContentKeyBinding | null = null;
         if (request.body.contentPublicKey && request.body.contentPublicKeySig) {
@@ -363,15 +409,10 @@ function registerKeyChallengeAuthRoutesForPurpose(
             }
             const eligibility = await enforceLoginEligibility({
                 accountId: expectedAccount.id,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (!eligibility.ok) {
-                if (eligibility.error === "account-disabled") {
-                    return reply.code(403).send({ error: "account-disabled" });
-                }
-                return reply.code(401).send({
-                    error: "Invalid token",
-                });
+                return sendLoginEligibilityFailure(reply, eligibility);
             }
             // The challenge carried password evidence only if a native verifier
             // issued it for this exact Account after proving the factor. Every
@@ -381,33 +422,34 @@ function registerKeyChallengeAuthRoutesForPurpose(
             const token = purpose.tokenKind === "account"
                 ? await inTx(async (tx) => {
                     await acquireAccountSessionOwnerMetadataFenceInTx(tx, expectedAccount.id);
-                    const passwordCredential = verifiedNativePasswordCredentialRevision !== null
-                        ? await tx.accountPasswordCredential.findUnique({
-                            where: { accountId: expectedAccount.id },
-                            select: { revision: true },
+                    const passwordIdentity = verifiedNativePasswordEvidence !== null
+                        ? await tx.accountIdentity.findUnique({
+                            where: { accountId_provider: { accountId: expectedAccount.id, provider: "email" } },
+                            select: { id: true, account: { select: { AccountPasswordCredential: { select: { revision: true } } } } },
                         })
                         : null;
                     const verifiedMethodId =
-                        verifiedNativePasswordCredentialRevision !== null
-                        && passwordCredential?.revision === verifiedNativePasswordCredentialRevision
+                        verifiedNativePasswordEvidence !== null
+                        && passwordIdentity?.id === verifiedNativePasswordEvidence.nativeIdentityId
+                        && passwordIdentity.account.AccountPasswordCredential?.revision === verifiedNativePasswordEvidence.credentialRevision
                         && challengeExpectedAccountId === expectedAccount.id
                             ? "email_password"
                             : "key_challenge";
                     if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: verifiedMethodId,
                         actionId: "login",
                         mode: "keyed",
                     })) return null;
                     return await auth.createTokenInTx(tx, expectedAccount.id, undefined, {
-                        kind: purpose.tokenKind,
-                        authority: "present_user",
+                        kind: tokenKind,
+                        authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                         authenticationEvidence: [{ kind: "home_method", methodId: verifiedMethodId }],
                     });
                 })
                 : await auth.createToken(expectedAccount.id, undefined, {
-                    kind: purpose.tokenKind,
-                    authority: "present_user",
+                    kind: tokenKind,
+                    authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                     authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
                 });
             if (!token) return reply.code(403).send({ error: "method_not_available" });
@@ -417,32 +459,23 @@ function registerKeyChallengeAuthRoutesForPurpose(
             });
         }
 
-        const encryptionFeatureEnv = readEncryptionFeatureEnv(process.env);
+        const encryptionFeatureEnv = readEncryptionFeatureEnv(requestHomeEnv);
         const effectiveDefaultEncryptionMode = resolveEffectiveDefaultAccountEncryptionMode(
             encryptionFeatureEnv.storagePolicy,
             encryptionFeatureEnv.defaultAccountMode,
         );
 
-        const existingAccount = requiredExistingAccount ?? await db.account.findUnique({
-            where: { publicKey: publicKeyHex },
-            select: {
-                id: true,
-                publicKey: true,
-                encryptionMode: true,
-                contentPublicKey: true,
-                contentPublicKeySig: true,
-            },
-        });
+        const existingAccount = signingAccount;
         const teamInvitationAdmission = purpose.tokenKind === "account"
             && !existingAccount
             && request.body.admission?.kind === "team_invitation"
                 ? request.body.admission
                 : null;
-        if (teamInvitationAdmission && !isTeamMembershipAdmissionEnabled()) {
+        if (teamInvitationAdmission && !await isTeamMembershipAdmissionEnabled({ env: requestHomeEnv })) {
             return reply.code(403).send({ error: "signup-disabled" });
         }
         if (purpose.tokenKind === "account" && !await isEffectiveHomeAuthMethodActionEnabled({
-            env: process.env,
+            env: requestHomeEnv,
             methodId: "key_challenge",
             actionId: existingAccount ? "login" : "provision",
             mode: "keyed",
@@ -454,7 +487,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
         }
         if (!existingAccount) {
             const blocked = shouldDenyPublicSignupProvisioningAction({
-                env: process.env,
+                env: requestHomeEnv,
                 requestIp: request.ip,
                 methodId: "key_challenge",
                 mode: "keyed",
@@ -484,15 +517,9 @@ function registerKeyChallengeAuthRoutesForPurpose(
                     error: "Invalid token",
                 });
             }
-            const eligibility = await enforceLoginEligibility({ accountId: existingAccount.id, env: process.env });
+            const eligibility = await enforceLoginEligibility({ accountId: existingAccount.id, env: requestHomeEnv });
             if (!eligibility.ok) {
-                // Eligibility can fail closed with 401 (invalid-token) when the account cannot be validated.
-                // We intentionally surface a generic auth-style error for 401 to avoid leaking internal details.
-                if (eligibility.statusCode === 401) return reply.code(401).send({ error: "Invalid token" });
-                if (eligibility.statusCode === 403 && eligibility.error === "provider-required") {
-                    return reply.code(403).send({ error: "provider-required", provider: eligibility.provider });
-                }
-                return reply.code(eligibility.statusCode).send({ error: eligibility.error });
+                return sendLoginEligibilityFailure(reply, eligibility);
             }
         }
 
@@ -508,23 +535,70 @@ function registerKeyChallengeAuthRoutesForPurpose(
         }
 
         let freshAccount = null;
+        let freshInvitationToken: string | null = null;
         if (!existingAccount) {
             try {
-                freshAccount = await inTx(async (tx) => {
-                    if (purpose.tokenKind === "account" && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
-                        methodId: "key_challenge",
-                        actionId: "provision",
-                        mode: "keyed",
-                        ...(teamInvitationAdmission ? { admission: { kind: "team_invitation" as const } } : {}),
-                    })) throw new Error("signup-disabled");
-                    if (!teamInvitationAdmission && (shouldDenyPublicSignupProvisioningAction({
-                        env: process.env,
-                        requestIp: request.ip,
-                        methodId: "key_challenge",
-                        mode: "keyed",
-                    }) || !resolveAuthPolicyFromEnv(process.env).anonymousSignupEnabled)) {
-                        throw new Error("signup-disabled");
+                const provisioned = await inTx(async (tx) => {
+                    if (consumeChallengeWithFreshAdmission && v2ChallengeId
+                        && !await consumeLoginKeyChallengeV2(tx, v2ChallengeId)) {
+                        throw new Error("key-challenge-consumed");
+                    }
+                    if (purpose.tokenKind === "account") {
+                        if (!teamInvitationAdmission && (shouldDenyPublicSignupProvisioningAction({
+                            env: requestHomeEnv,
+                            requestIp: request.ip,
+                            methodId: "key_challenge",
+                            mode: "keyed",
+                        }) || !resolveAuthPolicyFromEnv(requestHomeEnv).anonymousSignupEnabled)) {
+                            throw new Error("signup-disabled");
+                        }
+                        const effectiveMethods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
+                            env: requestHomeEnv,
+                            ...(teamInvitationAdmission ? { admission: { kind: "team_invitation" as const } } : {}),
+                        });
+                        const keyChallengeDecision = effectiveMethods.status === "ready"
+                            ? effectiveMethods.decisions.find((decision) => decision.id === "key_challenge")
+                            : null;
+                        const provisionAction = keyChallengeDecision?.actions.find((action) => action.id === "provision");
+                        if (!provisionAction?.enabled || provisionAction.mode !== "keyed") {
+                            throw new Error("signup-disabled");
+                        }
+                        // The Home recommendation is part of the same effective
+                        // decision already used for admission. The deployment
+                        // default remains the fallback only when the Home has no
+                        // recommendation. This keeps direct Key Challenge and
+                        // email/password provisioning on one protection contract.
+                        const homeAuthenticationPolicy = await readHomeGovernancePolicyInTx(tx);
+                        const freshEncryptionMode = homeAuthenticationPolicy.authentication.status === "narrowed"
+                            ? homeAuthenticationPolicy.authentication.policy.recommendedProvisioningMode
+                                ?? effectiveDefaultEncryptionMode
+                            : effectiveDefaultEncryptionMode;
+                        if (freshEncryptionMode === "e2ee" && !contentKeyBinding) {
+                            throw new Error("content_public_key_required");
+                        }
+                        const account = await provisionFreshAccountInTx(tx, {
+                            insertSemantics: {
+                                kind: "idempotent_verified_signing_identity",
+                                publicKey: publicKeyHex,
+                            },
+                            encryptionMode: freshEncryptionMode,
+                            contentKeyBinding,
+                            directoryPreparation: sameServiceBootstrapPreparation,
+                        });
+                        if (teamInvitationAdmission) {
+                            await requireTeamInvitationFreshAccountAdmissionInTx(tx, {
+                                token: teamInvitationAdmission.token,
+                                accountId: account.id,
+                            });
+                        }
+                        const token = teamInvitationAdmission
+                            ? await auth.createTokenInTx(tx, account.id, undefined, {
+                                kind: tokenKind,
+                                authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
+                                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+                            })
+                            : null;
+                        return { account, token };
                     }
                     const account = await provisionFreshAccountInTx(tx, {
                         insertSemantics: {
@@ -535,17 +609,19 @@ function registerKeyChallengeAuthRoutesForPurpose(
                         contentKeyBinding,
                         directoryPreparation: sameServiceBootstrapPreparation,
                     });
-                    if (teamInvitationAdmission) {
-                        await requireTeamInvitationFreshAccountAdmissionInTx(tx, {
-                            token: teamInvitationAdmission.token,
-                            accountId: account.id,
-                        });
-                    }
-                    return account;
+                    return { account, token: null };
                 });
+                freshAccount = provisioned.account;
+                freshInvitationToken = provisioned.token;
             } catch (error) {
+                if (error instanceof Error && error.message === "key-challenge-consumed") {
+                    return reply.code(401).send({ error: "Invalid signature" });
+                }
                 if (error instanceof Error && error.message === "signup-disabled") {
                     return reply.code(403).send({ error: "signup-disabled" });
+                }
+                if (error instanceof Error && error.message === "content_public_key_required") {
+                    return reply.code(400).send({ error: "content_public_key_required" });
                 }
                 if (error instanceof Error && error.message === "content_public_key_mismatch") {
                     return reply.code(409).send({ error: "content_public_key_mismatch" });
@@ -621,10 +697,10 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 });
             }
         }
-        const token = purpose.tokenKind === "account"
+        const token = freshInvitationToken ?? (purpose.tokenKind === "account"
             ? await inTx(async (tx) => {
                 if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                    env: process.env,
+                    env: requestHomeEnv,
                     methodId: "key_challenge",
                     actionId: freshAccount ? "provision" : "login",
                     mode: "keyed",
@@ -633,8 +709,8 @@ function registerKeyChallengeAuthRoutesForPurpose(
                         : {}),
                 })) return null;
                 return await auth.createTokenInTx(tx, user.id, undefined, {
-                    kind: purpose.tokenKind,
-                    authority: "present_user",
+                    kind: tokenKind,
+                    authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                     authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
                 });
             })
@@ -645,8 +721,8 @@ function registerKeyChallengeAuthRoutesForPurpose(
                             preparation: sameServiceBootstrapPreparation,
                         });
                         return auth.createTokenInTx(tx, user.id, undefined, {
-                            kind: purpose.tokenKind,
-                            authority: "present_user",
+                            kind: tokenKind,
+                            authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                             authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
                         });
                     })
@@ -654,11 +730,11 @@ function registerKeyChallengeAuthRoutesForPurpose(
                     user.id,
                     undefined,
                     {
-                        kind: purpose.tokenKind,
-                        authority: "present_user",
+                        kind: tokenKind,
+                        authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                         authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
                     },
-                );
+                ));
         if (!token) {
             return reply.code(403).send({
                 error: freshAccount ? "signup-disabled" : "method_not_available",

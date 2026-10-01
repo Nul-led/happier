@@ -1,11 +1,14 @@
 import {
     resolveEffectiveSessionAccess,
-    resolveStructuralSessionAccessForAccountsInTx,
-    resolveStructuralSessionAccessForSessionsInTx,
+    resolveSessionAccessForAccountsInTx,
+    resolveSessionAccessForSessionsInTx,
     type EffectiveSessionAccess,
 } from "@/app/session/access/sessionAccess";
 import type { Tx } from "@/storage/inTx";
-import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import {
+    backgroundDeliveryAuthentication,
+    type SessionAccessAuthentication,
+} from "@/app/session/access/sessionAccessAuthentication";
 
 export type SessionDiscussionStorageMode = "plain" | "e2ee";
 
@@ -62,9 +65,14 @@ export async function resolveSessionDiscussionContextInTx(tx: Tx, params: Readon
 export async function filterAccountsWithCurrentSessionReadAccessInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     accountIds: readonly string[];
+    authentication?: SessionAccessAuthentication;
 }>): Promise<ReadonlySet<string>> {
     if (params.accountIds.length === 0) return new Set();
-    const access = await resolveStructuralSessionAccessForAccountsInTx(tx, params);
+    const access = await resolveSessionAccessForAccountsInTx(tx, {
+        sessionId: params.sessionId,
+        accountIds: params.accountIds,
+        authentication: params.authentication ?? backgroundDeliveryAuthentication(),
+    });
     const readable = new Set<string>();
     for (const [accountId, effective] of access) {
         if (effective?.capabilities.readTranscript === true) readable.add(accountId);
@@ -75,23 +83,26 @@ export async function filterAccountsWithCurrentSessionReadAccessInTx(tx: Tx, par
 /**
  * The same current-read-access filter for a whole candidate page of Sessions.
  *
- * A fact loader that answers "what is still unread for these Accounts in these
- * Sessions" must not pay one access round trip per Session; this keeps the exact
- * Lane 04 decision while resolving the page in one bounded read. Absence from
- * the returned set is always "not readable right now", so a revoked collaborator
- * disappears from personal attention without any cursor being deleted.
+ * Each Session is admitted through Lane 04's credential-qualified owner. Absence
+ * from the returned set is always "not readable right now", so a revoked
+ * collaborator disappears from personal attention without any cursor being deleted.
  */
 export async function filterSessionsWithCurrentReadAccessInTx(tx: Tx, params: Readonly<{
     sessionIds: readonly string[];
     accountIds: readonly string[];
+    authentication?: SessionAccessAuthentication;
 }>): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
     const readable = new Map<string, Set<string>>();
     if (params.sessionIds.length === 0 || params.accountIds.length === 0) return readable;
-    const access = await resolveStructuralSessionAccessForSessionsInTx(tx, params);
     for (const accountId of new Set(params.accountIds)) readable.set(accountId, new Set());
+    const access = await resolveSessionAccessForSessionsInTx(tx, {
+        sessionIds: params.sessionIds,
+        accountIds: params.accountIds,
+        authentication: params.authentication ?? backgroundDeliveryAuthentication(),
+    });
     for (const [sessionId, perAccount] of access) {
         for (const [accountId, effective] of perAccount) {
-            if (effective?.capabilities.readTranscript !== true) continue;
+            if (effective.capabilities.readTranscript !== true) continue;
             const sessions = readable.get(accountId) ?? new Set<string>();
             sessions.add(sessionId);
             readable.set(accountId, sessions);

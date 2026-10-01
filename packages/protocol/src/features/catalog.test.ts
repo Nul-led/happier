@@ -322,7 +322,7 @@ describe('feature catalog', () => {
     expect(FEATURE_CATALOG['browser.context']?.representation).toBe('server');
     expect(FEATURE_CATALOG['browser.diagnostics']?.representation).toBe('server');
     // Automation is a server-owned capability too: a server admin can enable/disable it independently
-    // of human browsing + devtools. Its finer injectedPage/eval tiers stay client + fail-closed.
+    // of human browsing + devtools. Dormant injectedPage/eval ids add no local env opt-in.
     expect(FEATURE_CATALOG['browser.automation']?.representation).toBe('server');
   });
 

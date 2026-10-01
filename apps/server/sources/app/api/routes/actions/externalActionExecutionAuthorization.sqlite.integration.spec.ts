@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 import tweetnacl from "tweetnacl";
+import type { Server, Socket } from "socket.io";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -17,9 +18,11 @@ import {
     encodeExternalActionResolvedTargetV1,
     signExternalActionMachineRequestV1,
     signExternalActionMachineRpcRequestV1,
+    createExternalActionDaemonDispatchResponseV1,
+    prepareExternalActionResponseEnvelopeV1,
     type ExternalActionRequestEnvelopeV1,
 } from "@happier-dev/protocol/actions";
-import { encodePasswordCredentialFieldV1, type AccountPasswordCredentialV1 } from "@happier-dev/protocol";
+import { API_TOKEN_FULL_GRANT_V1, SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1, encodePasswordCredentialFieldV1, type AccountPasswordCredentialV1 } from "@happier-dev/protocol";
 import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
@@ -39,6 +42,12 @@ import { inTx } from "@/storage/inTx";
 import { registerTeamRoutes } from "@/app/teams/registerTeamRoutes";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { currentAccountStoredContentCompatibilityHeaders } from "@/app/api/testkit/accountStoredContentCompatibility";
+import { createExternalActionDaemonDispatcher, resolveCurrentSessionMachineFromServer } from "@/app/api/socket/externalActionDispatcher";
+import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { getAccountSessionSocketRoom } from "@/app/api/socketRooms";
+import { machineUpdateHandler } from "@/app/api/socket/machineUpdateHandler";
+import { createFakeSocket, getSocketHandler } from "@/app/api/testkit/socketHarness";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 
 import { registerExternalActionRoutes } from "./registerExternalActionRoutes";
 
@@ -70,6 +79,7 @@ describe("external Action execution authorization", () => {
 
     afterEach(async () => {
         await db.accountApiToken.deleteMany();
+        await db.accessKey.deleteMany();
         await db.machine.deleteMany();
         await db.teamMembership.deleteMany();
         await db.team.deleteMany();
@@ -484,6 +494,60 @@ describe("external Action execution authorization", () => {
             })).resolves.toBeNull();
         } finally {
             await app.close();
+        }
+    });
+
+    it("binds protected input to the exact payload and persists the invocation's original constraints", async () => {
+        const fixture = await createFixture({ qualifiedPat: true });
+        const session = await db.session.create({ data: {
+            accountId: fixture.account.id, tag: crypto.randomUUID(), metadata: "{}", encryptionMode: "plain",
+        } });
+        await db.machine.update({ where: { accountId_id: { accountId: fixture.account.id, id: fixture.machine.id } },
+            data: { operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1 } });
+        await db.accessKey.create({ data: { accountId: fixture.account.id, machineId: fixture.machine.id, sessionId: session.id, data: "key" } });
+        try {
+            const grant = { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ["session.message.send" as const] },
+                targets: { sessions: [session.id], machines: [] }, approve: false, permissionModes: ["default" as const] };
+            const issued = await auth.createApiToken({ accountId: fixture.account.id, tokenId: crypto.randomUUID(), label: "input", grant });
+            const principal = (await auth.verifyTokenForRoute(issued.token))?.apiTokenPrincipal;
+            if (!principal) throw new Error("Missing authenticated test principal");
+            const target = { kind: "session" as const, sessionId: session.id };
+            const authorization = await auth.mintExternalActionExecutionAuthorization({
+                serverIdentityId: await getOrCreateServerIdentityId(), accountId: principal.accountId,
+                principalId: principal.principalId, credentialId: principal.credentialId, grant,
+                machineId: fixture.machine.id, actionId: "session.message.send", requestId: crypto.randomUUID(),
+                requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1({ v: 1, target, input: { text: "input" } }), target,
+            });
+            await auth.updateApiToken({ accountId: fixture.account.id, tokenId: principal.credentialId, grant: API_TOKEN_FULL_GRANT_V1 });
+            const request = { v: 1 as const, sessionId: session.id, targetMachineId: fixture.machine.id, localId: "protected-input",
+                content: { t: "plain" as const, v: { role: "user", content: { type: "text", text: "input" } } },
+                requestedAction: { v: 1 as const, kind: "enqueue" as const } };
+            const externalAction = { v: 1 as const, authorization, target, effectActionId: "session.message.send",
+                installationId: fixture.machine.installationId!, machineSignature: signExternalActionMachineRpcRequestV1({
+                    authorizationToken: authorization.token, target, effectActionId: "session.message.send",
+                    installationId: fixture.machine.installationId!, requestId: authorization.binding.requestId,
+                    event: SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1, method: SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
+                    params: request, privateKey: fixture.keyPair.secretKey,
+                }) };
+            const socket = createFakeSocket({ data: { clientType: "machine-scoped", machineId: fixture.machine.id,
+                verifiedMachineInstallationId: fixture.machine.installationId } });
+            // Only the Socket.IO transport is a fixture; proof verification and durable admission remain real.
+            machineUpdateHandler(fixture.account.id, socket as unknown as Socket, {
+                operationSocketBatchLimits: { ok: true, limits: { maxItems: 200, maxSerializedBytes: 524_288 } },
+            });
+            const invoke = getSocketHandler(socket, SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1);
+            let response: unknown;
+            await invoke({ ...request, localId: "substituted", externalAction }, (value: unknown) => { response = value; });
+            expect(response).toMatchObject({ result: { status: "rejected", code: "session_input_unauthorized" } });
+            expect(await db.sessionPendingMessage.findFirst({ where: { sessionId: session.id } })).toBeNull();
+            await invoke({ ...request, externalAction }, (value: unknown) => { response = value; });
+            expect(response).toMatchObject({ result: { status: "accepted", localId: request.localId } });
+            expect(await db.sessionPendingMessage.findFirst({ where: { sessionId: session.id, localId: request.localId } }))
+                .toMatchObject({ inputAdmissionReceipt: { issuer: "authenticatedMachine",
+                    callerInputConstraints: { models: null, permissionModes: ["default"] } } });
+        } finally {
+            await db.sessionPendingMessage.deleteMany({ where: { sessionId: session.id } });
+            await db.accessKey.deleteMany({ where: { sessionId: session.id } });
         }
     });
 
@@ -978,17 +1042,25 @@ describe("external Action execution authorization", () => {
                 "/v2/sessions?limit=10",
                 "/v2/sessions/active?limit=10",
                 "/v2/sessions/archived?limit=10",
-                `/v2/sessions/${activeSession.id}`,
                 "/v1/account/encryption/currentness",
-                previewPath,
             ]) {
                 const raw = await app.inject({
                     method: "GET",
                     url: path,
-                    headers: { authorization: `Bearer ${fixture.pat.token}` },
+                    headers: { ...currentAccountStoredContentCompatibilityHeaders,
+                        authorization: `Bearer ${fixture.pat.token}` },
                 });
                 expect(raw.statusCode, path).toBe(403);
                 expect(raw.json(), path).toEqual({ error: "present_user_required" });
+            }
+            // Full PATs may read a named accessible Session directly; only the
+            // Account-wide surfaces above still require proof-bound admission.
+            for (const path of [`/v2/sessions/${activeSession.id}`, previewPath]) {
+                const raw = await app.inject({ method: "GET", url: path, headers: {
+                    ...currentAccountStoredContentCompatibilityHeaders,
+                    authorization: `Bearer ${fixture.pat.token}`,
+                } });
+                expect(raw.statusCode, raw.body).toBe(200);
             }
             const rawFiltered = await app.inject({
                 method: "POST",
@@ -1171,6 +1243,162 @@ describe("external Action execution authorization", () => {
         }
     });
 
+    it("rejects a deferred authorization after grant narrowing without undoing an already executed effect", async () => {
+        const fixture = await createFixture({ qualifiedPat: true });
+        const app = await createRealTeamApp();
+        try {
+            const authorization = await mint(app, fixture, 'approval.request.create');
+            const transport = getActionSpec(ACTION_ID).serverTransport;
+            if (!transport) throw new Error('test Action has no server transport');
+            const body = { v: 1, teamId: fixture.team.id, previousAuthenticationPolicy: fixture.team.authenticationPolicy,
+                authenticationPolicy: { v: 1, mode: 'inherit' } };
+            const headers = machineHeaders({ authorizationToken: authorization.token, target: authorization.binding.target,
+                method: transport.method, path: transport.path, body, privateKey: fixture.keyPair.secretKey });
+            const executed = await app.inject({ method: transport.method, url: transport.path, headers, payload: body });
+            expect(executed.statusCode, executed.body).toBe(200);
+            expect((await db.team.findUniqueOrThrow({ where: { id: fixture.team.id } })).authenticationPolicy).toBeNull();
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+                accessGrant: { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['session.transcript.get'] } },
+            } });
+            const replay = await app.inject({ method: transport.method, url: transport.path, headers, payload: body });
+            expect(replay.statusCode, replay.body).toBe(401);
+            expect((await db.team.findUniqueOrThrow({ where: { id: fixture.team.id } })).authenticationPolicy).toBeNull();
+            const path = bindExternalActionExecutionAuthorizationVerifyHttpPathV1('approval.request.create');
+            const currentnessBody = { v: 1 };
+            const deferred = await app.inject({ method: 'POST', url: path, payload: currentnessBody,
+                headers: machineHeaders({ authorizationToken: authorization.token, target: authorization.binding.target,
+                    method: 'POST', path, body: currentnessBody, privateKey: fixture.keyPair.secretKey }) });
+            expect(deferred.statusCode).toBe(401);
+        } finally { await app.close(); }
+    });
+
+    it("refuses daemon-local minting outside the current Session grant and admits its named Session", async () => {
+        const fixture = await createFixture({ qualifiedPat: true });
+        const { app } = await createApp(fixture.team.id);
+        try {
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+                accessGrant: { ...API_TOKEN_FULL_GRANT_V1, targets: { sessions: ['S1'], machines: [] } },
+            } });
+            const request = (sessionId: string) => app.inject({ method: 'POST',
+                url: bindExternalActionExecutionAuthorizationHttpPathV1('session.message.send'),
+                headers: { authorization: `Bearer ${fixture.pat.token}` },
+                payload: { v: 1, machineId: fixture.machine.id, envelope: { ...fixture.envelope,
+                    target: { kind: 'session', sessionId } } } });
+            const refused = await request('S2');
+            expect(refused.statusCode, refused.body).toBe(403);
+            expect(refused.json()).toMatchObject({ error: 'credential_scope_denied' });
+            const admitted = await request('S1');
+            expect(admitted.statusCode, admitted.body).toBe(200);
+            expect(ExternalActionExecutionAuthorizationV1Schema.parse(admitted.json()).binding.target)
+                .toEqual({ kind: 'session', sessionId: 'S1' });
+        } finally { await app.close(); }
+    });
+
+    it("refuses an ungranted relay Session before transport and attenuates verified machine membership without rewriting grants", async () => {
+        const fixture = await createFixture({ qualifiedPat: true });
+        await db.machine.update({ where: { id: fixture.machine.id }, data: {
+            operationProtocolCapabilitiesRevision: 1,
+            operationProtocolCapabilities: { externalActionExecutionAuthorization: { protocolVersions: [1] } },
+        } });
+        const fence = new Date();
+        for (const sessionId of ['S1', 'S2']) {
+            await db.session.create({ data: { id: sessionId, accountId: fixture.account.id, tag: sessionId,
+                metadata: '{}', active: true, lastActiveAt: fence } });
+            await db.accessKey.create({ data: { accountId: fixture.account.id, machineId: fixture.machine.id,
+                sessionId, data: 'encrypted' } });
+        }
+        const presence = createSessionPublisherPresence();
+        // Only Socket.IO discovery and the daemon transport are simulated; current publisher,
+        // credential, grant, placement and persistence decisions remain the real owners.
+        let publisherVisible = true;
+        const io = { in: (room: string) => ({ fetchSockets: async () => publisherVisible
+            ? ['S1', 'S2'].filter((sessionId) => room === getAccountSessionSocketRoom(fixture.account.id, sessionId))
+                .map((sessionId) => ({ data: { sessionPublisherAuthority: { v: 1, accountId: fixture.account.id,
+                    machineId: fixture.machine.id, sessionId, committedFenceMs: fence.getTime() } } }))
+            : [] }) } as unknown as Server;
+        const sentSessions: string[] = [];
+        const dispatch = createExternalActionDaemonDispatcher({ io, sessionPublisherPresence: presence,
+            forwardRpc: async ({ callParams }) => {
+                const request = callParams as { actionId: string; envelope: ExternalActionRequestEnvelopeV1 };
+                if (request.envelope.target?.kind === 'session') sentSessions.push(request.envelope.target.sessionId);
+                return { ok: true, result: createExternalActionDaemonDispatchResponseV1(prepareExternalActionResponseEnvelopeV1({
+                    v: 1, actionId: request.actionId, requestId: request.envelope.requestId,
+                    execution: { ok: true, result: { accepted: true } },
+                })) };
+            } });
+        const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>() as any;
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        enableAuthentication(app);
+        registerExternalActionRoutes(app, { dispatch });
+        await app.ready();
+        try {
+            const grant = { ...API_TOKEN_FULL_GRANT_V1, targets: { sessions: ['S1'], machines: [] } };
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: { accessGrant: grant } });
+            const relay = (sessionId: string) => app.inject({ method: 'POST', url: '/v1/actions/session.message.send',
+                headers: { authorization: `Bearer ${fixture.pat.token}` }, payload: { ...fixture.envelope,
+                    target: { kind: 'session', sessionId } } });
+            const refused = await relay('S2');
+            expect(refused.statusCode, refused.body).toBe(403);
+            expect(refused.json()).toEqual({ error: 'credential_scope_denied' });
+            expect(sentSessions).toEqual([]);
+            const admitted = await relay('S1');
+            expect(admitted.statusCode, admitted.body).toBe(200);
+            expect(sentSessions).toEqual(['S1']);
+
+            const machineGrant = { ...API_TOKEN_FULL_GRANT_V1, targets: { sessions: [], machines: [fixture.machine.id] } };
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: { accessGrant: machineGrant } });
+            const parent = await auth.verifyPat(fixture.pat.token);
+            if (!parent.ok) throw new Error('fixture credential was not verified');
+            const childGrant = { ...API_TOKEN_FULL_GRANT_V1, targets: { sessions: ['S1'], machines: [] } };
+            const mintChild = () => auth.createChildApiToken({ principal: parent, tokenId: crypto.randomUUID(), label: 'Session',
+                expiresAt: new Date(Date.now() + 60_000), grant: childGrant,
+                resolveSessionMachine: (sessionId) => resolveCurrentSessionMachineFromServer({
+                    io, presence, accountId: fixture.account.id, sessionId,
+                }) });
+            const child = await mintChild();
+            expect(child.grant).toEqual(childGrant);
+            expect((await db.accountApiToken.findUniqueOrThrow({ where: { id: fixture.pat.tokenId } })).accessGrant).toEqual(machineGrant);
+            publisherVisible = false;
+            await expect(mintChild()).rejects.toMatchObject({ code: 'api_token_child_invalid' });
+        } finally { await app.close(); }
+    });
+
+    it("admits a signed decision proof only when the current credential retains approve", async () => {
+        const fixture = await createFixture({ qualifiedPat: true });
+        const { app } = await createApp(fixture.team.id);
+        try {
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+                accessGrant: { ...API_TOKEN_FULL_GRANT_V1, approve: true },
+            } });
+            const authorization = await mint(app, fixture, 'approval.request.decide');
+            const method = 'S1:permission';
+            const requestId = crypto.randomUUID();
+            const params = { id: 'request', approved: true };
+            const execution = { v: 1 as const, authorization, effectActionId: 'approval.request.decide',
+                target: authorization.binding.target, installationId: fixture.machine.installationId!,
+                machineSignature: signExternalActionMachineRpcRequestV1({ authorizationToken: authorization.token,
+                    effectActionId: 'approval.request.decide', target: authorization.binding.target,
+                    installationId: fixture.machine.installationId!, event: SOCKET_RPC_EVENTS.CALL, method, requestId, params,
+                    privateKey: fixture.keyPair.secretKey }) };
+            expect(await verifyExternalActionMachineRpcExecution(execution, { method, requestId, params })).not.toBeNull();
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: { accessGrant: API_TOKEN_FULL_GRANT_V1 } });
+            expect(await verifyExternalActionMachineRpcExecution(execution, { method, requestId, params })).toBeNull();
+
+            const withoutApprove = await mint(app, fixture, ACTION_ID);
+            await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+                accessGrant: { ...API_TOKEN_FULL_GRANT_V1, approve: true },
+            } });
+            const widenedProof = { ...execution, authorization: withoutApprove,
+                target: withoutApprove.binding.target,
+                machineSignature: signExternalActionMachineRpcRequestV1({ authorizationToken: withoutApprove.token,
+                    effectActionId: 'approval.request.decide', target: withoutApprove.binding.target,
+                    installationId: fixture.machine.installationId!, event: SOCKET_RPC_EVENTS.CALL, method, requestId, params,
+                    privateKey: fixture.keyPair.secretKey }) };
+            expect(await verifyExternalActionMachineRpcExecution(widenedProof, { method, requestId, params })).toBeNull();
+        } finally { await app.close(); }
+    });
+
     it("binds a V1 invocation without optional correlation or target to the selected Machine", async () => {
         const fixture = await createFixture({ qualifiedPat: true });
         const { app } = await createApp(fixture.team.id);
@@ -1204,13 +1432,21 @@ describe("external Action execution authorization", () => {
         "allows the trusted Machine to bind a resolved effect for outer %s",
         async (outerActionId) => {
             const fixture = await createFixture({ qualifiedPat: true });
+            if (outerActionId !== 'approval.request.create') {
+                await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+                    accessGrant: { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['acme.workflow/actions/update-team'] } },
+                } });
+            }
+            const envelope = outerActionId === 'action.invoke' ? { ...fixture.envelope, input: {
+                action: { pluginId: 'acme.workflow', localId: 'update-team' }, input: { teamId: fixture.team.id },
+            } } : fixture.envelope;
             const { app, transport } = await createApp(fixture.team.id);
             try {
                 const response = await app.inject({
                     method: "POST",
                     url: bindExternalActionExecutionAuthorizationHttpPathV1(outerActionId),
                     headers: { authorization: `Bearer ${fixture.pat.token}` },
-                    payload: { v: 1, machineId: fixture.machine.id, envelope: fixture.envelope },
+                    payload: { v: 1, machineId: fixture.machine.id, envelope },
                 });
                 expect(response.statusCode).toBe(200);
                 const authorization = ExternalActionExecutionAuthorizationV1Schema.parse(response.json());
@@ -1244,13 +1480,17 @@ describe("external Action execution authorization", () => {
         },
     );
 
-    it("does not let an invocation wrapper authorize a present-user-only Discussion mutation", async () => {
+    it("does not let a contributed invocation authorize present-user-only token management even with approve", async () => {
         const fixture = await createFixture({ qualifiedPat: true });
+        await db.accountApiToken.update({ where: { id: fixture.pat.tokenId }, data: {
+            accessGrant: { ...API_TOKEN_FULL_GRANT_V1, approve: true,
+                actions: { families: [], ids: ['acme.workflow/actions/update-team'] } },
+        } });
         const { app } = await createApp(fixture.team.id);
         try {
             const response = await app.inject({
                 method: "POST",
-                url: bindExternalActionExecutionAuthorizationHttpPathV1("action.invoke"),
+                url: bindExternalActionExecutionAuthorizationHttpPathV1("acme.workflow/actions/update-team"),
                 headers: { authorization: `Bearer ${fixture.pat.token}` },
                 payload: { v: 1, machineId: fixture.machine.id, envelope: fixture.envelope },
             });
@@ -1261,19 +1501,15 @@ describe("external Action execution authorization", () => {
                 installationId: fixture.machine.installationId!,
                 requestId: authorization.binding.requestId,
             });
-            const path = "/v1/sessions/session-1/discussions";
-            const body = {
-                sessionId: "session-1",
-                title: "Private discussion",
-                firstMessage: { content: "must remain present-user-only" },
-            };
+            const path = "/test/present-user-only";
+            const body = { tokenId: crypto.randomUUID(), label: "must remain present-user-only" };
             const effect = await app.inject({
                 method: "POST",
                 url: path,
                 headers: machineHeaders({
                     authorizationToken: authorization.token,
                     target: authorization.binding.target,
-                    effectActionId: "session.discussion.create",
+                    effectActionId: "account.apiTokens.create",
                     method: "POST",
                     path,
                     body,

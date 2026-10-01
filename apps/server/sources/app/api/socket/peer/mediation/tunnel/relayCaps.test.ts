@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import * as relayCapsModule from './relayCaps.js';
 
 type RelayCapsModule = typeof import('./relayCaps');
 
 async function loadRelayCapsModule(): Promise<RelayCapsModule | null> {
-    const modulePath = './relayCaps.js';
-    return import(modulePath).catch(() => null) as Promise<RelayCapsModule | null>;
+    return relayCapsModule;
 }
 
 describe('resolvePeerTcpTunnelRelayCaps', () => {
@@ -15,7 +15,6 @@ describe('resolvePeerTcpTunnelRelayCaps', () => {
             serverRoutedEnabled: false,
             maxActiveTunnelsPerSocket: 8,
             maxFrameBytes: 64 * 1024,
-            maxBytes: 64 * 1024 * 1024,
             supportedEncodings: ['binary_frame_v2'],
             preferredEncoding: 'binary_frame_v2',
             maxBinaryHeaderBytes: 16 * 1024,
@@ -23,10 +22,7 @@ describe('resolvePeerTcpTunnelRelayCaps', () => {
             maxFramedMessageBytes: 512 * 1024,
             substreams: expect.objectContaining({
                 maxConcurrentSubstreams: 32,
-                maxTotalSubstreams: 1024,
             }),
-            maxIdleMs: 30_000,
-            maxDurationMs: 300_000,
         }));
 
         expect(mod?.resolvePeerTcpTunnelRelayCaps({
@@ -38,11 +34,6 @@ describe('resolvePeerTcpTunnelRelayCaps', () => {
             maxFramedMessageBytes: 99 * 1024 * 1024,
             substreams: {
                 maxConcurrentSubstreams: 999,
-                maxTotalSubstreams: 9999,
-                maxBytesPerSubstream: 99 * 1024 * 1024,
-                maxAggregateBytes: 99 * 1024 * 1024,
-                maxSubstreamIdleMs: 1000,
-                maxSessionIdleMs: 2000,
             },
         })).toEqual(expect.objectContaining({
             serverRoutedEnabled: true,
@@ -53,7 +44,6 @@ describe('resolvePeerTcpTunnelRelayCaps', () => {
             maxFramedMessageBytes: 8 * 1024 * 1024,
             substreams: expect.objectContaining({
                 maxConcurrentSubstreams: 128,
-                maxTotalSubstreams: 4096,
             }),
         }));
     });

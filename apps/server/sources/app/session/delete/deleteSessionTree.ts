@@ -3,6 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { notifySessionTranscriptMutationAfterCommit } from '../sessionTranscriptMutationObserver';
 import { revokeMachineInTx } from '@/app/machines/machineMutations';
 import { invalidateSessionFollowDestinationsForSessionDeleteInTx } from '@/app/session/follow/sessionFollowEdgeService';
+import { invalidateSessionReportsToForSessionDeleteInTx } from '@/app/session/relations/sessionReportsToService';
 
 export class SessionDeleteConditionLostError extends Error {
     constructor() {
@@ -93,6 +94,7 @@ export async function deleteSessionTree(
     await invalidateSessionFollowDestinationsForSessionDeleteInTx(tx, {
         sessionId: params.sessionId,
     });
+    await invalidateSessionReportsToForSessionDeleteInTx(tx, { sessionId: params.sessionId });
 
     const deletedSession = await tx.session.deleteMany({
         where: sessionWhere,

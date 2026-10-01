@@ -1,4 +1,3 @@
-export * from './artifactCompatibility.js';
 export * from './artifactArchive.js';
 export * from './artifactIntegrity.js';
 export * from './composer.js';
@@ -126,7 +125,13 @@ export {
   MIN_PLUGIN_UI_DESTINATION_RANK_HINT_V1,
   MIN_PLUGIN_UI_SETTINGS_DEFAULT_RANK_V1,
   PluginUiDestinationBadgeV1Schema,
-  PluginUiDestinationGroupHintV1Schema,
+  PluginUiDestinationPlacementV1Schema,
+  PluginUiAppPageColumnV1Schema,
+  PluginUiWidgetHomeV1Schema,
+  PluginUiWidgetPlacementV1Schema,
+  PluginUiWidgetSessionPlacementsV1Schema,
+  PluginUiWidgetAppPlacementsV1Schema,
+  readPluginUiWidgetPlacementsV1,
   PluginUiDestinationRankHintV1Schema,
   PluginUiSettingsGroupReferenceV1Schema,
   PluginUiSettingsGroupV1Schema,
@@ -134,7 +139,10 @@ export {
   PluginUiSettingsPageV1Schema,
   PluginDeclarativeComposerApplyEffectV1Schema,
   type PluginUiDestinationBadgeV1,
-  type PluginUiDestinationGroupHintV1,
+  type PluginUiDestinationPlacementV1,
+  type PluginUiAppPageColumnV1,
+  type PluginUiWidgetHomeV1,
+  type PluginUiWidgetPlacementV1,
   type PluginUiSettingsGroupReferenceV1,
   type PluginUiSettingsGroupV1,
   type PluginUiSettingsHostGroupIdV1,

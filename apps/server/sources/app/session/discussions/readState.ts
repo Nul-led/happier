@@ -7,6 +7,7 @@ import {
     listRelevantAccountIdsForSessionBadgeRefreshInTx,
 } from "@/app/session/personal/readState";
 import { inTx, type Tx } from "@/storage/inTx";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { filterAccountsWithCurrentSessionReadAccessInTx, resolveSessionDiscussionContextInTx } from "./access";
 import {
     markSessionDiscussionPrivateReaderChangedInTx,
@@ -54,12 +55,14 @@ async function listBaselinedTrackedAccountIdsInTx(tx: Tx, params: Readonly<{
 export async function initializeNewSessionDiscussionCursorsInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     discussionId: string;
+    authentication?: SessionAccessAuthentication;
 }>): Promise<void> {
     const tracked = await listBaselinedTrackedAccountIdsInTx(tx, { sessionId: params.sessionId });
     if (tracked.length === 0) return;
     const readable = await filterAccountsWithCurrentSessionReadAccessInTx(tx, {
         sessionId: params.sessionId,
         accountIds: tracked,
+        authentication: params.authentication,
     });
     const eligible = tracked.filter(accountId => readable.has(accountId));
     if (eligible.length === 0) return;

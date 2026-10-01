@@ -95,7 +95,7 @@ export const PluginDiagnosticRecordV1Schema = z.object({
   }).strict(),
   contribution: asProtocolZod(PluginContributionIdentityV1Schema).optional(),
   stage: PluginDiagnosticStageV1Schema,
-  generation: z.string().trim().min(1).optional(),
+  occurrenceId: z.string().trim().min(1).optional(),
   host: PluginDiagnosticHostV1Schema,
   platform: z.string().trim().min(1),
   correlationId: z.string().trim().min(1).optional(),
@@ -122,6 +122,7 @@ export type PluginContributionIntrospectionPresentationV1 = z.infer<
 export const PluginContributionLifecycleRecordV1Schema = z.object({
   version: z.literal(1),
   contribution: PluginContributionIntrospectionIdentityV1Schema,
+  occurrenceId: z.string().trim().min(1).optional(),
   progression: z.object({
     declared: z.literal(true),
     normalized: z.boolean(),
@@ -133,7 +134,7 @@ export const PluginContributionLifecycleRecordV1Schema = z.object({
     z.object({
       requirement: z.literal('required'),
       state: z.enum(['unbound', 'bound', 'unavailable']),
-      generation: z.string().trim().min(1).optional(),
+      occurrenceId: z.string().trim().min(1).optional(),
       reason: PluginDiagnosticTextV1Schema.optional(),
     }).strict(),
     z.object({ requirement: z.literal('notRequired'), state: z.literal('notRequired') }).strict(),
@@ -141,7 +142,7 @@ export const PluginContributionLifecycleRecordV1Schema = z.object({
   activation: z.discriminatedUnion('state', [
     z.object({ state: z.literal('notRequired') }).strict(),
     z.object({ state: z.literal('dormant') }).strict(),
-    z.object({ state: z.literal('active'), generation: z.string().trim().min(1) }).strict(),
+    z.object({ state: z.literal('active'), occurrenceId: z.string().trim().min(1) }).strict(),
     z.object({ state: z.literal('unavailable'), reason: PluginDiagnosticTextV1Schema }).strict(),
   ]),
   projection: z.discriminatedUnion('state', [

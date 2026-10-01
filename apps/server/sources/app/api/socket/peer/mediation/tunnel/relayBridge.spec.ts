@@ -1,5 +1,8 @@
 import {
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+    PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+    encodePeerTcpTunnelBinaryFrameV2,
+    decodePeerTcpTunnelBinaryFrameV2,
     type PeerTcpTunnelRelayEnvelope,
 } from "@happier-dev/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -193,18 +196,13 @@ describe("createPeerTcpTunnelRelayBridge.createTransport.send", () => {
                 kind: "tcp_tunnel",
                 tunnelId: "preview-tunnel-1",
                 allowedPorts: [5173],
-                maxIdleMs: 30_000,
-                maxDurationMs: 60_000,
             },
             nowMs: 1_000,
             ttlMs: 60_000,
             serverGateEnabled: true,
             serverCaps: {
                 allowedPorts: [5173],
-                maxBytes: 64 * 1024,
                 maxFrameBytes: 64 * 1024,
-                maxIdleMs: 30_000,
-                maxDurationMs: 60_000,
             },
             signingKey: { keyId: "relay-key-1", secretKey: keyPair.secretKey },
         });
@@ -230,25 +228,42 @@ describe("createPeerTcpTunnelRelayBridge.createTransport.send", () => {
                 },
             },
         });
+        await pseudoHandlers.get(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT)?.({
+            v: 2,
+            scopeUserId: "user-1",
+            sender: { kind: "user", socketId: transport.relaySocketId },
+            recipient: { kind: "machine", machineId: "machine-1" },
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+            frame: encodePeerTcpTunnelBinaryFrameV2({ header: {
+                version: 2, kind: "open", tunnelId: "preview-tunnel-1", substreamId: "response", payloadLength: 0,
+            } }),
+        });
+        const payload = new TextEncoder().encode("preview response");
         await machineHandlers.get(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT)?.({
-            v: 1,
+            v: 2,
             scopeUserId: "user-1",
             sender: { kind: "machine", machineId: "machine-1" },
             recipient: { kind: "user", socketId: transport.relaySocketId },
-            frame: {
-                v: 1,
-                kind: "data",
-                tunnelId: "preview-tunnel-1",
-                direction: "daemon_to_client",
-                sequence: 0,
-                payloadBase64: Buffer.from("preview response").toString("base64"),
-            },
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+            frame: encodePeerTcpTunnelBinaryFrameV2({
+                header: { version: 2, kind: "data", tunnelId: "preview-tunnel-1", substreamId: "response",
+                    direction: "daemon_to_client", sequence: 0, payloadLength: payload.byteLength },
+                payload,
+            }),
         });
 
         expect(received).toHaveBeenCalledWith(expect.objectContaining({
             recipient: { kind: "user", socketId: transport.relaySocketId },
-            frame: expect.objectContaining({ kind: "data", tunnelId: "preview-tunnel-1" }),
+            v: 2,
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
         }));
+        expect(decodePeerTcpTunnelBinaryFrameV2({
+            frame: received.mock.calls[0]?.[0].frame,
+            maxHeaderBytes: 64 * 1024,
+            maxPayloadBytes: 1024 * 1024,
+        })).toMatchObject({
+            ok: true, header: { kind: "data", tunnelId: "preview-tunnel-1", substreamId: "response" }, payload,
+        });
         expect(otherAccountReceived).not.toHaveBeenCalled();
 
         transport.close();

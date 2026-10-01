@@ -6,6 +6,7 @@ import {
     PEER_MEDIATION_RECEIPTS,
     createMachineLiveStreamRelayAuthorizationSigningInputV1,
     type MachineLiveStreamCapsV1,
+    type MachineLiveStreamCodecIdV1,
     type MachineLiveStreamRelayAuthorizationPayloadV1,
     type MachineLiveStreamRelayAuthorizationV1,
 } from "@happier-dev/protocol";
@@ -31,6 +32,9 @@ export type MintMachineLiveStreamRelayAuthorizationV1Input = Readonly<{
     targetMachineId: string;
     streamId: string;
     streamFamily: string;
+    sourceId?: string;
+    codecId?: MachineLiveStreamCodecIdV1;
+    viewerCodecs?: readonly MachineLiveStreamCodecIdV1[];
     caps: MachineLiveStreamCapsV1;
     nowMs: number;
     ttlMs: number;
@@ -91,11 +95,14 @@ export function mintMachineLiveStreamRelayAuthorizationV1(
         routeKind: "server_relay",
         streamId: input.streamId,
         streamFamily: input.streamFamily,
+        ...(input.sourceId ? { sourceId: input.sourceId } : {}),
+        ...(input.codecId ? { codecId: input.codecId } : {}),
+        ...(input.viewerCodecs ? { viewerCodecs: [...input.viewerCodecs] } : {}),
         ...(input.viewerSocketId ? { viewerSocketId: input.viewerSocketId } : {}),
-        maxBitrateBps: parsedCaps.data.maxBitrateBps,
-        maxFramesPerSecond: parsedCaps.data.maxFramesPerSecond,
-        maxFrameBytes: parsedCaps.data.maxFrameBytes,
-        maxDurationMs: parsedCaps.data.maxDurationMs,
+        ...(parsedCaps.data.maxBitrateBps !== undefined ? { maxBitrateBps: parsedCaps.data.maxBitrateBps } : {}),
+        ...(parsedCaps.data.maxFramesPerSecond !== undefined ? { maxFramesPerSecond: parsedCaps.data.maxFramesPerSecond } : {}),
+        ...(parsedCaps.data.maxFrameBytes !== undefined ? { maxFrameBytes: parsedCaps.data.maxFrameBytes } : {}),
+        ...(parsedCaps.data.maxDurationMs !== undefined ? { maxDurationMs: parsedCaps.data.maxDurationMs } : {}),
         ...(parsedCaps.data.maxTotalBytes ? { maxTotalBytes: parsedCaps.data.maxTotalBytes } : {}),
         iat: input.nowMs,
         exp: input.nowMs + input.ttlMs,

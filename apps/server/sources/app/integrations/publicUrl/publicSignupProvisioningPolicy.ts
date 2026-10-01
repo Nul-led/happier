@@ -2,6 +2,7 @@ import type { FeaturesResponse } from "@happier-dev/protocol";
 
 import { classifyRequestIp, type RequestIpClassification } from "@/app/net/requestOrigin";
 import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFeature';
+import type { AuthMethodActionMode } from '@/app/auth/methods/types';
 
 export type PublicProvisioningActionMode = "keyed" | "keyless";
 
@@ -61,9 +62,7 @@ function readPublicSignupProvisioningDenyConfigFromEnv(env: NodeJS.ProcessEnv): 
 
 function isDeniedActionMode(modes: ReadonlySet<PublicProvisioningActionMode>, mode: string): boolean {
     const value = mode.trim().toLowerCase();
-    // A combined action offers both branches, so a denied branch denies the
-    // whole action: it cannot be partly refused by omission.
-    if (value === "either") return modes.size > 0;
+    if (value === "either") return modes.has("keyed") && modes.has("keyless");
     const normalized = normalizeMode(value);
     return Boolean(normalized && modes.has(normalized));
 }
@@ -90,6 +89,21 @@ export function shouldDenyPublicSignupProvisioningAction(params: Readonly<{
     return true;
 }
 
+/** Project exactly the branches that the same final-admission predicate permits. */
+export function resolvePublicSignupProvisioningActionMode(params: Readonly<{
+    env: NodeJS.ProcessEnv;
+    requestIp: unknown;
+    methodId: string;
+    mode: AuthMethodActionMode;
+}>): AuthMethodActionMode | null {
+    if (params.mode !== "either") {
+        return shouldDenyPublicSignupProvisioningAction(params) ? null : params.mode;
+    }
+    const keyed = !shouldDenyPublicSignupProvisioningAction({ ...params, mode: "keyed" });
+    const keyless = !shouldDenyPublicSignupProvisioningAction({ ...params, mode: "keyless" });
+    return keyed && keyless ? "either" : keyed ? "keyed" : keyless ? "keyless" : null;
+}
+
 export function applyPublicSignupProvisioningRestrictionsToFeaturesPayload(params: Readonly<{
     payload: FeaturesResponse;
     env: NodeJS.ProcessEnv;
@@ -106,19 +120,14 @@ export function applyPublicSignupProvisioningRestrictionsToFeaturesPayload(param
         ...method,
         actions: Array.isArray(method.actions)
             ? method.actions.map((action) => {
-                  // The published catalog answers with the same predicate the
-                  // finalizers admit on; a second copy here would offer actions
-                  // every finalizer then rejects.
                   if (String(action?.id ?? "").trim().toLowerCase() !== "provision") return action;
-                  if (!shouldDenyPublicSignupProvisioningAction({
+                  const mode = resolvePublicSignupProvisioningActionMode({
                       env: params.env,
                       requestIp: params.requestIp,
                       methodId: String(method?.id ?? ""),
-                      mode: String(action?.mode ?? ""),
-                  })) {
-                      return action;
-                  }
-                  return { ...action, enabled: false };
+                      mode: action.mode,
+                  });
+                  return mode === null ? { ...action, enabled: false } : { ...action, mode };
               })
             : [],
     }));

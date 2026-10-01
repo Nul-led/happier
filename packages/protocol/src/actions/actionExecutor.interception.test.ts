@@ -292,7 +292,12 @@ describe('createActionExecutor execution interception', () => {
         surface: 'plugin',
         serverId: 'server-1',
         actionRequestId: 'deferred-title-1',
-        actionCaller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook', immutableGenerationId: 'generation-1' },
+        actionCaller: {
+          kind: 'plugin',
+          pluginId: 'caller.plugin',
+          contributionLocalId: 'title-hook',
+          sourceCustody: { kind: 'development', registeredRootId: 'root-1' },
+        },
       },
     );
     expect(deferred).toMatchObject({
@@ -311,7 +316,12 @@ describe('createActionExecutor execution interception', () => {
     expect(observeActionExecution.mock.calls.filter(([event]) => event.actionId === 'session.title.set'))
       .toEqual([[expect.objectContaining({
         input: { sessionId: 'session-1', title: 'deferred' },
-        caller: { kind: 'plugin', pluginId: 'caller.plugin', contributionLocalId: 'title-hook', immutableGenerationId: 'generation-1' },
+        caller: {
+          kind: 'plugin',
+          pluginId: 'caller.plugin',
+          contributionLocalId: 'title-hook',
+          sourceCustody: { kind: 'development', registeredRootId: 'root-1' },
+        },
         result: expect.objectContaining({ ok: true }),
       })]]);
   });

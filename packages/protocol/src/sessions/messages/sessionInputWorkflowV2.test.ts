@@ -9,7 +9,6 @@ import {
   deriveWorkflowSessionInputLocalIdV2,
   readSessionInputCausalPermissionAuthorityV1,
   withSessionInputAuthority,
-  WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED,
 } from './sessionInputAdmission.js';
 import { preservedBoundedNfcString } from '../../strings/preservedBoundedNfcString.js';
 
@@ -29,21 +28,23 @@ describe('Session workflow input admission V2', () => {
     }).success).toBe(false);
   });
 
-  it('uses distinct provenance arms for invocation and final result delivery', () => {
+  it('keeps invocation provenance and refuses retired result-delivery inputs', () => {
     expect(SessionMessageProvenanceV2Schema.parse({
       v: 2, kind: 'workflow_invocation', runId: 'r', invocationRecordId: 'i',
     }).kind).toBe('workflow_invocation');
-    expect(SessionMessageProvenanceV2Schema.parse({
+    expect(SessionMessageProvenanceV2Schema.safeParse({
       v: 2, kind: 'workflow_result_delivery', runId: 'r',
-    }).kind).toBe('workflow_result_delivery');
+    }).success).toBe(false);
+    expect(SessionInputRequestV2Schema.safeParse({
+      v: 2, producer: 'workflow', workflow: { purpose: 'result_delivery', runId: 'r' }, permission: {},
+    }).success).toBe(false);
   });
 
-  it('preserves accepted identity bytes and retains the operation-scoped update code', () => {
+  it('preserves accepted identity bytes', () => {
     const schema = preservedBoundedNfcString(4, 'ids');
     expect(schema.parse(' x ')).toBe(' x ');
     expect(schema.safeParse('e\u0301').success).toBe(false);
     expect(schema.safeParse('     ').success).toBe(false);
-    expect(WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED).toBe('workflow_input_admission_update_required');
   });
 
   it('settles V2 only with machine admission and matching workflow provenance', () => {
@@ -100,7 +101,34 @@ describe('Session workflow input admission V2', () => {
     }).permission.admittedPermissionCeiling).toBe('read-only');
   });
 
-  it('derives stable distinct Pending identities for invocation and final delivery', () => {
+  it('refuses workflow depth provenance that differs from the protected invocation request', () => {
+    const request = SessionInputRequestV2Schema.parse({
+      v: 2, producer: 'workflow',
+      workflow: { purpose: 'invocation', runId: 'r', invocationRecordId: 'i' }, permission: {},
+    });
+    expect(() => settleSessionMessageProvenanceV2({
+      request,
+      requestedProvenance: { v: 2, kind: 'workflow_invocation', runId: 'r', invocationRecordId: 'i', workDepth: 3 },
+      inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
+    })).toThrow(TypeError);
+    const stampedRequest = SessionInputRequestV2Schema.parse({
+      ...request, workflow: { ...request.workflow, workDepth: 3 },
+    });
+    expect(settleSessionMessageProvenanceV2({
+      request: stampedRequest,
+      requestedProvenance: { v: 2, kind: 'workflow_invocation', runId: 'r', invocationRecordId: 'i', workDepth: 3 },
+      inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
+    })).toMatchObject({ workDepth: 3 });
+    for (const workDepth of [undefined, 2]) {
+      expect(() => settleSessionMessageProvenanceV2({
+        request: stampedRequest,
+        requestedProvenance: { v: 2, kind: 'workflow_invocation', runId: 'r', invocationRecordId: 'i', workDepth },
+        inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' },
+      })).toThrow(TypeError);
+    }
+  });
+
+  it('derives stable distinct Pending identities for exact invocations', () => {
     const invocation = deriveWorkflowSessionInputLocalIdV2({
       purpose: 'invocation', runId: 'r', invocationRecordId: 'i',
     });
@@ -110,16 +138,13 @@ describe('Session workflow input admission V2', () => {
     expect(deriveWorkflowSessionInputLocalIdV2({
       purpose: 'invocation', runId: 'r', invocationRecordId: 'other',
     })).not.toBe(invocation);
-    expect(deriveWorkflowSessionInputLocalIdV2({
-      purpose: 'result_delivery', runId: 'r',
-    })).not.toBe(invocation);
   });
 
   it('projects settled V2 permission through the incumbent narrow causal authority', () => {
     const meta = withSessionInputAuthority({}, {
       v: 2,
       producer: 'workflow',
-      workflow: { purpose: 'result_delivery', runId: 'r' },
+      workflow: { purpose: 'invocation', runId: 'r', invocationRecordId: 'i' },
       permission: { admittedPermissionCeiling: 'read-only' },
     });
     expect(readSessionInputCausalPermissionAuthorityV1(meta)).toEqual({

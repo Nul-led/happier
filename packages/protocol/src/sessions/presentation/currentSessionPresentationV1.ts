@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 
-import { PluginContributionLocalIdSchema } from '../../plugins/contributionIdentity.js';
+import { PluginContributionLocalIdSchema, PluginContributionIdentityV1Schema } from '../../plugins/contributionIdentity.js';
 import { PluginIdSchema } from '../../plugins/pluginId.js';
+import { SessionSurfaceItemIdSchema } from '../board/ids.js';
 import {
   ComposerTransactionResultV1Schema,
   ComposerTransactionV1Schema,
@@ -12,9 +13,14 @@ const IdentifierSchema = z.string().trim().min(1).max(256);
 const PresentationTextSchema = z.string().max(16_384);
 const PresentationIndexSchema = z.number().int().nonnegative().safe();
 
+export const SESSION_COMPANION_BUILTIN_ITEM_IDS = ['session_summary', 'agent_plan', 'changes', 'local_services'] as const;
+const CompanionFrameStyleSchema = z.enum(['card', 'plain']);
+
 export const SessionCompanionPresentationItemRefV1Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('builtin'), id: z.literal('session_summary') }).strict(),
-  z.object({ kind: z.literal('widget'), widgetId: IdentifierSchema }).strict(),
+  z.object({ kind: z.literal('builtin'), id: z.enum(SESSION_COMPANION_BUILTIN_ITEM_IDS), frameStyle: CompanionFrameStyleSchema.optional() }).strict(),
+  z.object({ kind: z.literal('widget'), widgetId: SessionSurfaceItemIdSchema, frameStyle: CompanionFrameStyleSchema.optional() }).strict(),
+  z.object({ kind: z.literal('pane'), paneId: IdentifierSchema, frameStyle: CompanionFrameStyleSchema.optional() }).strict(),
+  z.object({ kind: z.literal('plugin'), surface: asProtocolZod(PluginContributionIdentityV1Schema), frameStyle: CompanionFrameStyleSchema.optional() }).strict(),
 ]);
 export type SessionCompanionPresentationItemRefV1 = z.infer<
   typeof SessionCompanionPresentationItemRefV1Schema
@@ -49,6 +55,11 @@ export const CurrentSessionPresentationIntentV1Schema = z.discriminatedUnion('ki
     kind: z.literal('companion.item.move'),
     item: SessionCompanionPresentationItemRefV1Schema,
     toIndex: PresentationIndexSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal('companion.item.frameStyle.set'),
+    item: SessionCompanionPresentationItemRefV1Schema,
+    frameStyle: CompanionFrameStyleSchema.nullable(),
   }).strict(),
   z.object({ kind: z.literal('companion.edge.set'), edge: z.enum(['leading', 'trailing']) }).strict(),
   z.object({ kind: z.literal('companion.collapse.set'), collapsed: z.boolean() }).strict(),

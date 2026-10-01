@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION,
   SESSION_ORGANIZATION_MAX_FOLDERS,
   SESSION_ORGANIZATION_MAX_LABELS,
   SESSION_ORGANIZATION_MAX_PINNED_SESSIONS,
@@ -23,6 +24,7 @@ const SessionOrganizationOrderScopeRequestSchema = SessionOrganizationOrderEntry
 
 export const SessionOrganizationSnapshotRequestSchema = z
   .object({
+    projectionVersion: z.literal(SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION).optional(),
     includeFolders: z.boolean().default(true),
     includeTags: z.boolean().default(true),
     includeLabels: z.boolean().default(true),

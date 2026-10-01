@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { Fastify } from "@/app/api/types";
-import { createFakeRouteApp, getRouteEntry } from "@/app/api/testkit/routeHarness";
+import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from "@/app/api/testkit/routeHarness";
+import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
 
 import { registerTeamRoutes } from "./registerTeamRoutes";
 
@@ -26,5 +27,24 @@ describe("Team route composition", () => {
                 allowLegacyHomeToken: false,
                 restrictedAuthFailureError: "team_forbidden",
             });
+    });
+
+    it("passes the supplied environment to the credential-resource feature gate", async () => {
+        const env = {
+            ...process.env,
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "0",
+        };
+        const app = createFakeRouteApp();
+
+        registerTeamRoutes(app as unknown as Fastify, env);
+
+        const path = homeDomainActionPathForMethod("teams.credentials.list", "POST");
+        const entry = getRouteEntry(app, "POST", path);
+        const reply = createReplyStub();
+        await getRouteHandler(app, "POST", path)({ userId: "account-1" }, reply);
+
+        expect(entry.opts.preHandler).toEqual(expect.any(Array));
+        expect(reply.code).toHaveBeenCalledWith(503);
+        expect(reply.send).toHaveBeenCalledWith({ error: "feature_disabled" });
     });
 });

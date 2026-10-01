@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import Ajv from 'ajv';
 
 import {
   WorkflowDefinitionSchema,
+  WorkflowBlockSchema,
   WorkflowIngressSchema,
   WorkflowSessionAuthoringSelectionSchema,
+  WorkflowInputDefinitionSchema,
   WorkflowStepSchema,
   type WorkflowDefinitionV1,
 } from './workflowV1.js';
@@ -13,10 +16,13 @@ import {
   validateWorkflowDefinition,
 } from './workflowValidationV1.js';
 import {
+  parseWorkflowDocumentJsonIngressV1,
   parseWorkflowDocumentJsonV1,
   serializeWorkflowDocumentJsonV1,
 } from './workflowDocumentV1.js';
 import { WorkflowBlockIdProtocolSchema } from './workflowBlockIdProtocol.js';
+import { sameStrictJsonValue } from '../json/strictJsonValue.js';
+import { createDeepWorkflowDefinition, deepWorkflowLeafPath } from './workflowDefinition.testkit.js';
 
 const CLAUDE_AGENT_TARGET = {
   kind: 'agent' as const,
@@ -36,7 +42,106 @@ function codesOf(result: ReturnType<typeof validateWorkflowDefinition>): string[
   return result.issues.map((issue) => issue.code);
 }
 
+describe('workflow input option sources', () => {
+  it('preserves a declared string enum and rejects incompatible types and defaults', () => {
+    const input = { name: 'apply', valueType: 'string', required: false, default: 'fix', enum: ['fix', 'report'] };
+    expect(WorkflowInputDefinitionSchema.parse(input)).toEqual(input);
+    expect(WorkflowInputDefinitionSchema.safeParse({ ...input, default: 'anything' }).success).toBe(false);
+    expect(WorkflowInputDefinitionSchema.safeParse({ ...input, valueType: 'json' }).success).toBe(false);
+  });
+  it('uses registered Action option sources as picker aids without replacing value types', () => {
+    const definition = { defaults: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.test', localId: 'test' } } },
+      inputs: [{ name: 'reviewers', valueType: 'json', required: false, optionsSourceId: 'review.engines.available' }],
+      blocks: [textStep('work', 'Work')] };
+    const result = validateWorkflowDefinition(definition);
+    expect(result.valid).toBe(true);
+    expect(result.normalizedDefinition?.inputs[0]).toMatchObject({ valueType: 'json', optionsSourceId: 'review.engines.available' });
+    expect(codesOf(validateWorkflowDefinition({ ...definition,
+      inputs: [{ ...definition.inputs[0], optionsSourceId: 'unregistered.options' }] }))).toContain('invalid_input');
+  });
+});
+
 describe('workflow definition normalization', () => {
+  it('normalizes role-backed Agent and non-Agent leaves through the canonical owner', () => {
+    const result = validateWorkflowDefinition({ version: 1,
+      roles: [{ roleId: 'builder', name: 'Builder', instructions: 'Build carefully', runsAs: { kind: 'session' } }],
+      defaults: { engine: { role: 'builder' } },
+      blocks: [textStep('build', 'Build'),
+        { kind: 'action', id: 'notify', actionId: 'user.notify', input: { message: { kind: 'literal', value: 'Done' } } },
+        { kind: 'workflow', id: 'child', workflowRef: 'builtin:keep-going', input: {} },
+        { kind: 'wait', id: 'review', document: { text: 'Review', references: [], attachments: [] }, result: { kind: 'text' } }],
+    });
+    expect(result.issues).toEqual([]);
+    expect(result.valid).toBe(true);
+    expect(WorkflowDefinitionSchema.safeParse(result.normalizedDefinition).success).toBe(true);
+  });
+  it('accepts portable origin conversation selection without embedded Session authority', () => {
+    const originStep = textStep('origin', 'Continue the originating conversation', {
+      input: [], result: { kind: 'text' }, execution: { conversation: { kind: 'origin_session' } },
+    });
+    expect(WorkflowStepSchema.safeParse(originStep).success).toBe(true);
+    expect(WorkflowStepSchema.safeParse({ ...originStep,
+      execution: { conversation: { kind: 'origin_session', sessionId: 'literal-origin' } },
+    }).success).toBe(false);
+  });
+  it('rejects cyclic block input without rejecting repeated acyclic branches', () => {
+    const loop = { kind: 'loop', id: 'loop', repetition: { kind: 'count', count: { kind: 'literal', value: 1 } }, body: [] as unknown[] };
+    loop.body.push(loop);
+    const parsed = WorkflowBlockSchema.safeParse(loop);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected cyclic block rejection');
+    expect(parsed.error.issues[0]?.path).toEqual(['body', 0]);
+    const leaf = textStep('work', 'Work');
+    expect(WorkflowBlockSchema.safeParse({ ...loop, body: [leaf, leaf] }).success).toBe(true);
+  });
+  it('advertises recursive canonical block constraints to Action schema consumers', () => {
+    const jsonSchema = WorkflowBlockSchema.toJSONSchema({ io: 'input', target: 'draft-7' });
+    const validate = new Ajv({ strict: false }).compile(jsonSchema);
+    expect(validate(createDeepWorkflowDefinition(12).blocks[0])).toBe(true);
+    expect(validate({ kind: 'if', id: 'gate', when: { kind: 'exists', value: { kind: 'literal', value: true } },
+      then: [textStep('bad', 'Work', { timeoutMs: 0 })], otherwise: [] })).toBe(false);
+    expect(validate({ kind: 'loop', id: 'loop', body: ['Work'], repetition: { kind: 'count', count: { kind: 'literal', value: 1 } } })).toBe(false);
+    expect(validate(textStep('work', 'Work', { unknown: true }))).toBe(false);
+  });
+  it('parses deep canonical structure and ingress with the same defaults and overrides', () => {
+    const definition = createDeepWorkflowDefinition();
+    const canonical = WorkflowDefinitionSchema.parse(definition);
+    const ingress = WorkflowIngressSchema.parse(definition);
+    const normalized = validateWorkflowDefinition(ingress);
+    expect(normalized.valid).toBe(true);
+    expect(sameStrictJsonValue(canonical, normalized.normalizedDefinition)).toBe(true);
+    expect(sameStrictJsonValue(ingress, canonical)).toBe(true);
+  });
+
+  it('keeps canonical requirements distinct from shorthand ingress', () => {
+    expect(WorkflowDefinitionSchema.safeParse({ version: 1, blocks: ['Work'] }).success).toBe(false);
+    expect(WorkflowDefinitionSchema.safeParse({ blocks: [textStep('work', 'Work')] }).success).toBe(false);
+    expect(WorkflowDefinitionSchema.safeParse({ version: 1, blocks: [{ kind: 'step', document: { text: 'Work' } }] }).success).toBe(false);
+    expect(validateWorkflowDefinition({ blocks: ['Work'] }, { context: { agentTarget: CLAUDE_AGENT_TARGET } }).valid).toBe(true);
+  });
+
+  it('retains the exact malformed deep child path at canonical and ingress boundaries', () => {
+    const definition = createDeepWorkflowDefinition();
+    const path = deepWorkflowLeafPath();
+    let leaf: unknown = definition;
+    for (const segment of path) leaf = (leaf as Record<string | number, unknown>)[segment];
+    (leaf as Record<string, unknown>).timeoutMs = 0;
+    const parsed = WorkflowDefinitionSchema.safeParse(definition);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error('expected invalid timeout');
+    expect(parsed.error.issues.map((issue) => issue.path)).toContainEqual([...path, 'timeoutMs']);
+    const normalized = normalizeWorkflowIngress(definition);
+    expect(normalized.kind).toBe('issues');
+    if (normalized.kind !== 'issues') throw new Error('expected invalid timeout');
+    expect(normalized.issues.map((issue) => issue.path)).toContain(`/${[...path, 'timeoutMs'].join('/')}`);
+  });
+
+  it('round-trips deep canonical definitions through document export and import', () => {
+    const definition = createDeepWorkflowDefinition();
+    const serialized = serializeWorkflowDocumentJsonV1({ kind: 'happier.workflow', version: 1, definition });
+    const imported = parseWorkflowDocumentJsonV1(serialized);
+    expect(sameStrictJsonValue(imported.definition, definition)).toBe(true);
+  });
   it('rejects a terminal newline in an authored block identity', () => {
     expect(WorkflowBlockIdProtocolSchema.safeParse('analyze\n').success).toBe(false);
   });
@@ -458,6 +563,103 @@ describe('workflow reference scopes', () => {
     expect(codesOf(result)).toContain('invalid_reference_scope');
   });
 
+  it('rejects previous parallel items even at concurrency one while preserving nested sequential loops', () => {
+    const previous = (blockId: string, loopBlockId: string) => ({
+      kind: 'result', producer: { blockId, scope: { kind: 'previous_iteration', loopBlockId } },
+    });
+    const build = (execution: 'parallel' | 'sequential', nested: boolean) => validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [{
+        kind: 'loop', id: 'each',
+        repetition: {
+          kind: 'items', items: { kind: 'literal', value: ['A', 'A', 'B'] },
+          execution, failurePolicy: 'fail_stop', ...(execution === 'parallel' ? { maxConcurrent: 1 } : {}),
+        },
+        body: nested ? [{
+          kind: 'loop', id: 'inner', repetition: { kind: 'count', count: { kind: 'literal', value: 2 } },
+          body: [textStep('work', 'work', { input: [previous('work', 'inner')] })],
+        }] : [textStep('work', 'work', { input: [previous('work', 'each')] })],
+      }],
+    });
+    expect(codesOf(build('parallel', false))).toContain('invalid_reference_scope');
+    expect(build('sequential', false).issues).toEqual([]);
+    expect(build('parallel', true).issues).toEqual([]);
+  });
+
+  it('accepts optional result inputs and refuses them in conditions, final output and loop sources', () => {
+    const optional = { kind: 'result', producer: { blockId: 'source', scope: { kind: 'current' } }, path: [], optional: true };
+    const build = (extra: Record<string, unknown>, finalOutput?: unknown) => validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [textStep('source', 'source'), textStep('consumer', 'consume', extra)],
+      ...(finalOutput === undefined ? {} : { finalOutput }),
+    });
+    expect(build({ input: [optional] }).issues).toEqual([]);
+    expect(codesOf(build({ onlyWhen: { kind: 'exists', value: optional } }))).toContain('invalid_reference_scope');
+    expect(codesOf(build({}, optional))).toContain('invalid_reference_scope');
+    const loop = validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [textStep('source', 'source'), {
+        kind: 'loop', id: 'loop', repetition: { kind: 'count', count: optional }, body: [textStep('work', 'work')],
+      }],
+    });
+    expect(codesOf(loop)).toContain('invalid_reference_scope');
+  });
+
+  it('binds trailing counts to a prior producer in the nearest loop body', () => {
+    const count = {
+      kind: 'loop_trailing_count', producer: { blockId: 'check', scope: { kind: 'current' } },
+      path: ['verdict'], equals: 'no_progress',
+    };
+    const inside = validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [{
+        kind: 'loop', id: 'rounds',
+        repetition: { kind: 'until', maxIterations: 4, stopWhen: {
+          kind: 'compare', operator: 'gte', left: count, right: { kind: 'literal', value: 3 },
+        } },
+        body: [textStep('check', 'check'), {
+          kind: 'if', id: 'gate', when: { kind: 'exists', value: { kind: 'literal', value: true } },
+          then: [textStep('report', 'report', { input: [count] })],
+        }],
+      }],
+    });
+    expect(inside.issues).toEqual([]);
+    const outside = validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [textStep('check', 'check'), textStep('report', 'report', { input: [count] })],
+    });
+    expect(codesOf(outside)).toContain('invalid_reference_scope');
+  });
+
+  it('keeps trailing-count producers inside the nearest loop and types counts as numbers', () => {
+    const count = {
+      kind: 'loop_trailing_count', producer: { blockId: 'check', scope: { kind: 'current' } },
+      path: ['verdict'], equals: 'no_progress',
+    };
+    const build = (left: unknown, right: unknown) => validateWorkflowDefinition({
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+      blocks: [textStep('root-check', 'root'), {
+        kind: 'loop', id: 'outer-loop',
+        repetition: { kind: 'count', count: { kind: 'literal', value: 2 } },
+        body: [textStep('outer-check', 'outer'), {
+          kind: 'loop', id: 'inner-loop',
+          repetition: { kind: 'until', maxIterations: 3, stopWhen: {
+            kind: 'compare', operator: 'gte', left, right,
+          } },
+          body: [textStep('check', 'check')],
+        }],
+      }],
+    });
+    expect(build(count, { kind: 'literal', value: 2 }).issues).toEqual([]);
+    expect(codesOf(build(count, { kind: 'literal', value: '2' }))).toContain('invalid_condition');
+    expect(codesOf(build({
+      ...count, producer: { blockId: 'outer-check', scope: { kind: 'outer', levels: 1 } },
+    }, { kind: 'literal', value: 2 }))).toContain('invalid_reference_scope');
+    expect(codesOf(build({
+      ...count, producer: { blockId: 'check', scope: { kind: 'previous_iteration', loopBlockId: 'inner-loop' } },
+    }, { kind: 'literal', value: 2 }))).toContain('invalid_reference_scope');
+  });
+
   it('keeps the authored final output stable regardless of block ordering in the response', () => {
     const result = validateWorkflowDefinition(linear);
     const reversedIssueOrder = validateWorkflowDefinition({
@@ -535,7 +737,7 @@ describe('workflow container policies', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('requires an evaluator to return a decision and forbids decisions elsewhere', () => {
+  it('requires evaluator continuation and permits declared decisions on ordinary steps', () => {
     const badEvaluator = validateWorkflowDefinition({
       defaults: { agentTarget: CLAUDE_AGENT_TARGET },
       blocks: [{
@@ -554,9 +756,17 @@ describe('workflow container policies', () => {
 
     const strayDecision = validateWorkflowDefinition({
       defaults: { agentTarget: CLAUDE_AGENT_TARGET },
-      blocks: [textStep('a', 'x', { result: { kind: 'decision', decisions: ['continue', 'stop'] } })],
+      blocks: [textStep('a', 'x', { result: { kind: 'decision', decisions: ['continue', 'done', 'stuck'] } })],
     });
-    expect(codesOf(strayDecision)).toContain('invalid_result_contract');
+    expect(strayDecision.valid).toBe(true);
+    for (const decisions of [['done', 'stuck'], ['continue']]) {
+      expect(codesOf(validateWorkflowDefinition({ defaults: { agentTarget: CLAUDE_AGENT_TARGET }, blocks: [{
+        kind: 'loop', id: 'judge', body: [textStep('work', 'x')], repetition: {
+          kind: 'evaluate', maxIterations: 2, history: 'none',
+          evaluator: textStep('judge-step', 'decide', { result: { kind: 'decision', decisions } }),
+        },
+      }] }))).toContain('invalid_result_contract');
+    }
   });
 
   it('rejects statically impossible repetition bounds', () => {
@@ -569,7 +779,8 @@ describe('workflow container policies', () => {
         body: [textStep('inner', 'x')],
       }],
     });
-    expect(codesOf(zeroCount)).toContain('invalid_repetition');
+    expect(zeroCount.valid).toBe(true);
+    expect(zeroCount.issues).toEqual([]);
 
     const notAList = validateWorkflowDefinition({
       defaults: { agentTarget: CLAUDE_AGENT_TARGET },
@@ -586,6 +797,48 @@ describe('workflow container policies', () => {
       }],
     });
     expect(codesOf(notAList)).toContain('invalid_repetition');
+  });
+
+  it('accepts a depth-1200 document below the stored envelope boundary stack-safely', () => {
+    let nested: Record<string, unknown> = textStep('leaf', 'finish');
+    for (let depth = 1_199; depth >= 0; depth -= 1) {
+      nested = {
+        kind: 'if',
+        id: `gate_${depth}`,
+        when: { kind: 'exists', value: { kind: 'literal', value: true } },
+        then: [nested],
+        otherwise: [],
+      };
+    }
+    const input = {
+      kind: 'happier.workflow',
+      version: 1,
+      definition: {
+        version: 1,
+        defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+        blocks: [nested],
+      },
+    };
+    const json = JSON.stringify(input);
+    const encodedBytes = new TextEncoder().encode(json).byteLength;
+    expect(encodedBytes).toBeGreaterThan(0);
+    expect(encodedBytes).toBeLessThan(512 * 1024);
+
+    let result: ReturnType<typeof parseWorkflowDocumentJsonIngressV1> | undefined;
+    expect(() => { result = parseWorkflowDocumentJsonIngressV1(json); }).not.toThrow();
+    expect(result?.ok).toBe(true);
+    if (result?.ok !== true) throw new Error(`expected depth-1200 document to normalize: ${JSON.stringify(result)}`);
+    expect(result.document.definition.blocks).toHaveLength(1);
+    let current: unknown = result.document.definition.blocks[0];
+    for (let depth = 0; depth < 1_200; depth += 1) {
+      expect((current as { kind: string; id: string }).kind).toBe('if');
+      expect((current as { id: string }).id).toBe(`gate_${depth}`);
+      const thenBlocks = (current as { then: unknown[] }).then;
+      expect(thenBlocks).toHaveLength(1);
+      current = thenBlocks[0];
+    }
+    expect((current as { kind: string; id: string }).kind).toBe('step');
+    expect((current as { id: string }).id).toBe('leaf');
   });
 
   it('rejects an ordering comparison between incompatible literals', () => {
@@ -769,9 +1022,16 @@ describe('workflow authoring selection round trip', () => {
     });
   });
 
-  it('rejects an existing Session combined with a new worktree before Run admission', () => {
+  it('preserves inherited Session cwd and rejects only explicit worktree forks before Run admission', () => {
     const existingSession = { kind: 'existing_session' as const, sessionId: 'session-1', machineId: 'machine-1' };
     const newWorktree = { kind: 'new_worktree' as const, source: { kind: 'original' as const } };
+
+    const inherited = validateWorkflowDefinition({
+      version: 1,
+      defaults: { agentTarget: CLAUDE_AGENT_TARGET, conversation: existingSession, workspace: newWorktree },
+      blocks: [textStep('work', 'work')],
+    });
+    expect(inherited.valid).toBe(true);
 
     for (const definition of [
       {
@@ -782,7 +1042,12 @@ describe('workflow authoring selection round trip', () => {
       {
         version: 1,
         defaults: { agentTarget: CLAUDE_AGENT_TARGET, conversation: existingSession, workspace: newWorktree },
-        blocks: [textStep('work', 'work')],
+        blocks: [textStep('work', 'work', { execution: { workspace: newWorktree } })],
+      },
+      {
+        version: 1,
+        defaults: { agentTarget: CLAUDE_AGENT_TARGET },
+        blocks: [textStep('work', 'work', { execution: { conversation: { kind: 'origin_session' }, workspace: newWorktree } })],
       },
     ]) {
       const result = validateWorkflowDefinition(definition);
@@ -831,7 +1096,7 @@ describe('workflow authoring selection round trip', () => {
     }).success).toBe(false);
   });
 
-  it('rejects environment, Machine, or runtime-kind fields inside a step selection', () => {
+  it('rejects environment and Machine placement while accepting per-leaf execution classes', () => {
     const result = validateWorkflowDefinition({
       defaults: { agentTarget: CLAUDE_AGENT_TARGET },
       blocks: [textStep('a', 'x', { execution: { environmentVariables: { TOKEN: 'secret' } } })],
@@ -842,13 +1107,13 @@ describe('workflow authoring selection round trip', () => {
       defaults: { agentTarget: CLAUDE_AGENT_TARGET, executionTarget: { kind: 'machine', machineId: 'm1' } },
       blocks: ['Analyze'],
     });
-    expect(codesOf(machine)).toContain('unknown_field');
+    expect(codesOf(machine)).toContain('invalid_input');
 
     const runtimeKind = validateWorkflowDefinition({
       defaults: { agentTarget: CLAUDE_AGENT_TARGET },
       blocks: [textStep('a', 'x', { execution: { executionTarget: { kind: 'detached_run' } } })],
     });
-    expect(codesOf(runtimeKind)).toContain('unknown_field');
+    expect(runtimeKind.valid).toBe(true);
   });
 
   it('blocks a staged-media attachment with the exact repairable reason', () => {

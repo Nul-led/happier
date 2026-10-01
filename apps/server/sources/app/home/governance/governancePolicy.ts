@@ -1,5 +1,6 @@
 import {
     HOME_TEAM_CREATION_POLICY_DEFAULT_V1,
+    HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1,
     readHomeAuthenticationPolicyV1,
     readHomeIdentityNetworkPolicyV1,
     readHomeTeamProviderPolicyV1,
@@ -7,6 +8,7 @@ import {
     type HomeAuthenticationPolicyReadV1,
     type HomeAuthenticationPolicyV1,
     type HomeGovernancePolicySetInputV1,
+    type HomeSignInServicePolicyV1,
     type HomeIdentityNetworkPolicyReadV1,
     type HomeTeamProviderPolicyReadV1,
     type ManagedIdentityProviderKindV1,
@@ -23,7 +25,15 @@ import { getActivePrismaRuntime } from "@/storage/prisma";
 import { inTx, type Tx } from "@/storage/inTx";
 
 import { authorizeHomeGovernanceMutationInTx } from "./homeCapabilities";
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
+import {
+    HOME_STORAGE_POLICY_KEY,
+    readHomeAuthenticationLock,
+    readHomeAuthenticationLockEnv,
+} from "./homeAuthenticationPolicyEnv";
+import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import type { EffectiveAuthMethodDecision } from "@/app/auth/methods/effectiveAuthMethods";
 
 /**
  * The Home database holds exactly one governance policy. There is no separate
@@ -35,6 +45,11 @@ export type HomeGovernancePolicyRecord = Readonly<{
     /** `0` while no row exists; the first persisted revision is `1`. */
     revision: number;
     teamCreationPolicy: TeamCreationPolicyV1;
+    /**
+     * Whether a member outside every Team is still shown the Teams destination.
+     * Members of a Team and Home administrators always are.
+     */
+    teamsVisibleToMembers: boolean;
     authentication: HomeAuthenticationPolicyReadV1;
     teamProviders: HomeTeamProviderPolicyReadV1;
     identityNetwork: HomeIdentityNetworkPolicyReadV1;
@@ -43,6 +58,7 @@ export type HomeGovernancePolicyRecord = Readonly<{
 type HomeGovernancePolicyRow = Readonly<{
     revision: number;
     teamCreationPolicy: string;
+    teamsVisibleToMembers: boolean;
     authenticationPolicy: unknown;
     teamProviderPolicy: unknown;
     identityNetworkPolicy: unknown;
@@ -51,6 +67,7 @@ type HomeGovernancePolicyRow = Readonly<{
 const DEPLOYMENT_DEFAULT_POLICY: HomeGovernancePolicyRecord = Object.freeze({
     revision: 0,
     teamCreationPolicy: HOME_TEAM_CREATION_POLICY_DEFAULT_V1,
+    teamsVisibleToMembers: HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1,
     authentication: Object.freeze({ status: "inherited" as const }),
     teamProviders: Object.freeze({ status: "inherited" as const }),
     identityNetwork: Object.freeze({ status: "inherited" as const }),
@@ -61,6 +78,7 @@ function projectPolicyRow(row: HomeGovernancePolicyRow | null): HomeGovernancePo
     return Object.freeze({
         revision: row.revision,
         teamCreationPolicy: readTeamCreationPolicyV1(row.teamCreationPolicy),
+        teamsVisibleToMembers: row.teamsVisibleToMembers,
         authentication: readHomeAuthenticationPolicyV1(row.authenticationPolicy),
         teamProviders: readHomeTeamProviderPolicyV1(row.teamProviderPolicy),
         identityNetwork: readHomeIdentityNetworkPolicyV1(row.identityNetworkPolicy),
@@ -73,6 +91,7 @@ async function findPolicyRowInTx(tx: Tx): Promise<HomeGovernancePolicyRow | null
         select: {
             revision: true,
             teamCreationPolicy: true,
+            teamsVisibleToMembers: true,
             authenticationPolicy: true,
             teamProviderPolicy: true,
             identityNetworkPolicy: true,
@@ -94,6 +113,7 @@ export async function readHomeGovernancePolicy(): Promise<HomeGovernancePolicyRe
         select: {
             revision: true,
             teamCreationPolicy: true,
+            teamsVisibleToMembers: true,
             authenticationPolicy: true,
             teamProviderPolicy: true,
             identityNetworkPolicy: true,
@@ -123,7 +143,9 @@ export type HomeGovernancePolicySetResult =
     | Readonly<{ status: "applied"; policy: HomeGovernancePolicyRecord }>
     | Readonly<{ status: "revision_conflict"; policy: HomeGovernancePolicyRecord }>
     | Readonly<{ status: "forbidden" }>
-    | Readonly<{ status: "invalid_policy" }>;
+    | Readonly<{ status: "invalid_policy" }>
+    /** The patch widens sign-in, admission or storage policy without `confirmWidening`; nothing was written. */
+    | Readonly<{ status: "widening_unconfirmed" }>;
 
 class HomeGovernancePolicyCreateConflictError extends Error {
     constructor() {
@@ -162,6 +184,7 @@ export async function setHomeGovernancePolicy(input: Readonly<{
         const result = await setHomeGovernancePolicyInTx(tx, input);
         if (result.status === "applied") {
             const minimumEligibilityMayChange = input.patch.teamCreationPolicy !== undefined
+                || input.patch.teamsVisibleToMembers !== undefined
                 || input.patch.authenticationPolicy !== undefined;
             await publishHomeGovernanceChangedInTx(tx, {
                 audience: minimumEligibilityMayChange ? "all_active_accounts" : "administrators",
@@ -178,25 +201,72 @@ export async function setHomeGovernancePolicy(input: Readonly<{
     }
 }
 
+const STORAGE_POLICY_RANK = { required_e2ee: 0, optional: 1, plaintext_only: 2 } as const;
+
+function enabledActionKeys(decisions: readonly EffectiveAuthMethodDecision[]): Set<string> {
+    return new Set(decisions.flatMap((decision) => decision.actions
+        .filter((action) => action.enabled)
+        .map((action) => `${decision.id}\u0000${action.id}\u0000${action.mode}`)));
+}
+
+function provisionModeKeys(decisions: readonly EffectiveAuthMethodDecision[]): Set<string> {
+    return new Set(decisions.flatMap((decision) =>
+        decision.allowedProvisionModes.map((mode) => `${decision.id}\u0000${mode}`)));
+}
+
+function addsAny(current: ReadonlySet<string>, next: ReadonlySet<string>): boolean {
+    for (const key of next) if (!current.has(key)) return true;
+    return false;
+}
+
 /**
- * Whether this Home could still be used under the prospective narrowing.
+ * Whether the stored storage policy moves toward less protection. The storage policy applies at the
+ * next start, so it is compared as stored, not through the running decision; a deployment lock
+ * means the document cannot change it at all.
+ */
+function storagePolicyWidens(
+    env: NodeJS.ProcessEnv,
+    current: HomeAuthenticationPolicyReadV1,
+    next: HomeAuthenticationPolicyV1 | null,
+): boolean {
+    if (readHomeAuthenticationLock(env, HOME_STORAGE_POLICY_KEY)) return false;
+    const deployment = readEncryptionFeatureEnv(readHomeAuthenticationLockEnv(env) as NodeJS.ProcessEnv).storagePolicy;
+    const stored = current.status === "narrowed" ? current.policy.storagePolicy ?? deployment : deployment;
+    return STORAGE_POLICY_RANK[next?.storagePolicy ?? deployment] > STORAGE_POLICY_RANK[stored];
+}
+
+type AuthenticationPolicyAssessment =
+    | Readonly<{ valid: false }>
+    | Readonly<{ valid: true; widens: boolean }>;
+
+/**
+ * Whether this Home could still be used under the prospective policy, and whether it widens.
  *
  * Usability is a route question, not an Account-mode question: the deployment's
  * permitted Account modes decide which Accounts may be *constructed*, while an
- * Account that already exists keeps its stored mode and its login. A narrowing
+ * Account that already exists keeps its stored mode and its login. A policy
  * is refused only when it leaves no enabled login or provision action at all,
  * names a method this deployment does not have, removes every provisioning
  * mode, or — through the auth-domain stranding owner — takes away the last
  * current login route of an Account that has one.
+ *
+ * It widens (§3.4 bound 5, the owner must confirm) when any sign-in action or
+ * Account mode is offered that the current decision does not offer, when the
+ * sign-in service comes back, or when the stored storage policy protects less.
+ * Both answers come from the one effective decision owner, current against
+ * prospective, so no second list of "permissive" fields exists.
  */
-async function isProspectiveAuthenticationPolicyValidInTx(
+async function assessAuthenticationPolicyChangeInTx(
     tx: Tx,
     policy: HomeAuthenticationPolicyV1 | null,
     env: NodeJS.ProcessEnv,
-): Promise<boolean> {
+): Promise<AuthenticationPolicyAssessment> {
+    const emailDeliveryReady = await isAuthEmailDeliveryReady({ env, tx });
+    const stored = (await readHomeGovernancePolicyInTx(tx)).authentication;
     const current = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
-        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
+        homeAuthenticationPolicyOverride: stored,
+        emailDeliveryReady,
     });
     const prospective = policy === null
         ? { status: "inherited" as const }
@@ -204,29 +274,69 @@ async function isProspectiveAuthenticationPolicyValidInTx(
     const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env,
         homeAuthenticationPolicyOverride: prospective,
-        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
+        emailDeliveryReady,
     });
-    if (effective.status !== "ready") return false;
+    if (effective.status !== "ready") return { valid: false };
 
     if (policy?.enabledMethodIds) {
         const knownIds = new Set(effective.decisions.map((decision) => decision.id));
-        if (policy.enabledMethodIds.some((id) => !knownIds.has(id))) return false;
+        if (policy.enabledMethodIds.some((id) => !knownIds.has(id))) return { valid: false };
     }
-    if (!effective.decisions.some((decision) => decision.allowedProvisionModes.length > 0)) return false;
+    if (!effective.decisions.some((decision) => decision.allowedProvisionModes.length > 0)) return { valid: false };
     if (policy?.recommendedProvisioningMode
         && !effective.decisions.some((decision) =>
-            decision.allowedProvisionModes.includes(policy.recommendedProvisioningMode!))) return false;
+            decision.allowedProvisionModes.includes(policy.recommendedProvisioningMode!))) return { valid: false };
     if (!effective.decisions.some((decision) => decision.actions.some((action) =>
-        action.enabled && (action.id === "login" || action.id === "provision")))) return false;
+        action.enabled && (action.id === "login" || action.id === "provision")))) return { valid: false };
 
     const loginStranding = await checkHomeAuthenticationPolicyRetainsLoginRoutesInTx(tx, {
         env,
         currentDecisions: current.status === "ready" ? current.decisions : [],
         prospectiveDecisions: effective.decisions,
     });
-    if (!loginStranding.ok) return false;
+    if (!loginStranding.ok) return { valid: false };
 
-    return true;
+    const currentDecisions = current.status === "ready" ? current.decisions : [];
+    const signInServiceOn = (service: HomeSignInServicePolicyV1 | null | undefined) =>
+        service !== null && service !== undefined && service.mode !== "disabled";
+    const widens = addsAny(enabledActionKeys(currentDecisions), enabledActionKeys(effective.decisions))
+        || addsAny(provisionModeKeys(currentDecisions), provisionModeKeys(effective.decisions))
+        || (!signInServiceOn(current.status === "ready" ? current.signInService : null) && signInServiceOn(effective.signInService))
+        || storagePolicyWidens(env, stored, policy);
+    return { valid: true, widens };
+}
+
+const POLICY_FIELDS = [
+    "teamCreationPolicy",
+    "teamsVisibleToMembers",
+    "authenticationPolicy",
+    "teamProviderPolicy",
+    "identityNetworkPolicy",
+] as const;
+
+/** Records the fields this patch changed, as stored before and after (§3.9). */
+async function recordPolicyChangeInTx(tx: Tx, input: Readonly<{
+    actorAccountId: string;
+    before: HomeGovernancePolicyRow | null;
+    patch: HomeGovernancePolicySetInputV1;
+    revision: number;
+    widening: boolean;
+}>): Promise<void> {
+    const changes = POLICY_FIELDS.flatMap((field) => {
+        const next = input.patch[field];
+        if (next === undefined) return [];
+        const from = input.before ? (input.before[field] ?? null) : null;
+        return JSON.stringify(from) === JSON.stringify(next) ? [] : [{ field, from, to: next }];
+    });
+    if (changes.length === 0) return;
+    await recordHomeAdministrationEventInTx(tx, {
+        actor: { kind: "account", accountId: input.actorAccountId },
+        target: null,
+        detail: {
+            action: "home.policy.set",
+            summary: { revision: input.revision, changes, ...(input.widening ? { widening: true as const } : {}) },
+        },
+    });
 }
 
 /**
@@ -246,7 +356,10 @@ export async function setHomeGovernancePolicyInTx(
     }>,
 ): Promise<HomeGovernancePolicySetResult> {
     const operations = new Set<"set_team_creation_policy" | "set_authentication_policy">();
-    if (input.patch.teamCreationPolicy !== undefined) operations.add("set_team_creation_policy");
+    // Who may create Teams and whether members outside every Team see them are
+    // one Teams-policy authority.
+    if (input.patch.teamCreationPolicy !== undefined
+        || input.patch.teamsVisibleToMembers !== undefined) operations.add("set_team_creation_policy");
     if (input.patch.authenticationPolicy !== undefined
         || input.patch.teamProviderPolicy !== undefined
         || input.patch.identityNetworkPolicy !== undefined) operations.add("set_authentication_policy");
@@ -277,12 +390,14 @@ export async function setHomeGovernancePolicyInTx(
         return { status: "invalid_policy" };
     }
 
-    if (input.patch.authenticationPolicy !== undefined
-        && !await isProspectiveAuthenticationPolicyValidInTx(
-            tx,
-            input.patch.authenticationPolicy,
-            input.env,
-        )) return { status: "invalid_policy" };
+    let widening = false;
+    if (input.patch.authenticationPolicy !== undefined) {
+        const assessment = await assessAuthenticationPolicyChangeInTx(tx, input.patch.authenticationPolicy, input.env);
+        if (!assessment.valid) return { status: "invalid_policy" };
+        // §3.4 bound 5: widening is the owner's confirmed decision, never a side effect of a save.
+        if (assessment.widens && input.patch.confirmWidening !== true) return { status: "widening_unconfirmed" };
+        widening = assessment.widens;
+    }
 
     if (input.patch.identityNetworkPolicy !== undefined
         && input.patch.identityNetworkPolicy !== null
@@ -291,6 +406,9 @@ export async function setHomeGovernancePolicyInTx(
             policy: input.patch.identityNetworkPolicy,
         }).status === "invalid") return { status: "invalid_policy" };
 
+    const teamsVisibleToMembersWrite = input.patch.teamsVisibleToMembers === undefined
+        ? {}
+        : { teamsVisibleToMembers: input.patch.teamsVisibleToMembers };
     const authenticationPolicyWrite = input.patch.authenticationPolicy === undefined
         ? {}
         : {
@@ -320,6 +438,7 @@ export async function setHomeGovernancePolicyInTx(
                     id: HOME_GOVERNANCE_POLICY_ID,
                     revision: 1,
                     ...(input.patch.teamCreationPolicy ? { teamCreationPolicy: input.patch.teamCreationPolicy } : {}),
+                    ...teamsVisibleToMembersWrite,
                     ...authenticationPolicyWrite,
                     ...teamProviderPolicyWrite,
                     ...identityNetworkPolicyWrite,
@@ -332,6 +451,7 @@ export async function setHomeGovernancePolicyInTx(
             }
             throw error;
         }
+        await recordPolicyChangeInTx(tx, { actorAccountId: input.actorAccountId, before: null, patch: input.patch, revision: 1, widening });
         return { status: "applied", policy: projectPolicyRow(await findPolicyRowInTx(tx)) };
     }
 
@@ -340,6 +460,7 @@ export async function setHomeGovernancePolicyInTx(
         data: {
             revision: currentRevision + 1,
             ...(input.patch.teamCreationPolicy ? { teamCreationPolicy: input.patch.teamCreationPolicy } : {}),
+            ...teamsVisibleToMembersWrite,
             ...authenticationPolicyWrite,
             ...teamProviderPolicyWrite,
             ...identityNetworkPolicyWrite,
@@ -348,5 +469,12 @@ export async function setHomeGovernancePolicyInTx(
     if (applied.count === 0) {
         return { status: "revision_conflict", policy: projectPolicyRow(await findPolicyRowInTx(tx)) };
     }
+    await recordPolicyChangeInTx(tx, {
+        actorAccountId: input.actorAccountId,
+        before: current,
+        patch: input.patch,
+        revision: currentRevision + 1,
+        widening,
+    });
     return { status: "applied", policy: projectPolicyRow(await findPolicyRowInTx(tx)) };
 }

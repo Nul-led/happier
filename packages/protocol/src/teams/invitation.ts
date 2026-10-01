@@ -13,6 +13,12 @@ import {
   TeamInvitationTokenV1Schema,
   type TeamInvitationTokenV1,
 } from './invitationToken.js';
+import {
+  decodeTeamKeysetCursorV1,
+  encodeTeamKeysetCursorV1,
+  readTeamKeysetIdV1,
+  readTeamKeysetTimeV1,
+} from './cursor.js';
 
 export {
   TEAM_INVITATION_TOKEN_LENGTH,
@@ -213,6 +219,37 @@ export const TeamInvitationListInputV1Schema = z.object({
   limit: z.number().int().min(1).max(100),
 }).strict();
 export type TeamInvitationListInputV1 = z.infer<typeof TeamInvitationListInputV1Schema>;
+
+/**
+ * Invitation pages are ordered by immutable creation time and id. The query key
+ * binds the position to the exact Team and derived state filter that produced it.
+ */
+export function teamInvitationsQueryKeyV1(input: Pick<TeamInvitationListInputV1, 'teamId' | 'state'>): string {
+  return `v1:invitations:${input.teamId}:${input.state ?? 'all'}`;
+}
+
+export type TeamInvitationsCursorV1 = Readonly<{ createdAt: number; id: string }>;
+
+export type TeamInvitationsCursorDecodeV1 =
+  | Readonly<{ status: 'ok'; cursor: TeamInvitationsCursorV1 }>
+  | Readonly<{ status: 'invalid' }>;
+
+export function encodeTeamInvitationsCursorV1(input: Readonly<{
+  queryKey: string;
+  createdAt: number;
+  id: string;
+}>): string {
+  return encodeTeamKeysetCursorV1({ queryKey: input.queryKey, parts: [input.createdAt, input.id] });
+}
+
+export function decodeTeamInvitationsCursorV1(value: string, queryKey: string): TeamInvitationsCursorDecodeV1 {
+  const decoded = decodeTeamKeysetCursorV1(value, queryKey);
+  if (decoded.status !== 'ok') return { status: 'invalid' };
+  const createdAt = readTeamKeysetTimeV1(decoded.parts[0]);
+  const id = readTeamKeysetIdV1(decoded.parts[1]);
+  if (createdAt === null || id === null) return { status: 'invalid' };
+  return { status: 'ok', cursor: { createdAt, id } };
+}
 
 export const TeamInvitationRevokeInputV1Schema = z.object({
   v: z.literal(1),

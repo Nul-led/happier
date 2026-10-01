@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { VoiceMediaApplicationKindV1Schema } from './voiceMediaV1.js';
+import { LocalServicePreviewDirectBindingV1Schema } from '../../../local/services/preview/v1.js';
 
 const PositiveIntSchema = z.number().int().positive();
 
@@ -26,9 +27,7 @@ export const TcpTunnelGrantScopeV1Schema = z.object({
   kind: z.literal('tcp_tunnel'),
   tunnelId: z.string().min(1),
   allowedPorts: z.array(z.number().int().min(1).max(65_535)).min(1),
-  maxIdleMs: PositiveIntSchema,
-  maxDurationMs: PositiveIntSchema,
-  maxTotalBytes: PositiveIntSchema.optional(),
+  preview: LocalServicePreviewDirectBindingV1Schema.optional(),
 }).strict();
 
 export const VoiceMediaGrantScopeV1Schema = z.object({
@@ -46,8 +45,9 @@ export const LiveStreamGrantScopeV1Schema = z.object({
   kind: z.literal('live_stream'),
   streamId: z.string().min(1),
   streamFamily: z.string().min(1),
-  maxBitrateBps: PositiveIntSchema,
-  maxDurationMs: PositiveIntSchema,
+  sourceId: z.string().min(1).optional(),
+  maxBitrateBps: PositiveIntSchema.optional(),
+  maxDurationMs: PositiveIntSchema.optional(),
   maxTotalBytes: PositiveIntSchema.optional(),
 }).strict();
 

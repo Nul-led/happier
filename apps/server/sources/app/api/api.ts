@@ -61,11 +61,14 @@ import { registerTeamMemberRoutes } from "@/app/teams/memberships/registerTeamMe
 import { registerTeamDirectoryRoutes } from "@/app/teams/directory/registerTeamDirectoryRoutes";
 import { registerTeamRoutes } from "@/app/teams/registerTeamRoutes";
 import { registerManagedGitHubAppRoutes } from "@/app/integrations/github/githubManagedAppRoutes";
-import {
-    resolveJoinScreenHomeIdentity,
-    resolveTeamJoinLinkTarget,
-} from "@/app/teams/invitations/joinScreenHome";
-import { registerAuthEmailApplicationLinkTarget, resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveJoinScreenHomeIdentity } from "@/app/teams/invitations/joinScreenHome";
+import { registerAuthEmailApplicationLinkTarget, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { createHomeAuthEmailDelivery, createHomeMailLinkTargetResolver } from "@/app/auth/email/homeAuthEmailDelivery";
+import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
+import { readHomeConfigEnv } from "@/app/home/settings/homeSettings";
+import { registerHomeSettingsRoutes } from "./routes/home/homeSettingsRoutes";
+import { registerHomeRetentionRoutes } from "./routes/home/homeRetentionRoutes";
+import { registerHomeReachabilityRoutes } from "./routes/home/homeReachabilityRoutes";
 import { startHomeSearchLifecycle, type HomeSearchLifecycle } from "@/app/search/homeSearchLifecycle";
 import { readCanonicalSessionMessagesPage } from "@/app/search/homeSearchCanonicalSessionMessages";
 import { registerHomeSearchRoutes } from "@/app/search/homeSearchRoutes";
@@ -99,6 +102,7 @@ export const API_CORS_ALLOWED_HEADERS = [
 ];
 export const API_CORS_EXPOSED_HEADERS = [
     'server-timing',
+    'x-happier-retry-reason',
 ];
 
 export function createApiCorsOptions(env: Record<string, string | undefined>): FastifyCorsOptions {
@@ -134,11 +138,13 @@ export function enableContentTypeParsers(app: Pick<FastifyInstance, 'addContentT
 export function registerApiRoutes(typed: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => ReturnType<HomeSearchLifecycle['capability']> | undefined;
     homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
-    authEmailDelivery?: ReturnType<typeof resolveAuthEmailDelivery>;
+    authEmailDelivery?: AuthEmailDelivery;
     resolveAuthEmailApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
     const authEmail = {
-        delivery: params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env),
+        // Resolved per send from the Home's effective mail settings (plan §3.3), never captured at
+        // startup, so a saved SMTP password is used by the next message.
+        delivery: params.authEmailDelivery ?? createHomeAuthEmailDelivery(),
     };
     const hasLifecycleSelectedDescriptorOwner = Object.prototype.hasOwnProperty.call(
         params,
@@ -148,22 +154,20 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
         ? async () => {
             const continuityStore = params.homeConnectionDescriptorContinuityStore;
             if (!continuityStore) return undefined;
+            // The live overlay carries a stored or inferred public address (plan §3.2).
             return readHomeConnectionDescriptor({
-                env: process.env,
+                env: await readHomeConfigEnv(),
                 continuityStore,
                 visibility: 'authenticated',
             });
         }
         : undefined;
     const resolveAuthEmailApplicationLinkTarget = params.resolveAuthEmailApplicationLinkTarget
-        ?? (async () => resolveTeamJoinLinkTarget(
-            process.env,
-            params.homeConnectionDescriptorContinuityStore,
-        ));
+        ?? createHomeMailLinkTargetResolver({ continuityStore: params.homeConnectionDescriptorContinuityStore });
     // The one mail-readiness owner reads the same link target the mail routes render from, for the
     // routes below and for environment-only readers (feature projection, Home governance).
-    const isAuthEmailReady = () => resolveAuthEmailReadiness({
-        transportReady: authEmail.delivery.isReady,
+    const isAuthEmailReady = async () => await resolveAuthEmailReadiness({
+        transportReady: await authEmail.delivery.isReady(),
         resolveApplicationLinkTarget: resolveAuthEmailApplicationLinkTarget,
     });
     registerAuthEmailApplicationLinkTarget(resolveAuthEmailApplicationLinkTarget);
@@ -178,6 +182,9 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     registerEphemeralRunnerRoutes(typed);
     accountRoutes(typed);
     homeGovernanceRoutes(typed);
+    registerHomeSettingsRoutes(typed, { authEmailDelivery: authEmail.delivery });
+    registerHomeRetentionRoutes(typed);
+    registerHomeReachabilityRoutes(typed);
     changesRoutes(typed);
     connectRoutes(typed);
     machinesRoutes(typed);
@@ -220,10 +227,8 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     // Home application origin and portable carrier the invitation link uses, so
     // both links address the identical Home.
     registerTeamRoutes(typed, process.env, {
-        resolveMemberSignInLinkTarget: async () => resolveTeamJoinLinkTarget(
-            process.env,
-            params.homeConnectionDescriptorContinuityStore,
-        ),
+        // One link-target owner for mail, invitation and member sign-in links (Home-effective env).
+        resolveMemberSignInLinkTarget: async () => await resolveAuthEmailApplicationLinkTarget(),
     });
     registerManagedGitHubAppRoutes(typed);
     // Team membership and flat Groups. Like Team lifecycle they compose nothing
@@ -237,11 +242,8 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     // lane's verified-mailbox fact, and the transactional mail boundary. This
     // route family owns none of them.
     registerTeamInvitationRoutes(typed, {
-        resolveJoinLinkTarget: async () => resolveTeamJoinLinkTarget(
-            process.env,
-            params.homeConnectionDescriptorContinuityStore,
-        ),
-        resolveJoinScreenHomeIdentity: async () => resolveJoinScreenHomeIdentity(process.env),
+        resolveJoinLinkTarget: async () => await resolveAuthEmailApplicationLinkTarget(),
+        resolveJoinScreenHomeIdentity: async () => resolveJoinScreenHomeIdentity(await readHomeConfigEnv()),
         email: {
             delivery: authEmail.delivery,
             isDeliveryReady: isAuthEmailReady,

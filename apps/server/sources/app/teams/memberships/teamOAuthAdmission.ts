@@ -196,7 +196,7 @@ export async function requireTeamOAuthAdmissionInTx(
         admission?: TeamOAuthAdmissionSource | null;
     }>,
 ) {
-    if (!isTeamMembershipAdmissionEnabled(input.env)) {
+    if (!await isTeamMembershipAdmissionEnabled({ tx, env: input.env })) {
         throw new TeamOAuthAdmissionAbort("team_authentication_unavailable");
     }
     if (!input.provider) {

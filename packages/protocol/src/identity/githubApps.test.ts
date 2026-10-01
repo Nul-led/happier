@@ -81,3 +81,25 @@ describe('managed GitHub App persisted text bounds', () => {
     }).binding.kind).toBe('directory_source');
   });
 });
+
+it('preserves distinct current and prospective GitHub App access projections', () => {
+  const projected = ManagedGitHubAppInstallationV1Schema.safeParse({
+    id: 'installation', registrationId: 'registration', githubInstallationId: '1',
+    githubOrganizationId: '2', githubOrganizationLogin: 'Acme',
+    repositorySelection: 'all', revision: 1, state: 'verified',
+    verifiedPermissions: {}, verifiedEvents: [], suspendedAt: null, lastVerifiedAt: null,
+    teamConsumers: [],
+    requirements: { permissions: {}, events: [], missingPermissions: [], missingEvents: [] },
+    prospectiveRequirements: {
+      permissions: { members: 'read' }, events: [],
+      missingPermissions: [{ permission: 'members', required: 'read' }], missingEvents: [],
+    },
+  });
+  expect(projected.success).toBe(true);
+  if (projected.success) {
+    expect(projected.data).toMatchObject({
+      requirements: { permissions: {} },
+      prospectiveRequirements: { permissions: { members: 'read' } },
+    });
+  }
+});

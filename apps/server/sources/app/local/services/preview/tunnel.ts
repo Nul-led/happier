@@ -43,7 +43,6 @@ type PreviewTunnelSession = {
     activeStreams: number;
     closed: boolean;
     streams: Map<string, PreviewSubstream>;
-    idleCloseTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type PreviewSubstream = {
@@ -108,16 +107,9 @@ export function createLocalServicePreviewTunnelOpener(
         });
     }
 
-    function clearSessionIdleClose(session: PreviewTunnelSession): void {
-        if (!session.idleCloseTimer) return;
-        clearTimeout(session.idleCloseTimer);
-        session.idleCloseTimer = null;
-    }
-
     function closeSession(key: string, session: PreviewTunnelSession): void {
         if (session.closed) return;
         session.closed = true;
-        clearSessionIdleClose(session);
         for (const stream of session.streams.values()) stream.relaySubstream.closeFromTunnel();
         session.streams.clear();
         sendBinaryFrame(session, {
@@ -133,25 +125,15 @@ export function createLocalServicePreviewTunnelOpener(
         sessions.delete(key);
     }
 
-    function scheduleSessionIdleClose(key: string, session: PreviewTunnelSession, idleDelayMs: number): void {
-        if (session.closed || session.activeStreams > 0) return;
-        clearSessionIdleClose(session);
-        session.idleCloseTimer = setTimeout(() => {
-            closeSession(key, session);
-        }, Math.max(1, idleDelayMs));
-        session.idleCloseTimer.unref?.();
-    }
-
     function getOrCreateSession(accountId: string, preview: LocalServicePreviewResourceV1): PreviewTunnelSession {
         const key = sessionKey(accountId, preview);
         const existing = sessions.get(key);
         if (existing && !existing.closed) {
-            clearSessionIdleClose(existing);
             return existing;
         }
 
         const featureEnv = readMachineTunnelFeatureEnv(input.env);
-        const signing = resolvePeerMediationGrantSigningConfig(input.env);
+        const signing = resolvePeerMediationGrantSigningConfig(input.env, nowMs());
         if (!signing.ok) {
             throw createTunnelUnavailableError("grant_signing_unavailable");
         }
@@ -170,19 +152,13 @@ export function createLocalServicePreviewTunnelOpener(
                 kind: "tcp_tunnel",
                 tunnelId,
                 allowedPorts: [preview.target.port],
-                maxIdleMs: featureEnv.maxIdleMs,
-                maxDurationMs: featureEnv.maxDurationMs,
-                maxTotalBytes: featureEnv.serverRoutedMaxBytes,
             },
             nowMs: nowMs(),
             ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.serverRelayedTcpTunnel,
             serverGateEnabled: featureEnv.serverRoutedEnabled,
             serverCaps: {
                 allowedPorts: featureEnv.allowedPorts,
-                maxBytes: featureEnv.serverRoutedMaxBytes,
                 maxFrameBytes: featureEnv.serverRoutedMaxFrameBytes,
-                maxIdleMs: featureEnv.maxIdleMs,
-                maxDurationMs: featureEnv.maxDurationMs,
             },
             signingKey: {
                 keyId: signing.keyId,
@@ -203,7 +179,6 @@ export function createLocalServicePreviewTunnelOpener(
             activeStreams: 0,
             closed: false,
             streams: new Map(),
-            idleCloseTimer: null,
         };
         session.unsubscribe = transport.subscribe((envelope) => {
             if (envelope.scopeUserId !== accountId) return;
@@ -279,7 +254,7 @@ export function createLocalServicePreviewTunnelOpener(
             session.streams.delete(substreamId);
             session.activeStreams = Math.max(0, session.activeStreams - 1);
             if (session.activeStreams === 0) {
-                scheduleSessionIdleClose(key, session, featureEnv.maxIdleMs);
+                closeSession(key, session);
             }
         }
 

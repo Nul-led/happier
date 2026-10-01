@@ -1,4 +1,4 @@
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForRequest, readHomeEffectiveEnv } from "@/app/features/catalog/serverFeatureGate";
 import { acquireGlobalLock } from "@/storage/globalLock";
 import { warn } from "@/utils/logging/log";
 import { DirectoryProjectionInvariantError } from "../directoryProjectionRepository";
@@ -67,7 +67,8 @@ export async function runEnterpriseIdentitySyncWorkerPass(params: Readonly<{
     scan?: DirectoryProjectionScan;
     catchUp?: DirectoryProjectionCatchUp;
 }> = {}): Promise<EnterpriseIdentitySyncWorkerPassResult> {
-    const env = params.env ?? process.env;
+    // Each pass reads the Home-effective configuration, so a Home switch applies on the next pass.
+    const env = await readHomeEffectiveEnv({ env: params.env });
     if (!isServerFeatureEnabledForRequest("teams", env)) return { status: "disabled" };
     const lockTtlMs = readEnterpriseIdentitySyncLockTtlMs(env);
     let lastResult: EnterpriseIdentitySyncWorkerPassResult = { status: "idle" };
@@ -97,6 +98,7 @@ export async function runEnterpriseIdentitySyncWorkerPass(params: Readonly<{
                 try {
                     result = await runActiveWorkosDirectoryIncremental({
                         source: claim.source,
+                        env,
                         catchUp: async (input) => {
                             const caughtUp = await (params.catchUp ?? catchUpDirectorySource)({ ...input, env });
                             if (!await renewLease()) return { ok: false, code: "stale_run" };
@@ -142,6 +144,7 @@ export async function runEnterpriseIdentitySyncWorkerPass(params: Readonly<{
             try {
                 result = await runClaimedDirectoryProjectionReconcile({
                     source: claim.source,
+                    env,
                     scan: async (input) => {
                         const scanned = await (params.scan ?? scanDirectorySource)({ ...input, env });
                         if (!await renewLease()) return { ok: false, code: "stale_run" };
@@ -188,6 +191,7 @@ export function startEnterpriseIdentitySyncWorker(params: Readonly<{
     catchUp?: DirectoryProjectionCatchUp;
 }> = {}): Readonly<{ stop: () => Promise<void>; nudge: () => void }> | null {
     const env = params.env ?? process.env;
+    // Only the deployment can keep the worker from starting; a Home switch is honoured per pass.
     if (!isServerFeatureEnabledForRequest("teams", env)) return null;
 
     const controller = new AbortController();

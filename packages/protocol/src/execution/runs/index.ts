@@ -96,10 +96,10 @@ export {
   type ExecutionRunLifecycleV1,
 } from './executionRunLifecycleV1.js';
 export {
-  buildExecutionRunCompletionInputV1,
   ExecutionRunCompletionV1Schema,
   type ExecutionRunCompletionV1,
 } from './completionInputV1.js';
+export { resolveExecutionRunNotifyParentDefaultV1 } from './executionRunNotifyParentDefaultV1.js';
 export type {
   ExecutionRunTransportErrorCode,
   ExecutionRunStartRunCreation,
@@ -197,6 +197,17 @@ export {
   type ExecutionRunResultContractV1,
 } from './resultContractV1.js';
 
+export {
+  normalizeExecutionRunProfileResultContract,
+  buildExecutionRunResultContractPrompt,
+  decodeExecutionRunProfileResult,
+  decodeExecutionRunResultObservation,
+  validateExecutionRunProfileResult,
+  type ExecutionRunProfileResultContract,
+  type ExecutionRunResultDecodeResult,
+  type ExecutionRunResultObservation,
+} from './resultContract.js';
+
 export const ExecutionRunSendRequestSchema = z.object({
   runId: z.string().min(1),
   message: z.string().min(1),
@@ -220,34 +231,12 @@ export type ExecutionRunSendRequest = z.infer<typeof ExecutionRunSendRequestSche
 export const ExecutionRunStopRequestSchema = z.object({ runId: z.string().min(1) }).passthrough();
 export type ExecutionRunStopRequest = z.infer<typeof ExecutionRunStopRequestSchema>;
 
-export const ExecutionRunCancelTurnRequestSchema = z.object({
-  runId: z.string().min(1),
-  occurrenceId: z.string().min(1),
-  turnId: z.string().min(1),
-}).strict();
-export type ExecutionRunCancelTurnRequest = z.infer<typeof ExecutionRunCancelTurnRequestSchema>;
-
-export const ExecutionRunCancelTurnResponseSchema = z.union([
-  z.object({
-    ok: z.literal(true),
-    status: z.enum(['requested', 'already_requested']),
-    runId: z.string().min(1),
-    occurrenceId: z.string().min(1),
-    turnId: z.string().min(1),
-  }).strict(),
-  z.object({
-    ok: z.literal(false),
-    error: z.string().min(1),
-    errorCode: z.enum([
-      'execution_run_not_found',
-      'execution_run_not_current',
-      'execution_run_turn_not_active',
-      'execution_run_cancel_unsupported',
-      'execution_run_cancel_failed',
-    ]),
-  }).strict(),
-]);
-export type ExecutionRunCancelTurnResponse = z.infer<typeof ExecutionRunCancelTurnResponseSchema>;
+export {
+  ExecutionRunCancelTurnRequestSchema,
+  ExecutionRunCancelTurnResponseSchema,
+  type ExecutionRunCancelTurnRequest,
+  type ExecutionRunCancelTurnResponse,
+} from './cancelTurn.js';
 
 export const ExecutionRunEnsureRequestSchema = z.object({
   runId: z.string().min(1),
@@ -287,6 +276,17 @@ export const ExecutionRunActionRequestSchema = z.object({
   input: z.unknown().optional(),
 }).passthrough();
 export type ExecutionRunActionRequest = z.infer<typeof ExecutionRunActionRequestSchema>;
+
+/** Runtime admission reasons for asking a retained reviewer a follow-up question. */
+export const ReviewFollowUpFailureCodeSchema = z.enum([
+  'review_follow_up_not_resumable',
+  'review_follow_up_ended',
+  'review_follow_up_resume_unavailable',
+  'execution_run_busy',
+  // Older runtimes used this generic refusal for non-resumable reviews.
+  'execution_run_action_not_supported',
+]);
+export type ReviewFollowUpFailureCode = z.infer<typeof ReviewFollowUpFailureCodeSchema>;
 
 export const ExecutionRunActionResponseSchema = z.object({
   ok: z.boolean(),

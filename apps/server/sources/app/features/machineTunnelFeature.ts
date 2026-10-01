@@ -24,11 +24,8 @@ export function resolveMachineTunnelFeature(env: NodeJS.ProcessEnv): FeaturesPay
                 tunnel: {
                     directPeer: {
                         allowedPorts: featureConfig.allowedPorts,
-                        maxIdleMs: featureConfig.maxIdleMs,
-                        maxDurationMs: featureConfig.maxDurationMs,
                     },
                     serverRouted: {
-                        maxBytes: featureConfig.serverRoutedMaxBytes,
                         maxActiveTunnelsPerSocket: featureConfig.serverRoutedMaxActiveTunnelsPerSocket,
                         maxFrameBytes: featureConfig.serverRoutedMaxFrameBytes,
                         supportedEncodings: featureConfig.serverRoutedSupportedEncodings,
@@ -37,8 +34,6 @@ export function resolveMachineTunnelFeature(env: NodeJS.ProcessEnv): FeaturesPay
                         maxRawPayloadBytes: featureConfig.serverRoutedMaxRawPayloadBytes,
                         maxFramedMessageBytes: featureConfig.serverRoutedMaxFramedMessageBytes,
                         substreams: featureConfig.serverRoutedSubstreams,
-                        maxIdleMs: featureConfig.maxIdleMs,
-                        maxDurationMs: featureConfig.maxDurationMs,
                         disabledReason: featureConfig.serverRoutedEnabled ? undefined : 'relay_disabled_by_server_policy',
                     },
                 },

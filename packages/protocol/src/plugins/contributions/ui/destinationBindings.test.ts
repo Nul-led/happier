@@ -25,6 +25,17 @@ import type { PluginUiPageHeaderActionV1Input } from './sessionHeaderActions.js'
 import { PluginSurfaceTargetV1Schema } from './surfaceTargets.js';
 
 if (false) {
+  const acceptedHomeWidget: PluginUiViewV2Input = {
+    id: 'home', renderer: 'native', container: 'widget', target: { kind: 'app' },
+    home: { default: 'shown' },
+  };
+  // @ts-expect-error Home defaults belong only to App-target widgets.
+  const rejectedSessionHomeWidget: PluginUiViewV2Input = {
+    id: 'board', renderer: 'native', container: 'widget', target: { kind: 'session' },
+    home: { default: 'shown' },
+  };
+  void acceptedHomeWidget;
+  void rejectedSessionHomeWidget;
   const acceptedMultiplePane: PluginUiViewV2Input = {
     id: 'accepted-multiple-pane',
     renderer: 'compare-renderer',
@@ -690,20 +701,35 @@ describe('V2 destination declarations', () => {
   });
 });
 
-describe('embedded Session widget role', () => {
+describe('embedded widget role', () => {
   const widgetView = Object.freeze({
     id: 'review-status-widget',
-    container: 'sessionWidget',
+    container: 'widget',
     target: { kind: 'session' },
     renderer: 'review-native',
     fallbackRenderers: ['review-web'],
     title: 'Review status',
   });
 
-  it('admits exactly the sessionWidget × session declaration through the one Registry row', () => {
+  it('admits one widget role for Session and App, with an App-only Home default', () => {
+    const session = { ...widgetView, container: 'widget' };
+    const app = { ...session, target: { kind: 'app' }, home: { default: 'shown' } };
+    expect(PluginUiViewV2Schema.safeParse(session).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse(app).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse({ ...app, home: { default: 'available' } }).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse({ ...app, home: { default: 'unknown' } }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({ ...session, home: { default: 'shown' } }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({ ...widgetView, container: 'unsupportedWidget' }).success).toBe(false);
+    expect(surfaceRegistry.normalizePluginUiInlineSurfaceBindingV1({
+      pluginId: 'acme.widgets', surfaceId: 'home', rendererId: 'native',
+      role: 'widget', target: { kind: 'app' },
+    })).toMatchObject({ role: 'widget', targetKind: 'app', surfaceContextPlacement: 'appSurface' });
+  });
+
+  it('admits widget targets through the one Registry row', () => {
     const parsed = PluginUiViewV2Schema.safeParse(widgetView);
     expect(parsed.success ? null : parsed.error.issues).toBeNull();
-    for (const targetKind of ['app', 'project', 'browser', 'services'] as const) {
+    for (const targetKind of ['project', 'browser', 'services'] as const) {
       expect(PluginUiViewV2Schema.safeParse({
         ...widgetView,
         target: { kind: targetKind },
@@ -712,33 +738,35 @@ describe('embedded Session widget role', () => {
   });
 
   it('admits content and fill and rejects shell-geometry presentations', () => {
-    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'content'))
-      .toMatchObject({ role: 'sessionWidget', targetKind: 'session', surfaceContextPlacement: 'sessionPane' });
-    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'fill'))
-      .toMatchObject({ role: 'sessionWidget', presentation: 'fill' });
-    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'compact')).toBeNull();
-    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('sessionWidget', 'inline')).toBeNull();
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('widget', 'content'))
+      .toMatchObject({ role: 'widget', targetKind: 'session', surfaceContextPlacement: 'sessionPane' });
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('widget', 'fill'))
+      .toMatchObject({ role: 'widget', presentation: 'fill' });
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('widget', 'content', 'app'))
+      .toMatchObject({ role: 'widget', targetKind: 'app', surfaceContextPlacement: 'appSurface' });
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('widget', 'compact')).toBeNull();
+    expect(surfaceRegistry.resolvePluginUiInlineSurfaceSlotV1('widget', 'inline')).toBeNull();
   });
 
   it('never becomes a destination, collision domain, or destination-metadata carrier', () => {
-    expect(surfaceRegistry.PluginUiDestinationContainerV1Schema.safeParse('sessionWidget').success)
+    expect(surfaceRegistry.PluginUiDestinationContainerV1Schema.safeParse('widget').success)
       .toBe(false);
-    expect(surfaceRegistry.resolvePluginUiDestinationBindingSlotV1('sessionWidget', 'session'))
+    expect(surfaceRegistry.resolvePluginUiDestinationBindingSlotV1('widget', 'session'))
       .toBeNull();
     expect(normalizePluginUiDestinationBindingV1({
       pluginId: 'examples.public-sdk-review-assistant',
       destinationId: 'review-status-widget',
       rendererId: 'review-native',
-      container: 'sessionWidget',
+      container: 'widget',
       target: { kind: 'session' },
     })).toBeNull();
     expect(surfaceRegistry.PLUGIN_UI_DESTINATION_BINDING_SLOTS_V1
-      .some((slot) => (slot.container as string) === 'sessionWidget')).toBe(false);
+      .some((slot) => (slot.container as string) === 'widget')).toBe(false);
     for (const destinationOnly of [
       { instancePolicy: 'singleton' },
       { badge: { label: 'New' } },
       { headerActions: [] },
-      { groupHint: 'review' },
+      { placement: { kind: 'rail' } },
     ]) {
       expect(PluginUiViewV2Schema.safeParse({ ...widgetView, ...destinationOnly }).success).toBe(false);
     }
@@ -751,11 +779,11 @@ describe('embedded Session widget role', () => {
       rendererId: 'review-native',
       fallbackRendererIds: ['review-web'],
       availableRendererIds: ['review-native', 'review-web'],
-      role: 'sessionWidget',
+      role: 'widget',
       target: { kind: 'session' },
     })).toMatchObject({
       kind: 'inline',
-      role: 'sessionWidget',
+      role: 'widget',
       targetKind: 'session',
       surfaceContextPlacement: 'sessionPane',
       surface: { pluginId: 'examples.public-sdk-review-assistant', localId: 'review-status-widget' },
@@ -778,7 +806,7 @@ describe('Registry-derived inline role vocabulary', () => {
   });
 
   it('answers authored-`ui.views` inline membership from the Registry, not a caller list', () => {
-    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionWidget')).toBe(true);
+    expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('widget')).toBe(true);
     expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionSubagentLaunch')).toBe(true);
     expect(surfaceRegistry.isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionSubagentDetails')).toBe(true);
     // Session info sections are their own contribution family, never `ui.views`.
@@ -795,8 +823,8 @@ describe('Registry-derived inline role vocabulary', () => {
 
   it('derives the role/presentation mount union from the same rows', () => {
     const mounts: surfaceRegistry.PluginUiInlineSurfaceMountV1[] = [
-      { role: 'sessionWidget', presentation: 'content' },
-      { role: 'sessionWidget', presentation: 'fill' },
+      { role: 'widget', presentation: 'content' },
+      { role: 'widget', presentation: 'fill' },
       { role: 'sessionSubagentLaunch', presentation: 'content' },
       { role: 'sessionSubagentDetails', presentation: 'fill' },
       { role: 'sessionInfoSection', presentation: 'content' },

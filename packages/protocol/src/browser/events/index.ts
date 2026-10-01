@@ -3,6 +3,7 @@ export {
   BrowserDownloadRequestedEventV1Schema,
   BrowserEventKindV1Schema,
   BrowserEventV1Schema,
+  BrowserEventBatchV1Schema,
   BrowserExternalOpenRequestedEventV1Schema,
   BrowserFaviconChangedEventV1Schema,
   BrowserLoadingProgressChangedEventV1Schema,
@@ -26,3 +27,4 @@ export {
   type BrowserEventV1,
   type BrowserNavigationLoadingStateV1,
 } from './v1.js';
+export * from './activeTarget.js';

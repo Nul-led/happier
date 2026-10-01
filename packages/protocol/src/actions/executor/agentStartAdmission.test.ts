@@ -1,0 +1,107 @@
+import { describe, expect, it } from 'vitest';
+import { admitActionAgentStartV1, resolveActionAgentStartRequestsV1 } from './agentStartAdmission.js';
+import { ProviderBoundModelRefSchema } from '../../providers/selection/v1.js';
+import { DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1 } from '../../account/settings/sessionAgentSpawnPolicyV1.js';
+
+const nativeTarget = { kind: 'agent' as const, identity: { pluginId: 'native.agent', localId: 'agent' } };
+const roleTarget = { kind: 'agent' as const, identity: { pluginId: 'role.agent', localId: 'agent' } };
+
+describe('canonical Action agent-start adapter', () => {
+  it.each([{ FEATURE_FLAG: 'enabled' }, {}])('keeps explicit spawn environments subject to the single admission owner: %j', (environmentVariables) => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'session.spawn_new', input: {
+      executionTarget: { serverId: 'server', machineId: 'run-machine' }, directory: { kind: 'path', path: '/repo' },
+      agentTarget: nativeTarget, environmentVariables,
+    }, context: {}, baseline: { machineId: 'run-machine', directory: '/repo' } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.errorCode);
+    const request = result.requests[0];
+    if (!request) throw new Error('expected_spawn_request');
+    expect(admitActionAgentStartV1({ sessionAgentSpawnPolicyV1: {
+      ...DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, allowEnvironmentVariables: false,
+    } }, request, {
+      caller: { kind: 'session', sessionId: 'lead', starterDepth: 0, turnDepth: 0 },
+      baseline: { machineId: 'run-machine', directory: '/repo', configuration: { agentTarget: nativeTarget } },
+      roles: {}, ledSubtreeSessionIds: [], workDepthLimit: 4, callerPermissionCeiling: 'default',
+    })).toMatchObject({ ok: false, refusal: { code: 'policy_denied_field', field: 'environmentVariables' },
+      error: { errorCode: 'policy_denied_field', details: { field: 'environmentVariables' } } });
+  });
+
+  it('preserves a typed ORC refusal for shared materializer admission', () => {
+    expect(admitActionAgentStartV1({}, { kind: 'session_target', targetSessionId: 'target' }, null))
+      .toMatchObject({ ok: false, refusal: { code: 'target_unavailable' }, error: { errorCode: 'target_unavailable' } });
+  });
+
+  it.each([false, true])('projects frozen selection while respecting explicit native Action targets: role=%s', (overrideEngine) => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'execution.run.start',
+      input: { backendTarget: nativeTarget, intent: 'delegate', modelId: 'native-model', profileId: 'native-execution-profile' }, context: {},
+      baseline: { machineId: 'run-machine', directory: '/repo' },
+      effectiveSelection: { overrideEngine, selection: { agentTarget: roleTarget, profileId: 'portable-profile',
+        modelSelection: { v: 1, updatedAt: 0, ref: { agentTargetKey: 'agent:role.agent/agent', providerConnectionId: null, modelId: 'role-model' } } } },
+    });
+    expect(result).toMatchObject({ ok: true, requests: [{ kind: 'execution_run', backendTargets: [overrideEngine ? roleTarget : nativeTarget],
+      facts: { agentTarget: overrideEngine ? roleTarget : nativeTarget, profileId: 'portable-profile',
+        modelSelection: { modelId: overrideEngine ? 'role-model' : 'native-model' } } }] });
+    expect(result).toMatchObject({ ok: true, effectiveInput: { backendTarget: overrideEngine ? roleTarget : nativeTarget,
+      profileId: 'native-execution-profile', modelId: overrideEngine ? 'role-model' : 'native-model' } });
+  });
+
+  it('supplies a missing native spawn target from the frozen selection', () => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'session.spawn_new', input: {
+      executionTarget: { serverId: 'server', machineId: 'run-machine' }, directory: { kind: 'path', path: '/repo' },
+    }, context: {},
+      baseline: { machineId: 'run-machine', directory: '/repo' }, effectiveSelection: { selection: { agentTarget: roleTarget } } });
+    expect(result).toMatchObject({ ok: true, requests: [{ kind: 'spawn_new', facts: { agentTarget: roleTarget } }] });
+  });
+
+  it('admits known spawn policy facts while its nonauthority initial input remains dynamic', () => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'session.spawn_new', input: {
+      executionTarget: { serverId: 'server', machineId: 'run-machine' }, directory: { kind: 'path', path: '/repo' },
+      agentTarget: nativeTarget, initialInput: { text: { kind: 'input', name: 'task' } },
+    }, context: {}, baseline: { machineId: 'run-machine', directory: '/repo' } });
+    expect(result).toMatchObject({ ok: true, requests: [{ kind: 'spawn_new', facts: {
+      agentTarget: nativeTarget, machineId: 'run-machine', directory: '/repo',
+    } }], effectiveInput: { initialInput: { text: { kind: 'input', name: 'task' } } } });
+  });
+
+  it('does not borrow a Workflow default model from another explicit Action Agent', () => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'execution.run.start',
+      input: { backendTarget: nativeTarget, intent: 'delegate' }, context: {},
+      baseline: { machineId: 'run-machine', directory: '/repo' }, effectiveSelection: { selection: {
+        agentTarget: roleTarget, modelSelection: { v: 1, updatedAt: 0,
+          ref: { agentTargetKey: 'agent:role.agent/agent', providerConnectionId: null, modelId: 'other-agent-model' } },
+      } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.errorCode);
+    expect(result.requests[0]).toMatchObject({ facts: { agentTarget: nativeTarget } });
+    const request = result.requests[0];
+    if (!request || request.kind !== 'execution_run') throw new Error('expected_execution_start');
+    expect(request.facts.modelSelection).toBeUndefined();
+    expect(result.effectiveInput.modelSelection).toBeUndefined();
+  });
+
+  it('freezes a native-compatible flat execution Action model from the Workflow selection', () => {
+    const model = { agentTargetKey: 'agent:native.agent/agent', providerConnectionId: null, modelId: 'workflow-model' };
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'execution.run.start',
+      input: { backendTarget: nativeTarget, intent: 'delegate' }, context: {},
+      baseline: { machineId: 'run-machine', directory: '/repo' },
+      effectiveSelection: { selection: { agentTarget: nativeTarget, modelSelection: { v: 1, updatedAt: 0, ref: model } } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.errorCode);
+    expect(ProviderBoundModelRefSchema.safeParse(result.effectiveInput.modelSelection).success).toBe(true);
+    expect(result.effectiveInput.modelSelection).toEqual(model);
+    expect(result.requests[0]).toMatchObject({ facts: { modelSelection: model } });
+  });
+
+  it('refuses a role fanout whose distinct keyed connections cannot survive its target projection', () => {
+    const result = resolveActionAgentStartRequestsV1({ actionId: 'subagents.delegate.start', context: {},
+      baseline: { machineId: 'run-machine', directory: '/repo' },
+      input: { backendTargetKeys: ['agent:native.agent/agent', 'agent:other.agent/agent'],
+        connectedServicesByBackendTargetKey: { 'agent:native.agent/agent': 'openai:profile-a',
+          'agent:other.agent/agent': 'anthropic:profile-b' } },
+      effectiveSelection: { overrideEngine: true, selection: { agentTarget: roleTarget } },
+    });
+    expect(result).toEqual({ ok: false, errorCode: 'target_unavailable' });
+  });
+});

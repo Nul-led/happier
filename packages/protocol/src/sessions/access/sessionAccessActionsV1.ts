@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { PrincipalRefV1Schema } from '../../teams/principal.js';
 import { SessionAccessLevelV1Schema, SessionGrantIntentV1Schema } from './sessionAccessGrantV1.js';
-import { SessionAccessGrantsListRequestV1Schema } from './sessionAccessOperationsV1.js';
+import { RequiredSessionTeamCredentialV1Schema, SessionAccessGrantsListRequestV1Schema } from './sessionAccessOperationsV1.js';
 
 /** Public logical input: recipient envelopes are materialized by the host crypto owner. */
 export const SessionAccessGrantSetActionInputV1Schema = z.object({
@@ -10,7 +10,8 @@ export const SessionAccessGrantSetActionInputV1Schema = z.object({
   subject: PrincipalRefV1Schema,
   accessLevel: SessionAccessLevelV1Schema,
   canApprovePermissions: z.boolean(),
-}).strict().superRefine(({ sessionId: _sessionId, ...grant }, context) => {
+  requiredTeamCredential: RequiredSessionTeamCredentialV1Schema.optional(),
+}).strict().superRefine(({ sessionId: _sessionId, requiredTeamCredential: _requiredTeamCredential, ...grant }, context) => {
   const parsed = SessionGrantIntentV1Schema.safeParse(grant);
   if (!parsed.success) for (const issue of parsed.error.issues) {
     context.addIssue({ code: 'custom', path: issue.path, message: issue.message });

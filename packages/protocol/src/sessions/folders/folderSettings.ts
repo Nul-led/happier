@@ -31,6 +31,11 @@ const SessionFolderWorkspaceRefWorkspaceScopeV1Schema = z
 export const SessionFolderWorkspaceRefV1Schema = z.discriminatedUnion('t', [
   SessionFolderWorkspaceRefWorkspaceRefV1Schema,
   SessionFolderWorkspaceRefWorkspaceScopeV1Schema,
+  z.object({
+    t: z.literal('managedSessions'),
+    serverId: ServerIdSchema,
+    machineId: z.string().trim().min(1).max(SESSION_FOLDER_MAX_ID_LENGTH),
+  }).strict(),
 ]);
 export type SessionFolderWorkspaceRefV1 = z.infer<typeof SessionFolderWorkspaceRefV1Schema>;
 

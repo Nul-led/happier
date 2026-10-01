@@ -14,7 +14,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { listSessionPersonalEventRecipients } from "@/app/session/personal/eventEligibility";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPublisherPresence";
 import { hasExactCurrentPublisherAuthorityInTx } from "@/app/session/pending/hasExactCurrentPublisherAuthorityInTx";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
@@ -137,7 +137,7 @@ export type SubmitSessionActivityRemoteAlertsParams = Readonly<{
 export async function submitSessionActivityRemoteAlerts(
     params: SubmitSessionActivityRemoteAlertsParams,
 ): Promise<readonly string[]> {
-    if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) return [];
+    if (!await isServerFeatureEnabledForHome("sessions.following")) return [];
     const disposition = resolveSessionActivityRemoteAlertDisposition(
         params.event,
         params.committedMessage,

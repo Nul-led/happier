@@ -5,7 +5,19 @@ import {
   SessionRuntimeTemporaryThrottleDetailsV1Schema,
   SessionRuntimeUsageLimitDetailsV1Schema,
   sanitizeSessionRuntimeIssueV1,
+  resolveSessionRuntimeIssueSignInRecovery,
 } from './runtimeIssueV1.js';
+
+describe('runtime authentication recovery', () => {
+  it('targets the failing Agent on the same machine, including normalized predecessor issues', () => {
+    const issue = SessionRuntimeIssueV1Schema.parse({ v: 1, scope: 'primary_session', status: 'failed',
+      code: 'auth_failed', source: 'auth_error', occurredAt: 1, provider: 'codex' });
+    expect(resolveSessionRuntimeIssueSignInRecovery(issue, 'machine')).toEqual({ kind: 'agent_sign_in', machineId: 'machine', agentId: 'codex' });
+    expect(resolveSessionRuntimeIssueSignInRecovery({ ...issue, source: 'usage_limit' }, 'machine')).toBeNull();
+    expect(resolveSessionRuntimeIssueSignInRecovery(issue, null)).toBeNull();
+    expect(resolveSessionRuntimeIssueSignInRecovery({ ...issue, agentId: undefined }, 'machine')).toBeNull();
+  });
+});
 
 describe('SessionRuntimeUsageLimitDetailsV1Schema', () => {
   const baseDetails = {

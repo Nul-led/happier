@@ -1,5 +1,29 @@
+export * from './invocationAuthority.js';
+export { WORKSPACE_ACTION_IDS, WORKSPACE_ACTION_INPUT_SCHEMAS, WORKSPACE_ACTION_OUTPUT_SCHEMAS, isWorkspaceActionId, type WorkspaceActionId, type WorkspaceTabsListOutput } from './workspaceActionFamily.js';
+export * from './scopeActionFamily.js';
+export * from './specs/homeHub.js';
+export * from '../connect/configurationActionsV1.js';
+export * from '../connect/executeConfigurationActionV1.js';
+export * from './settingsDeclarationActionFamily.js';
+export * from './appShellActionFamily.js';
+export * from './decisionAuthority.js';
+export { createWorkflowDefinitionActions, type WorkflowDefinitionArtifactOperations, type WorkflowDefinitionArtifactHeaderRow } from './executor/workflowDefinitions.js';
+export {
+  ActionCompletionContractV1Schema, ActionCompletionStateV1Schema,
+  freezeActionCompletionContractV1, prepareActionCompletionV1, resumeActionCompletionV1,
+  readActionCompletionRunObservationV1,
+  type ActionCompletionDeclaration, type ActionCompletionContractV1, type ActionCompletionStateV1,
+  type ActionCompletionRun, type ActionCompletionLaunchFailure, type ActionCompletionResult,
+  type ExecutionRunTerminalObservation, type ReviewRunMaterialization,
+} from './actionCompletion.js';
+export { createWorkflowActionExecutor, normalizeWorkflowActionThrownError, type WorkflowRunActionOwner } from './executor/workflowAccountActions.js';
+export { createWorkflowTriggerActions, removeWorkflowTriggersForDefinition, type WorkflowTriggerActions, type WorkflowTriggerActionsDependencies, type WorkflowTriggerAutomationOperations } from './executor/workflowTriggerActions.js';
+export { createAccountWorkflowTriggerActions, type WorkflowTriggerAccountHostParams } from './executor/workflowTriggerAccountHost.js';
+export { assertControllerDominates, createWorkflowAccountRunActionOwner, type WorkflowAccountRunActionDeps, type WorkflowAccountRunEncryption } from './executor/workflowRunActions.js';
+export { resolveActionAgentStartContextV1 } from './executor/agentStartAdmission.js';
 export {
   computeExternalActionRequestEnvelopeDigestV1,
+  computeExternalActionSocketRpcRequestDigestV1,
   signExternalActionMachineRequestV1,
   verifyExternalActionMachineRequestV1,
   signExternalActionMachineRpcRequestV1,
@@ -8,6 +32,7 @@ export {
   verifyExternalActionApprovalInputV1,
   encodeExternalActionResolvedTargetV1,
   decodeExternalActionResolvedTargetV1,
+  type ExternalActionMachineRpcEventV1,
 } from './externalActionExecutionAuthorization.js';
 export {
   ExternalActionExecutionAuthorizationBindingV1Schema,
@@ -199,7 +224,7 @@ export {
   formatQualifiedPluginActionId,
   parseQualifiedPluginActionId,
   type QualifiedPluginActionId,
-} from '../plugins/actions/invocation.js';
+} from '../plugins/actions/qualifiedActionId.js';
 export {
   isAgentInitiatedApprovalRequiredByDefault,
   isApprovalRequiredByActionsSettings,
@@ -207,6 +232,7 @@ export {
   resolveActionApprovalRouting,
   AGENT_INITIATED_APPROVAL_REQUIRED_ACTION_IDS,
   EGRESS_SENSITIVE_AGENT_FLOOR,
+  SURFACE_AUTHORITY_AGENT_FLOOR,
   type ActionApprovalRoutingDecision,
   type ResolveActionApprovalRoutingArgs,
 } from './actionApprovalPolicy.js';
@@ -258,7 +284,6 @@ export {
   getActionSpec,
   isInternalActionId,
   isPluginProvenanceOnlyActionId,
-  isInteractiveDiscussionApiExcludedActionId,
   projectSessionSpawnNewApiRequest,
   getActionContextualDefaults,
   isVoicePromptHotPathSpec,
@@ -313,6 +338,12 @@ export {
   type SessionTranscriptGetItem,
   type SessionTranscriptGetOutput,
   type SessionTranscriptGetResult,
+  TranscriptOpenedAgentStateV1Schema,
+  type TranscriptOpenedAgentStateV1,
+  TranscriptOpenedSharedMetadataV1Schema,
+  type TranscriptOpenedSharedMetadataV1,
+  TranscriptOpenedFollowOutputV1Schema,
+  type TranscriptOpenedFollowOutputV1,
   listActionCliCommandDeclarations,
   type ActionCliCommandDeclaration,
 } from './actionSpecs.js';
@@ -532,3 +563,6 @@ export {
   parseSessionListQueryActionResultV1,
   type SessionListQueryActionResultV1,
 } from '../sessions/awareness/action.js';
+export { ReviewStartTerminalValueV1Schema } from './specs/executionRunCompletion.js';
+export * from './specs/machineConnection.js';
+export * from './sessionTerminalActionFamily.js';

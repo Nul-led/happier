@@ -21,7 +21,6 @@ describe("Account lifecycle", () => {
             tempDirPrefix: "happier-account-lifecycle-",
             initAuth: true,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });

@@ -4,6 +4,7 @@ import {
   DEFAULT_MACHINE_ADMINISTRATION_SELECTIONS_V1,
   MachineAdministrationSelectionsV1Schema,
   MachineAdministrationTargetV1Schema,
+  MachineAdministrationTargetsV1Schema,
 } from './machineAdministrationSelectionsV1.js';
 
 describe('machineAdministrationSelectionsV1', () => {
@@ -28,10 +29,14 @@ describe('machineAdministrationSelectionsV1', () => {
     );
   });
 
+  it('does not accept device target memory in the Account policy document', () => {
+    expect(MachineAdministrationSelectionsV1Schema.safeParse({
+      v: 1, targetsByKey: {}, pluginExecutionOriginsByPluginId: {},
+    }).success).toBe(false);
+  });
+
   it('preserves exact server-qualified machine targets', () => {
-    const parsed = MachineAdministrationSelectionsV1Schema.parse({
-      v: 1,
-      targetsByKey: {
+    const targets = MachineAdministrationTargetsV1Schema.parse({
         agents: {
           serverIdentityId: 'srv_account_one',
           machineId: 'machine-shared',
@@ -40,7 +45,9 @@ describe('machineAdministrationSelectionsV1', () => {
           serverIdentityId: 'srv_account_two',
           machineId: 'machine-shared',
         },
-      },
+    });
+    const parsed = MachineAdministrationSelectionsV1Schema.parse({
+      v: 1,
       pluginExecutionOriginsByPluginId: {
         'acme.plugin': {
           serverIdentityId: 'srv_account_two',
@@ -52,7 +59,7 @@ describe('machineAdministrationSelectionsV1', () => {
         },
       },
     });
-    expect(parsed.targetsByKey).toEqual({
+    expect(targets).toEqual({
       agents: {
         serverIdentityId: 'srv_account_one',
         machineId: 'machine-shared',
@@ -73,15 +80,11 @@ describe('machineAdministrationSelectionsV1', () => {
   });
 
   it('rejects malformed entries instead of silently retaining local routing identity', () => {
-    expect(MachineAdministrationSelectionsV1Schema.safeParse({
-      v: 1,
-      targetsByKey: {
+    expect(MachineAdministrationTargetsV1Schema.safeParse({
         agents: {
           serverIdentityId: 'profile-local',
           machineId: 'machine-a',
         },
-      },
-      pluginExecutionOriginsByPluginId: {},
     }).success).toBe(false);
   });
 });

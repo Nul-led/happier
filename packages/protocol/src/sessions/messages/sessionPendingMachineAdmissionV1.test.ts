@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { API_TOKEN_FULL_GRANT_V1 } from '../../auth/apiTokenGrant.js';
 import {
   SessionExecutionRunPendingEnqueueRequestV1Schema,
   SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
@@ -13,6 +14,18 @@ import {
 } from './sessionPendingMachineAdmissionV1.js';
 
 describe('Session Pending machine admission V1', () => {
+  it('admits only the existing signed execution proof, never caller-authored constraint claims', () => {
+    const request = { v: 1, sessionId: 'session-1', targetMachineId: 'machine-1', localId: 'input-1',
+      content: { t: 'encrypted', c: 'cipher' }, requestedAction: { v: 1, kind: 'enqueue' } };
+    const externalAction = { v: 1, authorization: { v: 1, token: 'proof', binding: {
+      serverIdentityId: 'home', accountId: 'owner', principalId: 'token-1', credentialId: 'token-1',
+      grant: API_TOKEN_FULL_GRANT_V1, machineId: 'machine-1', actionId: 'session.message.send',
+      requestId: 'request-1', requestEnvelopeDigest: 'A'.repeat(43), target: { kind: 'session', sessionId: 'session-1' },
+    } }, effectActionId: 'session.message.send', target: { kind: 'session', sessionId: 'session-1' },
+      installationId: 'installation-1', machineSignature: 'A'.repeat(86) };
+    expect(SessionPendingEnqueueByMachineRequestV1Schema.safeParse({ ...request, externalAction }).success).toBe(true);
+    expect(SessionPendingEnqueueByMachineRequestV1Schema.safeParse({ ...request, callerInputConstraints: { models: null, permissionModes: null } }).success).toBe(false);
+  });
   it('exposes a separate closed Account target resource instead of widening main admission', () => {
     const targetSchema = SessionExecutionRunPendingEnqueueRequestV1Schema;
     const input = { v: 1, localId: 'target-input', targetMachineId: 'machine-1', content: { t: 'encrypted', c: 'cipher' } };

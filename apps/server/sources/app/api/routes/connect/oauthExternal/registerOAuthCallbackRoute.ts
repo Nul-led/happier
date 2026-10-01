@@ -3,9 +3,7 @@ import * as privacyKit from "privacy-kit";
 import { z } from "zod";
 
 import { type Fastify } from "../../../types";
-import { connectExternalIdentity } from "@/app/auth/providers/identity";
 import { auth } from "@/app/auth/auth";
-import { Context } from "@/context";
 import { encryptString } from "@/modules/encrypt";
 import { db } from "@/storage/db";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
@@ -42,6 +40,7 @@ import {
 } from "@/app/integrations/github/githubManagedAppManifest";
 import { readDirectoryProvisionedIdentityCandidatesInTx } from "@/app/teams/directory/provisionedIdentityBinding";
 import { inTx } from "@/storage/inTx";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 async function createConnectPending(params: Readonly<{
     providerId: string;
@@ -112,8 +111,9 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }),
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const callbackProviderId = request.params.provider.toString().trim().toLowerCase();
-        const fallbackWebAppUrl = resolveWebAppOAuthReturnUrlFromEnv(process.env, callbackProviderId);
+        const fallbackWebAppUrl = resolveWebAppOAuthReturnUrlFromEnv(requestHomeEnv, callbackProviderId);
 
         const { code, state, iss } = request.query;
         const oauthError = (request.query as any)?.error?.toString?.().trim?.() || "";
@@ -240,7 +240,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         const accountDirectoryTargetIsCurrent = accountDirectoryTarget
             ? await isCurrentAccountDirectoryOAuthTarget(
                 accountDirectoryTarget,
-                process.env,
+                requestHomeEnv,
             )
             : false;
         if (
@@ -293,6 +293,17 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     ? { flow, mode: "keyless" }
                     : { flow };
 
+        // Every current authenticated identity link completes through its pending
+        // finalizer. An in-flight attempt from an older writer cannot silently
+        // regain the retired callback-side mutation path.
+        if (
+            flow === "connect"
+            && (attemptPurpose === null || isTeamAdmission)
+            && attemptParsed.data.connectFinalization !== "credential_adoption_v1"
+        ) {
+            return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, error: "invalid_state" }));
+        }
+
         if (isGitHubAppManifestSetup) {
             const binding = attemptParsed.data.githubAppManifestSetup;
             const userId = oauthState.userId;
@@ -327,7 +338,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 actorAccountId: userId,
                 owner: binding.owner,
                 code,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (completed.status !== "created") {
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
@@ -389,7 +400,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 ...binding.authentication,
                 actorAccountId: userId,
                 binding,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (resolved.status !== "ready") {
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
@@ -406,7 +417,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             try {
                 const exchanged = await exchangeOAuthCodeForProfile({
                     provider: resolved.provider,
-                    env: process.env,
+                    env: requestHomeEnv,
                     code,
                     state,
                     iss,
@@ -453,7 +464,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         }
 
         const boundRuntime = await resolveOAuthSecurityBinding({
-            env: process.env,
+            env: requestHomeEnv,
             providerId,
             binding: attemptParsed.data.securityBinding,
             purpose: attemptPurpose,
@@ -473,7 +484,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             }));
         }
         const effectiveHomeMethods = securityBinding.provider.context.kind === "home"
-            ? await resolveEffectiveHomeAuthMethods({ env: process.env })
+            ? await resolveEffectiveHomeAuthMethods({ env: requestHomeEnv })
             : null;
         const isHomeActionEnabled = (
             actionId: "login" | "provision",
@@ -494,8 +505,8 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         ) {
             const keyedAllowed = isHomeActionEnabled("provision", "keyed");
             const keylessAllowed = isHomeActionEnabled("login", "keyless");
-            const availability = resolveKeylessAccountsAvailability(process.env);
-            const keylessConfig = readAuthOauthKeylessFeatureEnv(process.env);
+            const availability = resolveKeylessAccountsAvailability(requestHomeEnv);
+            const keylessConfig = readAuthOauthKeylessFeatureEnv(requestHomeEnv);
             const keylessConfigured = keylessConfig.enabled
                 && keylessConfig.providers.includes(providerId);
             if (!availability.ok && keylessConfigured && !keyedAllowed) {
@@ -549,7 +560,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         try {
             const { accessToken, refreshToken, profile } = await exchangeOAuthCodeForProfile({
                 provider,
-                env: process.env,
+                env: requestHomeEnv,
                 code,
                 state,
                 iss,
@@ -574,7 +585,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }
                 const expiresAt = new Date(Math.min(
                     attempt.expiresAt.getTime(),
-                    Date.now() + resolveOAuthPendingTtlMsFromEnv(process.env),
+                    Date.now() + resolveOAuthPendingTtlMsFromEnv(requestHomeEnv),
                 ));
                 const result = await createIdentityConnectionTestResult({
                     initiatorAccountId: userId,
@@ -582,7 +593,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     providerUserId,
                     diagnostics: await describeIdentityConnectionTestDiagnostics({
                         provider,
-                        env: process.env,
+                        env: requestHomeEnv,
                         profile,
                         securityBinding,
                     }),
@@ -622,7 +633,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 const pendingKey =
                     `oauth_pending_${randomKeyNaked(24)}`;
                 const ttlMs =
-                    resolveOAuthPendingTtlMsFromEnv(process.env);
+                    resolveOAuthPendingTtlMsFromEnv(requestHomeEnv);
                 await db.repeatKey.create({
                     data: {
                         key: pendingKey,
@@ -699,7 +710,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 let usernameReason: "invalid_login" | "login_taken" | null = null;
 
                 if (loginUsername) {
-                    const loginValidation = validateUsername(loginUsername, process.env);
+                    const loginValidation = validateUsername(loginUsername, requestHomeEnv);
                     if (!loginValidation.ok) {
                         if (!isAlreadyLinked) {
                             usernameRequired = true;
@@ -751,7 +762,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                                   ),
                               )
                             : undefined;
-                    const ttlMs = resolveOAuthPendingTtlMsFromEnv(process.env);
+                    const ttlMs = resolveOAuthPendingTtlMsFromEnv(requestHomeEnv);
                     await db.repeatKey.create({
                         data: {
                             key: pendingKey,
@@ -790,8 +801,8 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         }));
                     }
 
-                    const encryptionEnv = readEncryptionFeatureEnv(process.env);
-                    const availability = resolveKeylessAccountsAvailability(process.env);
+                    const encryptionEnv = readEncryptionFeatureEnv(requestHomeEnv);
+                    const availability = resolveKeylessAccountsAvailability(requestHomeEnv);
 
                     const provisioningModes = (() => {
                         const modes: Array<{ value: "plain" | "e2ee"; mode: "keyed" | "keyless" }> = [];
@@ -807,7 +818,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         return modes
                             .filter((entry) => {
                                 return !shouldDenyPublicSignupProvisioningAction({
-                                    env: process.env,
+                                    env: requestHomeEnv,
                                     requestIp: request.ip,
                                     methodId: providerId,
                                     mode: entry.mode,
@@ -874,7 +885,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                               ),
                           )
                         : undefined;
-                const ttlMs = resolveOAuthPendingTtlMsFromEnv(process.env);
+                const ttlMs = resolveOAuthPendingTtlMsFromEnv(requestHomeEnv);
                 await db.repeatKey.create({
                     data: {
                         key: pendingKey,
@@ -915,8 +926,6 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, pending: pendingKey }));
             }
 
-            const ctx = Context.create(userId!);
-
             const account = await db.account.findUnique({
                 where: { id: userId! },
                 select: { username: true },
@@ -932,7 +941,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     requireUsername = true;
                     usernameReason = "invalid_login";
                 } else {
-                    const loginValidation = validateUsername(loginUsername, process.env);
+                    const loginValidation = validateUsername(loginUsername, requestHomeEnv);
                     if (!loginValidation.ok) {
                         requireUsername = true;
                         usernameReason = "invalid_login";
@@ -970,41 +979,36 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             }
 
             if (!await resolveOAuthSecurityBinding({
-                env: process.env, providerId, binding: securityBinding,
+                env: requestHomeEnv, providerId, binding: securityBinding,
                 purpose: securityBinding.purpose, stage: "oauth_finalize",
             })) {
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
                     ...redirectBaseParams, error: "auth_provider_configuration_changed",
                 }));
             }
-            if (attemptParsed.data.connectFinalization === "credential_adoption_v1") {
-                const username = existingUsername ?? loginUsername;
-                if (!username) {
-                    return reply.redirect(buildRedirectUrl(webAppUrl, {
-                        ...redirectBaseParams,
-                        error: "invalid_profile",
-                    }));
-                }
-                const pendingKey = await createConnectPending({
-                    providerId,
-                    userId: userId!,
-                    securityBinding,
-                    profile,
-                    accessToken,
-                    ...(refreshToken ? { refreshToken } : {}),
-                    retainAccessToken: provider.accessTokenCustody !== "identity_proof_only",
-                });
+            const username = existingUsername ?? loginUsername;
+            if (!username) {
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
                     ...redirectBaseParams,
-                    status: "connected",
-                    login,
-                    username,
-                    pending: pendingKey,
+                    error: "invalid_profile",
                 }));
             }
-            // Compatibility for clients that predate authenticated connect finalization.
-            await connectExternalIdentity({ providerId, reference: securityBinding.provider, ctx, profile, accessToken, refreshToken });
-            return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, status: "connected", login }));
+            const pendingKey = await createConnectPending({
+                providerId,
+                userId: userId!,
+                securityBinding,
+                profile,
+                accessToken,
+                ...(refreshToken ? { refreshToken } : {}),
+                retainAccessToken: provider.accessTokenCustody !== "identity_proof_only",
+            });
+            return reply.redirect(buildRedirectUrl(webAppUrl, {
+                ...redirectBaseParams,
+                status: "connected",
+                login,
+                username,
+                pending: pendingKey,
+            }));
         } catch (error: unknown) {
             const rawCode = error instanceof Error ? error.message : "server_error";
             const code = rawCode === "auth_provider_unavailable" ? "auth_provider_configuration_changed" : rawCode;

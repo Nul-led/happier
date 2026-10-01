@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { SessionMetadataOwnerPatchV1Schema } from '../../sessions/metadata/sessionMetadataEnvelopesV1.js';
-import { SessionMetadataInactiveModelIntentExpectationV1Schema } from '../../sessions/metadata/sessionMetadataEnvelopesV1.js';
+import { SessionMetadataOwnerPatchV1Schema } from '../../sessions/metadata/sessionMetadataSchemasV1.js';
+import { SessionMetadataInactiveModelIntentExpectationV1Schema } from '../../sessions/metadata/sessionMetadataSchemasV1.js';
 import {
   SessionTeamCredentialBindingIntentsV1Schema,
 } from './sessionBindingIntentV1.js';

@@ -86,7 +86,6 @@ describe('startApi Home search production composition', () => {
                 HAPPIER_FILES_BACKEND: 'local',
                 HAPPY_FILES_BACKEND: 'local',
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
                 AUTH_REQUIRED_LOGIN_PROVIDERS: '',
                 PORT: '0',
             },

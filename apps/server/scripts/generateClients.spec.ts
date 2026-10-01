@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     areRequestedPrismaOutputsCurrent,
+    invalidateServerTypeScriptBuildInfo,
     isMainModule,
     prismaGenerateDatabaseUrlForProvider,
     resolveBuildDbProvidersFromEnv,
@@ -114,6 +115,41 @@ describe("resolveSchemaSyncInvocation", () => {
             checkOnly: false,
             processExecPath: "/runtime/node",
         }).args).not.toContain("--check");
+    });
+});
+
+describe("invalidateServerTypeScriptBuildInfo", () => {
+    it("removes the incremental cache only when generated Prisma declarations are newer", async () => {
+        const removed: Array<Readonly<{ path: string; options: Readonly<{ force: boolean }> }>> = [];
+        const mtimes = new Map([
+            ["/repo/apps/server/node_modules/.cache/tsc/server.typecheck.tsbuildinfo", 10],
+            ["/repo/node_modules/.prisma/client/index.d.ts", 20],
+            ["/repo/apps/server/generated/sqlite-client/index.d.ts", 5],
+            ["/repo/apps/server/generated/mysql-client/index.d.ts", 5],
+        ]);
+
+        await invalidateServerTypeScriptBuildInfo({
+            serverRoot: "/repo/apps/server",
+            statFile: async (path) => ({ mtimeMs: mtimes.get(path) ?? 0 }),
+            rmFile: async (path, options) => {
+                removed.push({ path, options });
+            },
+        });
+
+        expect(removed).toEqual([{
+            path: "/repo/apps/server/node_modules/.cache/tsc/server.typecheck.tsbuildinfo",
+            options: { force: true },
+        }]);
+
+        mtimes.set("/repo/apps/server/node_modules/.cache/tsc/server.typecheck.tsbuildinfo", 30);
+        await invalidateServerTypeScriptBuildInfo({
+            serverRoot: "/repo/apps/server",
+            statFile: async (path) => ({ mtimeMs: mtimes.get(path) ?? 0 }),
+            rmFile: async (path, options) => {
+                removed.push({ path, options });
+            },
+        });
+        expect(removed).toHaveLength(1);
     });
 });
 

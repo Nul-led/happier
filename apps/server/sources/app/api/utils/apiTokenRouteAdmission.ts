@@ -1,7 +1,7 @@
 import type {
-    EphemeralSessionRunnerRouteBinding,
-    EphemeralSessionRunnerRouteMachineField,
-    EphemeralSessionRunnerRouteSessionField,
+    RestrictedCredentialRouteBinding,
+    RestrictedCredentialRouteMachineField,
+    RestrictedCredentialRouteSessionSelector,
 } from "../types";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
 import type {
@@ -9,9 +9,47 @@ import type {
     AuthTokenAuthority,
     AuthTokenKind,
 } from "@happier-dev/protocol";
+import { isApiTokenGrantRestrictedV1, type ApiTokenGrantV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
+import { canCredentialDecideV1 } from "@happier-dev/protocol/actions/decisionAuthority";
+import type { ActionId } from "@happier-dev/protocol/actions";
+import type { VerifiedApiTokenPrincipal } from "@/app/auth/auth";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { resolveSessionAccessForOperation, type EffectiveSessionAccess, type SessionCapability } from "@/app/session/access/sessionAccess";
+import { inTx } from "@/storage/inTx";
 
 export const PRESENT_USER_REQUIRED_ERROR = "present_user_required" as const;
 export const SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR = "session_runtime_public_auth_forbidden" as const;
+
+/** The same grant, target and effective Session access admission for every direct PAT transport. */
+export async function admitApiTokenSessionOperation(input: Readonly<{
+    principal: VerifiedApiTokenPrincipal;
+    sessionId: string;
+    actionId: ActionId;
+    capability?: SessionCapability;
+    authentication?: SessionAccessAuthentication;
+    targetMachineId?: string | null;
+}>): Promise<Readonly<{ ok: true; access: EffectiveSessionAccess }>
+    | Readonly<{ ok: false; error: "credential_scope_denied" | "present_user_required" }>> {
+    const grant = input.principal.grant;
+    const authentication = {
+        env: process.env,
+        ...input.authentication,
+        authority: input.principal.authority,
+        authenticationEvidence: input.principal.authenticationEvidence,
+        apiTokenGrant: grant,
+    } satisfies SessionAccessAuthentication;
+    const decision = await inTx(tx => resolveSessionAccessForOperation(tx, {
+        accountId: input.principal.accountId, sessionId: input.sessionId, authentication,
+        apiTokenAction: { actionId: input.actionId, targetMachineId: input.targetMachineId },
+        ...(input.capability ? { capability: input.capability } : {}),
+    }));
+    if (decision.status !== "allowed") return { ok: false, error: "credential_scope_denied" };
+    if (input.capability === "approveRuntimePermissions"
+        && !canCredentialDecideV1({ authority: authentication.authority, grant })) {
+        return { ok: false, error: "present_user_required" };
+    }
+    return { ok: true, access: decision.access };
+}
 
 type OptionalPublicAuthCandidate = Readonly<{
     userId: string;
@@ -68,15 +106,19 @@ type AuthenticatedRouteRequest = Readonly<{
     authTokenKind?: unknown;
     userId?: unknown;
     sessionRuntimePrincipal?: VerifiedEphemeralSessionRunnerPrincipal;
+    apiTokenPrincipal?: Readonly<{ grant: ApiTokenGrantV1 }>;
     params?: unknown;
     body?: unknown;
+    query?: unknown;
     externalActionExecutionAuthorized?: unknown;
     externalActionEffectActionId?: unknown;
     routeOptions?: Readonly<{
         config?: Readonly<{
             allowApiToken?: unknown;
+            allowScopedApiToken?: unknown;
+            apiTokenSessionAction?: unknown;
             allowAccountDirectoryToken?: unknown;
-            ephemeralSessionRunnerBinding?: EphemeralSessionRunnerRouteBinding;
+            restrictedCredentialBinding?: RestrictedCredentialRouteBinding;
         }>;
     }>;
 }>;
@@ -87,12 +129,18 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
         : null;
 }
 
-function readEphemeralSessionRunnerRouteField(
+export function readRestrictedCredentialRouteField(
     request: AuthenticatedRouteRequest,
-    field: EphemeralSessionRunnerRouteSessionField | EphemeralSessionRunnerRouteMachineField,
+    field: RestrictedCredentialRouteSessionSelector | RestrictedCredentialRouteMachineField,
 ): unknown {
+    if (typeof field !== "string") {
+        const values = field.map(candidate => readRestrictedCredentialRouteField(request, candidate))
+            .filter(value => value !== undefined);
+        return values.length === 1 ? values[0] : undefined;
+    }
     const params = readRecord(request.params);
     const body = readRecord(request.body);
+    const query = readRecord(request.query);
     switch (field) {
         case "params.sessionId":
             return params?.sessionId;
@@ -104,6 +152,10 @@ function readEphemeralSessionRunnerRouteField(
             const consumer = readRecord(body?.consumer);
             return consumer?.kind === "session" ? consumer.sessionId : undefined;
         }
+        case "query.sessionId":
+            return query?.sessionId;
+        case "query.sessionAccessSessionId":
+            return query?.sessionAccessSessionId;
         case "body.machineId":
             return body?.machineId;
         case "body.initiatorMachineId":
@@ -120,12 +172,12 @@ function readEphemeralSessionRunnerRouteField(
 function isEphemeralSessionRunnerRequestBound(request: AuthenticatedRouteRequest): boolean {
     const principal = request.sessionRuntimePrincipal;
     if (!principal || request.userId !== principal.accountId) return false;
-    const binding = request.routeOptions?.config?.ephemeralSessionRunnerBinding;
+    const binding = request.routeOptions?.config?.restrictedCredentialBinding;
     if (!binding) return false;
     if (binding.scope === "account") return true;
-    if (readEphemeralSessionRunnerRouteField(request, binding.session) !== principal.sessionId) return false;
+    if (readRestrictedCredentialRouteField(request, binding.session) !== principal.sessionId) return false;
     if (binding.machine === undefined) return true;
-    const machineId = readEphemeralSessionRunnerRouteField(request, binding.machine);
+    const machineId = readRestrictedCredentialRouteField(request, binding.machine);
     if (binding.machineOptional === true && (machineId === undefined || machineId === null)) return true;
     return machineId === principal.machineId;
 }
@@ -162,8 +214,13 @@ export function isRestrictedAuthTokenDeniedForRoute(
         case "terminal":
             return request.routeOptions?.config?.allowAccountDirectoryToken === true;
         case "api_token":
-            if (request.routeOptions?.config?.allowApiToken === true) return false;
-            return request.externalActionExecutionAuthorized !== true;
+            if (request.externalActionExecutionAuthorized === true) return false;
+            if (typeof request.routeOptions?.config?.apiTokenSessionAction === "string"
+                && request.routeOptions.config.restrictedCredentialBinding?.scope === "session") return false;
+            if (request.routeOptions?.config?.allowApiToken !== true) return true;
+            return request.apiTokenPrincipal !== undefined
+                && isApiTokenGrantRestrictedV1(request.apiTokenPrincipal.grant)
+                && request.routeOptions.config.allowScopedApiToken !== true;
         case "account_directory":
             return request.routeOptions?.config?.allowAccountDirectoryToken !== true;
         case "ephemeral_session_runner":

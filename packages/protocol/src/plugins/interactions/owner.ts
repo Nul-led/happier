@@ -42,7 +42,7 @@ export type TransientInteractionOwner = Readonly<{
   settle(candidate: unknown): InteractionTransientSettlementReceiptV1;
   terminateAll(status: Extract<
     InteractionTerminalStatusV1,
-    'sessionEnded' | 'generationRetired' | 'hostRestarted' | 'unavailable'
+    'sessionEnded' | 'occurrenceRetired' | 'hostRestarted' | 'unavailable'
   >): void;
   current(): readonly InteractionTransientRequestV1[];
 }>;
@@ -57,7 +57,7 @@ export type TransientInteractionOwnerParams = Readonly<{
   sessionSignal?: AbortSignal;
   /** Required only for an exact execution-run scope and retires with that Run. */
   executionRunSignal?: AbortSignal;
-  isGenerationCurrent(): boolean;
+  isOccurrenceCurrent(): boolean;
   /**
    * Product policy supplied by the host; callers cannot select a fallback.
    * `null` is the explicit no-deadline arm: nothing is stamped and no timer is
@@ -219,8 +219,8 @@ export function createTransientInteractionOwner(
     if (pending.get(entry.request.requestId) !== entry) {
       return Object.freeze({ status: 'notCurrent', requestId: entry.request.requestId });
     }
-    if (!readsCurrent(params.isGenerationCurrent)) {
-      return finish(entry, lifecycleResult(entry.request, 'generationRetired'));
+    if (!readsCurrent(params.isOccurrenceCurrent)) {
+      return finish(entry, lifecycleResult(entry.request, 'occurrenceRetired'));
     }
     let validation: ReturnType<typeof validateInteractionTransientSettlementV1>;
     try {
@@ -264,8 +264,8 @@ export function createTransientInteractionOwner(
     });
     if (!normalized.ok) return unavailableResult(input, requestId);
     const stamped = normalized.value;
-    if (!readsCurrent(params.isGenerationCurrent)) {
-      return lifecycleResult(stamped, 'generationRetired');
+    if (!readsCurrent(params.isOccurrenceCurrent)) {
+      return lifecycleResult(stamped, 'occurrenceRetired');
     }
     if (scopeSignal?.aborted) {
       return lifecycleResult(stamped, 'sessionEnded');
@@ -278,7 +278,7 @@ export function createTransientInteractionOwner(
         const current = pending.get(stamped.requestId);
         if (current) finish(current, lifecycleResult(
           stamped,
-          readsCurrent(params.isGenerationCurrent) ? 'requesterAborted' : 'generationRetired',
+          readsCurrent(params.isOccurrenceCurrent) ? 'requesterAborted' : 'occurrenceRetired',
         ));
       };
       const sessionAbort = scopeSignal
@@ -287,7 +287,7 @@ export function createTransientInteractionOwner(
           if (!current) return;
           finish(current, lifecycleResult(
             stamped,
-            readsCurrent(params.isGenerationCurrent) ? 'sessionEnded' : 'generationRetired',
+            readsCurrent(params.isOccurrenceCurrent) ? 'sessionEnded' : 'occurrenceRetired',
           ));
         }
         : undefined;
@@ -347,7 +347,7 @@ export function createTransientInteractionOwner(
   const terminateAll = (
     status: Extract<
       InteractionTerminalStatusV1,
-      'sessionEnded' | 'generationRetired' | 'hostRestarted' | 'unavailable'
+      'sessionEnded' | 'occurrenceRetired' | 'hostRestarted' | 'unavailable'
     >,
   ): void => {
     if (scope.kind === 'app' && status === 'sessionEnded') {

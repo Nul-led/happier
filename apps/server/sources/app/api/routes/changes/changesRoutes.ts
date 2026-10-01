@@ -47,6 +47,8 @@ export function changesRoutes(app: Fastify) {
             },
         },
         config: {
+            allowApiToken: true,
+            allowScopedApiToken: true,
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "changes"),
         },
     }, async (request, reply) => {
@@ -64,15 +66,24 @@ export function changesRoutes(app: Fastify) {
     });
 
     app.get('/v2/changes', {
-        preHandler: app.authenticate,
+        preHandler: [async (request, reply) => {
+            if (request.query?.sessionId !== undefined && request.query?.sessionAccessSessionId !== undefined) {
+                return reply.code(400).send({ error: 'invalid_params' });
+            }
+        }, app.authenticate],
         schema: {
             querystring: z.object({
                 after: z.coerce.number().int().min(0).optional(),
                 limit: z.coerce.number().int().min(1).max(500).default(200),
+                sessionId: asServerProtocolZod(SessionIdSchema).optional(),
                 sessionAccessSessionId: asServerProtocolZod(SessionIdSchema).optional(),
             }).optional(),
         },
         config: {
+            allowApiToken: true,
+            allowScopedApiToken: true,
+            apiTokenSessionAction: "session.transcript.get",
+            restrictedCredentialBinding: { scope: "session", session: ["query.sessionId", "query.sessionAccessSessionId"] },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "changes"),
         },
     }, async (request, reply) => {
@@ -80,9 +91,14 @@ export function changesRoutes(app: Fastify) {
         const userIdRedacted = redactIdForLogs(userId);
         const after = request.query?.after ?? 0;
         const limit = request.query?.limit ?? 200;
+        const sessionId = request.query?.sessionId;
         const sessionAccessSessionId = request.query?.sessionAccessSessionId;
 
         const compatibility = readAccountStoredContentCompatibilityForHttpRequest(request);
+        if (request.authTokenKind === "api_token" && sessionAccessSessionId !== undefined
+            && compatibility.supportsSessionAccessWitnessProtocol !== true) {
+            return reply.code(403).send({ error: "credential_scope_denied" });
+        }
         if (
             sessionAccessSessionId !== undefined
             && compatibility.supportsSessionAccessWitnessProtocol
@@ -210,9 +226,13 @@ export function changesRoutes(app: Fastify) {
         }
 
         const nextCursor = rows.length > 0 ? rows[rows.length - 1]!.cursor : after;
-        // Additive change kinds are withheld from peers that predate them, while `nextCursor`
-        // stays derived from the raw page so a withheld trailing row cannot stall the poll.
+        // Exact Session selectors and compatibility can withhold rows, while
+        // `nextCursor` stays derived from the raw page so even an empty filtered
+        // page progresses through unrelated Account activity.
         const visibleRows = rows.filter((row) => {
+            if (sessionId !== undefined && (
+                (row.kind !== 'session' && row.kind !== 'share') || row.entityId !== sessionId
+            )) return false;
             if (row.kind === 'pluginDomain') return compatibility.supportsPluginDataProtocol;
             if (row.kind === 'machinePool') return compatibility.supportsMachinePoolChangeProtocol;
             if (row.kind === 'savedSecretResource') return compatibility.supportsSavedSecretResourceChangeProtocol;

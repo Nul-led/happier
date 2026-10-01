@@ -762,7 +762,7 @@ describe("Session access owner/direct authority (SQLite)", () => {
         });
     });
 
-    it("preserves capability-specific authentication continuation when direct access is weaker", async () => {
+    it("preserves capability-specific authentication continuation without bypassing direct capability checks", async () => {
         const { actor, session, share } = await fixture("edit");
         await enableKeyChallengeForAccount(actor.id);
         const team = await db.team.create({ data: {
@@ -839,7 +839,7 @@ describe("Session access owner/direct authority (SQLite)", () => {
                 sessionId: session.id,
                 authentication: enabled,
                 capability: "manageAccess",
-            })).resolves.toMatchObject({ status: "allowed", access: { level: "edit" } });
+            })).resolves.toEqual({ status: "unavailable" });
         });
     });
 

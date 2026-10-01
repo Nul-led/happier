@@ -8,8 +8,6 @@ import {
     CredentialAccessSelectedRawAccessDigestSchema,
     GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
     PluginCredentialAccessSlotIdSchema,
-    PluginInstallReviewPrincipalDigestSchema,
-    PluginPermissionInstalledGenerationIdSchema,
     type PluginPermissionSubjectV1,
 } from "@happier-dev/protocol";
 
@@ -56,8 +54,6 @@ describe("plugin permission strict subject DB contract", () => {
             accessDeclarationDigest: CredentialAccessDeclarationDigestSchema.parse("a".repeat(64)),
             selectedAuthorityDigest: CredentialAccessSelectedAuthorityDigestSchema.parse("c".repeat(64)),
             selectedRawAccessDigest: CredentialAccessSelectedRawAccessDigestSchema.parse("d".repeat(64)),
-            installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse("generation-1"),
-            installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse("b".repeat(64)),
         } as const satisfies PluginPermissionSubjectV1;
         const credentialSubjects = [
             credentialSubject,
@@ -87,11 +83,9 @@ describe("plugin permission strict subject DB contract", () => {
             },
             {
                 ...credentialSubject,
-                installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse("generation-2"),
             },
             {
                 ...credentialSubject,
-                installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse("d".repeat(64)),
             },
         ] as const satisfies readonly PluginPermissionSubjectV1[];
 

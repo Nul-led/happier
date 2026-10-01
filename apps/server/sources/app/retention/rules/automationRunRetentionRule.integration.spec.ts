@@ -38,6 +38,7 @@ function createPolicy(automationRunDays = 1): RetentionPolicy {
             globalLocks: keepForever,
             automationRuns: { mode: "delete_older_than", days: automationRunDays },
             automationRunEvents: keepForever,
+            homeAdministrationEvents: keepForever,
         },
     };
 }

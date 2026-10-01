@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES } from '../../runtime/agentSessionStartupInstructionsV1.js';
-import { PluginAgentContributionV2Schema } from './v2.js';
+import { AGENT_CODING_PROMPT_BLOCK_V1_MAX_UTF8_BYTES, PluginAgentContributionV2Schema } from './v2.js';
 
 const agent = {
   id: 'acme-agent',
@@ -33,6 +32,20 @@ const agent = {
 } as const;
 
 describe('Agent catalog declarations', () => {
+  it('declares revision delivery through resume explicitly and fails closed for undeclared or unknown mechanisms', () => {
+    const withStartup = (revisionChanges?: string) => ({
+      ...agent,
+      capabilities: { sessions: { ...agent.capabilities.sessions,
+        open: ['create', 'resume'], startupInstructions: { versions: [1],
+          ...(revisionChanges ? { revisionChanges } : {}) },
+      } },
+    });
+    expect(PluginAgentContributionV2Schema.safeParse(withStartup('resume')).success).toBe(true);
+    expect(PluginAgentContributionV2Schema.safeParse(withStartup('patch')).success).toBe(false);
+    expect(PluginAgentContributionV2Schema.parse(withStartup()).capabilities.sessions?.startupInstructions)
+      .not.toHaveProperty('revisionChanges');
+  });
+
   it('keeps Agent lifecycle capability grammar exclusive to the declared primary runtime', () => {
     expect(PluginAgentContributionV2Schema.safeParse({
       ...agent,
@@ -72,7 +85,7 @@ describe('Agent catalog declarations', () => {
         codingPromptBehavior: {
           blocks: [{
             id: 'provider.acme.oversized',
-            text: 'a'.repeat(AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES + 1),
+            text: 'a'.repeat(AGENT_CODING_PROMPT_BLOCK_V1_MAX_UTF8_BYTES + 1),
           }],
         },
       },

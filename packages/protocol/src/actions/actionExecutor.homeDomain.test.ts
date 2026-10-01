@@ -36,6 +36,7 @@ function homeAccountRow(): HomeAccountRowV1 {
       disable: { status: 'available' },
       reenable: { status: 'unavailable', reason: 'target_not_suspended' },
       delete: { status: 'available' },
+      signOutEverywhere: { status: 'available' },
     },
   };
 }
@@ -51,6 +52,8 @@ describe('createActionExecutor (Home governance and Teams)', () => {
       createdAt: '2026-09-14T10:00:00.000Z',
       lastUsedAt: null,
       expiresAt: null,
+      authenticationStatus: 'satisfied',
+      canAuthorize: false,
     };
     const output = {
       token: `hapek_v1_${key.keyId}_${'a'.repeat(43)}`,

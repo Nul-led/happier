@@ -22,7 +22,7 @@ describe('legacy Plugin UI contribution contraction', () => {
     expect(rootBarrel).not.toMatch(/\bPluginReactNativeBundleManifestV1(?:Schema)?\b/);
     expect(rootBarrel).not.toMatch(/\bPluginUiExecutableArtifactManifestV1(?:Schema)?\b/);
     expect(uiContributionBarrel).not.toContain('./reactNativeBundles.js');
-    expect(generatedArtifactManifest).toContain('PluginUiArtifactsManifestV1Schema');
+    expect(generatedArtifactManifest).toContain('PluginUiArtifactsManifestV2Schema');
     expect(generatedArtifactManifest).toContain('PluginUiArtifactFileV1Schema');
   });
 });

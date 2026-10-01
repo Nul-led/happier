@@ -92,6 +92,37 @@ describe("Team Groups (SQLite integration)", () => {
         expect(result.ok).toBe(true);
     });
 
+    it("keeps ownerless Group recovery read-only when the Team has a restricted policy", async () => {
+        const owner = await account();
+        const team = await db.team.create({
+            data: {
+                name: "Restricted ownerless Groups",
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            },
+        });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: "Recovery", nameKey: "recovery" } });
+        const homeAdmin = await account("admin");
+        await db.account.update({ where: { id: owner.id }, data: { status: "suspended" } });
+
+        const result = await inTx((tx) => listTeamGroupsForActorInTx(tx, {
+            teamId: team.id,
+            actorAccountId: homeAdmin.id,
+            archived: "active",
+        }));
+
+        expect(result).toMatchObject({ ok: true, value: { items: [{ id: group.id, capabilities: {
+            updateMetadata: false,
+            archive: false,
+            restore: false,
+            manageNativeMembers: false,
+        } }] } });
+    });
+
     /** A real WorkOS source and a binding that targets an existing native Group. */
     async function externalBinding(input: Readonly<{
         teamId: string;
@@ -470,6 +501,52 @@ describe("Team Groups (SQLite integration)", () => {
                     owner: { kind: "directory_source", directorySourceId: okta.directorySourceId },
                 },
             ]);
+    });
+
+    it("excludes retained memberships from Group count and roster while structurally inactive", async () => {
+        const { team, ownerAccountId } = await teamWithOwner("Effective Group roster");
+        const group = await createGroup(team.id, ownerAccountId, "Developers");
+        const person = await memberOf(team.id);
+        await inTx((tx) => addTeamGroupMemberForActorInTx(tx, {
+            teamId: team.id,
+            actorAccountId: ownerAccountId,
+            groupId: group.id,
+            accountId: person.accountId,
+            historyAccess: "from_membership",
+        }));
+
+        const expectEffectiveMember = async (expected: boolean) => {
+            const detail = await inTx((tx) => getTeamGroupForActorInTx(tx, {
+                teamId: team.id,
+                actorAccountId: ownerAccountId,
+                groupId: group.id,
+            }));
+            expect(detail.ok).toBe(true);
+            if (!detail.ok) return;
+            expect(detail.value.memberCount).toBe(expected ? 1 : 0);
+
+            const roster = await inTx((tx) => listTeamGroupMembersForActorInTx(tx, {
+                teamId: team.id,
+                actorAccountId: ownerAccountId,
+                groupId: group.id,
+            }));
+            expect(roster.ok).toBe(true);
+            if (!roster.ok) return;
+            expect(roster.value.items).toHaveLength(expected ? 1 : 0);
+        };
+
+        await expectEffectiveMember(true);
+        await db.account.update({ where: { id: person.accountId }, data: { status: "suspended" } });
+        await expectEffectiveMember(false);
+        await db.account.update({ where: { id: person.accountId }, data: { status: "active" } });
+        await db.teamMembership.update({ where: { id: person.membershipId }, data: { status: "suspended" } });
+        await expectEffectiveMember(false);
+        await db.teamMembership.update({ where: { id: person.membershipId }, data: { status: "active" } });
+        await db.team.update({ where: { id: team.id }, data: { archivedAt: new Date() } });
+        await expectEffectiveMember(false);
+        await db.team.update({ where: { id: team.id }, data: { archivedAt: null } });
+        await db.teamGroup.update({ where: { id: group.id }, data: { archivedAt: new Date() } });
+        await expectEffectiveMember(false);
     });
 
     it("treats removal of a contribution from an absent Group row as unchanged", async () => {

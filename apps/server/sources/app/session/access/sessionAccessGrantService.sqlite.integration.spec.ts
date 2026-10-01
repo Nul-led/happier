@@ -894,10 +894,10 @@ describe("Session access grant service (SQLite integration)", () => {
         expect(await db.accountSessionFollow.findUnique({ where })).toMatchObject({ following: false });
     });
 
-    // teams-lane-04-session-access-sharing-authorship-presence.md §3: the relationship
-    // effect receives only Accounts that actually gained effective read; an overlap
-    // cannot auto-Follow someone who already reads the Session.
-    it("does not auto-Follow a direct share to someone who already reads through a Team, but follows a genuinely new reader", async () => {
+    // Lane 09C: a newly created direct relationship qualifies its own automatic
+    // Follow preference even when effective read access already existed through
+    // a Team. Team/Group transitions still qualify only newly effective readers.
+    it("auto-Follows a direct share even when the reader already reads through a Team, and follows a genuinely new reader", async () => {
         const fixture = await createFixture();
         // A friend outside the Team: the direct grant is their only read source.
         const newReader = await createAccount("grant-new-reader");
@@ -917,7 +917,7 @@ describe("Session access grant service (SQLite integration)", () => {
             subject: { kind: "account", accountId: fixture.collaborator.id },
             grant: { accessLevel: "edit", canApprovePermissions: false },
         }))).toMatchObject({ ok: true, changed: true });
-        expect(await db.accountSessionFollow.findUnique({ where: { accountId_sessionId: { accountId: fixture.collaborator.id, sessionId: fixture.session.id } } })).toBeNull();
+        expect(await db.accountSessionFollow.findUnique({ where: { accountId_sessionId: { accountId: fixture.collaborator.id, sessionId: fixture.session.id } } })).toMatchObject({ following: true });
 
         expect(await inTx((tx) => putSessionAccessGrantInTx(tx, {
             actorAccountId: fixture.owner.id,

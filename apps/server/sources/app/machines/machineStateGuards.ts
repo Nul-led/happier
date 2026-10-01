@@ -2,6 +2,8 @@ import { db } from "@/storage/db";
 import type { Tx } from "@/storage/inTx";
 import {
     readMachineIrohEndpointAuthorityV1,
+    MachineOperationProtocolCapabilitiesV1Schema,
+    type MachineOperationProtocolCapabilityNameV1,
     type MachineIrohEndpointAuthorityV1,
 } from "@happier-dev/protocol";
 
@@ -35,6 +37,7 @@ export async function readMachineAvailabilityState(params: Readonly<{
 export async function readAvailableMachineIrohEndpointAuthority(params: Readonly<{
     accountId: string;
     machineId: string;
+    requiredCapability?: MachineOperationProtocolCapabilityNameV1;
 }>): Promise<MachineIrohEndpointAuthorityV1 | null> {
     const machine = await db.machine.findFirst({
         where: { accountId: params.accountId, id: params.machineId },
@@ -46,6 +49,10 @@ export async function readAvailableMachineIrohEndpointAuthority(params: Readonly
         },
     });
     if (classifyMachineAvailabilityState(machine) !== "available" || machine === null) return null;
+    if (params.requiredCapability) {
+        const capabilities = MachineOperationProtocolCapabilitiesV1Schema.safeParse(machine.operationProtocolCapabilities);
+        if (!capabilities.success || !capabilities.data[params.requiredCapability]) return null;
+    }
     return readMachineIrohEndpointAuthorityV1({
         capabilities: machine.operationProtocolCapabilities,
         revision: machine.operationProtocolCapabilitiesRevision,

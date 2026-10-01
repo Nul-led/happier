@@ -11,6 +11,12 @@ export {
   type BrowserRuntimeActionId,
 } from './browser.js';
 export {
+  COMPUTER_RUNTIME_ACTION_IDS,
+  isComputerRuntimeActionId,
+  executeComputerRuntimeAction,
+  type ComputerRuntimeActionId,
+} from './computer.js';
+export {
   DEVICES_SIMULATOR_RUNTIME_ACTION_IDS,
   isDevicesSimulatorRuntimeActionId,
   executeDevicesSimulatorRuntimeAction,

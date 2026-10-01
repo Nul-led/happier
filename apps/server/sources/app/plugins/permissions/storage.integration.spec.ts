@@ -51,12 +51,11 @@ function callerReleaseFacts(pluginId: string) {
         collectionContracts: [],
         uiSlots: [{
             contributionId: "hosted",
+            artifactId: "hosted",
             tier: "hostedWeb",
             platform: "web",
             artifactDigest: `sha256:${"b".repeat(64)}`,
-            compatibility: {
-                hostUiApiVersion: "1.0.0",
-            },
+            hostUiApiRange: "^1.0.0",
         }],
         packageAssetArchive: {
             archiveDigestSha256: `sha256:${"c".repeat(64)}`,
@@ -88,10 +87,10 @@ async function seedCurrentCallerMaterialization(params: Readonly<{
         accountId: params.accountId,
         publisherMachineId: params.machineId,
         input: {
+            expectedRevision: null,
             snapshot: {
                 serverIdentityId: PINNED_SERVER_IDENTITY_ID,
                 machineId: params.machineId,
-                revision: 1,
                 materializations: [{
                     serverIdentityId: PINNED_SERVER_IDENTITY_ID,
                     machineId: params.machineId,
@@ -101,7 +100,7 @@ async function seedCurrentCallerMaterialization(params: Readonly<{
                     sourceClass: "registryPackage" as const,
                     portableRelease: true,
                     archiveDigestSha256: facts.archiveDigestSha256,
-                    uiArtifacts: facts.uiSlots.map(({ compatibility: _compatibility, ...slot }) => slot),
+                    uiArtifacts: facts.uiSlots,
                     enabled: true,
                     trustState: "trusted" as const,
                     observedAt: 1_700_000_000_000,

@@ -7,9 +7,32 @@ import {
 
 import { sessionUpdateHandler } from "./sessionUpdateHandler";
 
+// The feature decision reads the stored Home rows (the database boundary): none is stored.
+vi.mock("@/storage/db", async (importOriginal) => ({
+    ...await importOriginal<typeof import("@/storage/db")>(),
+    db: { homeSettings: { findUnique: async () => null }, homeGovernancePolicy: { findUnique: async () => null } },
+}));
+
 describe("sessionUpdateHandler ephemeral Runner admission", () => {
     beforeEach(() => vi.stubEnv("HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED", "1"));
     afterEach(() => vi.unstubAllEnvs());
+
+    it("exposes only message input and disconnect cleanup to an API-token viewer", () => {
+        const handlers = new Map<string, (...args: unknown[]) => unknown>();
+        // Socket registration is the network boundary; handler logic remains real.
+        const socket = { data: { clientType: "session-scoped", sessionId: "session-13" },
+            on: (event: string, listener: (...args: unknown[]) => unknown) => handlers.set(event, listener) };
+        sessionUpdateHandler("account-13", socket as never,
+            { connectionType: "session-scoped", socket, userId: "account-13", sessionId: "session-13" } as never,
+            undefined, { principalKind: "api-token-session-viewer", principal: {
+                accountId: "account-13", credentialId: "token-13", principalId: "token-13",
+                authority: "account_automation", expiresAt: null, authenticationEvidence: undefined,
+                grant: { v: 1, actions: { families: [], ids: ["session.transcript.get", "session.message.send"] },
+                    targets: { sessions: ["session-13"], machines: [] }, approve: false, origins: [],
+                    models: null, permissionModes: null, create: null }, parentTokenId: null, embedConfig: null,
+            } });
+        expect([...handlers.keys()].sort()).toEqual(["disconnect", "message"]);
+    });
 
     it("keeps personal Account attention operations outside the Session runtime principal", async () => {
         const handlers = new Map<string, (...args: unknown[]) => unknown>();

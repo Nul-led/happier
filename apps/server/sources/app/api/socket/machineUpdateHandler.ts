@@ -32,6 +32,8 @@ import {
     machineUpdateMatchesStoredMode,
     type ExternalSessionOperationSocketBatchLimitResolutionV1,
     type MachineUpdateMetadataResponse,
+    type MachineSessionTerminalCaptureResponseV1,
+    type MachineSessionTerminalFinalizeResponseV1,
     type SessionServerStartIngressResponseV1,
 } from "@happier-dev/protocol";
 import { projectActionOperationSnapshotPush } from './actionOperationSnapshotPush';
@@ -41,6 +43,8 @@ import type { createSessionPublisherPresence } from "@/app/presence/sessionPubli
 import { publishSessionPublisherClose } from "@/app/presence/publishSessionPublisherClose";
 import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
 import { scheduleSessionActivityRemoteAlerts } from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
+import { resolveCurrentSessionRecipientAccountIdsInTx } from "@/app/session/access/sessionRecipients";
+import { scheduleSessionPersonalEvent } from "@/app/session/personal/publishPersonalEvent";
 import {
     classifyMachineAvailabilityState,
     readMachineAvailabilityState,
@@ -49,6 +53,14 @@ import {
     buildAccountStoredContentSocketUpgradeError,
     readAccountStoredContentCompatibilityForSocket,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
+import { hasCurrentSocketCredential } from "./socketCredentialCurrentness";
+import { readVerifiedMachineSocketInstallationIdFromSocketData } from "./machineSocketInstallationProof";
+import {
+    TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1,
+    TeamCredentialExternalProviderOperationRetireV1Schema,
+} from "@happier-dev/protocol/teams";
+import { retireExternalBrokerOperationInTx } from "@/app/teams/credentials/externalBrokerOperation";
+import { verifyExternalActionMachineRpcExecution } from "@/app/auth/externalActionExecutionAuthorization";
 
 function readMarkedMachineSocketUpgradeRequired(
     socket: Socket,
@@ -126,6 +138,35 @@ export function machineUpdateHandler(
         }>) => Promise<SessionServerStartIngressResponseV1>;
     }>,
 ) {
+    socket.on(TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1, async (
+        request: unknown,
+        callback?: (response: unknown) => void,
+    ) => {
+        const parsed = TeamCredentialExternalProviderOperationRetireV1Schema.safeParse(request);
+        if (!parsed.success) { callback?.({ ok: false, reasonCode: "invalid_request" }); return; }
+        const machineId = readAuthenticatedMachineId(socket);
+        const installationId = readVerifiedMachineSocketInstallationIdFromSocketData(socket.data);
+        try {
+            if (!machineId || !installationId || !await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ ok: false, reasonCode: "resource_forbidden" });
+                return;
+            }
+            const result = await inTx(async tx => {
+                const machine = await tx.machine.findFirst({
+                    where: { id: machineId, accountId: userId, installationId }, select: { id: true },
+                });
+                if (!machine) return { ok: false as const, reasonCode: "resource_forbidden" as const };
+                return await retireExternalBrokerOperationInTx(tx, {
+                    authenticatedAccountId: userId, authenticatedMachineId: machine.id,
+                    externalApiKeyId: parsed.data.externalApiKeyId, operationId: parsed.data.operationId,
+                });
+            });
+            callback?.(result);
+        } catch {
+            // No acknowledgement on an indeterminate storage failure: custody
+            // keeps its retirement pending and can retry through its owner.
+        }
+    });
     socket.on(SESSION_SERVER_START_INGRESS_EVENT_V1, async (
         request: unknown,
         callback?: (response: unknown) => void,
@@ -196,6 +237,23 @@ export function machineUpdateHandler(
             }
 
             try {
+                const { externalAction, ...unsignedRequest } = parsed.data;
+                const verifiedInvocation = externalAction
+                    ? await verifyExternalActionMachineRpcExecution(externalAction, {
+                        event, method: event, requestId: externalAction.authorization.binding.requestId,
+                        params: unsignedRequest,
+                    }) : null;
+                if (externalAction && (!verifiedInvocation
+                    || verifiedInvocation.principal.accountId !== userId
+                    || verifiedInvocation.binding.machineId !== sourceMachineId
+                    || parsed.data.targetMachineId !== sourceMachineId
+                    || verifiedInvocation.effectActionId !== "session.message.send"
+                    || verifiedInvocation.target.kind !== "session"
+                    || verifiedInvocation.target.sessionId !== parsed.data.sessionId
+                    || readVerifiedMachineSocketInstallationIdFromSocketData(socket.data) !== externalAction.installationId)) {
+                    callback?.({ v: version, result: { status: "rejected", code: "session_input_unauthorized" } });
+                    return;
+                }
                 const result = await enqueuePendingMessageByAuthenticatedMachine({
                     accountId: userId,
                     sourceMachineId,
@@ -205,6 +263,10 @@ export function machineUpdateHandler(
                     localId: parsed.data.localId,
                     content: parsed.data.content,
                     requestedAction: parsed.data.requestedAction,
+                    ...(verifiedInvocation ? { callerInputConstraints: {
+                        models: verifiedInvocation.binding.grant.models,
+                        permissionModes: verifiedInvocation.binding.grant.permissionModes,
+                    } } : {}),
                     ...(parsed.data.requestEqualityEvidenceV1
                         ? { requestEqualityEvidenceV1: parsed.data.requestEqualityEvidenceV1 }
                         : {}),
@@ -231,7 +293,7 @@ export function machineUpdateHandler(
 
     socket.on(MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1, async (
         request: unknown,
-        callback?: (response: unknown) => void,
+        callback?: (response: MachineSessionTerminalCaptureResponseV1) => void,
     ) => {
         const parsed = MachineSessionTerminalCaptureRequestV1Schema.safeParse(request);
         const machineId = readAuthenticatedMachineId(socket);
@@ -286,7 +348,11 @@ export function machineUpdateHandler(
                         v: 1,
                         status: "rejected",
                         sessionId: parsed.data.sessionId,
-                        reason: result.reason,
+                        // The domain's missing machine binding is an authorization
+                        // denial at this existing wire boundary.
+                        reason: result.reason === "machine_control_unavailable"
+                            ? "unauthorized"
+                            : result.reason,
                     }
                     : {
                         v: 1,
@@ -311,7 +377,7 @@ export function machineUpdateHandler(
 
     socket.on(MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1, async (
         request: unknown,
-        callback?: (response: unknown) => void,
+        callback?: (response: MachineSessionTerminalFinalizeResponseV1) => void,
     ) => {
         const parsed = MachineSessionTerminalFinalizeRequestV1Schema.safeParse(request);
         const machineId = readAuthenticatedMachineId(socket);
@@ -581,12 +647,24 @@ export function machineUpdateHandler(
                 activityCache.invalidateMachine(machineId);
                 return;
             }
-            const admitted = await inTx(async (tx) => await hasCurrentSessionScopedMachineAccessInTx({
-                tx,
-                accountId: userId,
-                machineId,
-                sessionId: parsed.data.sessionId,
-            }));
+            const admitted = await inTx(async (tx) => {
+                if (!(await hasCurrentSessionScopedMachineAccessInTx({
+                    tx, accountId: userId, machineId, sessionId: parsed.data.sessionId,
+                }))) return false;
+                // Synchronize the committed content-free fact, not a background
+                // notification decision. The router qualifies each live socket's
+                // credential; Activity then applies its current Follow and policy.
+                const recipients = await resolveCurrentSessionRecipientAccountIdsInTx(tx, { sessionId: parsed.data.sessionId });
+                for (const recipientAccountId of recipients) {
+                    scheduleSessionPersonalEvent(tx, recipientAccountId, {
+                        type: 'session-personal-event',
+                        sessionId: parsed.data.sessionId,
+                        event: 'source_unavailable',
+                        eventId: JSON.stringify([parsed.data.machineId, parsed.data.observedAtMs]),
+                    });
+                }
+                return true;
+            });
             if (!admitted) return;
             // The daemon emits only after its canonical status metadata write
             // commits. Recipient access, Follow and policy are rechecked by the
@@ -618,6 +696,14 @@ export function machineUpdateHandler(
         }
 
         try {
+            // Credential verification uses the Auth owner's database reader.
+            // Complete it before opening a write transaction so it cannot wait
+            // on a connection held by that same transaction.
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ v: 1, result: 'error', code: 'machine_unavailable' });
+                socket.disconnect(true);
+                return;
+            }
             await inTx(async (tx) => {
                 const machine = await tx.machine.findFirst({
                     where: { accountId: userId, id: machineId },
@@ -635,7 +721,6 @@ export function machineUpdateHandler(
                     }));
                     return null;
                 }
-
                 const expectedRevision = machine.operationProtocolCapabilitiesRevision;
                 const nextRevision = (expectedRevision ?? 0) + 1;
                 const { count } = await tx.machine.updateMany({
@@ -712,6 +797,11 @@ export function machineUpdateHandler(
             }
             const { metadata, expectedVersion } = parsed.data;
 
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ result: 'error', message: 'Forbidden' });
+                socket.disconnect(true);
+                return;
+            }
             await inTx(async (tx) => {
                 const machine = await tx.machine.findFirst({
                     where: { accountId: userId, id: machineId },
@@ -828,6 +918,11 @@ export function machineUpdateHandler(
                 return;
             }
 
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                callback?.({ result: 'error', message: 'Forbidden' });
+                socket.disconnect(true);
+                return;
+            }
             await inTx(async (tx) => {
                 const machine = await tx.machine.findFirst({
                     where: { accountId: userId, id: machineId },

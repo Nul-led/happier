@@ -38,6 +38,7 @@ import {
     ConnectedServiceCredentialV3PreparationError,
     prepareConnectedServiceCredentialMutationV3,
 } from "./prepareConnectedServiceCredentialMutationV3";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
     app.post("/v3/connect/:serviceId/profiles/:profileId/credential", {
@@ -305,6 +306,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const serviceId = request.params.serviceId satisfies ConnectedServiceId;
         const profileId = request.params.profileId;
@@ -324,7 +326,7 @@ export function registerConnectedServiceCredentialRoutesV3(app: Fastify): void {
                     ? { expectedCredentialRevision: request.query.expectedCredentialRevision }
                     : {}),
                 cleanupGroupReferences: request.query.cleanupGroupReferences === true
-                    || !isServerFeatureEnabledForRequest("connectedServices.accountGroups", process.env),
+                    || !isServerFeatureEnabledForRequest("connectedServices.accountGroups", requestHomeEnv),
             });
         if (result.status === "revision_required") {
             return reply.code(400).send({ error: "invalid-params" });

@@ -1,11 +1,21 @@
 import Fastify from "fastify";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { LocalServicePreviewResourceV1 } from "@happier-dev/protocol";
 
 import { peerMediationGrantSigningEnv } from "@/testkit/env";
 import { registerLocalServiceRoutes } from "./registerRoutes";
 import type { LocalServicePreviewTunnelStream } from "@/app/local/services/preview/httpAdapter";
+
+// Database boundary only; preview registration still executes the real Machine-owner check.
+vi.mock("@/storage/db", async () => {
+    const { createDbMocks } = await import("@/app/api/testkit/dbMocks");
+    const storage = createDbMocks({ machine: ["findFirst"] });
+    storage.db.machine.findFirst.mockImplementation(async (query: { where: { id: string; accountId: string } }) => (
+        query.where.id === "machine_1" && query.where.accountId === "user_1" ? { id: "machine_1" } : null
+    ));
+    return { db: storage.db };
+});
 
 /**
  * Composed data-plane coverage for the PUBLIC local-service exposure vertical (lane C1, R-4).
@@ -78,8 +88,9 @@ async function buildPublicPreviewApp(recorder: UpstreamRecorder) {
     const app = Fastify({ logger: false });
     // The shared bearer preHandler; the public DATA plane is deliberately unauthenticated, so the
     // stub only needs to establish the actor identity the CONTROL routes read.
-    (app as unknown as { authenticate: unknown }).authenticate = async (request: { userId?: string }) => {
+    (app as unknown as { authenticate: unknown }).authenticate = async (request: { userId?: string; authAuthority?: "present_user" }) => {
         request.userId = "user_1";
+        request.authAuthority = "present_user";
     };
 
     registerLocalServiceRoutes(app as never, {
@@ -170,8 +181,7 @@ describe("public local-service exposure data plane (composed Fastify)", () => {
 
             const upstream = recorder.writes.join("");
             expect(upstream.length).toBeGreaterThan(0);
-            // Exactly one header block, exactly one request line, no injected header.
-            expect(upstream.split("\r\n\r\n")).toHaveLength(2);
+            // Exactly one request line and no injected header, including native chunked framing.
             expect(upstream.split("\r\n").filter((line) => /\sHTTP\/1\.1$/u.test(line))).toHaveLength(1);
             expect(upstream).not.toMatch(/\r\nX-Injected:/u);
             expect(upstream.split("\r\n")[0]).toBe(
@@ -185,11 +195,11 @@ describe("public local-service exposure data plane (composed Fastify)", () => {
     it("keeps the public data plane 404 when the exposure feature gate is off", async () => {
         const recorder: UpstreamRecorder = { writes: [] };
         const app = Fastify({ logger: false });
-        // The shared bearer preHandler; the public DATA plane is deliberately unauthenticated, so the
-    // stub only needs to establish the actor identity the CONTROL routes read.
-    (app as unknown as { authenticate: unknown }).authenticate = async (request: { userId?: string }) => {
-        request.userId = "user_1";
-    };
+        // The shared bearer preHandler establishes the verified CONTROL-route principal.
+        (app as unknown as { authenticate: unknown }).authenticate = async (request: { userId?: string; authAuthority?: "present_user" }) => {
+            request.userId = "user_1";
+            request.authAuthority = "present_user";
+        };
         registerLocalServiceRoutes(app as never, {
             // DEC-7: default configuration keeps public preview disabled.
             env: { NODE_ENV: "test" } as NodeJS.ProcessEnv,

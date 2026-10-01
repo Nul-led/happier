@@ -79,9 +79,41 @@ export async function resolveTeamCredentialBrokerMachineForSaveInTx(
 }
 
 /**
- * Rechecks saved eligibility and the current endpoint in the caller's authority transaction.
- * The caller obtains the canonical Socket.IO presence inventory before entering the transaction;
- * persisted active/lastActiveAt fields are not live presence authority.
+ * Rechecks saved eligibility against current presence in the caller's authority transaction, and
+ * reads whatever Iroh endpoint the Machine currently advertises. The caller obtains the canonical
+ * Socket.IO presence inventory before entering the transaction; persisted active/lastActiveAt
+ * fields are not live presence authority.
+ *
+ * A broker Machine reached over the Home's server relay (resource test, external API key) carries
+ * no Iroh endpoint of its own, so the endpoint is a fact, not an eligibility condition here: only
+ * a consumer that opens the private peer tunnel requires one.
+ */
+export async function resolveTeamCredentialBrokerMachinePresentInTx(
+    tx: Tx,
+    params: TeamCredentialBrokerMachineTarget & Readonly<{ presence: MachineDaemonPresenceInventory }>,
+): Promise<Readonly<{
+    ok: true;
+    machineId: string;
+    endpointAuthority: MachineIrohEndpointAuthorityV1 | null;
+}> | TeamCredentialBrokerMachineEligibilityError> {
+    const eligible = await readEligibleBrokerMachineInTx(tx, params);
+    if (!eligible.ok) return eligible;
+    if (params.presence.state !== "known" || !params.presence.machineIds.has(eligible.machine.id)) {
+        return { ok: false, error: "broker_unavailable" };
+    }
+    return {
+        ok: true,
+        machineId: eligible.machine.id,
+        endpointAuthority: readMachineIrohEndpointAuthorityV1({
+            capabilities: eligible.machine.operationProtocolCapabilities,
+            revision: eligible.machine.operationProtocolCapabilitiesRevision,
+        }),
+    };
+}
+
+/**
+ * The present-eligible Machine plus the private-tunnel requirement: a broker open that carries its
+ * own Iroh endpoint. Relay-reached consumers use `resolveTeamCredentialBrokerMachinePresentInTx`.
  */
 export async function resolveTeamCredentialBrokerMachineForOpenInTx(
     tx: Tx,
@@ -91,15 +123,8 @@ export async function resolveTeamCredentialBrokerMachineForOpenInTx(
     machineId: string;
     endpointAuthority: MachineIrohEndpointAuthorityV1;
 }> | TeamCredentialBrokerMachineEligibilityError> {
-    const eligible = await readEligibleBrokerMachineInTx(tx, params);
-    if (!eligible.ok) return eligible;
-    if (params.presence.state !== "known" || !params.presence.machineIds.has(eligible.machine.id)) {
-        return { ok: false, error: "broker_unavailable" };
-    }
-    const endpointAuthority = readMachineIrohEndpointAuthorityV1({
-        capabilities: eligible.machine.operationProtocolCapabilities,
-        revision: eligible.machine.operationProtocolCapabilitiesRevision,
-    });
-    if (!endpointAuthority) return { ok: false, error: "broker_unavailable" };
-    return { ok: true, machineId: eligible.machine.id, endpointAuthority };
+    const present = await resolveTeamCredentialBrokerMachinePresentInTx(tx, params);
+    if (!present.ok) return present;
+    if (present.endpointAuthority === null) return { ok: false, error: "broker_unavailable" };
+    return { ok: true, machineId: present.machineId, endpointAuthority: present.endpointAuthority };
 }

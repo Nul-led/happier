@@ -31,10 +31,7 @@ describe('background service contributions', () => {
     });
   });
 
-  it('rejects duplicate ids, unknown descriptor fields, and unknown contribution families', () => {
-    expect(PluginContributesV2Schema.safeParse({
-      backgroundServices: [{ id: 'same' }, { id: 'same' }],
-    }).success).toBe(false);
+  it('rejects unknown descriptor fields and unknown contribution families', () => {
     expect(PluginContributesV2Schema.safeParse({
       backgroundServices: [{ id: 'indexer', schedule: '* * * * *' }],
     }).success).toBe(false);

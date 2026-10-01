@@ -5,10 +5,16 @@ import {
     NativeEmailPasswordProvisionErrorResponseV1Schema,
     NativeEmailPasswordProvisionRequestV1Schema,
     NativeEmailPasswordProvisionResponseV1Schema,
+    NativeEmailPasswordLoginRequestV1Schema,
 } from './nativeAuthEmailRoutes.js';
 import { encodePasswordCredentialFieldV1 } from './accountPasswordCredential.js';
 
 describe('native email provision wire', () => {
+    it('accepts only a terminal narrowing request on password login', () => {
+        const request = { v: 1, email: 'person@example.test', password: 'correct password with spaces' };
+        expect(NativeEmailPasswordLoginRequestV1Schema.safeParse({ ...request, credentialKind: 'terminal' }).success).toBe(true);
+        expect(NativeEmailPasswordLoginRequestV1Schema.safeParse({ ...request, credentialKind: 'account' }).success).toBe(false);
+    });
     it('publishes the canonical bearer-free E2EE recovery entry', () => {
         expect(NATIVE_AUTH_PASSWORD_RECOVERY_APP_PATH_V1).toBe('/auth/password/recover');
     });
@@ -33,6 +39,7 @@ describe('native email provision wire', () => {
             account: { mode: 'plain', password: 'correct password with spaces' },
         };
         expect(NativeEmailPasswordProvisionRequestV1Schema.safeParse(plain).success).toBe(true);
+        expect(NativeEmailPasswordProvisionRequestV1Schema.safeParse({ ...plain, credentialKind: 'terminal' }).success).toBe(true);
         expect(NativeEmailPasswordProvisionRequestV1Schema.safeParse({ ...plain, accountId: 'caller-selected' }).success).toBe(false);
         expect(NativeEmailPasswordProvisionRequestV1Schema.safeParse({
             ...plain,

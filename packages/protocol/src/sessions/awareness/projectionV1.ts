@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { SessionReportsToV1Schema, SessionReportsV1Schema } from '../relations/sessionReportsToV1.js';
+import { SessionOriginKindV1Schema } from '../creation/sessionCreateOriginV1.js';
+import { ExecutionRunIdSchema } from '../idsV1.js';
 
 import {
   SessionWorkStateItemKindV1Schema,
@@ -140,11 +143,22 @@ export type SessionAwarenessWorkHeadlineV1 = z.infer<typeof SessionAwarenessWork
  */
 export const SessionAwarenessLineageV1Schema = z
   .object({
-    relation: z.enum(['fork', 'replay', 'subagent', 'message_provenance']),
+    relation: z.enum(['fork', 'replay']),
     sourceSessionId: z.string().min(1).optional(),
   })
   .strict();
 export type SessionAwarenessLineageV1 = z.infer<typeof SessionAwarenessLineageV1Schema>;
+
+/** Immutable creation provenance is control data, independent of private lineage. */
+export const SessionAwarenessOriginV1Schema = z.object({
+  kind: SessionOriginKindV1Schema,
+  runId: ExecutionRunIdSchema.optional(),
+}).strict().superRefine((origin, context) => {
+  if (origin.runId !== undefined && origin.kind !== 'run_step') {
+    context.addIssue({ code: 'custom', path: ['runId'], message: 'Only workflow steps name a server Run' });
+  }
+});
+export type SessionAwarenessOriginV1 = z.infer<typeof SessionAwarenessOriginV1Schema>;
 
 export const SessionAwarenessWorkspaceV1Schema = z
   .object({
@@ -168,6 +182,7 @@ export const SessionAwarenessProjectionV1Schema = z
   .object({
     v: z.literal(SESSION_AWARENESS_PROJECTION_VERSION_V1),
     sessionId: z.string().min(1),
+    origin: SessionAwarenessOriginV1Schema.optional(),
     title: z.string().min(1).optional(),
     lifecycle: SessionAwarenessLifecycleV1Schema,
     runtime: SessionAwarenessRuntimeV1Schema,
@@ -178,6 +193,9 @@ export const SessionAwarenessProjectionV1Schema = z
     workspace: SessionAwarenessWorkspaceV1Schema.optional(),
     encryption: SessionAwarenessEncryptionV1Schema,
     availability: SessionAwarenessAvailabilityV1Schema,
+    reportsTo: SessionReportsToV1Schema.optional(),
+    reports: SessionReportsV1Schema.optional(),
+    pendingReviewRuns: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type SessionAwarenessProjectionV1 = z.infer<typeof SessionAwarenessProjectionV1Schema>;

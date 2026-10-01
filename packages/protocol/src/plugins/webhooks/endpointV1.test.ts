@@ -93,6 +93,8 @@ describe('plugin webhook endpoint lifecycle wire contracts', () => {
       'https://example.test/v1/plugins/webhooks/opaque-route',
       'http://localhost:3000/v1/plugins/webhooks/opaque-route',
       'http://127.0.0.1:3000/v1/plugins/webhooks/opaque-route',
+      'http://127.0.0.2:3000/v1/plugins/webhooks/opaque-route',
+      'http://hooks.localhost:3000/v1/plugins/webhooks/opaque-route',
       'http://[::1]:3000/v1/plugins/webhooks/opaque-route',
     ]) {
       expect(PluginWebhookPublicUrlV1Schema.safeParse(value).success, value).toBe(true);

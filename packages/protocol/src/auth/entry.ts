@@ -6,7 +6,7 @@ import {
   FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
   HomeSignInServicePolicyV1Schema,
 } from '../features/payload/featuresResponseSchema.js';
-import { TeamInvitationPreviewV1Schema, TeamInvitationTokenV1Schema } from '../teams/invitation.js';
+import { TeamInvitationPostAuthContinuationV1Schema, TeamInvitationPreviewV1Schema, TeamInvitationTokenV1Schema } from '../teams/invitation.js';
 import { TeamIdentityProviderKindV1Schema } from '../teams/identity/connection.js';
 import { AuthEntryMethodIdV1Schema } from './methodId.js';
 import { NativeAuthOneTimeBearerV1Schema } from './nativeAuthOneTimeOperation.js';
@@ -35,10 +35,13 @@ const TeamAuthEntryRequestScopeV1Schema = z.object({
   teamId: TeamInvitationPreviewV1Schema.shape.team.shape.teamId,
 }).strict();
 const TeamAuthEntryProjectionScopeV1Schema = z.object({ kind: z.literal('team') }).strict();
-const InvitationAuthEntryRequestScopeV1Schema = z.object({
+const InvitationAuthEntryRequestScopeV1Schema = z.union([z.object({
   kind: z.literal('invitation'),
   token: TeamInvitationTokenV1Schema,
-}).strict();
+}).strict(), z.object({
+  kind: z.literal('invitation'),
+  continuation: TeamInvitationPostAuthContinuationV1Schema,
+}).strict()]);
 const NativeEmailVerificationAuthEntryRequestScopeV1Schema = z.object({
   kind: z.literal('native_email_verification'),
   token: NativeAuthOneTimeBearerV1Schema,
@@ -274,6 +277,8 @@ const InvitationReadyProjectionV1Schema = z.object({
   home: AuthEntryHomePresentationV1Schema,
   account: AccountDisplayProfileV1Schema.optional(),
   team: InvitationAuthEntryTeamV1Schema,
+  /** The same bounded offer, resolved without disclosing a held bearer. */
+  preview: TeamInvitationPreviewV1Schema.optional(),
   actions: z.array(InvitationAuthEntryActionV1Schema).max(AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1),
   /** Whether native fresh-Account provisioning must first prove mailbox control. */
   invitationEmailVerificationRequired: z.boolean(),

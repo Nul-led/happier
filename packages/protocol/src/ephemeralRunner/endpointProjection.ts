@@ -82,3 +82,13 @@ export const RunnerEndpointProjectionResponseV1Schema = z.discriminatedUnion('st
   z.object({ status: z.literal('conflict'), reason: z.enum(['proof_mismatch', 'installation_mismatch', 'manifest_mismatch']) }).strict(),
 ]);
 export type RunnerEndpointProjectionResponseV1 = z.infer<typeof RunnerEndpointProjectionResponseV1Schema>;
+
+export const RunnerEndpointDeclineResponseV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('declined') }).strict(),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['activation_closed', 'activation_expired', 'creator_unavailable', 'recipient_mismatch', 'already_materialized']),
+  }).strict(),
+  z.object({ status: z.literal('conflict'), reason: z.literal('proof_mismatch') }).strict(),
+]);
+export type RunnerEndpointDeclineResponseV1 = z.infer<typeof RunnerEndpointDeclineResponseV1Schema>;

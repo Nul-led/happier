@@ -13,7 +13,7 @@ describe("native bearer email readiness", () => {
     it("refuses verification and reset before persistence or delivery without the Homes link producer", async () => {
         const deps = {
             resolveApplicationLinkTarget: async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }),
-            delivery: { isReady: true, async deliver() { return { status: "sent" as const }; } },
+            delivery: { isReady: async () => true, async deliver() { return { status: "sent" as const }; } },
         };
         const recipient = { address: "recipient@example.test", normalizedEmail: "recipient@example.test" };
         expect(await requestNativeEmailVerification(deps, {
@@ -21,7 +21,7 @@ describe("native bearer email readiness", () => {
         })).toEqual({ status: "unavailable" });
         expect(await db.repeatKey.count()).toBe(0);
         expect(await requestPlainPasswordReset(deps, {
-            recipient, accountId: "account", credentialRevision: 1, expectedNativeIdentity: recipient.normalizedEmail,
+            recipient, accountId: "account", credentialRevision: 1, nativeIdentityId: "identity_1", expectedNativeIdentity: recipient.normalizedEmail,
         })).toEqual({ status: "unavailable" });
     });
 
@@ -35,7 +35,7 @@ describe("native bearer email readiness", () => {
                 serverId: "home-a",
             }),
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 async deliver(message: AuthEmailMessage) {
                     if (message.kind === "native_email_verification" && message.verifyUrl) messages.push(message.verifyUrl);
                     return { status: "sent" as const };

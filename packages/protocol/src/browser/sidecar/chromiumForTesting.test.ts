@@ -20,7 +20,14 @@ describe('chromium-for-testing pinned product source descriptor', () => {
     expect(mod?.CHROMIUM_FOR_TESTING_PRODUCT_SOURCE).toBeDefined();
     if (!mod?.CHROMIUM_FOR_TESTING_PRODUCT_SOURCE) return;
 
-    const expectedPlatforms = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64'];
+    const expectedPlatforms = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'win32-x64'];
+    const expectedExecutableSubpaths = {
+      'darwin-arm64': 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      'darwin-x64': 'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      'linux-x64': 'chrome-linux64/chrome',
+      'linux-arm64': 'chrome-linux-arm64/chrome',
+      'win32-x64': 'chrome-win64/chrome.exe',
+    } as const;
     const assetsByPlatform = mod.CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.assetsByPlatform;
     expect(Object.keys(assetsByPlatform).sort()).toEqual([...expectedPlatforms].sort());
 
@@ -33,6 +40,9 @@ describe('chromium-for-testing pinned product source descriptor', () => {
       // source resolver can promote the artifact. No platform stays null/fail-closed.
       expect(asset.integrityDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(asset.executableSubpath.startsWith('/')).toBe(false);
+      expect(asset.executableSubpath).toBe(
+        expectedExecutableSubpaths[platform as keyof typeof expectedExecutableSubpaths],
+      );
     }
   });
 
@@ -87,7 +97,23 @@ describe('chromium-for-testing pinned product source descriptor', () => {
     expect(mod.resolveChromiumForTestingPlatform('darwin', 'arm64')).toBe('darwin-arm64');
     expect(mod.resolveChromiumForTestingPlatform('linux', 'x64')).toBe('linux-x64');
     expect(mod.resolveChromiumForTestingPlatform('win32', 'x64')).toBe('win32-x64');
-    expect(mod.resolveChromiumForTestingPlatform('linux', 'arm64')).toBeNull();
+    expect(mod.resolveChromiumForTestingPlatform('linux', 'arm64')).toBe('linux-arm64');
     expect(mod.resolveChromiumForTestingPlatform('freebsd', 'x64')).toBeNull();
+  });
+
+  it('pins the upstream stable Linux ARM64 artifact without upgrading existing platform pins', async () => {
+    const mod = await import('./chromiumForTesting.js');
+    const source = mod.CHROMIUM_FOR_TESTING_PRODUCT_SOURCE;
+    const arm = source.assetsByPlatform['linux-arm64'];
+    expect(arm).toMatchObject({
+      pinnedVersion: '154.0.8037.92',
+      archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux-arm64/chrome-linux-arm64.zip',
+      integrityDigest: 'sha256:c0af361aab66b24c72e36a4326dce4d7edf4bc23f9aede8af988c2cb6ea3fec0',
+      executableSubpath: 'chrome-linux-arm64/chrome',
+    });
+    expect(source.pinnedVersion).toBe('127.0.6533.88');
+    for (const platform of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'win32-x64']) {
+      expect(source.assetsByPlatform[platform].archiveUrl).toContain('/127.0.6533.88/');
+    }
   });
 });

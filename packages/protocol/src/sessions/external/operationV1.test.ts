@@ -48,7 +48,10 @@ function request(
       qualifiedIdentity: qualifiedSource,
       linkGeneration: 'link-generation-1',
       sourceGeneration: 'source-generation-1',
-      contributionGeneration: 'contribution-generation-1',
+      sourceCustody: {
+        kind: 'development' as const,
+        registeredRootId: 'development-root-1',
+      },
     },
   };
 
@@ -139,6 +142,29 @@ const materializeAuthorIntent = {
 };
 
 describe('External Sessions durable operation contract', () => {
+  it('retains exact stopped-process evidence privately across operation serialization', () => {
+    const sourceIdentity = {
+      machineId: 'machine-1', linkedSessionId: 'session-1', remoteSessionId: 'remote-1',
+      linkGeneration: 'link-generation-1', sourceKey: 'private-source-key', qualifiedIdentity: qualifiedSource,
+    };
+    const processIdentity = { machineId: 'machine-1', pid: 4242, startedAtMs: 1000 };
+    const destructiveQuiescence = {
+      status: 'verified_stopped', sourceIdentity, processIdentity,
+      evidence: { kind: 'operating_system_process_state', processState: 'verified_stopped', observedAtMs: 2000, sourceIdentity, processIdentity },
+    };
+    const input = {
+      ...baseRecord('takeover_persisted'),
+      canonicalOwnerEvidence: { linkedSessionRevision: 3, destructiveQuiescence },
+    };
+    const parsed = ExternalSessionOperationRecordV1Schema.safeParse(JSON.parse(JSON.stringify(input)));
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.canonicalOwnerEvidence).toHaveProperty('destructiveQuiescence', destructiveQuiescence);
+    expect(JSON.stringify(projectExternalSessionOperationProgressV1(parsed.data))).not.toContain('private-source-key');
+    expect(projectExternalSessionOperationProgressV1(parsed.data)).not.toHaveProperty('canonicalOwnerEvidence');
+    expect(projectExternalSessionOperationSharedPresentationV1(parsed.data)).not.toHaveProperty('canonicalOwnerEvidence');
+  });
+
   it('persists the exact bounded private plugin author-intent union while retaining native rows', () => {
     const takeover = ExternalSessionOperationRecordV1Schema.safeParse({
       ...baseRecord('takeover_persisted'),

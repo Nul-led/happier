@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest';
 
 describe('transferSessions schemas', () => {
+  it('admits only explicitly Session-bound attachment uploads through the public schema', async () => {
+    const mod = await import('../../index.js');
+    expect(mod).toHaveProperty('SessionAttachmentUploadInitRequestV1Schema');
+    const schema = mod.SessionAttachmentUploadInitRequestV1Schema;
+    const request = {
+      t: 'session_attachment_upload_v1',
+      sessionId: 'session-a',
+      messageLocalId: 'message-a',
+      fileName: 'notes.txt',
+      sizeBytes: 3,
+      uploadLocation: 'workspace',
+      workspaceRelativeDir: '.happier/attachments',
+      vcsIgnoreStrategy: 'none',
+      vcsIgnoreWritesEnabled: false,
+    };
+    expect(schema.safeParse(request)).toMatchObject({ success: true, data: request });
+    expect(schema.safeParse({ ...request, sessionId: undefined }).success).toBe(false);
+    expect(schema.safeParse({ ...request, sessionId: ' session-a ' }).success).toBe(false);
+    expect(schema.safeParse({ ...request, callerAuthority: 'present_user' }).success).toBe(false);
+  });
+
   it('accepts import and export session open responses with bounded, strict shapes', async () => {
     const mod = await import('./index.js');
 

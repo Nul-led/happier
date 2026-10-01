@@ -11,6 +11,7 @@ const UnavailableProvisionedAdmissionModeV1Schema = z.object({
     "home_policy_prohibited",
     "directory_source_required",
     "directory_projection_required",
+    "team_connection_unavailable",
   ]),
 }).strict();
 

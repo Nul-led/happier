@@ -38,6 +38,7 @@ import {
     isMtlsAcceptedByCurrentTeamPolicyInTx,
     MtlsFinalizationAbort,
 } from "./finalizeMtlsAuthentication";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 type ForwardedMtlsIdentity = NonNullable<ReturnType<typeof resolveMtlsIdentityFromForwardedHeaders>>;
 
@@ -200,13 +201,14 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const body = request.body as {
                 returnTo: string;
                 teamId: string;
                 admission?: NativeAccountAdmissionV1;
             };
-            const mtlsEnv = readAuthMtlsFeatureEnv(process.env);
-            if (!isTeamMembershipAdmissionEnabled()) {
+            const mtlsEnv = readAuthMtlsFeatureEnv(requestHomeEnv);
+            if (!await isTeamMembershipAdmissionEnabled({ env: requestHomeEnv })) {
                 return reply.code(403).send({ error: "not-eligible" });
             }
             if (!isAllowedReturnTo({ returnTo: body.returnTo, allowPrefixes: mtlsEnv.returnToAllowPrefixes })) {
@@ -224,7 +226,7 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
                 });
                 if (!team || team.archivedAt !== null
                     || (invitation && team.admissionMode !== "invite_only")
-                    || !await isMtlsAcceptedByCurrentTeamPolicyInTx(tx, team, Boolean(invitation))) return null;
+                    || (!invitation && !await isMtlsAcceptedByCurrentTeamPolicyInTx(tx, team, false))) return null;
                 return { teamId: team.id, invitation };
             });
             if (!prepared) return reply.code(403).send({ error: "not-eligible" });
@@ -235,7 +237,7 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
                 ...(prepared.invitation ? { invitation: prepared.invitation } : {}),
             });
             const requestBaseUrl = normalizeHttpUrl(`${request.protocol}://${request.host}`);
-            const publicBaseUrl = resolveConfiguredPublicServerUrl(process.env) ?? requestBaseUrl;
+            const publicBaseUrl = resolveConfiguredPublicServerUrl(requestHomeEnv) ?? requestBaseUrl;
             if (!publicBaseUrl) return reply.code(403).send({ error: "not-eligible" });
             const startUrl = new URL("/v1/auth/mtls/start", `${publicBaseUrl}/`);
             startUrl.searchParams.set("returnTo", body.returnTo);
@@ -262,7 +264,8 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
-            const mtlsEnv = readAuthMtlsFeatureEnv(process.env);
+            const requestHomeEnv = await readRequestHomeEnv(request);
+            const mtlsEnv = readAuthMtlsFeatureEnv(requestHomeEnv);
             const returnTo = String((request.query as any)?.returnTo ?? "");
             if (!isAllowedReturnTo({ returnTo, allowPrefixes: mtlsEnv.returnToAllowPrefixes })) {
                 return reply.code(400).send({ error: "invalid-returnTo" });
@@ -297,7 +300,8 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
-            const mtlsEnv = readAuthMtlsFeatureEnv(process.env);
+            const requestHomeEnv = await readRequestHomeEnv(request);
+            const mtlsEnv = readAuthMtlsFeatureEnv(requestHomeEnv);
             const returnTo = String((request.query as any)?.returnTo ?? "");
             if (!isAllowedReturnTo({ returnTo, allowPrefixes: mtlsEnv.returnToAllowPrefixes })) {
                 return reply.code(400).send({ error: "invalid-returnTo" });
@@ -306,7 +310,7 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             const identity =
                 mtlsEnv.mode === "forwarded"
                     ? resolveMtlsIdentityFromForwardedHeaders({
-                          env: process.env,
+                          env: requestHomeEnv,
                           headers: request.headers as any,
                       })
                     : null;
@@ -388,11 +392,12 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
-            const mtlsEnv = readAuthMtlsFeatureEnv(process.env);
+            const requestHomeEnv = await readRequestHomeEnv(request);
+            const mtlsEnv = readAuthMtlsFeatureEnv(requestHomeEnv);
             const identity =
                 mtlsEnv.mode === "forwarded"
                     ? resolveMtlsIdentityFromForwardedHeaders({
-                          env: process.env,
+                          env: requestHomeEnv,
                           headers: request.headers as any,
                       })
                     : null;
@@ -474,7 +479,7 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
                         account,
                     )
                     || !await isEffectiveHomeAuthMethodActionEnabled({
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: "mtls",
                         actionId: "login",
                         mode: "keyless",

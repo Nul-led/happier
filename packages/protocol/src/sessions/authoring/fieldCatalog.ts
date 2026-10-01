@@ -195,6 +195,19 @@ export const SESSION_AUTHORING_FIELD_CATALOG = defineSessionAuthoringFields({
       automationExistingSession: 'inherited',
     },
   },
+  directoryKind: {
+    // Which `SessionDirectoryIntentV1` kind the new session is authored with. `managed` means no
+    // folder: the target daemon keeps a private one. `directory` above stays the remembered folder,
+    // so choosing a folder again restores it. Absent (every older draft) means `path`.
+    schema: z.enum(['path', 'managed']).nullable().optional(),
+    description: 'Whether the new session uses the directory above or no folder (a private folder kept by the machine).',
+    storageClass: 'template',
+    draftStorage: 'sync',
+    contexts: ['newSession'],
+    defaultSurface: 'hidden',
+    defaultEditabilityByContext: { newSession: 'editable' },
+    default: null,
+  },
   checkoutCreationDraft: {
     schema: SessionAuthoringCheckoutCreationDraftV1Schema.nullable(),
     description: 'Worktree creation draft persisted in authoring state before session creation.',

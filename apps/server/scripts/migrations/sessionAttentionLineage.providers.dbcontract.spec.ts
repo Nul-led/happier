@@ -19,8 +19,8 @@ const quotaDropId = "20260630223000_drop_service_account_quota_snapshots";
 // on its independent line. The exact released DROP is retained in 0.3 and is
 // copied from the canonical migration below.
 // The later list is the observed current `../0.2` frontier at
-// 7e1ce993c408c0f634b81267aac2bcd8e7859975. Its relevant migration trees are
-// clean through 20260907190000 and shared SQL remains byte-identical.
+// ac30c50856abd2265c14459e77ee3384da1698ad (branch `dev`, clean). Its relevant
+// migration trees are clean through 20260907190000 and shared SQL remains byte-identical.
 // Immutable `server-v0.2.12` at
 // a357c65536ba89669422977d6f7daf9aa0d17e73 ends at
 // `latestReleasedPredecessorLastId`; every included SQL file is byte-identical
@@ -196,6 +196,104 @@ function mysqlDatabaseUrl(databaseUrl: string, database: string): string {
     const url = new URL(databaseUrl);
     url.pathname = `/${database}`;
     return url.toString();
+}
+
+const workflowEnvelopeFixture = JSON.stringify({
+    t: "plain",
+    v: "workflow-envelope-".repeat(40),
+});
+
+async function seedReleasedAutomation(
+    provider: Provider,
+    database: PostgresPrismaClient | MysqlPrismaClient,
+): Promise<void> {
+    const quote = provider === "postgres" ? '"' : "`";
+    const now = provider === "postgres" ? "CURRENT_TIMESTAMP" : "CURRENT_TIMESTAMP(3)";
+    await database.$executeRawUnsafe(
+        `INSERT INTO ${quote}Account${quote} (${quote}id${quote}, ${quote}publicKey${quote}, ${quote}updatedAt${quote}) VALUES ('workflow-predecessor-account', 'workflow-predecessor-key', ${now})`,
+    );
+    await database.$executeRawUnsafe(
+        `INSERT INTO ${quote}Automation${quote} (${quote}id${quote}, ${quote}accountId${quote}, ${quote}name${quote}, ${quote}scheduleKind${quote}, ${quote}targetType${quote}, ${quote}templateCiphertext${quote}, ${quote}updatedAt${quote}) VALUES ('workflow-predecessor-automation', 'workflow-predecessor-account', 'Released automation', 'manual', 'new_session', 'sealed-template', ${now})`,
+    );
+    await database.$executeRawUnsafe(
+        `INSERT INTO ${quote}AutomationRun${quote} (${quote}id${quote}, ${quote}automationId${quote}, ${quote}accountId${quote}, ${quote}state${quote}, ${quote}scheduledAt${quote}, ${quote}dueAt${quote}, ${quote}updatedAt${quote}) VALUES ('workflow-predecessor-run', 'workflow-predecessor-automation', 'workflow-predecessor-account', 'succeeded', ${now}, ${now}, ${now})`,
+    );
+}
+
+async function expectWorkflowUpgradeStorage(
+    provider: Provider,
+    database: PostgresPrismaClient | MysqlPrismaClient,
+): Promise<void> {
+    if (provider === "postgres") {
+        await database.$executeRawUnsafe(
+            `UPDATE "AutomationRun"
+             SET "workflowAcceptedSnapshotEnvelope" = $1, "workflowCheckpointEnvelope" = $1,
+                 "workflowCustodyState" = 'pending'
+             WHERE "id" = 'workflow-predecessor-run'`,
+            workflowEnvelopeFixture,
+        );
+        await database.$executeRawUnsafe(
+            `INSERT INTO "WorkflowRunInvocation"
+                ("id", "runId", "sequence", "memberOrdinal", "contentEnvelope", "updatedAt")
+             VALUES ('workflow-predecessor-invocation', 'workflow-predecessor-run', 0, 0, $1, CURRENT_TIMESTAMP)`,
+            workflowEnvelopeFixture,
+        );
+        const [run] = await database.$queryRawUnsafe<Array<{
+            originKind: string;
+            automationId: string;
+            acceptedLength: unknown;
+            checkpointLength: unknown;
+        }>>(`
+            SELECT "originKind", "automationId",
+                   char_length("workflowAcceptedSnapshotEnvelope") AS "acceptedLength",
+                   char_length("workflowCheckpointEnvelope") AS "checkpointLength"
+            FROM "AutomationRun" WHERE "id" = 'workflow-predecessor-run'
+        `);
+        expect(run).toMatchObject({
+            originKind: "automation",
+            automationId: "workflow-predecessor-automation",
+        });
+        expect(Number(run?.acceptedLength)).toBe(workflowEnvelopeFixture.length);
+        expect(Number(run?.checkpointLength)).toBe(workflowEnvelopeFixture.length);
+        const [invocation] = await database.$queryRawUnsafe<Array<{ contentLength: unknown }>>(`
+            SELECT char_length("contentEnvelope") AS "contentLength"
+            FROM "WorkflowRunInvocation" WHERE "id" = 'workflow-predecessor-invocation'
+        `);
+        expect(Number(invocation?.contentLength)).toBe(workflowEnvelopeFixture.length);
+        return;
+    }
+
+    await database.$executeRawUnsafe(
+        "UPDATE `AutomationRun` SET `workflowAcceptedSnapshotEnvelope` = ?, `workflowCheckpointEnvelope` = ?, `workflowCustodyState` = 'pending' WHERE `id` = 'workflow-predecessor-run'",
+        workflowEnvelopeFixture,
+        workflowEnvelopeFixture,
+    );
+    await database.$executeRawUnsafe(
+        "INSERT INTO `WorkflowRunInvocation` (`id`, `runId`, `sequence`, `memberOrdinal`, `contentEnvelope`, `updatedAt`) VALUES ('workflow-predecessor-invocation', 'workflow-predecessor-run', 0, 0, ?, CURRENT_TIMESTAMP(3))",
+        workflowEnvelopeFixture,
+    );
+    const [run] = await database.$queryRawUnsafe<Array<{
+        originKind: string;
+        automationId: string;
+        acceptedLength: unknown;
+        checkpointLength: unknown;
+    }>>(`
+        SELECT \`originKind\`, \`automationId\`,
+               CHAR_LENGTH(\`workflowAcceptedSnapshotEnvelope\`) AS \`acceptedLength\`,
+               CHAR_LENGTH(\`workflowCheckpointEnvelope\`) AS \`checkpointLength\`
+        FROM \`AutomationRun\` WHERE \`id\` = 'workflow-predecessor-run'
+    `);
+    expect(run).toMatchObject({
+        originKind: "automation",
+        automationId: "workflow-predecessor-automation",
+    });
+    expect(Number(run?.acceptedLength)).toBe(workflowEnvelopeFixture.length);
+    expect(Number(run?.checkpointLength)).toBe(workflowEnvelopeFixture.length);
+    const [invocation] = await database.$queryRawUnsafe<Array<{ contentLength: unknown }>>(`
+        SELECT CHAR_LENGTH(\`contentEnvelope\`) AS \`contentLength\`
+        FROM \`WorkflowRunInvocation\` WHERE \`id\` = 'workflow-predecessor-invocation'
+    `);
+    expect(Number(invocation?.contentLength)).toBe(workflowEnvelopeFixture.length);
 }
 
 async function expectPostgresMachinePoolContract(database: PostgresPrismaClient): Promise<void> {
@@ -404,6 +502,9 @@ describe.each(predecessorCases)("$frontier migration lineage before Account Dire
                     await database.$executeRawUnsafe("INSERT INTO \"Account\" (\"id\", \"publicKey\", \"updatedAt\") VALUES ('read-owner', 'read-owner-key', CURRENT_TIMESTAMP), ('read-recipient', 'read-recipient-key', CURRENT_TIMESTAMP)");
                     await database.$executeRawUnsafe("INSERT INTO \"Session\" (\"id\", \"tag\", \"accountId\", \"metadata\", \"updatedAt\", \"seq\", \"lastViewedSessionSeq\", \"unreadSince\") VALUES ('read-never', 'read-never', 'read-owner', '{}', CURRENT_TIMESTAMP, 5, NULL, NULL), ('read-unread', 'read-unread', 'read-owner', '{}', CURRENT_TIMESTAMP, 5, 2, '2026-08-01 00:00:00')");
                 }
+                if (frontier === "released-v0.2.12") {
+                    await seedReleasedAutomation("postgres", database);
+                }
 
                 await replacePredecessorWithCurrentMigrations("postgres", staged.stagedMigrationsDir);
                 await deploy("postgres", staged.stageDir, databaseUrl);
@@ -418,6 +519,9 @@ describe.each(predecessorCases)("$frontier migration lineage before Account Dire
                 );
 
                 expect(ledgerAfterSecondDeploy).toEqual(ledgerBeforeSecondDeploy);
+                if (frontier === "released-v0.2.12") {
+                    await expectWorkflowUpgradeStorage("postgres", database);
+                }
                 if (!hasQuotaBeforeUpgrade) {
                     expect(await database.$queryRawUnsafe("SELECT \"accountId\", \"sessionId\", \"lastViewedSessionSeq\", \"unreadSince\" FROM \"AccountSessionReadState\" ORDER BY \"sessionId\"")).toEqual([
                         { accountId: "read-owner", sessionId: "read-never", lastViewedSessionSeq: 0, unreadSince: null },
@@ -427,7 +531,6 @@ describe.each(predecessorCases)("$frontier migration lineage before Account Dire
                     await expect(database.$queryRawUnsafe(`SELECT "lastViewedSessionSeq" FROM "AccountSessionReadState" WHERE "accountId" = 'read-owner' AND "sessionId" = 'read-unread'`))
                         .resolves.toEqual([{ lastViewedSessionSeq: 2 }]);
                 }
-
                 const quotaRows = await database.$queryRawUnsafe(
                     `SELECT "id", "status", encode("snapshot", 'hex') AS "snapshotHex"
                      FROM "ServiceAccountQuotaSnapshot" WHERE "id" = 'preserved-quota-row'`,
@@ -508,6 +611,9 @@ describe.each(predecessorCases)("$frontier migration lineage before Account Dire
                     await database.$executeRawUnsafe("INSERT INTO `Account` (`id`, `publicKey`, `updatedAt`) VALUES ('read-owner', 'read-owner-key', CURRENT_TIMESTAMP), ('read-recipient', 'read-recipient-key', CURRENT_TIMESTAMP)");
                     await database.$executeRawUnsafe("INSERT INTO `Session` (`id`, `tag`, `accountId`, `metadata`, `updatedAt`, `seq`, `lastViewedSessionSeq`, `unreadSince`) VALUES ('read-never', 'read-never', 'read-owner', '{}', CURRENT_TIMESTAMP, 5, NULL, NULL), ('read-unread', 'read-unread', 'read-owner', '{}', CURRENT_TIMESTAMP, 5, 2, '2026-08-01 00:00:00')");
                 }
+                if (frontier === "released-v0.2.12") {
+                    await seedReleasedAutomation("mysql", database);
+                }
 
                 await replacePredecessorWithCurrentMigrations("mysql", staged.stagedMigrationsDir);
                 await deploy("mysql", staged.stageDir, databaseUrl);
@@ -520,6 +626,9 @@ describe.each(predecessorCases)("$frontier migration lineage before Account Dire
                 );
 
                 expect(ledgerAfterSecondDeploy).toEqual(ledgerBeforeSecondDeploy);
+                if (frontier === "released-v0.2.12") {
+                    await expectWorkflowUpgradeStorage("mysql", database);
+                }
                 if (!hasQuotaBeforeUpgrade) {
                     expect(await database.$queryRawUnsafe("SELECT `accountId`, `sessionId`, `lastViewedSessionSeq`, `unreadSince` FROM `AccountSessionReadState` ORDER BY `sessionId`")).toEqual([
                         { accountId: "read-owner", sessionId: "read-never", lastViewedSessionSeq: 0, unreadSince: null },

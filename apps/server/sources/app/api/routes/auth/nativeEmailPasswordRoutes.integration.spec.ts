@@ -128,6 +128,12 @@ describe("native password authentication through the registered method", () => {
             expect(await auth.verifyToken(response.json().token)).toMatchObject({
                 userId: account.id, authTokenKind: "account", authority: "present_user",
             });
+            const terminal = await app.inject({ method: "POST", url: "/v1/auth/email/login",
+                payload: { v: 1, email: "alice@example.test", password, credentialKind: "terminal" } });
+            expect(terminal.statusCode, terminal.statusCode >= 400 ? terminal.body : undefined).toBe(200);
+            expect(await auth.verifyToken(terminal.json().token)).toMatchObject({
+                userId: account.id, authTokenKind: "terminal",
+            });
             expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
                 encryptionMode: "plain", publicKey: null, contentPublicKey: null, contentPublicKeySig: null,
             });
@@ -164,7 +170,7 @@ describe("native password authentication through the registered method", () => {
         try {
             const login = (candidate = password) => app.inject({
                 method: "POST", url: "/v1/auth/email/login",
-                payload: { v: 1, email: "directory@example.test", password: candidate, credentialTarget: "account_directory" },
+                payload: { v: 1, email: "directory@example.test", password: candidate, credentialTarget: "account_directory", credentialKind: "terminal" },
             });
             const response = await login();
             expect(response.statusCode, response.body).toBe(200);

@@ -6,6 +6,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 
 import {
+    API_TOKEN_FULL_GRANT_V1,
+    ApiTokenGrantV1Schema,
+    evaluateApiTokenGrantV1,
+    isModelRefGrantedV1,
+    isPermissionModeGrantedV1,
+    parseAccountApiTokenBearerV1,
     signAccountContentKeyBindingV1,
     ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1,
     ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
@@ -24,6 +30,7 @@ import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/ac
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { registerAccountApiTokenManagementRoutes } from "./registerAccountApiTokenManagementRoutes";
+import { registerSessionCreateOrLoadRoute } from "../session/registerSessionCreateOrLoadRoute";
 
 function createTestApp() {
     const app = Fastify({ logger: false });
@@ -32,6 +39,7 @@ function createTestApp() {
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
     enableAuthentication(typed);
     registerAccountApiTokenManagementRoutes(typed);
+    registerSessionCreateOrLoadRoute(typed);
     return typed;
 }
 
@@ -55,11 +63,200 @@ describe("authRoutes (API-token management) (integration)", () => {
 
     afterEach(async () => {
         harness.resetEnv();
+        await db.session.deleteMany();
         await db.account.deleteMany();
     });
 
     afterAll(async () => {
-        await harness.close();
+        if (harness) await harness.close();
+    });
+
+    it("refuses forged session creation authorization before creating a Session", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional' });
+        const account = await db.account.create({ data: { publicKey: `pat-creator-${randomUUID()}`, encryptionMode: 'plain' } });
+        const signed = await auth.createToken(account.id, undefined, { kind: 'account', authority: 'present_user' });
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const response = await app.inject({ method: 'POST', url: '/v1/sessions',
+                headers: { ...bearer(signed), 'x-happier-account-stored-content-protocol': '2',
+                    'x-happier-session-creation-authorization': 'forged' },
+                payload: { tag: randomUUID(), metadataLayoutVersion: 1, sharedMetadata: { ciphertext: '{"v":1}' },
+                    ownerMetadata: { t: 'plain', v: { v: 1 } }, encryptionMode: 'plain' } });
+            expect(response.statusCode, response.body).toBe(401);
+            expect(await db.session.count({ where: { accountId: account.id } })).toBe(0);
+        } finally { await app.close(); }
+    });
+
+    it("persists a restricted grant, attenuates children, and revokes children only when access changes", async () => {
+        const account = await db.account.create({ data: { publicKey: `pat-grant-${randomUUID()}`, encryptionMode: 'plain' } });
+        const signed = await auth.createToken(account.id, undefined, { kind: 'account', authority: 'present_user' });
+        const grant = {
+            v: 1, actions: { families: [], ids: ['session.message.send', 'session.transcript.get'] },
+            targets: { sessions: ['S1'], machines: [] }, approve: false, origins: ['https://example.com'],
+            models: null, permissionModes: ['default'], create: null,
+        };
+        const tokenId = randomUUID();
+        const expiresAt = new Date(Date.now() + 60_000).toISOString();
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const created = await app.inject({ method: 'POST', url: ACCOUNT_API_TOKENS_CREATE_HTTP_PATH_V1,
+                headers: bearer(signed), payload: { tokenId, label: 'Restricted', grant, expiresAt } });
+            expect(created.statusCode, created.body).toBe(200);
+            expect(created.json().apiToken.grant).toEqual(grant);
+            const parent = created.json().token;
+            const childPayload = { tokenId: randomUUID(), label: 'Child', expiresAt, grant };
+            const mint = (credential: string, payload: unknown = childPayload) => app.inject({ method: 'POST',
+                url: '/v1/auth/api-tokens/children/create', headers: bearer(credential), payload });
+            const wider = await mint(parent, { ...childPayload, grant: { ...grant, targets: null } });
+            expect(wider.statusCode, wider.body).toBe(400);
+            expect(wider.json()).toEqual({ error: 'api_token_child_invalid' });
+            const tooLate = await mint(parent, { ...childPayload, expiresAt: new Date(Date.now() + 120_000).toISOString() });
+            expect(tooLate.statusCode).toBe(400);
+            const child = await mint(parent);
+            expect(child.statusCode, child.body).toBe(200);
+            expect(child.json().apiToken.hasEncryptionAccess).toBe(false);
+            const childCredential = child.json().token;
+            expect((await mint(childCredential, { ...childPayload, tokenId: randomUUID() })).statusCode).toBe(403);
+            const self = await app.inject({ method: 'GET', url: '/v1/auth/api-tokens/self', headers: bearer(childCredential) });
+            expect(self.statusCode, self.body).toBe(200);
+            expect(self.json()).toEqual({ accountId: account.id, accountEncryptionMode: 'plain', credentialId: childPayload.tokenId,
+                parentTokenId: tokenId, expiresAt, grant, embedConfig: null });
+            const list = await app.inject({ method: 'POST', url: ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
+                headers: bearer(signed), payload: {} });
+            expect(list.json().tokens).toEqual([expect.objectContaining({ tokenId, grant, activeChildCount: 1 })]);
+            const edit = (payload: unknown) => app.inject({ method: 'POST', url: '/v1/auth/api-tokens/update',
+                headers: bearer(signed), payload });
+            expect((await edit({ tokenId, label: 'Renamed' })).statusCode).toBe(200);
+            expect((await auth.verifyPat(childCredential)).ok).toBe(true);
+            const embedConfig = { v: 1, ui: { attachments: false }, newChat: { enabled: false },
+                organization: { folderId: null, tagIds: [] }, style: null };
+            expect((await edit({ tokenId, embedConfig })).statusCode).toBe(200);
+            const afterPresentationEdit = await app.inject({ method: 'GET', url: '/v1/auth/api-tokens/self', headers: bearer(childCredential) });
+            expect(afterPresentationEdit.statusCode).toBe(200);
+            expect(afterPresentationEdit.json().embedConfig).toEqual(embedConfig);
+            expect((await auth.verifyPat(childCredential)).ok).toBe(true);
+            expect((await edit({ tokenId, grant: { ...grant, actions: { families: [], ids: ['session.transcript.get'] } } })).statusCode).toBe(200);
+            expect((await auth.verifyPat(childCredential)).ok).toBe(false);
+            const fresh = await mint(parent, { ...childPayload, tokenId: randomUUID(),
+                grant: { ...grant, actions: { families: [], ids: ['session.transcript.get'] } } });
+            expect(fresh.statusCode, fresh.body).toBe(200);
+            await app.inject({ method: 'POST', url: ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1,
+                headers: bearer(signed), payload: { tokenId } });
+            expect((await auth.verifyPat(fresh.json().token)).ok).toBe(false);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("attributes only fresh Session rows to a current execution authorization and confines attribution children", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional' });
+        const account = await db.account.create({ data: { publicKey: `creator-${randomUUID()}`, encryptionMode: 'plain' } });
+        const other = await db.account.create({ data: { publicKey: `creator-other-${randomUUID()}`, encryptionMode: 'plain' } });
+        const signed = await auth.createToken(account.id, undefined, { kind: 'account', authority: 'present_user' });
+        const root = await auth.createApiToken({ accountId: account.id, tokenId: randomUUID(), label: 'Creator' });
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const expiresAt = new Date(Date.now() + 60_000).toISOString();
+            const mintChild = (grant = API_TOKEN_FULL_GRANT_V1, extra = {}) => app.inject({ method: 'POST',
+                url: '/v1/auth/api-tokens/children/create', headers: bearer(root.token),
+                payload: { tokenId: randomUUID(), label: 'Creator child', expiresAt, grant, ...extra } });
+            const child = await mintChild();
+            expect(child.statusCode, child.body).toBe(200);
+            const childId = child.json().apiToken.tokenId;
+            const machineId = randomUUID();
+            const authorization = await auth.mintExternalActionExecutionAuthorization({
+                serverIdentityId: await getOrCreateServerIdentityId(), accountId: account.id, principalId: account.id,
+                credentialId: childId, grant: API_TOKEN_FULL_GRANT_V1, machineId,
+                actionId: 'session.spawn_new', requestId: randomUUID(), requestEnvelopeDigest: 'a'.repeat(43),
+                target: { kind: 'machine', machineId },
+            });
+            const create = (tag: string, proof?: string, credential = signed) => app.inject({ method: 'POST', url: '/v1/sessions',
+                headers: { ...bearer(credential), 'x-happier-account-stored-content-protocol': '2',
+                    ...(proof ? { 'x-happier-session-creation-authorization': proof } : {}) },
+                payload: { tag, metadataLayoutVersion: 1, sharedMetadata: { ciphertext: '{"v":1}' },
+                    ownerMetadata: { t: 'plain', v: { v: 1 } }, encryptionMode: 'plain' } });
+            const tag = randomUUID();
+            expect((await create(tag, authorization.token)).statusCode).toBe(200);
+            const created = await db.session.findUniqueOrThrow({ where: { accountId_tag: { accountId: account.id, tag } } });
+            expect(created.createdByApiTokenId).toBe(childId);
+            expect((await create(tag)).statusCode).toBe(200);
+            expect((await db.session.findUniqueOrThrow({ where: { id: created.id } })).createdByApiTokenId).toBe(childId);
+            const ordinaryTag = randomUUID();
+            expect((await create(ordinaryTag)).statusCode).toBe(200);
+            const ordinary = await db.session.findUniqueOrThrow({ where: { accountId_tag: { accountId: account.id, tag: ordinaryTag } } });
+            expect(ordinary.createdByApiTokenId).toBeNull();
+            const otherSigned = await auth.createToken(other.id, undefined, { kind: 'account', authority: 'present_user' });
+            expect((await create(randomUUID(), authorization.token, otherSigned)).statusCode).toBe(401);
+            const explicitGrant = { ...API_TOKEN_FULL_GRANT_V1, actions: { families: [], ids: ['session.message.send'] },
+                targets: { sessions: [created.id], machines: [] } };
+            expect((await mintChild(explicitGrant, { requireCreatedByChildTokenId: childId })).statusCode).toBe(200);
+            expect((await mintChild({ ...explicitGrant, targets: { sessions: [ordinary.id], machines: [] } },
+                { requireCreatedByChildTokenId: childId })).statusCode).toBe(400);
+            const sibling = await mintChild();
+            expect((await mintChild(explicitGrant, { requireCreatedByChildTokenId: sibling.json().apiToken.tokenId })).statusCode).toBe(400);
+            await auth.revokeApiToken({ accountId: account.id, tokenId: root.tokenId });
+            expect((await create(randomUUID(), authorization.token)).statusCode).toBe(401);
+        } finally { await app.close(); }
+    });
+
+    it("admits nullable child constraints only when every effective outcome remains within the parent", async () => {
+        const account = await db.account.create({ data: { publicKey: `attenuation-${randomUUID()}` } });
+        const modelA = { agentTargetKey: 'agent:happier.agent.claude/claude', providerConnectionId: null, modelId: 'a' };
+        const modelB = { ...modelA, modelId: 'b' };
+        const creation = { machineId: 'M1', agentTargetKey: modelA.agentTargetKey, directory: 'managed',
+            placement: { folderId: 'leads', tagIds: ['inbound'] } };
+        const spawn = { executionTarget: { serverId: 'home', machineId: 'M1' },
+            agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.claude', localId: 'claude' } },
+            directory: { kind: 'managed' }, organizationPlacement: creation.placement };
+        const bounded = ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1,
+            actions: { families: [], ids: ['session.message.send'] }, targets: { sessions: ['S1'], machines: ['M1'] },
+            models: [modelA], permissionModes: ['default'], create: creation });
+        const requests = [
+            ...['M1', 'M2'].map((machineId) => ({ actionId: 'session.spawn_new', target: { kind: 'machine' as const, machineId },
+                spawnInput: { ...spawn, executionTarget: { serverId: 'home', machineId } } })),
+            ...[{ ...spawn, directory: { kind: 'path', path: '/tmp' } },
+                { ...spawn, organizationPlacement: { folderId: 'other', tagIds: ['inbound'] } },
+                { ...spawn, organizationPlacement: { folderId: 'leads', tagIds: ['other'] } },
+                { ...spawn, agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } } }]
+                .map((spawnInput) => ({ actionId: 'session.spawn_new', target: { kind: 'machine' as const, machineId: 'M1' }, spawnInput })),
+            ...['S1', 'S2'].flatMap((sessionId) => ['session.message.send', 'approval.request.decide']
+                .map((actionId) => ({ actionId, target: { kind: 'session' as const, sessionId } }))),
+        ];
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const cases = (['actions', 'targets', 'models', 'permissionModes', 'create'] as const).flatMap((field) => [
+                { parent: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, [field]: bounded[field] }),
+                    child: API_TOKEN_FULL_GRANT_V1, accepted: false },
+                { parent: API_TOKEN_FULL_GRANT_V1,
+                    child: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, [field]: bounded[field] }), accepted: true },
+            ]);
+            cases.push({ parent: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, create: creation }),
+                child: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, actions: bounded.actions }), accepted: true });
+            cases.push({ parent: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, create: creation }),
+                child: ApiTokenGrantV1Schema.parse({ ...API_TOKEN_FULL_GRANT_V1, create: { ...creation,
+                    agentTargetKey: 'agent:happier.agent.codex/codex' } }), accepted: false });
+            for (const testCase of cases) {
+                const root = await auth.createApiToken({ accountId: account.id, tokenId: randomUUID(), label: 'Parent', grant: testCase.parent });
+                const response = await app.inject({ method: 'POST', url: '/v1/auth/api-tokens/children/create', headers: bearer(root.token),
+                    payload: { tokenId: randomUUID(), label: 'Child', expiresAt: new Date(Date.now() + 60_000).toISOString(), grant: testCase.child } });
+                expect(response.statusCode, response.body).toBe(testCase.accepted ? 200 : 400);
+                if (!testCase.accepted) continue;
+                expect(response.json().apiToken.grant).toEqual(testCase.child);
+                for (const request of requests) if (evaluateApiTokenGrantV1({ ...request, grant: testCase.child }).ok) {
+                    expect(evaluateApiTokenGrantV1({ ...request, grant: testCase.parent }).ok).toBe(true);
+                }
+                for (const ref of [modelA, modelB, 'automatic'] as const) if (isModelRefGrantedV1(testCase.child, ref)) {
+                    expect(isModelRefGrantedV1(testCase.parent, ref)).toBe(true);
+                }
+                for (const mode of ['default', 'bypassPermissions'] as const) if (isPermissionModeGrantedV1(testCase.child, mode)) {
+                    expect(isPermissionModeGrantedV1(testCase.parent, mode)).toBe(true);
+                }
+            }
+        } finally { await app.close(); }
     });
 
     it("rejects explicit unattended delegation when the initiating credential has no evidence", async () => {
@@ -270,6 +467,10 @@ describe("authRoutes (API-token management) (integration)", () => {
                     expiresAt: "2030-08-22T12:00:00.000Z",
                     hasEncryptionAccess: false,
                     hasUnattendedTeamAccess: false,
+                    grant: API_TOKEN_FULL_GRANT_V1,
+                    parentTokenId: null,
+                    activeChildCount: 0,
+                    embedConfig: null,
                 },
             });
 
@@ -282,7 +483,9 @@ describe("authRoutes (API-token management) (integration)", () => {
             expect(signedList.statusCode).toBe(200);
             expect(signedList.json()).toEqual({ tokens: [createdBody.apiToken] });
             expect(signedList.body).not.toContain(createdBody.token);
-            expect(signedList.body).not.toContain(createdBody.token.split("_")[3]);
+            const parsedBearer = parseAccountApiTokenBearerV1(createdBody.token);
+            expect(parsedBearer).not.toBeNull();
+            expect(signedList.body).not.toContain(parsedBearer!.secret);
 
             const [createWithPat, listWithPat, revokeWithPat, revokeAllWithPat] = await Promise.all([
                 app.inject({
@@ -316,6 +519,7 @@ describe("authRoutes (API-token management) (integration)", () => {
                 expect(response.json()).toEqual({ error: "present_user_required" });
             }
 
+            await db.account.update({ where: { id: account.id }, data: { terminalPresentUserPolicy: 'disallowed' } });
             const terminalToken = await auth.createToken(account.id, { session: "api-token-management-terminal" }, { kind: "terminal", authority: "account_automation" });
             const terminalList = await app.inject({
                 method: "POST",

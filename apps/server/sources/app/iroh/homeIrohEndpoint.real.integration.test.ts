@@ -324,11 +324,14 @@ describe("composed Home Iroh application bytes", () => {
         const rawAddon = loadIrohNodeNativeAddon(explicitAddonPath);
         const testController = createIrohTestControllerFromNativeAddon(rawAddon);
         if (topology === "direct") await testController.forceDirectOnly();
-        else await testController.forceRelayOnly();
+        else await testController.forceRelayOnly(process.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL);
         expect(testController.getObservedPath()).toBe("unknown");
         if (topology === "relay") {
             const relayUrl = testController.getTestRelayUrl();
             if (!relayUrl) throw new Error("Forced-relay native fixture did not publish its test relay URL");
+            if (process.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL) {
+                expect(relayUrl).toBe(process.env.HAPPIER_TEST_IROH_EXTERNAL_RELAY_URL);
+            }
             process.env[HOME_IROH_RELAY_POLICY_ENV_KEY] = "automatic";
             process.env[HOME_IROH_RELAY_URLS_ENV_KEY] = relayUrl;
         } else {

@@ -75,7 +75,7 @@ export function createSessionViewerTagWhere(params: Readonly<{
 /**
  * Compose the V1 query only from predicates supplied by their canonical
  * owners. Access, personal scope/attention and applicable-audience semantics
- * are compiled before this boundary; listing owns storage, tags and the
+ * are compiled before this boundary; listing owns storage, folders, tags and the
  * inactive-corpus rule.
  */
 export function createFilteredSessionListWhere(params: Readonly<{
@@ -93,6 +93,16 @@ export function createFilteredSessionListWhere(params: Readonly<{
         params.scopeWhere,
         params.audienceWhere,
         createSessionViewerTagWhere({ accountId: params.accountId, tagIds: query.tagIds }),
+        query.folderIds?.length
+            ? {
+                sessionFolderAssignments: {
+                    some: {
+                        accountId: params.accountId,
+                        folderId: { in: [...query.folderIds] },
+                    },
+                },
+            }
+            : undefined,
         query.attention === "needs_my_attention" ? params.attentionWhere : undefined,
         // "Hide inactive" must select the same liveness the row projection
         // publishes: a Session whose transcript is not hosted publishes

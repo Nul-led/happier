@@ -502,9 +502,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 kind: "tcp_tunnel",
                 tunnelId: "tun_1",
                 allowedPorts: [3000],
-                maxIdleMs: 30_000,
-                maxDurationMs: 300_000,
-                maxTotalBytes: 64 * 1024 * 1024,
             },
         } as const;
         const route = createRouteTestBuilder({
@@ -515,7 +512,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000,5173",
-                    [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                     [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -549,9 +545,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                     relaySocketId: "relay_socket_1",
                     destination: { host: "127.0.0.1", port: 3000 },
                     maxFrameBytes: 64 * 1024,
-                    maxIdleMs: 30_000,
-                    maxDurationMs: 300_000,
-                    maxTotalBytes: 64 * 1024 * 1024,
                     iat: 1_000,
                     exp: 301_000,
                 },
@@ -611,7 +604,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000",
-                    [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled]: "false",
                     [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
@@ -660,7 +652,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000",
-                    [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps]: "64000",
@@ -718,7 +709,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000",
-                    [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps]: "64000",
@@ -855,7 +845,6 @@ describe("registerPeerMediationGrantRoutes", () => {
                 env: {
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "3000",
-                    [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled]: "true",
                     [FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps]: "64000",

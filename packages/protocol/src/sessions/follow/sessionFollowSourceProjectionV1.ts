@@ -10,10 +10,15 @@ export const SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1 = SESSION_TRANSCR
 export const SessionFollowSourceProjectionRequestV1Schema = z.object({
   v: z.literal(1),
   sourceSessionId: z.string().trim().min(1),
+  edgeKind: z.literal('reports_to').optional(),
+  attachedAt: z.number().int().nonnegative().optional(),
+  readMode: z.enum(['incremental', 'initial_current_snapshot']).optional(),
   afterTranscriptSeq: z.number().int().min(0),
   observedTranscriptSeq: z.number().int().min(0),
   limit: z.number().int().min(1).max(SESSION_FOLLOW_SOURCE_PROJECTION_MAX_PAGE_ROWS_V1),
-}).strict().refine((value) => value.afterTranscriptSeq <= value.observedTranscriptSeq);
+}).strict().refine((value) => value.afterTranscriptSeq <= value.observedTranscriptSeq)
+  .refine((value) => (value.edgeKind === 'reports_to') === (value.attachedAt !== undefined), { path: ['attachedAt'] })
+  .refine((value) => value.readMode !== 'initial_current_snapshot' || value.edgeKind === 'reports_to', { path: ['readMode'] });
 
 export const SessionFollowSourceProjectionV1Schema = z.object({
   id: z.string().trim().min(1),
@@ -33,6 +38,7 @@ export const SessionFollowSourceProjectionV1Schema = z.object({
   latestReadyEventAt: z.number().int().nullable(),
   meaningfulActivityAt: z.number().int().nullable(),
   agentStateVersion: z.number().int().min(0),
+  pendingReviewRuns: z.number().int().nonnegative().optional(),
   pendingPermissionRequestCount: z.number().int().min(0).optional(),
   pendingUserActionRequestCount: z.number().int().min(0).optional(),
   pendingRequestObservedAt: z.number().int().nullable().optional(),

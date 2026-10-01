@@ -39,7 +39,13 @@ const caller = {
     machineId: "machine-1",
     machineInstallationId: "installation-1",
     materializationId: "materialization-1",
-    immutableGenerationId: "generation-1",
+    sourceCustody: {
+        kind: "bundled_first_party",
+        packagedRuntime: {
+            kind: "cli_version_root",
+            versionRootId: "channels-test-cli-root",
+        },
+    },
 } as const;
 
 function listedRow(params: Readonly<{
@@ -59,6 +65,8 @@ function listedRow(params: Readonly<{
 const scheduleAutomation: AutomationListItem = {
     id: "automation-1",
     accountId: "account-1",
+    workflowDefinitionId: null,
+    scopeSessionId: null,
     name: "Daily digest",
     description: null,
     enabled: true,

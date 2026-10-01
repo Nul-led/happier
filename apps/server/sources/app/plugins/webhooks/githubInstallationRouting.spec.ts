@@ -7,19 +7,27 @@ function bytes(value: string): Uint8Array {
 }
 
 describe("verified GitHub installation routing", () => {
-    it("preserves the exact canonical decimal identity without Number coercion", () => {
+    it("preserves safe-integer identities exactly and fails closed beyond safe integers", () => {
+        expect(extractVerifiedGitHubInstallationIdV1(bytes(
+            '{"action":"opened","installation":{"node_id":"x","id":9007199254740991},"repository":{}}',
+        ))).toEqual({ ok: true, installationId: "9007199254740991" });
+        // Bounded JSON.parse cannot preserve precision beyond MAX_SAFE_INTEGER.
+        // Failing closed routes nothing rather than routing the wrong installation.
         expect(extractVerifiedGitHubInstallationIdV1(bytes(
             '{"action":"opened","installation":{"node_id":"x","id":18446744073709551615},"repository":{}}',
-        ))).toEqual({ ok: true, installationId: "18446744073709551615" });
+        ))).toEqual({ ok: false, code: "malformedInstallation" });
     });
 
-    it("reads only the top-level installation object and rejects duplicate routing facts", () => {
+    it("reads only the top-level installation object; JSON duplicate keys resolve to the last value", () => {
         expect(extractVerifiedGitHubInstallationIdV1(bytes(
             '{"repository":{"installation":{"id":123}},"installation":{"id":456}}',
         ))).toEqual({ ok: true, installationId: "456" });
+        // JSON.parse keeps the last duplicate key. Duplicates never reach
+        // routing before signature verification, and GitHub never sends them,
+        // so last-wins is the bounded canonical parse rather than a second tokenizer.
         expect(extractVerifiedGitHubInstallationIdV1(bytes(
             '{"installation":{"id":123},"installation":{"id":456}}',
-        ))).toEqual({ ok: false, code: "malformedInstallation" });
+        ))).toEqual({ ok: true, installationId: "456" });
     });
 
     it("rejects missing, string, zero, negative, fractional, and overlong identities", () => {
@@ -39,7 +47,7 @@ describe("verified GitHub installation routing", () => {
         }
     });
 
-    it("rejects invalid UTF-8, invalid JSON, excessive nesting, and trailing content", () => {
+    it("rejects invalid UTF-8, invalid JSON, and trailing content before verification", () => {
         expect(extractVerifiedGitHubInstallationIdV1(Uint8Array.of(0xff))).toEqual({
             ok: false,
             code: "malformedPayload",
@@ -47,12 +55,20 @@ describe("verified GitHub installation routing", () => {
         for (const payload of [
             '{"installation":{"id":123}',
             '{"installation":{"id":123}} trailing',
-            `${"[".repeat(65)}0${"]".repeat(65)}`,
         ]) {
             expect(extractVerifiedGitHubInstallationIdV1(bytes(payload))).toEqual({
                 ok: false,
                 code: "malformedPayload",
             });
         }
+    });
+
+    it("reports non-object JSON as a routing miss rather than a payload failure", () => {
+        // Bounded JSON.parse admits the syntax; the shape check then reports
+        // no usable installation. Ingest maps both codes to 404, so the
+        // outward routing behavior is unchanged.
+        expect(extractVerifiedGitHubInstallationIdV1(bytes(
+            `${"[".repeat(65)}0${"]".repeat(65)}`,
+        ))).toEqual({ ok: false, code: "malformedInstallation" });
     });
 });

@@ -1,17 +1,44 @@
-import { resolveRelayAccessConfiguredCanonicalPublicServerUrl } from "@happier-dev/cli-common/relayAccess";
+import {
+    resolveRelayAccessConfiguredPublicAccess,
+    type RelayAccessConfiguredPublicAccess,
+} from "@happier-dev/cli-common/relayAccess";
 import { resolveHappyHomeDirFromEnvironment } from "@happier-dev/cli-common/agents";
-import { inferAndApplyTailscaleServePublicServerUrl } from "@/app/integrations/tailscale/tailscaleServePublicUrlInference";
-import { inferAndApplyTailscaleFunnelPublicServerUrl } from "@/app/integrations/tailscale/tailscaleFunnelPublicUrlInference";
+import { inferTailscaleServePublicServerUrl } from "@/app/integrations/tailscale/tailscaleServePublicUrlInference";
+import { inferTailscaleFunnelPublicServerUrl } from "@/app/integrations/tailscale/tailscaleFunnelPublicUrlInference";
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 
+/**
+ * The public address inferred on the computer that runs this server (plan
+ * `2026-09-26-home-owner-console` §3.2): the relay-access method configured here, else Tailscale
+ * Serve, else Tailscale Funnel pointing at this server's port.
+ *
+ * Inference is a read-only source. It never writes the environment; the configuration overlay
+ * places an inferred value after the deployment env and the owner's stored address and stamps it
+ * `inferred`, so it can never become the sign-in audience or pass for a setting (invariants I1, I2).
+ * Results are cached per process with the configured time to live and refreshed when the
+ * relay-access file changes; request paths only peek at the cache and refresh it in the background.
+ */
+export type InferredPublicServerUrlSource = "relay_access" | "tailscale_serve" | "tailscale_funnel";
+
+export type InferredPublicServerUrl = Readonly<{
+    url: string;
+    source: InferredPublicServerUrlSource;
+}>;
+
+export type InferredPublicServerAccess = Readonly<{
+    inferred: InferredPublicServerUrl | null;
+    /** The relay-access configuration on this computer, when one exists. */
+    relayAccess: RelayAccessConfiguredPublicAccess | null;
+}>;
+
 type InferenceCacheState = {
-    value: string | null;
+    value: InferredPublicServerAccess | null;
     resolved: boolean;
     expiresAtMs: number;
     relayAccessMtimeMs: number | null;
-    inflight: Promise<string | null> | null;
+    inflight: Promise<InferredPublicServerAccess> | null;
 };
 
 const cache: InferenceCacheState = {
@@ -22,7 +49,7 @@ const cache: InferenceCacheState = {
     inflight: null,
 };
 
-const INFERRED_ENV_FLAG = "HAPPIER_PUBLIC_SERVER_URL_INFERRED";
+const NOTHING_INFERRED: InferredPublicServerAccess = Object.freeze({ inferred: null, relayAccess: null });
 
 function normalizeHttpUrl(raw: unknown): string | null {
     const value = String(raw ?? "").trim();
@@ -54,10 +81,6 @@ function resolveInternalServerUrl(env: NodeJS.ProcessEnv): string {
     return `http://127.0.0.1:${port}`;
 }
 
-function isEnvPublicServerUrlInferred(env: NodeJS.ProcessEnv): boolean {
-    return String(env[INFERRED_ENV_FLAG] ?? "").trim() === "1";
-}
-
 function shouldInferFromRelayAccessConfig(env: NodeJS.ProcessEnv): boolean {
     return parseBooleanEnv(env.HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL, true);
 }
@@ -69,6 +92,84 @@ async function readRelayAccessConfigMtimeMs(env: NodeJS.ProcessEnv): Promise<num
     const st = await stat(path).catch(() => null);
     if (!st) return null;
     return typeof st.mtimeMs === "number" ? st.mtimeMs : null;
+}
+
+async function probePublicServerAccess(env: NodeJS.ProcessEnv): Promise<InferredPublicServerAccess> {
+    const relayAccess = shouldInferFromRelayAccessConfig(env)
+        ? await resolveRelayAccessConfiguredPublicAccess(env, { upstreamUrl: resolveInternalServerUrl(env) })
+            .catch(() => null)
+        : null;
+    const relayAccessUrl = normalizeHttpUrl(relayAccess?.shareUrl);
+    if (relayAccessUrl) return { inferred: { url: relayAccessUrl, source: "relay_access" }, relayAccess };
+
+    const serveUrl = normalizeHttpUrl(await inferTailscaleServePublicServerUrl(env));
+    if (serveUrl) return { inferred: { url: serveUrl, source: "tailscale_serve" }, relayAccess };
+    const funnelUrl = normalizeHttpUrl(await inferTailscaleFunnelPublicServerUrl(env));
+    if (funnelUrl) return { inferred: { url: funnelUrl, source: "tailscale_funnel" }, relayAccess };
+    return { inferred: null, relayAccess };
+}
+
+/** Starts (or joins) the one in-flight probe; `cache.inflight` is set synchronously. */
+function refresh(
+    env: NodeJS.ProcessEnv,
+    readMtimeMs: () => Promise<number | null>,
+): Promise<InferredPublicServerAccess> {
+    if (cache.inflight) return cache.inflight;
+    const inflight: Promise<InferredPublicServerAccess> = (async () => {
+        const relayAccessMtimeMs = await readMtimeMs().catch(() => null);
+        const value = await probePublicServerAccess(env).catch(() => cache.value ?? NOTHING_INFERRED);
+        cache.value = value;
+        cache.resolved = true;
+        cache.expiresAtMs = Date.now() + resolveCacheTtlMs(env);
+        cache.relayAccessMtimeMs = relayAccessMtimeMs;
+        return value;
+    })().finally(() => {
+        if (cache.inflight === inflight) cache.inflight = null;
+    });
+    cache.inflight = inflight;
+    return inflight;
+}
+
+/**
+ * Resolves what this computer can say about its public address, probing when the cache is cold,
+ * expired, or the relay-access configuration changed. Single-flight. For callers that can wait
+ * (startup, the Home console's reachability read).
+ */
+export async function resolveInferredPublicServerAccess(env: NodeJS.ProcessEnv): Promise<InferredPublicServerAccess> {
+    const relayAccessMtimeMs = await readRelayAccessConfigMtimeMs(env);
+    const relayAccessChanged = relayAccessMtimeMs !== cache.relayAccessMtimeMs;
+    if (cache.resolved && cache.value && !relayAccessChanged && Date.now() < cache.expiresAtMs) {
+        return cache.value;
+    }
+    return await refresh(env, async () => relayAccessMtimeMs);
+}
+
+export async function resolveInferredPublicServerUrl(env: NodeJS.ProcessEnv): Promise<InferredPublicServerUrl | null> {
+    return (await resolveInferredPublicServerAccess(env)).inferred;
+}
+
+/**
+ * The hot-path read: the last inferred address, never waiting. A cold or expired cache starts one
+ * background refresh; until it lands the caller sees the previous answer (or nothing yet).
+ */
+export function peekInferredPublicServerUrl(env: NodeJS.ProcessEnv): InferredPublicServerUrl | null {
+    if (!cache.resolved || Date.now() >= cache.expiresAtMs) {
+        void refresh(env, () => readRelayAccessConfigMtimeMs(env)).catch(() => undefined);
+    }
+    return cache.value?.inferred ?? null;
+}
+
+/** The last resolved inference facts, without probing. */
+export function readInferredPublicServerAccess(): InferredPublicServerAccess | null {
+    return cache.resolved ? cache.value : null;
+}
+
+export function resetPublicServerUrlInferenceCacheForTests(): void {
+    cache.value = null;
+    cache.resolved = false;
+    cache.expiresAtMs = 0;
+    cache.relayAccessMtimeMs = null;
+    cache.inflight = null;
 }
 
 function readSingleHeaderValue(headers: Record<string, unknown>, name: string): string {
@@ -111,79 +212,6 @@ function normalizeHostForComparison(raw: string): Readonly<{ hostname: string; p
     } catch {
         return null;
     }
-}
-
-export async function resolveCachedPublicServerUrl(
-    env: NodeJS.ProcessEnv,
-): Promise<string | null> {
-    const explicit = readPublicServerUrlFromEnv(env);
-    if (explicit && !isEnvPublicServerUrlInferred(env)) return explicit;
-
-    const now = Date.now();
-    const ttlMs = resolveCacheTtlMs(env);
-    const inferRelayAccess = shouldInferFromRelayAccessConfig(env);
-    const relayAccessMtimeMs = inferRelayAccess ? await readRelayAccessConfigMtimeMs(env) : null;
-    const relayAccessChanged = (relayAccessMtimeMs ?? null) !== (cache.relayAccessMtimeMs ?? null);
-
-    if (cache.resolved && !relayAccessChanged && now < cache.expiresAtMs) {
-        return cache.value;
-    }
-    if (cache.inflight) return await cache.inflight;
-
-    cache.inflight = (async () => {
-        try {
-            // A previously inferred ingress is a cache result, not explicit
-            // operator configuration. Re-probe against an environment without
-            // that stale result so relay/Tailscale owners can observe changes,
-            // while preserving the last-known ingress if re-probing fails.
-            const inferenceEnv = isEnvPublicServerUrlInferred(env)
-                ? { ...env, HAPPIER_PUBLIC_SERVER_URL: "" }
-                : env;
-            const relayAccessCandidate = inferRelayAccess
-                ? await resolveRelayAccessConfiguredCanonicalPublicServerUrl(inferenceEnv, {
-                    upstreamUrl: resolveInternalServerUrl(inferenceEnv),
-                })
-                : null;
-            if (relayAccessCandidate) {
-                env.HAPPIER_PUBLIC_SERVER_URL = relayAccessCandidate;
-                env[INFERRED_ENV_FLAG] = "1";
-                return relayAccessCandidate;
-            }
-            const inferred =
-                (await inferAndApplyTailscaleServePublicServerUrl(inferenceEnv))
-                ?? (await inferAndApplyTailscaleFunnelPublicServerUrl(inferenceEnv));
-            if (inferred) {
-                env.HAPPIER_PUBLIC_SERVER_URL = inferred;
-                env[INFERRED_ENV_FLAG] = "1";
-            }
-        } finally {
-            // Whether inference succeeded or failed, normalize the current env value for caching.
-            const resolved = normalizeHttpUrl(env.HAPPIER_PUBLIC_SERVER_URL);
-            cache.value = resolved;
-            cache.resolved = true;
-            cache.expiresAtMs = Date.now() + ttlMs;
-            cache.relayAccessMtimeMs = relayAccessMtimeMs;
-        }
-        return cache.value;
-    })();
-
-    try {
-        return await cache.inflight;
-    } finally {
-        cache.inflight = null;
-    }
-}
-
-export function readPublicServerUrlFromEnv(env: NodeJS.ProcessEnv): string | null {
-    return normalizeHttpUrl(env.HAPPIER_PUBLIC_SERVER_URL);
-}
-
-export function resetPublicServerUrlInferenceCacheForTests(): void {
-    cache.value = null;
-    cache.resolved = false;
-    cache.expiresAtMs = 0;
-    cache.relayAccessMtimeMs = null;
-    cache.inflight = null;
 }
 
 export function isRequestOnPublicServerUrl(params: Readonly<{

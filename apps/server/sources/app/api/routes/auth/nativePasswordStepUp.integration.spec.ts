@@ -59,6 +59,15 @@ describe("native current-password first-key authority", () => {
             const expired = (await stepUp()).json().externalAuthProof;
             await db.repeatKey.update({ where: { key: expired.pending }, data: { expiresAt: new Date(0) } });
             expect(await inTx(tx => consumeAccountEncryptionFirstKeyExternalAuthProofInTx(tx, { accountId: account.id, requestDigest, externalAuthProof: expired }))).toMatchObject({ ok: false, reason: "expired" });
+            const replacedEnrollment = (await stepUp()).json().externalAuthProof;
+            const previousIdentity = await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: account.id, provider: "email" } } });
+            // Replacement can preserve email and revision; neither identifies
+            // the enrollment whose password was actually verified.
+            await db.accountIdentity.delete({ where: { id: previousIdentity.id } });
+            await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: "stepup@example.test", profile: {} } });
+            expect(await inTx(tx => consumeAccountEncryptionFirstKeyExternalAuthProofInTx(tx, {
+                accountId: account.id, requestDigest, externalAuthProof: replacedEnrollment,
+            }))).toMatchObject({ ok: false });
             const changedIdentity = (await stepUp()).json().externalAuthProof;
             await db.accountIdentity.updateMany({ where: { accountId: account.id, provider: "email" }, data: { providerUserId: "changed@example.test" } });
             expect(await inTx(tx => consumeAccountEncryptionFirstKeyExternalAuthProofInTx(tx, { accountId: account.id, requestDigest, externalAuthProof: changedIdentity }))).toMatchObject({ ok: false, reason: "identity_mismatch" });

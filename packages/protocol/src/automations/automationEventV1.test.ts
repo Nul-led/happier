@@ -838,7 +838,8 @@ describe('Automation event V1 contracts', () => {
           materializationId: 'materialization-1',
           pluginId: 'com.acme.github',
         },
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       },
       input: { transport: { kind: 'checkpointedPull' } },
     });
@@ -851,7 +852,8 @@ describe('Automation event V1 contracts', () => {
           materializationId: 'materialization-1',
           pluginId: 'com.acme.github',
         },
-        immutableGenerationId: 'github-immutable-generation-a',
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       },
       input: { transport: { kind: 'checkpointedPull' }, pageSize: 500 },
     });
@@ -859,7 +861,7 @@ describe('Automation event V1 contracts', () => {
       ...request,
       caller: { ...request.caller, accountId: 'caller-controlled-account' },
     }).success).toBe(false);
-    const { immutableGenerationId: _generation, ...unstampedCaller } = request.caller;
+    const { occurrenceId: _occurrence, ...unstampedCaller } = request.caller;
     expect(AutomationEventActionHttpRequestSchemasV1['automation.event.sources.list'].safeParse({
       ...request,
       caller: unstampedCaller,
@@ -914,7 +916,8 @@ describe('Automation event V1 contracts', () => {
       v: 1,
       caller: {
         pluginId: 'com.acme.github',
-        immutableGenerationId,
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
         materialization: {
           machineId: 'machine-1',
           materializationId: 'materialization-1',
@@ -967,7 +970,8 @@ describe('Automation event V1 contracts', () => {
     } as const;
     const caller = {
       pluginId: 'com.acme.github',
-      immutableGenerationId,
+      occurrenceId: 'github-occurrence-a',
+      sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       materialization: {
         machineId: 'machine-1',
         materializationId: 'materialization-1',
@@ -1190,7 +1194,12 @@ describe('Automation event V1 contracts', () => {
     const caller = {
       pluginId: 'com.acme.github',
       contributionLocalId: 'repository-events',
-      immutableGenerationId,
+      occurrenceId: 'github-occurrence-a',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId,
+        installSource: 'npm' as const,
+      },
       materialization: {
         machineId: 'machine-1',
         materializationId: 'materialization-1',
@@ -1345,7 +1354,7 @@ describe('Automation event V1 contracts', () => {
         materializationId: 'materialization-1',
         pluginId: 'com.acme.github',
       },
-      reporterImmutableGenerationId: 'gen-github-immutable-a',
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       state: sourceReport.state,
       code: sourceReport.code,
       lastObservedAt: sourceReport.lastObservedAt,
@@ -1360,7 +1369,7 @@ describe('Automation event V1 contracts', () => {
     expect(AutomationEventSourceStatusV1Schema.parse(projectedStatus)).toEqual(projectedStatus);
     expect(AutomationEventSourceStatusReportV1Schema.safeParse({
       ...sourceReport,
-      reporterImmutableGenerationId: 'gen-github-immutable-a',
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
     }).success).toBe(false);
   });
 
@@ -1373,7 +1382,7 @@ describe('Automation event V1 contracts', () => {
         materializationId: 'materialization-1',
         pluginId: 'com.acme.github',
       },
-      reporterImmutableGenerationId: 'github-immutable-generation-a',
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       scopeKey: 'durablePush:wh_ep_AAAAAAAAAAAAAAAAAAAAAB',
       observedRevision: '1',
       adoptedRevision: '1',
@@ -1394,7 +1403,7 @@ describe('Automation event V1 contracts', () => {
         materializationId: 'materialization-1',
         pluginId: 'com.acme.github',
       },
-      reporterImmutableGenerationId: 'github-immutable-generation-a',
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       observedRevision: '1',
       adoptedRevision: '1',
       state: 'current',

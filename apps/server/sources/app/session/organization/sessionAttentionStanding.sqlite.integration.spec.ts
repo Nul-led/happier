@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { SessionOrganizationSnapshotResponseSchema } from "@happier-dev/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const scheduleAccountActivityBadgeRefresh = vi.hoisted(() => vi.fn());
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
@@ -84,6 +85,49 @@ describe("session attention standings on SQLite", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it("requires an update only for released readers whose standing snapshot exceeds 500 rows", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+        const sessionIds = Array.from({ length: 500 }, () => randomUUID());
+        await db.session.createMany({ data: sessionIds.map((id) => ({
+            id, accountId, tag: `session-${id}`, metadata: "{}", metadataVersion: 0,
+            agentState: null, agentStateVersion: 0,
+        })) });
+        await db.sessionAttentionStanding.createMany({ data: sessionIds.map((id) => ({
+            accountId, sessionId: id, standing: true,
+        })) });
+        const route = createSnapshotRouteBuilder();
+        const legacyQuery = { includeAttentionStandings: "true" };
+        const withinLimit = await route.invoke({ userId: accountId, query: legacyQuery });
+        expect(withinLimit.reply.statusCode).toBe(200);
+        // Pinned ui-web-v0.2.11 (98ea8fb76733b1dd785d38c31360179cafa84824):
+        // packages/protocol/src/sessionOrganization/{standings,snapshot,constants}.ts.
+        // Keep this released strict vector independent of the current unrestricted schema.
+        const releasedStandings = z.array(z.object({
+            sessionId: z.string().trim().min(1).max(191),
+            standing: z.boolean(), updatedAt: z.number().int().nonnegative(),
+        }).strict()).max(500);
+        const withinSnapshot = SessionOrganizationSnapshotResponseSchema.parse(withinLimit.response).snapshot;
+        expect(releasedStandings.parse(withinSnapshot.attentionStandings)).toHaveLength(500);
+
+        const write = await createStandingRouteBuilder().invoke({
+            userId: accountId, params: { sessionId }, body: { standing: true },
+        });
+        expect(write.reply.statusCode).toBe(200);
+        const oversized = await route.invoke({ userId: accountId, query: legacyQuery });
+        expect(oversized.reply.statusCode).toBe(426);
+        expect(oversized.response).toEqual({
+            error: "client-upgrade-required",
+            requirement: { v: 1, kind: "session-organization", minimumProtocolVersion: 2 },
+        });
+        const current = await route.invoke({
+            userId: accountId, query: { ...legacyQuery, projectionVersion: "2" },
+        });
+        expect(current.reply.statusCode).toBe(200);
+        expect(SessionOrganizationSnapshotResponseSchema.parse(current.response).snapshot.attentionStandings)
+            .toHaveLength(501);
+        expect((await route.invoke({ userId: accountId, query: {} })).reply.statusCode).toBe(200);
     });
 
     it("round-trips the standing tri-state through the route", async () => {
@@ -431,7 +475,7 @@ describe("session attention standings on SQLite", () => {
 
         const snapshot = await createSnapshotRouteBuilder().invoke({
             userId: accountId,
-            query: { includeAttentionStandings: "true" },
+            query: { includeAttentionStandings: "true", projectionVersion: "2" },
         });
         expect(SessionOrganizationSnapshotResponseSchema.parse(snapshot.response).snapshot.attentionStandings)
             .toHaveLength(502);

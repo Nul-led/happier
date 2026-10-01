@@ -1,23 +1,155 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  WorkflowContainerClosingV1Schema,
   WorkflowActionFailureV1Schema,
+  WorkflowExecutionCorrespondenceV1Schema,
+  WorkflowConversationRefV1Schema,
   areWorkflowRetainedRuntimeSelectionsEqualV1,
   projectWorkflowRetainedRuntimeSelectionV1,
   projectWorkflowBigIntV1,
   WorkflowFinalResultV1Schema,
+  projectWorkflowFinalResultDeliverableTextV1,
   WorkflowInvocationLifecycleV1Schema,
   WorkflowControlV1Schema,
   WorkflowProgressEnvelopeV1Schema,
+  WorkflowInvocationPathV1Schema,
   WorkflowRecoveryChoiceV1Schema,
   WorkflowResultRefV1Schema,
   WorkflowRunInvocationIndexV1Schema,
   WorkflowRunOriginV1Schema,
   WorkflowRunSummaryV1Schema,
+  WorkflowRunAvailabilityV1Schema,
+  WorkflowInvocationRecoveryAvailabilityV1Schema,
   WorkflowStepObservationV1Schema,
+  classifyWorkflowHoldV1,
+  applyWorkflowInvocationFactV1,
 } from './workflowProgressV1.js';
 
 describe('workflow progress v1', () => {
+  it('rejects the retired older-daemon input-admission update requirement', () => {
+    expect(WorkflowActionFailureV1Schema.safeParse({ ok: false,
+      errorCode: 'workflow_input_admission_update_required',
+      error: 'workflow_input_admission_update_required',
+    }).success).toBe(false);
+  });
+  it('requires the current invocation restoration decision and rejects retired Run recovery flags', () => {
+    const unavailable = { kind: 'unavailable', reason: 'run_not_interrupted' };
+    const recovery = { reattach: unavailable, retry: unavailable,
+      continueSameConversation: unavailable, continueFreshAgent: unavailable };
+    expect(WorkflowInvocationRecoveryAvailabilityV1Schema.safeParse(recovery).success).toBe(false);
+    expect(WorkflowInvocationRecoveryAvailabilityV1Schema.safeParse({ ...recovery, restoreWorkspace: unavailable }).success).toBe(true);
+    const availability = { pause: false, resumeBoundary: false, restoreWorkspace: false,
+      cancel: false, inspectExecution: true, disabledReasons: [] };
+    expect(WorkflowRunAvailabilityV1Schema.safeParse(availability).success).toBe(true);
+    for (const field of ['recoverSameConversation', 'recoverFreshAgent', 'retry']) {
+      expect(WorkflowRunAvailabilityV1Schema.safeParse({ ...availability, [field]: false }).success).toBe(false);
+    }
+  });
+
+  it('requires current Run ownership and visibility facts while attention remains operation-specific', () => {
+    const summary = { id: 'run-1', sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
+      origin: { kind: 'direct' }, state: 'queued', revision: 0, machineId: 'machine-1',
+      workflowCustodyState: 'pending', originDeliveryAckRevision: null,
+      availability: { pause: true, resumeBoundary: false, restoreWorkspace: false,
+        cancel: true, inspectExecution: true, disabledReasons: [] },
+      createdAt: '2026-09-08T00:00:00.000Z', updatedAt: '2026-09-08T00:00:00.000Z' };
+    expect(WorkflowRunSummaryV1Schema.safeParse(summary).success).toBe(true);
+    for (const field of ['sourceArtifactId', 'ownerAccountId', 'visibleTeamId']) {
+      const missing = Object.fromEntries(Object.entries(summary).filter(([key]) => key !== field));
+      expect(WorkflowRunSummaryV1Schema.safeParse(missing).success).toBe(false);
+    }
+    expect(WorkflowRunSummaryV1Schema.safeParse({ ...summary, attentionRequired: true }).success).toBe(true);
+  });
+  it('preserves the existing typed Run access denial at the Workflow failure boundary', () => {
+    expect(WorkflowActionFailureV1Schema.safeParse({
+      ok: false, errorCode: 'run_access_denied', error: 'run_access_denied',
+    }).success).toBe(true);
+  });
+  it('persists strict decision, stop-arm and exhaustion outcomes in the existing closing fact', () => {
+    for (const outcome of [
+      { kind: 'decision', value: 'stuck', reason: 'no progress' },
+      { kind: 'stop_condition', arm: 2 },
+      { kind: 'stop_condition' },
+      { kind: 'exhausted', rounds: 3 },
+    ]) expect(WorkflowContainerClosingV1Schema.parse({ code: 'loop_completed', outcome })).toEqual({ code: 'loop_completed', outcome });
+    for (const outcome of [
+      { kind: 'decision', value: 'done', hidden: true },
+      { kind: 'stop_condition', arm: -1 },
+      { kind: 'exhausted', rounds: 0 },
+      { kind: 'unknown' },
+    ]) expect(WorkflowContainerClosingV1Schema.safeParse({ code: 'loop_completed', outcome }).success).toBe(false);
+  });
+  it('round-trips admitted child inputs in the sealed frame progress', () => {
+    const progress = { kind: 'happier.workflow-progress.v1', invocationPath: { blockId: 'child', scope: [] },
+      blockKind: 'workflow', attempt: '0', logicalInvocationRecordId: 'child-invocation',
+      container: { kind: 'body', nextBlockOrdinal: '1', frameInputs: { rounds: 2 },
+        frameProjectWorkspace: { descriptor: { machineId: 'machine', directory: '/repo/app', checkoutRootPath: '/repo' },
+          creationIntent: { kind: 'git_worktree', sourceDirectory: '/source/app', baseRef: 'a'.repeat(40),
+            displayName: 'workflow-frame', branchMode: 'new' } } } };
+    expect(WorkflowProgressEnvelopeV1Schema.parse(JSON.parse(JSON.stringify(progress)))).toMatchObject(progress);
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse({ ...progress,
+      container: { ...progress.container, frameInputs: { 'invalid name': 2 } } }).success).toBe(false);
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse({ ...progress, container: { ...progress.container,
+      frameProjectWorkspace: { ...progress.container.frameProjectWorkspace, hiddenOwner: 'other' } } }).success).toBe(false);
+  });
+  it('retains the exact frozen nested Workflow scope without caller-owned ancestry fields', () => {
+    const path = { blockId: 'child-leaf', scope: [{ kind: 'workflow', blockId: 'child' }] };
+    expect(WorkflowInvocationPathV1Schema.safeParse(path).success).toBe(true);
+    expect(WorkflowInvocationPathV1Schema.safeParse({ ...path,
+      scope: [{ ...path.scope[0], sourceArtifactId: 'caller-chosen' }],
+    }).success).toBe(false);
+  });
+  it('classifies pending generation intent as runnable and ignores historical holds', () => {
+    const row = { isCurrent: true, lifecycle: 'waiting_for_review' as const, progress: {} };
+    expect(classifyWorkflowHoldV1(row)).toBe('awaiting_person');
+    const generate = { ...row, progress: { review: { decision: {
+      kind: 'generate' as const, requestedFromContentRevision: '0',
+    } } } };
+    expect(classifyWorkflowHoldV1(generate)).toBe('generate');
+    expect(classifyWorkflowHoldV1({ ...generate, isCurrent: false })).toBe('resolved');
+    expect(classifyWorkflowHoldV1({ ...generate, lifecycle: 'completed' })).toBe('resolved');
+  });
+  it('rebases owned observations without replacing the published value or review reason', () => {
+    const current = WorkflowProgressEnvelopeV1Schema.parse({
+      kind: 'happier.workflow-progress.v1', invocationPath: { blockId: 'a', scope: [] },
+      blockKind: 'step', attempt: '0', logicalInvocationRecordId: 'inv-1', result: { version: 'published' },
+      reason: { code: 'review_required' }, review: { resultSource: { kind: 'published', by: 'agent' } },
+    });
+    const next = applyWorkflowInvocationFactV1(current, { result: 'late prose', reason: 'stale',
+      usage: { outputTokens: 9 }, interaction: { requests: {} } });
+    expect(next.result).toEqual({ version: 'published' });
+    expect(next.reason).toEqual(current.reason);
+    expect(next.review).toEqual(current.review);
+    expect(next.usage).toEqual({ outputTokens: 9 });
+    expect(current.usage).toBeUndefined();
+    expect(applyWorkflowInvocationFactV1({ ...current, result: undefined, reason: undefined }, {
+      result: null, reason: 'input_failed', reasonMessage: 'visible',
+    })).toMatchObject({ result: null, reason: { code: 'input_failed', message: 'visible' } });
+  });
+  it('keeps review intent private and requires a row content token', () => {
+    expect(WorkflowInvocationLifecycleV1Schema.safeParse('waiting_for_review').success).toBe(true);
+    const index = { id: 'inv-1', runId: 'run-1', sequence: '0', parentRecordId: null,
+      memberOrdinal: '0', attempt: '0', lifecycle: 'waiting_for_review',
+      createdAt: '2026-09-30T00:00:00.000Z', updatedAt: '2026-09-30T00:00:00.000Z' };
+    expect(WorkflowRunInvocationIndexV1Schema.safeParse(index).success).toBe(false);
+    expect(WorkflowRunInvocationIndexV1Schema.safeParse({ ...index, contentRevision: '3' }).success).toBe(true);
+    const progress = { kind: 'happier.workflow-progress.v1', invocationPath: { blockId: 'a', scope: [] },
+      blockKind: 'step', attempt: '0', logicalInvocationRecordId: 'inv-1',
+      review: { decision: { kind: 'generate', requestedFromContentRevision: '2' } } };
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse(progress).success).toBe(true);
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse({ ...progress,
+      review: { decision: { kind: 'generate', requestedFromContentRevision: '2', followUp: { kind: 'editing' } } },
+    }).success).toBe(false);
+  });
+  it('refuses retired Workflow attached correspondence and conversation identities', () => {
+    expect(WorkflowExecutionCorrespondenceV1Schema.safeParse({
+      kind: 'attached_run', sessionId: 'session-1', runId: 'execution-1', localInputId: 'input-1',
+    }).success).toBe(false);
+    expect(WorkflowConversationRefV1Schema.safeParse({
+      kind: 'attached_run', machineId: 'machine-1', sessionId: 'session-1', runId: 'execution-1',
+    }).success).toBe(false);
+  });
   it('represents exact recorded-workspace restoration as an explicit recovery choice', () => {
     expect(WorkflowRecoveryChoiceV1Schema.parse({
       kind: 'restore_workspace', invocation: { recordId: 'inv-1' },
@@ -34,7 +166,7 @@ describe('workflow progress v1', () => {
   it('projects database BigInts as canonical nonnegative decimal strings', () => {
     const base = {
       id: 'inv-1', runId: 'run-1', sequence: '0', parentRecordId: null,
-      memberOrdinal: '12', attempt: '2', lifecycle: 'running',
+      memberOrdinal: '12', attempt: '2', contentRevision: '0', lifecycle: 'running',
       createdAt: '2026-09-08T00:00:00.000Z', updatedAt: '2026-09-08T00:00:00.000Z',
     };
     expect(WorkflowRunInvocationIndexV1Schema.safeParse(base).success).toBe(true);
@@ -48,7 +180,7 @@ describe('workflow progress v1', () => {
   });
 
   it('keeps lifecycle in the public index and out of the sealed progress payload', () => {
-    expect(WorkflowInvocationLifecycleV1Schema.options).toHaveLength(13);
+    expect(WorkflowInvocationLifecycleV1Schema.options).toHaveLength(14);
     expect(WorkflowProgressEnvelopeV1Schema.safeParse({
       kind: 'happier.workflow-progress.v1',
       invocationPath: { blockId: 'a', scope: [] },
@@ -109,6 +241,25 @@ describe('workflow progress v1', () => {
       invocationPath: { blockId: '$root', scope: [] },
       blockKind: 'step',
     }).success).toBe(false);
+  });
+
+  it('uses the same nonnegative attempt identity for initial and recovered structural frames', () => {
+    const structural = {
+      kind: 'happier.workflow-progress.v1',
+      invocationPath: { blockId: 'parallel-1', scope: [] },
+      blockKind: 'parallel',
+      logicalInvocationRecordId: 'logical-parallel-1',
+      container: { kind: 'parallel', nextBranchOrdinal: '0' },
+    } as const;
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse({ ...structural, attempt: '0' }).success).toBe(true);
+    expect(WorkflowProgressEnvelopeV1Schema.safeParse({
+      ...structural,
+      attempt: '1',
+      previousAttemptRecordId: 'prior-parallel-1',
+    }).success).toBe(true);
+    for (const attempt of ['-1', '01', '1.0']) {
+      expect(WorkflowProgressEnvelopeV1Schema.safeParse({ ...structural, attempt }).success).toBe(false);
+    }
   });
 
   it('keeps provider resume identity private to detached execution correspondence', () => {
@@ -352,18 +503,18 @@ describe('workflow progress v1', () => {
     expect(WorkflowRunOriginV1Schema.safeParse({ kind: 'automation', automationId: 'a', extra: true }).success).toBe(false);
   });
 
-  it('projects direct result delivery separately from terminal Run lifecycle', () => {
-    const summary = WorkflowRunSummaryV1Schema.parse({
+  it('projects the origin delivery acknowledgement separately from terminal Run lifecycle', () => {
+    const summary = WorkflowRunSummaryV1Schema.parse({ sourceArtifactId: null, ownerAccountId: 'account-1', visibleTeamId: null,
       id: 'run-1',
       origin: { kind: 'direct', originSessionId: 'session-1' },
       state: 'succeeded',
       revision: 3,
       machineId: 'machine-1',
       workflowCustodyState: 'settled',
-      workflowResultDeliveryState: { kind: 'unavailable' },
+      originDeliveryAckRevision: 2,
       availability: {
-        pause: false, resumeBoundary: false, recoverSameConversation: false,
-        recoverFreshAgent: false, retry: false, restoreWorkspace: false, cancel: false,
+        pause: false, resumeBoundary: false,
+          restoreWorkspace: false, cancel: false,
         inspectExecution: true, disabledReasons: [],
       },
       createdAt: '2026-09-08T00:00:00.000Z',
@@ -371,42 +522,31 @@ describe('workflow progress v1', () => {
     });
     expect(summary).toMatchObject({
       state: 'succeeded',
-      workflowResultDeliveryState: { kind: 'unavailable' },
+      originDeliveryAckRevision: 2,
     });
     expect(WorkflowRunSummaryV1Schema.safeParse({
       ...summary,
-      workflowResultDeliveryState: 'unavailable',
+      originDeliveryAckRevision: -1,
     }).success).toBe(false);
     expect(WorkflowRunSummaryV1Schema.safeParse({
       ...summary,
       availability: {
-        pause: false, resumeBoundary: false, recoverSameConversation: false,
-        recoverFreshAgent: false, retry: false, cancel: false,
+        pause: false, resumeBoundary: false,
+          cancel: false,
         inspectExecution: true, disabledReasons: [],
       },
     }).success).toBe(false);
     expect(WorkflowRunSummaryV1Schema.safeParse({
       ...summary,
       availability: {
-        pause: false, resumeBoundary: false, recoverSameConversation: false,
-        recoverFreshAgent: false, retry: false, restoreWorkspace: false,
+        pause: false, resumeBoundary: false,
+          restoreWorkspace: false,
         cancel: false, inspectExecution: true,
       },
     }).success).toBe(false);
-    expect(WorkflowRunSummaryV1Schema.parse({
-      ...summary,
-      workflowResultDeliveryState: {
-        kind: 'unavailable',
-        reason: 'workflow_outcome_unresolved',
-      },
-    }).workflowResultDeliveryState).toEqual({
-      kind: 'unavailable',
-      reason: 'workflow_outcome_unresolved',
-    });
-    expect(WorkflowRunSummaryV1Schema.safeParse({
-      ...summary,
-      workflowResultDeliveryState: { kind: 'unavailable', reason: 'invented_reason' },
-    }).success).toBe(false);
+    expect(WorkflowRunSummaryV1Schema.parse({ ...summary, originDeliveryAckRevision: null }).originDeliveryAckRevision).toBeNull();
+    expect(WorkflowRunSummaryV1Schema.safeParse({ ...summary, originDeliveryAckRevision: 1.5 }).success).toBe(false);
+    expect(WorkflowRunSummaryV1Schema.safeParse({ ...summary, workflowResultDeliveryState: 'pending' }).success).toBe(false);
   });
 
   it('requires the exact Run handle on the self-dependency failure and forbids details elsewhere', () => {
@@ -506,6 +646,25 @@ describe('workflow progress v1', () => {
     }));
     expect(parsed.result).toEqual({ changed: true });
     expect(parsed.usage).toEqual({ inputTokens: 120, outputTokens: 30, costUsd: 0.04 });
+  });
+
+  it('projects the one direct-delivery representation from every final result variant', () => {
+    const finalResult = (result: Parameters<typeof WorkflowFinalResultV1Schema.parse>[0]) =>
+      WorkflowFinalResultV1Schema.parse(result);
+    const producerInvocation = { recordId: 'inv-final' };
+
+    expect(projectWorkflowFinalResultDeliverableTextV1(finalResult({
+      kind: 'happier.workflow-final-result.v1', result: { kind: 'text', value: 'done' }, producerInvocation,
+    }))).toBe('done');
+    expect(projectWorkflowFinalResultDeliverableTextV1(finalResult({
+      kind: 'happier.workflow-final-result.v1', result: { kind: 'decision', value: 'continue' }, producerInvocation,
+    }))).toBe('continue');
+    expect(projectWorkflowFinalResultDeliverableTextV1(finalResult({
+      kind: 'happier.workflow-final-result.v1', result: { kind: 'json', value: 'json-text' }, producerInvocation,
+    }))).toBe('json-text');
+    expect(projectWorkflowFinalResultDeliverableTextV1(finalResult({
+      kind: 'happier.workflow-final-result.v1', result: { kind: 'json', value: { ok: true } }, producerInvocation,
+    }))).toBeNull();
   });
 
   it('rejects usage values that the canonical runtime usage owner cannot represent', () => {

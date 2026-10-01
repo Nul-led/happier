@@ -282,12 +282,35 @@ describe("Team external-fact seam (SQLite integration)", () => {
             desired: "active",
             historyAccess: "from_membership",
         }));
-        expect(seized).toEqual({ status: "management_conflict" });
         const untouched = await db.teamMembership.findUniqueOrThrow({
             where: { teamId_accountId: { teamId: acme.id, accountId: person.id } },
         });
+        // Reported as somebody else's lifetime, not as a conflict: the source
+        // still has valid Group evidence against this exact membership.
+        expect(seized).toEqual({ status: "managed_elsewhere", teamMembershipId: untouched.id });
         expect(untouched.role).toBe("admin");
         expect(untouched.sessionAccessStartsAt).toBeNull();
+
+        // A source cannot end a lifetime it never admitted, so an offboarding
+        // observation for that person is a no-op rather than a conflict that
+        // would park the whole source.
+        const notOffboarded = await inTx((tx) => applyExternalTeamMembershipInTx(tx, {
+            teamId: acme.id,
+            accountId: person.id,
+            source: {
+                kind: "directory_source",
+                directorySourceId: directorySource.id,
+                externalUserId: "ext-2",
+            },
+            desired: "absent",
+            historyAccess: "from_membership",
+        }));
+        expect(notOffboarded).toEqual({
+            status: "unchanged",
+            teamMembershipId: untouched.id,
+            accountId: person.id,
+        });
+        await expect(db.teamMembership.count({ where: { id: untouched.id } })).resolves.toBe(1);
 
         // A source belonging to another Team cannot reach this one.
         const other = await team("Other Home Team");
@@ -337,7 +360,10 @@ describe("Team external-fact seam (SQLite integration)", () => {
             },
             desired: "active",
             historyAccess: "from_membership",
-        }))).resolves.toEqual({ status: "management_conflict" });
+        }))).resolves.toEqual({
+            status: "managed_elsewhere",
+            teamMembershipId: activated.teamMembershipId,
+        });
         await expect(db.teamMembership.findUniqueOrThrow({
             where: { id: activated.teamMembershipId },
             select: { identityConnectionManagement: { select: { teamIdentityConnectionId: true } } },

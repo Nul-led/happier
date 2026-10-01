@@ -54,6 +54,8 @@ describe('legacy direct-session takeover wire schemas', () => {
       'invalid_request',
       'machine_offline',
       'agent_unavailable',
+      'agent_timeout',
+      'agent_error',
       'internal_error',
     ]);
     expect(ExternalSessionsRpcErrorCodeSchema.safeParse('provider_unavailable').success).toBe(false);

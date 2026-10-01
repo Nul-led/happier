@@ -7,6 +7,8 @@ import { z } from 'zod';
  */
 export const SESSION_INPUT_ADMISSION_REJECTION_CODES_V1 = [
   'session_input_invalid',
+  'model_not_granted',
+  'permission_mode_not_granted',
   'session_input_archived',
   'session_input_unauthorized',
   'session_input_target_unavailable',

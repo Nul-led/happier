@@ -20,8 +20,10 @@ import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { inTx } from "@/storage/inTx";
 
+import { listHomeAdministrationEventsInTx } from "@/app/home/audit/homeAdministrationEvents";
 import {
     createHomeManagedOidcProvider,
+    deleteHomeManagedIdentityProvider,
     listHomeManagedIdentityProviders,
     replaceHomeManagedIdentityProviderSecret,
     setHomeManagedIdentityProviderEnabled,
@@ -72,6 +74,7 @@ afterAll(async () => {
     await harness.close();
 });
 afterEach(async () => {
+    await db.homeAdministrationEvent.deleteMany({});
     await db.teamIdentityConnection.deleteMany({});
     await db.identityProviderInstance.deleteMany({});
     await db.teamMembership.deleteMany({});
@@ -81,6 +84,69 @@ afterEach(async () => {
 });
 
 describe("Home managed OIDC consumed lifecycle", () => {
+    it("records who added, re-keyed and removed a Home provider in Activity, never the secret", async () => {
+        const owner = await account("owner");
+        const created = await createHomeManagedOidcProvider({
+            actorAccountId: owner,
+            displayName: "Okta",
+            config: oidcConfig,
+            clientSecret: "first-secret-value",
+        });
+        expect(created.status).toBe("created");
+        if (created.status !== "created") return;
+        const replaced = await replaceHomeManagedIdentityProviderSecret({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: created.instance.revision,
+            clientSecret: "second-secret-value",
+        });
+        expect(replaced.status).toBe("applied");
+        const current = await db.identityProviderInstance.findUniqueOrThrow({
+            where: { id: created.instance.id },
+            select: { revision: true },
+        });
+        const removed = await deleteHomeManagedIdentityProvider({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: current.revision,
+        });
+        expect(removed.status).toBe("deleted");
+
+        const listed = await inTx((tx) => listHomeAdministrationEventsInTx(tx, { targetId: created.instance.id }));
+        expect(listed.status).toBe("ok");
+        if (listed.status !== "ok") return;
+        expect(listed.result.items.map((event) => [event.action, event.summary, event.actor.accountId, event.target?.kind]))
+            .toEqual([
+                ["identity_provider.remove", { displayName: "Okta" }, owner, "identity_provider"],
+                ["identity_provider.secret.replace", { displayName: "Okta" }, owner, "identity_provider"],
+                ["identity_provider.create", { displayName: "Okta" }, owner, "identity_provider"],
+            ]);
+        const stored = JSON.stringify(await db.homeAdministrationEvent.findMany({}));
+        expect(stored).not.toContain("first-secret-value");
+        expect(stored).not.toContain("second-secret-value");
+    });
+
+    it("does not record Team-owned provider changes as Home administration", async () => {
+        const owner = await account("owner");
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                teamProviderPolicy: { v: 1, allowedTeamProviderKinds: ["oidc"], teamJitAllowed: false, approvedGitHubEnterpriseOrigins: [] },
+            },
+        });
+        const team = await db.team.create({ data: { name: "Team-owned audit" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner, role: "owner", status: "active" } });
+        const created = await createHomeManagedOidcProvider({
+            actorAccountId: owner,
+            owner: { kind: "team", teamId: team.id },
+            displayName: "Team login",
+            config: oidcConfig,
+            clientSecret: "team-secret",
+        });
+        expect(created.status).toBe("created");
+        expect(await db.homeAdministrationEvent.count()).toBe(0);
+    });
+
     it("publishes Team currentness when a Team-owned provider changes", async () => {
         const owner = await account("owner");
         await db.homeGovernancePolicy.create({

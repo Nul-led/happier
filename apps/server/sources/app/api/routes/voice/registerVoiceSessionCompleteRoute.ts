@@ -15,6 +15,7 @@ import {
     createVoiceProviderConversationIdentity,
 } from "./voiceProviderConversationIdentity";
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 class VoiceCompletionConflictError extends Error {
     constructor() {
@@ -47,6 +48,7 @@ export function registerVoiceSessionCompleteRoute(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const { leaseId, providerConversationId } = request.body as VoiceSessionLifecycleBody;
         const providerIdentity = createVoiceProviderConversationIdentity({
@@ -54,7 +56,7 @@ export function registerVoiceSessionCompleteRoute(app: Fastify): void {
             providerConversationId,
         });
 
-        const serverFeatures = resolveServerFeaturesForGating(process.env);
+        const serverFeatures = resolveServerFeaturesForGating(requestHomeEnv);
         if (!isResolvedServerFeatureEnabledForGating(serverFeatures, "voice.happierVoice")) {
             return reply.code(404).send({ ok: false, reason: "not_found" as const });
         }
@@ -135,7 +137,7 @@ export function registerVoiceSessionCompleteRoute(app: Fastify): void {
             return reply.code(503).send({ ok: false, reason: "upstream_error" as const });
         }
 
-        const elevenLabsService = createHostedElevenLabsService(process.env);
+        const elevenLabsService = createHostedElevenLabsService(requestHomeEnv);
         const providerAbortScope = createVoiceRouteAbortScope(reply);
         const verification = await elevenLabsService
             .verifyConversation({

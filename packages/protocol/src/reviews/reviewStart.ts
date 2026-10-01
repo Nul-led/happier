@@ -8,6 +8,7 @@ import { ReviewScmScopeV1Schema } from './scope.js';
 import { TeamCredentialProviderModelSelectionV1Schema } from '../teams/credentials/resourceV1.js';
 import { ExecutionRunTeamCredentialSessionBindingConsentV1Schema } from '../execution/runs/startRequest.js';
 import { SecretReferenceOverlayV1Schema } from '../profiles/secretReferenceOverlayV1.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
 /**
  * Canonical, cross-surface input contract for starting reviews.
@@ -40,9 +41,14 @@ export const REVIEW_SCM_SCOPE_INPUT_KEY = 'scmReviewScope';
 
 export const ReviewStartInputSchema = z
   .object({
+    roleId: z.string().trim().min(1).optional(),
+    launchProfileId: z.string().trim().min(1).optional(),
     sessionId: z.string().min(1).optional(),
+    target: z.object({ kind: z.literal('detached') }).strict().optional(),
     engineIds: z.array(ReviewEngineIdSchema).min(1),
     instructions: z.string().trim().min(1),
+    notifyParentOnCompletion: z.boolean().optional(),
+    reviewCommentAuthorIntent: z.enum(['open', 'propose']).default('propose'),
     // Intentionally default to uncommitted changes: the common "review what I just changed"
     // flow should stay narrowly scoped unless the user explicitly broadens it.
     changeType: ReviewChangeTypeSchema.default('uncommitted'),
@@ -55,25 +61,21 @@ export const ReviewStartInputSchema = z
     [SCM_PULL_REQUEST_REVIEW_SCOPE_INPUT_KEY]: ScmPullRequestReviewScopeV1Schema.optional(),
     permissionMode: z.string().min(1).default('read_only'),
     profileId: z.string().trim().min(1).optional(),
-    profileGenerationId: z.string().trim().min(1).optional(),
+    profileSourceCustody: PluginSourceCustodyV1Schema.optional(),
     secretReferenceOverlay: SecretReferenceOverlayV1Schema.optional(),
     teamCredentialModel: TeamCredentialProviderModelSelectionV1Schema.optional(),
     teamCredentialSessionBindingConsent: ExecutionRunTeamCredentialSessionBindingConsentV1Schema.optional(),
   })
   .passthrough()
   .superRefine((value, ctx) => {
-    if (Boolean(value.profileId) !== Boolean(value.profileGenerationId)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'profileId and profileGenerationId must be provided together',
-        path: value.profileId ? ['profileGenerationId'] : ['profileId'],
-      });
+    if (value.target && value.sessionId !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: 'A detached review cannot target a Session' });
     }
-    if (value.profileId && value.runLocation === 'current_session') {
+    if (Boolean(value.profileId) !== Boolean(value.profileSourceCustody)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'execution-run profiles require the execution-run host path',
-        path: ['runLocation'],
+        message: 'profileId and profileSourceCustody must be provided together',
+        path: value.profileId ? ['profileSourceCustody'] : ['profileId'],
       });
     }
     if (value.teamCredentialModel && value.engineIds.length !== 1) {
@@ -81,13 +83,6 @@ export const ReviewStartInputSchema = z
         code: z.ZodIssueCode.custom,
         message: 'A Team credential model requires exactly one review engine',
         path: ['engineIds'],
-      });
-    }
-    if (value.teamCredentialModel && value.runLocation === 'current_session') {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Team credential models require the execution-run host path',
-        path: ['runLocation'],
       });
     }
     if (value.teamCredentialSessionBindingConsent) {

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionExecutor as createRawActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import type { ActionDefinitionV1 } from './actionDefinitionV1.js';
 import { getActionSpec } from './actionSpecs.js';
+import { ActionIdSchema } from './actionIds.js';
+import type { MachinesAgentsListInput } from '../capabilities/machineAgentInventory.js';
 import { getActionRequiredServerFeatureId } from './actionRequiredServerFeature.js';
 import { ActionsSettingsV1Schema } from './actionSettings.js';
 import { SPAWN_SESSION_ERROR_CODES } from '../sessions/spawnSession.js';
@@ -68,6 +70,26 @@ function createActionExecutor(deps: ActionExecutorDeps): ReturnType<typeof creat
   };
 }
 
+describe('machine Agent inventory execution', () => {
+  it('preserves exact machine, Home and refresh targeting through every inventory surface', async () => {
+    const machinesAgentsList = vi.fn(async (_args: MachinesAgentsListInput) => ({ items: [] }));
+    const executor = createActionExecutor({ ...createDeps(), machinesAgentsList });
+    const input = { machineId: 'machine-1', serverId: 'home-1', agentId: 'acme/helper', refresh: true };
+    for (const surface of ['ui', 'cli', 'mcp', 'agent'] as const) {
+      await expect(executor.execute(ActionIdSchema.parse('machines.agents.list'), input, {
+        surface, authority: surface === 'ui' ? 'present_user' : 'account_automation',
+      })).resolves.toEqual({ ok: true, result: { items: [] } });
+    }
+    expect(machinesAgentsList.mock.calls.map(([args]) => args)).toEqual([input, input, input, input]);
+  });
+
+  it('fails closed when the inventory adapter is unavailable', async () => {
+    await expect(createActionExecutor(createDeps()).execute(ActionIdSchema.parse('machines.agents.list'), {
+      machineId: 'machine-1',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+  });
+});
+
 const canonicalSessionSpawnInput = {
   creationKey: 'inventory:session-create-1',
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
@@ -79,6 +101,28 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (inventory/discovery)', () => {
+  it('cancels only the addressed response through the existing cancel-turn RPC Action', async () => {
+    const request = { runId: 'run-1', occurrenceId: 'occurrence-1', turnId: 'turn-1' };
+    const output = { ok: true as const, status: 'requested' as const, ...request };
+    const requests: unknown[] = [];
+    const deps = {
+      ...createDeps(),
+      executionRunCancelTurn: async (sessionId: string | null, input: unknown) => {
+        requests.push({ sessionId, input });
+        return output;
+      },
+    };
+    const executor = createActionExecutor(deps);
+    const id = ActionIdSchema.parse('execution.run.cancel_turn');
+    const result = await executor.execute(id, { sessionId: 'session-1', ...request }, { surface: 'agent' });
+    expect(result).toEqual({ ok: true, result: output });
+    expect(requests).toEqual([{ sessionId: 'session-1', input: request }]);
+    expect(getActionSpec(id).bindings?.rpcMethod).toBe('execution.run.cancelTurn.v1');
+    await expect(executor.execute(id, { sessionId: 'session-1', runId: 'run-1', turnId: 'turn-1' }))
+      .resolves.toMatchObject({ ok: false });
+    expect(requests).toHaveLength(1);
+  });
+
   it('uses the canonical feature map for Action search, get, and admission', async () => {
     const homeDomainAction = vi.fn(async () => ({ resources: [] }));
     const enabledFeatures = new Set(['teams', 'teams.credentialResources']);
@@ -627,6 +671,16 @@ describe('createActionExecutor (inventory/discovery)', () => {
     const res = await executor.execute('review.engines.list', { sessionId: 's1', includeDisabled: true });
     expect(res.ok).toBe(true);
     expect(deps.reviewEnginesList).toHaveBeenCalledWith({ sessionId: 's1', includeDisabled: true });
+  });
+
+  it('routes exact-path review scope to the shared engine inventory', async () => {
+    const deps = createDeps();
+    const executor = createActionExecutor(deps);
+
+    const res = await executor.execute('review.engines.list', { sessionId: 's1', scope: 'paths' });
+
+    expect(res.ok).toBe(true);
+    expect(deps.reviewEnginesList).toHaveBeenCalledWith({ sessionId: 's1', scope: 'paths' });
   });
 
   it('keeps execution-run list scope out of the transport request', async () => {
@@ -1373,10 +1427,23 @@ describe('createActionExecutor (inventory/discovery)', () => {
         additionalProperties: false,
       },
     };
-    const listContributedActionDefinitions = vi.fn(() => [contributedAction]);
+    // The bulk listing carries no schemas; spec.get reads them per Action.
+    const {
+      kindVersion: _kindVersion,
+      inputSchema: contributedInputSchema,
+      outputSchema: contributedOutputSchema,
+      ...contributedSummary
+    } = contributedAction;
+    const listContributedActionDefinitions = vi.fn(() => [contributedSummary]);
+    const readContributedActionSchemas = vi.fn(async (id: string) => (
+      id === contributedAction.id
+        ? { inputSchema: contributedInputSchema, outputSchema: contributedOutputSchema }
+        : null
+    ));
     const executor = createActionExecutor({
       ...createDeps(),
       listContributedActionDefinitions,
+      readContributedActionSchemas,
     } as ActionExecutorDeps);
 
     const searchResult = await executor.execute(
@@ -1413,6 +1480,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
       ok: true,
       result: { actionSpec: contributedAction },
     });
+    expect(readContributedActionSchemas).toHaveBeenCalledWith(contributedAction.id, undefined);
     await expect(executor.execute(
       'action.options.resolve',
       { actionId: contributedAction.id, fieldPath: 'depth', query: 'full' },
@@ -1629,6 +1697,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
           fieldPath,
           optionsSourceId,
           options,
+          ...(fieldPath === 'modelSelection' ? { modelCatalog: { nativeModels: options, providerProjection: null } } : {}),
         },
       });
     }
@@ -1649,6 +1718,7 @@ describe('createActionExecutor (inventory/discovery)', () => {
       machineId: 'm1',
       serverId: 'local',
       limit: 10,
+      includeProviderProjection: true,
     });
     expect(deps.agentsConfigOptionsList).toHaveBeenCalledWith({
       agentId: 'claude',

@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
-import { ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1 } from "@happier-dev/protocol";
+import { API_TOKEN_FULL_GRANT_V1, ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1 } from "@happier-dev/protocol";
 
 import { auth } from "@/app/auth/auth";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
@@ -92,6 +92,9 @@ describe("authRoutes (API token introspection) (integration)", () => {
                 credentialId: pat.tokenId,
                 expiresAt: "2030-08-22T12:01:00.000Z",
                 authority: "account_automation",
+                grant: API_TOKEN_FULL_GRANT_V1,
+                parentTokenId: null,
+                embedConfig: null,
             });
             const patSecret = pat.token.split("_")[3];
             expect(patSecret).toBeTruthy();

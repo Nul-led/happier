@@ -6,6 +6,13 @@ import { ActionInputOptionSchema } from './actionInputHints.js';
 import { normalizeActionInputByFieldHints, resolveEffectiveActionInputFields } from './actionInputHintsRuntime.js';
 
 describe('resolveEffectiveActionInputFields', () => {
+  it('offers the required scalar value editor and optional page filter for declared settings Actions', () => {
+    const setFields = resolveEffectiveActionInputFields(getActionSpec('settings.set'), { anchor: 'appearance.density' });
+    expect(setFields.find((field) => field.path === 'value')).toMatchObject({ widget: 'json', required: true, visible: true });
+    const listFields = resolveEffectiveActionInputFields(getActionSpec('settings.list'), {});
+    expect(listFields.find((field) => field.path === 'pageId')).toMatchObject({ widget: 'text', required: false, visible: true });
+  });
+
   it('accepts the exact input-hints owner rather than requiring a fabricated ActionSpec', () => {
     expectTypeOf<Parameters<typeof resolveEffectiveActionInputFields>[0]>()
       .toEqualTypeOf<Pick<ActionSpec, 'inputHints'>>();

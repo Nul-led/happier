@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import * as protocol from '../../index.js';
+import * as protocol from './folderSettings.js';
 
 const protocolExports = protocol as Record<string, unknown>;
 
@@ -13,6 +13,11 @@ function getSchema(name: 'SessionFoldersV1Schema' | 'SessionFolderV1Schema') {
 }
 
 describe('session folder settings schemas', () => {
+  it('accepts a managed-session bucket without a filesystem path', () => {
+    const workspace = { t: 'managedSessions', serverId: 'server_1', machineId: 'machine_1' };
+    expect(protocol.SessionFolderWorkspaceRefV1Schema.parse(workspace)).toEqual(workspace);
+    expect(protocol.SessionFolderWorkspaceRefV1Schema.safeParse({ ...workspace, rootPath: '/fake' }).success).toBe(false);
+  });
   it('exports folder settings through the canonical sessions subpath', async () => {
     const sessions = await import('@happier-dev/protocol/sessions');
 

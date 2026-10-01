@@ -4,7 +4,11 @@ export {
   type BrowserAutomationImplementedActionKindV1,
 } from './notImplemented.js';
 
+export * from './reverseDispatchV1.js';
+export * from './locators.js';
+
 export {
+  BROWSER_AUTOMATION_MAX_ACTION_TIMEOUT_MS,
   BrowserAutomationActionCapabilityMapV1Schema,
   BrowserAutomationActionCapabilityV1Schema,
   BrowserAutomationActionKindV1Schema,
@@ -23,6 +27,7 @@ export {
   BrowserAutomationMutatingActionKindV1Schema,
   BrowserAutomationReadOnlyActionKindV1Schema,
   BrowserAutomationRequesterKindV1Schema,
+  resolveBrowserAutomationActionRequester,
   BrowserAutomationRequesterRefV1Schema,
   BrowserAutomationTimelineEntryV1Schema,
   BrowserAutomationTimelineV1Schema,

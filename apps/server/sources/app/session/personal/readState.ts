@@ -220,6 +220,7 @@ export async function beginViewerReadTrackingOnFollowEntryInTx(params: Readonly<
     accountId: string;
     sessionId: string;
     wasTracked: boolean;
+    authentication?: SessionAccessAuthentication;
 }>): Promise<void> {
     if (params.wasTracked) return;
     await seedViewerReadStateAtCurrentCeilingInTx(params.tx, {
@@ -229,6 +230,7 @@ export async function beginViewerReadTrackingOnFollowEntryInTx(params: Readonly<
     await initializeSessionDiscussionCursorsOnTrackingEntryInTx(params.tx, {
         accountId: params.accountId,
         sessionId: params.sessionId,
+        authentication: params.authentication,
     });
 }
 
@@ -248,6 +250,7 @@ export async function beginViewerReadTrackingOnFollowEntriesInTx(params: Readonl
     sessionId: string;
     accountIds: readonly string[];
     wasTrackedByAccountId: ReadonlyMap<string, boolean>;
+    authentication?: SessionAccessAuthentication;
 }>): Promise<void> {
     const needsSeeding = [...new Set(params.accountIds)]
         .filter(accountId => typeof accountId === 'string' && accountId.length > 0)
@@ -260,6 +263,7 @@ export async function beginViewerReadTrackingOnFollowEntriesInTx(params: Readonl
     await initializeSessionDiscussionCursorsOnTrackingEntriesInTx(params.tx, {
         sessionId: params.sessionId,
         accountIds: needsSeeding,
+        authentication: params.authentication,
     });
 }
 

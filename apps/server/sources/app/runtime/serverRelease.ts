@@ -1,0 +1,14 @@
+import packageJson from '../../../package.json' with { type: 'json' };
+
+/**
+ * The release version of the running server binary (plan `2026-09-26-home-owner-console` §3.7).
+ *
+ * Release automation stamps this package's version at every release (`bump-version`, preview
+ * versions), and the binary builds and the deployment image carry that `package.json`, so the
+ * server can state which release it is instead of a client inferring it from a host runtime that
+ * may not be the same binary. Diagnostic only; never a gate.
+ */
+export function readServerReleaseVersion(): string | null {
+    const version = typeof packageJson.version === 'string' ? packageJson.version.trim() : '';
+    return version.length > 0 ? version : null;
+}

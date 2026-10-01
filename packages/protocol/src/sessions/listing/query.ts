@@ -51,6 +51,10 @@ const TagIdsSchema = z.array(SelectorIdSchema)
   .refine((values) => new Set(values).size === values.length, { message: 'Duplicate tag selectors' })
   .transform((values) => values.sort());
 
+const FolderIdsSchema = z.array(SelectorIdSchema)
+  .refine((values) => new Set(values).size === values.length, { message: 'Duplicate folder selectors' })
+  .transform((values) => values.sort());
+
 const CursorSchema = z.string().refine(
   (value) => decodeV2SessionListCursorV2(value) !== null || decodeV2SessionListCursorV1(value) !== null,
   { message: 'Invalid cursor format' },
@@ -65,6 +69,8 @@ export const SessionListQueryV1Schema = z.object({
   attention: SessionAttentionFilterV1Schema,
   audiences: AudienceSelectionsSchema,
   tagIds: TagIdsSchema,
+  folderIds: FolderIdsSchema.optional(),
+  underSessionId: SelectorIdSchema.optional(),
   cursor: CursorSchema.optional(),
   attentionCursor: CursorSchema.optional(),
   limit: z.number().int().min(1).max(SESSION_LIST_PAGE_MAX_LIMIT).optional(),
@@ -74,9 +80,10 @@ export const SessionListQueryV1Schema = z.object({
   { message: 'cursor and attentionCursor cannot be combined', path: ['attentionCursor'] },
 );
 
-export type SessionListQueryV1 = Readonly<Omit<z.infer<typeof SessionListQueryV1Schema>, 'audiences' | 'tagIds'> & {
+export type SessionListQueryV1 = Readonly<Omit<z.infer<typeof SessionListQueryV1Schema>, 'audiences' | 'tagIds' | 'folderIds'> & {
   audiences: readonly SessionAudienceSelectionV1[];
   tagIds: readonly string[];
+  folderIds?: readonly string[];
 }>;
 
 export const SessionListUnavailableQueryV1Schema = z.object({

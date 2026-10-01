@@ -63,7 +63,13 @@ const caller = {
     machineId: MACHINE_ID,
     machineInstallationId: MACHINE_INSTALLATION_ID,
     materializationId: MATERIALIZATION_ID,
-    immutableGenerationId: "generation-channels-1",
+    sourceCustody: {
+        kind: "bundled_first_party",
+        packagedRuntime: {
+            kind: "cli_version_root",
+            versionRootId: "channels-test-cli-root",
+        },
+    },
 } as const;
 
 const releaseFacts = normalizePluginReleaseFactsV1({
@@ -1162,7 +1168,11 @@ describe("Automation Conversation admission database boundary", () => {
             machineId: MACHINE_ID,
             machineInstallationId: MACHINE_INSTALLATION_ID,
             materializationId: externalMaterializationId,
-            immutableGenerationId: "generation-slack-bridge-1",
+            sourceCustody: {
+                kind: "managed",
+                immutableGenerationId: "generation-slack-bridge-1",
+                installSource: "archive",
+            },
         } as const;
         const externalBindingId = "binding-acme-slack-bridge";
 

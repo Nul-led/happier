@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MachinePoolNameV1Schema } from '../../machines/pools/v1.js';
 import { asProtocolZod } from '../../plugins/actions/internalProtocolZodAdapter.js';
 
 import {
@@ -119,6 +120,22 @@ export type TeamCredentialSessionUsePolicyV1 = z.infer<
 export type TeamCredentialDeliveryModeV1 = z.infer<
   typeof TeamCredentialDeliveryModeV1Schema
 >;
+
+/**
+ * The one rule for narrowing a disclosure ceiling to `brokered_only`
+ * (Lane 10 child 01 §7.1 rule 5 and the §7.2 "Narrow direct ceiling" row).
+ *
+ * Broker and direct rights are independent, and narrowing withdraws only the
+ * consent to direct disclosure: `both` keeps its broker half, a direct-only
+ * grant ends, and no grant gains broker use it did not already carry. The
+ * create and edit drafts and the Home's mutations all apply this rule.
+ */
+export function narrowTeamCredentialDeliveryModeToBrokeredOnlyV1(
+  mode: TeamCredentialDeliveryModeV1 | null,
+): 'brokered' | null {
+  return mode === 'brokered' || mode === 'both' ? 'brokered' : null;
+}
+
 export type TeamCredentialRequestProtocolKindV1 = z.infer<typeof TeamCredentialRequestProtocolKindV1Schema>;
 export type TeamCredentialRequestPolicyV1 = z.infer<typeof TeamCredentialRequestPolicyV1Schema>;
 
@@ -360,8 +377,12 @@ export const TeamCredentialResourceSourcePresentationV1Schema = z.discriminatedU
 export const TeamCredentialBrokerPresentationV1Schema = z.object({
   selectedTarget: z.object({ machineId: z.string().min(1), displayName: z.string().trim().min(1).max(120).nullable(), availability: z.enum(['available', 'offline', 'update_required']) }).strict().nullable(),
   eligibleTargets: z.array(z.object({ machineId: z.string().min(1), displayName: z.string().trim().min(1).max(120).nullable(), availability: z.enum(['available', 'offline', 'update_required']) }).strict()),
-  selectedPool: z.object({ poolId: z.string().min(1).max(256), displayName: z.string().trim().min(1).max(120).nullable(), availability: z.enum(['available', 'unavailable', 'not_verified']), availableMachineCount: z.number().int().nonnegative().nullable() }).strict().nullable(),
-  eligiblePools: z.array(z.object({ poolId: z.string().min(1).max(256), displayName: z.string().trim().min(1).max(120).nullable(), availability: z.enum(['available', 'unavailable', 'not_verified']), availableMachineCount: z.number().int().nonnegative().nullable() }).strict()),
+  // Pool names use the canonical MachinePoolNameV1 contract and may be longer
+  // than the bounded Machine-label presentation. Keep the full domain value
+  // here; UI surfaces may ellipsize visually without making a valid resource
+  // summary parse as resource_corrupt.
+  selectedPool: z.object({ poolId: z.string().min(1).max(256), displayName: MachinePoolNameV1Schema.nullable(), availability: z.enum(['available', 'unavailable', 'not_verified']), availableMachineCount: z.number().int().nonnegative().nullable() }).strict().nullable(),
+  eligiblePools: z.array(z.object({ poolId: z.string().min(1).max(256), displayName: MachinePoolNameV1Schema.nullable(), availability: z.enum(['available', 'unavailable', 'not_verified']), availableMachineCount: z.number().int().nonnegative().nullable() }).strict()),
 }).strict();
 
 /**
@@ -527,6 +548,13 @@ export const TeamCredentialResourceCatalogEntryV1Schema = z.object({
   mayBroker: z.boolean(),
   mayReceiveDirect: z.boolean(),
   directMaterialState: TeamCredentialDirectMaterialStateV1Schema,
+  /**
+   * Retained first-disclosure history for this viewer, separate from the
+   * readiness `directMaterialState` describes: present and true only when the
+   * Home has recorded a direct delivery to them. Absence means no recorded
+   * disclosure, so first direct use still asks (child 06 L10D-R3).
+   */
+  directDeliveryRecorded: z.boolean().optional(),
   sessionUsePolicy: TeamCredentialSessionUsePolicyV1Schema.nullable(),
   providerModels: z.array(TeamCredentialProviderModelCatalogEntryV1Schema),
   /** Exact, content-free direct Connected Service choices current for this recipient. */
@@ -599,9 +627,6 @@ export const TeamCredentialErrorCodeV1Schema = z.enum([
   'disclosure_not_allowed', 'broker_unavailable', 'update_required', 'resource_corrupt',
   'resource_not_found', 'resource_forbidden',
   'member_not_eligible', 'session_policy_incompatible',
-  /** Permanent product decision: a restricted-authentication Team never mints
-   * external API keys, because that bearer carries no Team authentication. */
-  'external_api_restricted_team',
   'invalid_limit', 'limit_identity_immutable', 'subject_not_in_team',
   'token_limit_unavailable', 'cost_limit_unavailable', 'team_credential_usage_limit',
 ]);
@@ -621,7 +646,6 @@ export function teamCredentialErrorHttpStatusV1(code: TeamCredentialErrorCodeV1)
     case 'forbidden':
     case 'resource_forbidden':
     case 'member_not_eligible':
-    case 'external_api_restricted_team':
     case 'team_authentication_required':
       return 403;
     case 'not_found_or_not_visible':

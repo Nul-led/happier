@@ -2,6 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { SessionSpawnNewResultV1Schema } from './sessionSpawnNewResultV1.js';
 import { createProviderErrorV1 } from '../../providers/errors.js';
 
+describe('Session creation fork files', () => {
+  it('reports an empty cross-machine fork without accepting unbounded reasons', () => {
+    const result = {
+      type: 'success', disposition: 'created', sessionId: 'session-1',
+      executionTarget: { serverId: 'server-1', machineId: 'machine-2' },
+      organizationPlacement: { folderId: null, tagIds: [] },
+      initialInput: { status: 'notRequested' },
+      filesNotCopied: { reason: 'cross_machine' },
+    };
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, filesNotCopied: { reason: 'unknown' } }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, filesNotCopied: { reason: 'cross_machine', sourcePath: '/private' } }).success).toBe(false);
+  });
+});
+
+describe('Session creation Agent preconditions', () => {
+  it.each(['agent_cli_missing', 'agent_signed_out'])('requires Agent identity only for %s', (code) => {
+    const result = { type: 'error', code, agentId: 'antigravity', retryable: false };
+    expect(SessionSpawnNewResultV1Schema.safeParse(result)).toMatchObject({ success: true, data: result });
+    expect(SessionSpawnNewResultV1Schema.safeParse({ type: 'error', code, retryable: false }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, agentId: ' ' }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, code: 'spawn_failed' }).success).toBe(false);
+    expect(SessionSpawnNewResultV1Schema.safeParse({ ...result, retryable: true }).success).toBe(false);
+  });
+});
+
 describe('Session creation Provider recovery', () => {
   it('preserves bounded Provider details and their canonical retryability', () => {
     const providerError = createProviderErrorV1('provider_not_enabled_on_machine', {

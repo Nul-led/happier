@@ -63,6 +63,10 @@ describe("local service public exposure rate limits", () => {
         expect(checkRateLimit({ exposure, clientKey: "overflow_b", nowMs: floodAtMs })).toBe(false);
         expect(checkRateLimit({ exposure, clientKey: "overflow_c", nowMs: floodAtMs })).toBe(false);
 
+        const unrelatedExposure = { ...exposure, exposureId: "public_preview_2" };
+        expect(checkRateLimit({ exposure: unrelatedExposure, clientKey: "client_a", nowMs: floodAtMs })).toBe(true);
+        expect(checkRateLimit({ exposure: unrelatedExposure, clientKey: "client_b", nowMs: floodAtMs })).toBe(true);
+
         // Once the window the limiter already reasons about has passed, the map is reclaimed, so
         // two distinct new clients each get their own bucket again. Without reclamation both would
         // still land in the shared overflow bucket and the second would be refused.

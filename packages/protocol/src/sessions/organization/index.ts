@@ -4,6 +4,8 @@ export {
 } from './accountEncryptionMigrationInventory.js';
 
 export {
+  SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION,
+  SESSION_ORGANIZATION_LEGACY_MAX_ATTENTION_STANDINGS,
   SESSION_ORGANIZATION_FOLDER_DELETE_ASSIGNMENT_BEHAVIORS,
   SESSION_ORGANIZATION_FOLDER_DELETE_ASSIGNMENTS_DEFAULT,
   SESSION_ORGANIZATION_LABEL_KINDS,
@@ -28,6 +30,10 @@ export {
 export {
   SessionOrganizationContentEnvelopeSchema,
   SessionOrganizationDisplayStateSchema,
+  SessionOrganizationContentUnavailableError,
+  prepareSessionOrganizationDisplayEnvelopeForAccountModeV1,
+  openSessionOrganizationDisplayEnvelopeV1,
+  projectSessionOrganizationDisplayEnvelopeForReadV1,
   type SessionOrganizationContentEnvelope,
   type SessionOrganizationDisplayState,
 } from './content.js';
@@ -122,6 +128,17 @@ export {
   type SetSessionAttentionStandingRequest,
   type SetSessionAttentionStandingResponse,
 } from './standings.js';
+
+export {
+  SESSION_ATTENTION_SET_ACTION_ID,
+  SESSION_ATTENTION_STANDING_HTTP_PATH_V1,
+  SessionAttentionSetInputV1Schema,
+  SessionAttentionSetResultV1Schema,
+  buildSessionAttentionStandingHttpPath,
+  resolveSessionAttentionStandingRequest,
+  type SessionAttentionSetInputV1,
+  type SessionAttentionSetResultV1,
+} from './attentionAction.js';
 
 export {
   SessionOrganizationSnapshotRequestSchema,

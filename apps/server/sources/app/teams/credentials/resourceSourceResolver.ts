@@ -8,6 +8,7 @@ import {
     computeTeamCredentialConnectedAccountSourceVersionV1,
     computeTeamCredentialPoolMemberSourceVersionV1,
     computeTeamCredentialSourceMemberKeyV1,
+    parseTeamCredentialSourceVersionV1,
     type TeamCredentialSourceMemberV1,
 } from "@happier-dev/protocol/teams";
 
@@ -85,6 +86,7 @@ export function parsePublishedTeamCredentialSourceVersions(value: string | null)
         if (entries.some(([key, version]) => key.length < 1 || typeof version !== "string" || version.length < 1)) {
             return null;
         }
+        for (const [, version] of entries) parseTeamCredentialSourceVersionV1(version as string);
         return Object.fromEntries(entries) as Record<string, string>;
     } catch {
         return null;

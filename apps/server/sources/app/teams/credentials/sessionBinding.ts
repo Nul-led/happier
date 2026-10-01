@@ -10,9 +10,9 @@ import {
     TeamCredentialSourceBindingV1Schema,
     type TeamCredentialSourceBindingV1,
 } from "@happier-dev/protocol/teams";
-import type { SessionTeamCredentialBindingConsequenceV1 } from "@happier-dev/protocol";
+import type { RequiredSessionTeamCredentialV1, SessionTeamCredentialBindingConsequenceV1 } from "@happier-dev/protocol";
 import type { Tx } from "@/storage/inTx";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { assertSessionTeamReadableGrantInTx } from "@/app/session/access/sessionAccess";
 import { putSessionAccessGrantInTx } from "@/app/session/access/sessionAccessGrantService";
 import {
@@ -22,6 +22,7 @@ import {
 import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
 import {
     readTeamCredentialBrokerPlacement,
+    resolveTeamCredentialBrokerPlacementFingerprint,
     admitTeamCredentialBrokerMachineForResourceInTx,
     admitTeamCredentialBrokerPoolForBrokeredUseInTx,
     type TeamCredentialBrokerPlacementSelection,
@@ -73,7 +74,7 @@ export async function writeParsedSessionTeamCredentialBindingsInTx(
         authentication: SessionAccessAuthentication;
     }>,
 ): Promise<SessionTeamCredentialBindingWriteResult> {
-    if (!isServerFeatureEnabledForRequest("teams.credentialResources", process.env)) {
+    if (!await isServerFeatureEnabledForHome("teams.credentialResources", { tx })) {
         return { ok: false, reason: "feature_disabled" };
     }
     const owner = await tx.session.findUnique({
@@ -177,7 +178,7 @@ export async function validateSessionTeamCredentialBindingIntentInTx(
         authentication: SessionAccessAuthentication;
     }>,
 ): Promise<SessionTeamCredentialBindingWriteResult> {
-    if (!isServerFeatureEnabledForRequest("teams.credentialResources", process.env)) {
+    if (!await isServerFeatureEnabledForHome("teams.credentialResources", { tx })) {
         return { ok: false, reason: "feature_disabled" };
     }
     const session = await tx.session.findUnique({
@@ -225,24 +226,60 @@ export async function grantRequiredTeamVisibilityAndValidateBindingInTx(
     }>,
 ): Promise<SessionTeamCredentialBindingWriteResult> {
     if (input.intent.resourceId === null) return { ok: false, reason: "invalid_input" };
-    const resource = await tx.teamCredentialResource.findUnique({
-        where: { id: input.intent.resourceId },
-        select: { teamId: true, revision: true, sessionUsePolicy: true },
-    });
-    if (!resource) return { ok: false, reason: "resource_missing" };
-    if (resource.revision !== input.intent.expectedResourceRevision) return { ok: false, reason: "resource_changed" };
-    if (resource.teamId !== input.consentTeamId || resource.sessionUsePolicy !== "team_visibility_required") {
+    if (input.intent.teamId !== undefined && input.intent.teamId !== input.consentTeamId) {
         return { ok: false, reason: "invalid_input" };
     }
+    const admitted = await validateRequiredTeamVisibilityInTx(tx, {
+        ...input,
+        requiredTeamCredential: input.intent,
+    });
+    if (!admitted.ok) return admitted;
     const grant = await putSessionAccessGrantInTx(tx, {
         actorAccountId: input.accountId,
         sessionId: input.sessionId,
-        subject: { kind: "team", teamId: resource.teamId },
+        subject: { kind: "team", teamId: input.consentTeamId },
         grant: { accessLevel: "edit", canApprovePermissions: false },
         authentication: input.authentication,
     });
-    if (!grant.ok) return { ok: false, reason: "access_removed" };
-    return await validateSessionTeamCredentialBindingIntentInTx(tx, input);
+    return grant.ok ? { ok: true } : { ok: false, reason: "access_removed" };
+}
+
+/** Validate the exact selected resource against consented visibility before any access effect. */
+export async function validateRequiredTeamVisibilityInTx(
+    tx: Tx,
+    input: Readonly<{
+        sessionId: string;
+        accountId: string;
+        consentTeamId: string;
+        requiredTeamCredential: RequiredSessionTeamCredentialV1;
+        authentication: SessionAccessAuthentication;
+    }>,
+): Promise<SessionTeamCredentialBindingWriteResult> {
+    const session = await tx.session.findUnique({
+        where: { id: input.sessionId },
+        select: { accountId: true, primaryTeamId: true },
+    });
+    if (!session) return { ok: false, reason: "session_missing" };
+    if (session.accountId !== input.accountId) return { ok: false, reason: "session_owner_mismatch" };
+    const resource = await tx.teamCredentialResource.findUnique({
+        where: { id: input.requiredTeamCredential.resourceId },
+        select: { teamId: true, revision: true, sessionUsePolicy: true },
+    });
+    if (!resource) return { ok: false, reason: "resource_missing" };
+    if (resource.revision !== input.requiredTeamCredential.expectedResourceRevision) return { ok: false, reason: "resource_changed" };
+    if (resource.teamId !== input.consentTeamId || resource.sessionUsePolicy !== "team_visibility_required") {
+        return { ok: false, reason: "invalid_input" };
+    }
+    const admitted = await validateSessionTeamCredentialResourceForContextInTx(tx, {
+        accountId: input.accountId,
+        ...input.requiredTeamCredential,
+        authentication: input.authentication,
+        policy: {
+            primaryTeamId: session.primaryTeamId,
+            isVisibleToTeam: async (teamId) => teamId === input.consentTeamId,
+        },
+    });
+    return admitted.ok ? { ok: true } : admitted;
 }
 
 type SessionTeamCredentialResourceValidationResult =
@@ -254,6 +291,7 @@ type SessionTeamCredentialResourceValidationResult =
         /** The resource's own current source binding, parsed once here so no caller reparses it. */
         sourceBinding: TeamCredentialSourceBindingV1;
         custodianAccountId: string;
+        brokerPlacementFingerprint: string | null;
     }>
     | Readonly<{ ok: false; reason: SessionTeamCredentialBindingRejection }>;
 
@@ -284,7 +322,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         authentication: SessionAccessAuthentication;
     }>,
 ): Promise<SessionTeamCredentialResourceValidationResult> {
-    if (!isServerFeatureEnabledForRequest("teams.credentialResources", process.env)) {
+    if (!await isServerFeatureEnabledForHome("teams.credentialResources", { tx })) {
         return { ok: false, reason: "feature_disabled" };
     }
     const resource = await tx.teamCredentialResource.findUnique({
@@ -398,6 +436,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         source,
         sourceBinding: parsedSourceBinding.data,
         custodianAccountId: resource.custodianAccountId,
+        brokerPlacementFingerprint: resolveTeamCredentialBrokerPlacementFingerprint(resource),
     };
 }
 

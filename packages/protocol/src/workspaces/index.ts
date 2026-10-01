@@ -26,3 +26,17 @@ export {
   type ProjectKeyV1,
   type WorkspaceRefV1,
 } from './workspaceRefV1.js';
+
+export {
+  deriveWorkspaceSyncTopology,
+  resolveWorkspaceSyncTransferRoute,
+  resolveWorkspaceSyncRelationshipEndpointRoles,
+  resolveWorkspaceSyncRelationshipTransferDirection,
+  type DerivedWorkspaceSyncSet,
+  type WorkspaceSyncEndpointRole,
+  type WorkspaceSyncRelationshipEndpointRoles,
+  type WorkspaceSyncTopology,
+  type WorkspaceSyncTransferRoute,
+  type WorkspaceSyncTopologyIssue,
+  type WorkspaceSyncTransferDirection,
+} from './workspaceSyncTopology.js';

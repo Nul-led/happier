@@ -84,6 +84,12 @@ const REMOTE_DEV_9B097966_SESSION_DRAFT_PRIVATE_PAYLOAD_VECTOR = {
 
 const FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS = [
   {
+    kind: 'authoring_memory',
+    kindByte: 33,
+    ciphertext: 'oSEhIiMkJSYnKCkqKywtLi8wMTIzNDU2NzgvkjjsyXnjd5V6EbBc5y8nKi3+MwmE6GJZIa6juBTw9S23Gng1j2KwRR4PKw0xUmvACKwPy4n1UouHPWjZaPCjw1u8djJA4fStOTSuiw==',
+    payload: { slot: 33, source: 'embeddable-happier-authoring-memory-v1' },
+  },
+  {
     kind: 'account_settings',
     kindByte: 1,
     ciphertext: 'oQEhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzj94RlZIyAv18gROn+709f0csPWYSTXX9PU9wCNwiQ+5MD1DSBhM5dHrncrvnXpyR0=',
@@ -547,6 +553,10 @@ const CURRENT_ACCOUNT_SCOPED_KIND_ROLLBACK_DISPOSITIONS = {
     productionOwner: 'Runner Machine content-key verifier fact owner',
     remoteDev165A: 'rollback_blocking',
   },
+  authoring_memory: {
+    productionOwner: 'Account authoring-memory reserved-row owner',
+    remoteDev165A: 'rollback_blocking',
+  },
 } as const satisfies Record<AccountScopedBlobKind, AccountScopedKindRollbackDisposition>;
 
 describe('accountScopedCipher', () => {
@@ -1007,6 +1017,7 @@ describe('accountScopedCipher', () => {
       ['action_operation_snapshot', 23],
       ['qualified_connected_account_attempt_transaction', 24],
       ['session_owner_metadata', 26],
+      ['authoring_memory', 33],
     ];
 
     for (const [kind, expectedKindByte] of cases) {

@@ -13,9 +13,9 @@ import {
   PluginUiReleaseSlotV1Schema,
   isExactPluginMachineMaterializationReleaseCorrespondenceV1,
   isPluginUiReleaseSlotCompatibleWithArtifactLinkV1,
+  normalizePluginMachineMaterializationSnapshotV1,
   normalizePluginReleaseFactsV1,
   pluginReleaseFactsEqualV1,
-  reconcilePluginMachineMaterializationSnapshotV1,
 } from './v1.js';
 import {
   PluginReleaseRefV1Schema as PluginReleaseRefV1PublicSchema,
@@ -51,6 +51,7 @@ describe('Plugin Account availability v1', () => {
     const target = {
       release: { pluginId: 'com.acme.fixture', version: '1.2.3' },
       contributionId: 'hosted',
+      artifactId: 'hosted-renderer',
       tier: 'hostedWeb',
       platform: 'web',
     } as const;
@@ -84,113 +85,71 @@ describe('Plugin Account availability v1', () => {
     }).success).toBe(false);
   });
 
-  it('persists portable UI release slots from generated artifact facts without transient host-adoption facts', () => {
+  it('persists one semantic UI release slot and matches an Account carrier without transient host facts', () => {
     const portableSlot = {
       contributionId: 'native',
+      artifactId: 'native-renderer',
       tier: 'reactNative' as const,
       platform: 'ios' as const,
       artifactDigest: `sha256:${'b'.repeat(64)}`,
-      compatibility: {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.2.0',
-        reactNativeVersion: '0.83.4',
-        expoRuntimeVersion: '0.2.0-native',
-        hermesVersion: '0.15.0',
-      },
+      hostUiApiRange: '^1.0.0',
     };
 
     expect(PluginUiReleaseSlotV1Schema.parse(portableSlot)).toEqual(portableSlot);
     expect(PluginUiReleaseSlotV1Schema.safeParse({
       ...portableSlot,
-      compatibility: {
-        ...portableSlot.compatibility,
-        hostAppVersion: '2.0.0',
-      },
+      hostAppVersion: '2.0.0',
     }).success).toBe(false);
 
     const link = {
       release: { pluginId: 'com.acme.fixture', version: '1.2.3' },
       contributionId: portableSlot.contributionId,
+      artifactId: portableSlot.artifactId,
       tier: portableSlot.tier,
       platform: portableSlot.platform,
-      artifactId: '00000000-0000-4000-8000-000000000001',
+      accountArtifactId: '00000000-0000-4000-8000-000000000001',
       artifactDigest: portableSlot.artifactDigest,
-      compatibility: {
-        hostAppVersion: '2.0.0',
-        ...portableSlot.compatibility,
-        platform: 'ios',
-        channel: 'store',
-        nativeCapabilities: ['safe-area'],
-      },
+      hostUiApiRange: portableSlot.hostUiApiRange,
     };
     expect(PluginAccountPluginUiArtifactLinkV1Schema.parse(link)).toEqual(link);
-    expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(portableSlot, link.compatibility)).toBe(true);
+    expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(portableSlot, link)).toBe(true);
     expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(portableSlot, {
-      ...link.compatibility,
-      reactNativeVersion: '0.84.0',
+      ...link,
+      artifactId: 'other-renderer',
     })).toBe(false);
   });
 
   it('does not make a framework-free hosted release slot depend on transient host React facts', () => {
     const portableSlot = PluginUiReleaseSlotV1Schema.parse({
       contributionId: 'hosted',
+      artifactId: 'hosted-renderer',
       tier: 'hostedWeb',
       platform: 'web',
       artifactDigest: `sha256:${'c'.repeat(64)}`,
-      compatibility: {
-        hostUiApiVersion: '1.0.0',
-      },
+      hostUiApiRange: '^1.0.0',
     });
-    const hostCompatibility = {
-      hostAppVersion: '2.0.0',
-      hostUiApiVersion: '1.0.0',
-      reactVersion: '19.2.0',
-      reactNativeVersion: '0.83.4',
-      expoRuntimeVersion: '0.2.0-native',
-      hermesVersion: '0.15.0',
-      platform: 'web' as const,
-      channel: 'store' as const,
-      nativeCapabilities: [],
+    const link = {
+      release: { pluginId: 'com.acme.fixture', version: '1.2.3' },
+      ...portableSlot,
+      accountArtifactId: '00000000-0000-4000-8000-000000000001',
     };
 
     expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
       portableSlot,
-      hostCompatibility,
+      link,
     )).toBe(true);
     expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(portableSlot, {
-      ...hostCompatibility,
-      hostUiApiVersion: '2.0.0',
+      ...link,
+      hostUiApiRange: '^2.0.0',
     })).toBe(false);
   });
 
-  it('keeps declarative release-slot framework compatibility exact', () => {
-    const portableSlot = PluginUiReleaseSlotV1Schema.parse({
-      contributionId: 'declarative',
-      tier: 'declarative',
-      platform: 'web',
-      artifactDigest: `sha256:${'d'.repeat(64)}`,
-      compatibility: {
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.2.0',
-      },
-    });
-    const hostCompatibility = {
-      hostAppVersion: '2.0.0',
-      hostUiApiVersion: '1.0.0',
-      reactVersion: '19.2.0',
-      platform: 'web' as const,
-      channel: 'store' as const,
-      nativeCapabilities: [],
-    };
-
-    expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
-      portableSlot,
-      hostCompatibility,
-    )).toBe(true);
-    expect(isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(portableSlot, {
-      ...hostCompatibility,
-      reactVersion: '20.0.0',
-    })).toBe(false);
+  it('rejects exact-version and framework compatibility branches beside the one host API range', () => {
+    expect(PluginUiReleaseSlotV1Schema.safeParse({
+      contributionId: 'native', artifactId: 'native-renderer', tier: 'reactNative', platform: 'ios',
+      artifactDigest: `sha256:${'d'.repeat(64)}`, hostUiApiRange: '^1.0.0',
+      compatibility: { hostUiApiVersion: '1.0.0', reactVersion: '19.2.0' },
+    }).success).toBe(false);
   });
 
   it('exports the availability grammar through its dedicated public family', () => {
@@ -219,23 +178,19 @@ describe('Plugin Account availability v1', () => {
       uiSlots: [
         {
           contributionId: 'native',
+          artifactId: 'native-renderer',
           tier: 'reactNative',
           platform: 'ios',
           artifactDigest: `sha256:${'b'.repeat(64)}`,
-          compatibility: {
-            hostUiApiVersion: '1.0.0',
-            reactVersion: '19.2.0',
-            reactNativeVersion: '0.83.4',
-          },
+          hostUiApiRange: '^1.0.0',
         },
         {
           contributionId: 'hosted',
+          artifactId: 'hosted-renderer',
           tier: 'hostedWeb',
           platform: 'web',
           artifactDigest: `sha256:${'c'.repeat(64)}`,
-          compatibility: {
-            hostUiApiVersion: '1.0.0',
-          },
+          hostUiApiRange: '^1.0.0',
         },
       ],
       packageAssetArchive: packageAssetArchive(),
@@ -271,12 +226,11 @@ describe('Plugin Account availability v1', () => {
       }],
       uiSlots: [{
         contributionId: 'hosted',
+        artifactId: 'hosted-renderer',
         tier: 'hostedWeb',
         platform: 'web',
         artifactDigest: `sha256:${'b'.repeat(64)}`,
-        compatibility: {
-          hostUiApiVersion: '1.0.0',
-        },
+        hostUiApiRange: '^1.0.0',
       }],
       packageAssetArchive: packageAssetArchive([{
         resourceId: 'brand',
@@ -412,7 +366,6 @@ describe('Plugin Account availability v1', () => {
     const snapshot = PluginMachineMaterializationSnapshotV1Schema.parse({
       serverIdentityId: 'srv_availability_fixture',
       machineId: 'machine-1',
-      revision: 7,
       materializations: [{
         serverIdentityId: 'srv_availability_fixture',
         machineId: 'machine-1',
@@ -442,6 +395,10 @@ describe('Plugin Account availability v1', () => {
       ...snapshot,
       materializations: [{ ...materialization, immutableGenerationId: 'forbidden' }],
     }).success).toBe(false);
+    expect(PluginMachineMaterializationSnapshotV1Schema.safeParse({
+      ...snapshot,
+      materializations: [{ ...materialization, sourceClass: 'bundledFirstParty' }],
+    }).success).toBe(false);
   });
 
   it('binds portable materializations to Account-owned release facts through coordinate and artifact evidence', () => {
@@ -457,12 +414,11 @@ describe('Plugin Account availability v1', () => {
       }],
       uiSlots: [{
         contributionId: 'hosted',
+        artifactId: 'hosted-renderer',
         tier: 'hostedWeb',
         platform: 'web',
         artifactDigest: `sha256:${'b'.repeat(64)}`,
-        compatibility: {
-          hostUiApiVersion: '1.0.0',
-        },
+        hostUiApiRange: '^1.0.0',
       }],
       packageAssetArchive: packageAssetArchive(),
     };
@@ -477,9 +433,11 @@ describe('Plugin Account availability v1', () => {
         archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
         uiArtifacts: [{
         contributionId: 'hosted',
+        artifactId: 'hosted-renderer',
         tier: 'hostedWeb',
         platform: 'web',
         artifactDigest: `sha256:${'b'.repeat(64)}`,
+        hostUiApiRange: '^1.0.0',
       }],
       enabled: true,
       trustState: 'trusted',
@@ -497,6 +455,16 @@ describe('Plugin Account availability v1', () => {
       parsedMaterialization,
       parsedRelease,
     )).toBe(true);
+    expect(isExactPluginMachineMaterializationReleaseCorrespondenceV1(
+      PluginMachineMaterializationV1Schema.parse({
+        ...materialization,
+        uiArtifacts: materialization.uiArtifacts.map((artifact) => ({
+          ...artifact,
+          hostUiApiRange: '^2.0.0',
+        })),
+      }),
+      parsedRelease,
+    )).toBe(false);
     expect(isExactPluginMachineMaterializationReleaseCorrespondenceV1(
       {
         ...parsedMaterialization,
@@ -549,7 +517,7 @@ describe('Plugin Account availability v1', () => {
     )).toBe(false);
   });
 
-  it('reconciles complete machine inventories so equal reports rejoin and a newer empty report removes current rows', () => {
+  it('keeps client-authored ordering out of normalized complete machine inventories', () => {
     const first = {
       serverIdentityId: 'srv_availability_fixture',
       machineId: 'machine-1',
@@ -568,65 +536,26 @@ describe('Plugin Account availability v1', () => {
       materializationId: 'install-epoch-2',
       version: '2.0.0',
     };
-    const current = [first, second];
-    const equalReordered = reconcilePluginMachineMaterializationSnapshotV1({
-      currentRevision: 7,
-      current,
-      report: {
-        serverIdentityId: 'srv_availability_fixture',
-        machineId: 'machine-1',
-        revision: 7,
-        materializations: [second, first],
-      },
+    const normalized = normalizePluginMachineMaterializationSnapshotV1({
+      serverIdentityId: 'srv_availability_fixture',
+      machineId: 'machine-1',
+      materializations: [second, first],
     });
-    expect(equalReordered.kind).toBe('rejoin');
+    expect(normalized.materializations.map((entry) => entry.materializationId)).toEqual([
+      'install-epoch-1',
+      'install-epoch-2',
+    ]);
+    expect(PluginMachineMaterializationSnapshotV1Schema.safeParse({
+      ...normalized,
+      revision: 7,
+    }).success).toBe(false);
 
-    expect(reconcilePluginMachineMaterializationSnapshotV1({
-      currentRevision: 7,
-      current,
-      report: {
-        serverIdentityId: 'srv_availability_fixture',
-        machineId: 'machine-1',
-        revision: 7,
-        materializations: [{ ...first, version: '1.2.4' }, second],
-      },
-    })).toMatchObject({ kind: 'conflict', currentRevision: 7 });
-
-    expect(reconcilePluginMachineMaterializationSnapshotV1({
-      currentRevision: 7,
-      current,
-      report: {
-        serverIdentityId: 'srv_availability_fixture',
-        machineId: 'machine-1',
-        revision: 6,
-        materializations: current,
-      },
-    })).toMatchObject({ kind: 'stale', currentRevision: 7 });
-
-    expect(reconcilePluginMachineMaterializationSnapshotV1({
-      currentRevision: 7,
-      current,
-      report: {
-        serverIdentityId: 'srv_availability_fixture',
-        machineId: 'machine-1',
-        revision: 8,
-        materializations: [],
-      },
-    })).toMatchObject({
-      kind: 'replace',
-      snapshot: expect.objectContaining({ revision: 8, materializations: [] }),
-    });
-
-    expect(reconcilePluginMachineMaterializationSnapshotV1({
-      currentRevision: null,
-      current: [],
-      report: {
-        serverIdentityId: 'srv_availability_fixture',
-        machineId: 'machine-1',
-        revision: 0,
-        materializations: [],
-      },
-    })).toMatchObject({ kind: 'replace' });
+    const reportInputSchema = (availability as Record<string, unknown>)
+      .PluginAvailabilityMaterializationsReportActionInputV1Schema as { parse(input: unknown): unknown };
+    const reportOutputSchema = (availability as Record<string, unknown>)
+      .PluginAvailabilityMaterializationsReportActionOutputV1Schema as { parse(input: unknown): unknown };
+    expect(reportInputSchema.parse({ expectedRevision: null, snapshot: normalized })).toBeDefined();
+    expect(reportOutputSchema.parse({ revision: 7, outcome: 'conflict' })).toBeDefined();
   });
 
   it('keeps hosted UI intent distinct from hosting capability', () => {
@@ -690,6 +619,7 @@ describe('Plugin Account availability v1', () => {
     const input = {
       release: { pluginId: 'com.acme.fixture', version: '1.2.3' },
       contributionId: 'hosted',
+      artifactId: 'hosted-artifact',
       tier: 'hostedWeb',
       platform: 'web',
       expectedArtifactDigest: `sha256:${'b'.repeat(64)}`,
@@ -730,12 +660,11 @@ describe('Plugin Account availability v1', () => {
       collectionContracts: [],
       uiSlots: [{
         contributionId: 'hosted',
+        artifactId: 'hosted-renderer',
         tier: 'hostedWeb',
         platform: 'web',
         artifactDigest: `sha256:${'b'.repeat(64)}`,
-        compatibility: {
-          hostUiApiVersion: '1.0.0',
-        },
+        hostUiApiRange: '^1.0.0',
       }],
       packageAssetArchive: packageAssetArchive(),
     };
@@ -748,18 +677,14 @@ describe('Plugin Account availability v1', () => {
       facts: releaseFacts,
       sourceClass: 'localPath',
     }).success).toBe(false);
+    expect(releasePublishInput?.safeParse({
+      facts: releaseFacts,
+      sourceClass: 'bundledFirstParty',
+    }).success).toBe(false);
     expect(uiArtifactPublishInput?.safeParse({
       release: releaseFacts.ref,
       slot: releaseFacts.uiSlots[0],
-      hostCompatibility: {
-        hostAppVersion: '2.0.0',
-        hostUiApiVersion: '1.0.0',
-        reactVersion: '19.2.0',
-        platform: 'web',
-        channel: 'store',
-        nativeCapabilities: [],
-      },
-      artifactId: '00000000-0000-4000-8000-000000000001',
+      accountArtifactId: '00000000-0000-4000-8000-000000000001',
       artifact: {
         header: 'aGVhZGVy',
         body: 'Ym9keQ==',
@@ -769,13 +694,13 @@ describe('Plugin Account availability v1', () => {
     expect(uiArtifactPublishInput?.safeParse({
       release: releaseFacts.ref,
       slot: releaseFacts.uiSlots[0],
-      artifactId: '00000000-0000-4000-8000-000000000001',
+      accountArtifactId: '00000000-0000-4000-8000-000000000001',
       artifact: {
         header: 'aGVhZGVy',
         body: 'Ym9keQ==',
         dataEncryptionKey: 'a2V5',
       },
-    }).success).toBe(false);
+    }).success).toBe(true);
     expect(intentSetInput?.safeParse({
       pluginId: 'com.acme.fixture',
       desiredVersion: '1.2.3',
@@ -842,7 +767,9 @@ describe('Plugin Account availability v1', () => {
       .toBe('/v1/plugins/availability/ui-artifacts/browser-frame/issue');
     expect(paths?.['account.plugins.availability.packageAsset.remove'])
       .toBe('/v1/plugins/availability/package-assets/remove');
-    expect(new Set(Object.values(paths ?? {})).size).toBe(14);
+    expect(paths?.['account.plugins.availability.collectionWriters.claim'])
+      .toBe('/v1/plugins/availability/collection-writers/claim');
+    expect(new Set(Object.values(paths ?? {})).size).toBe(15);
   });
 
   it('keeps the package Asset archive behind qualified Availability publish/read actions', () => {

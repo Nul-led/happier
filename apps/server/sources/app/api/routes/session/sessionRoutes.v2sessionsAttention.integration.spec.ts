@@ -222,6 +222,48 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         expect(await computeAuthenticatedAccountActivityBadgeCount(owner.id, authentication)).toBe(2);
     });
 
+    it("measures exact attention count and refill over quiet tracked SQLite corpora", async () => {
+        for (const quietCount of [200, 2_000]) {
+            const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+            const quiet = Array.from({ length: quietCount }, (_, index) => ({
+                id: randomUUID(), accountId: owner.id, tag: randomUUID(), encryptionMode: "plain" as const,
+                metadata: "{}", seq: 1, meaningfulActivityAt: new Date(10_000 + index),
+            }));
+            await db.session.createMany({ data: quiet });
+            await db.accountSessionReadState.createMany({ data: quiet.map(row => ({
+                sessionId: row.id, accountId: owner.id, lastViewedSessionSeq: 1,
+            })) });
+            const sparse = await createSparseOwnerAttentionCandidates({ accountId: owner.id, rejectedCount: 0, exactMatchCount: 2 });
+            const samples: Array<{ countMs: number; firstPageMs: number; nextPageMs: number }> = [];
+            for (let sample = 0; sample < 3; sample += 1) {
+                const started = performance.now();
+                expect(await computeAuthenticatedAccountActivityBadgeCount(owner.id, authentication)).toBe(2);
+                const counted = performance.now();
+                const read = (cursor?: string) => listSessionsForAccount({
+                    userId: owner.id, authentication,
+                    source: { kind: "query", query: {
+                        v: 1, storage: "active", includeInactive: true, scope: "my_work",
+                        attention: "needs_my_attention", audiences: [], tagIds: [], limit: 1,
+                        ...(cursor ? { cursor } : {}),
+                    } },
+                    rowRepresentabilityWhere: {}, timing: createV2SessionListServerTiming({}),
+                });
+                const first = await read();
+                const firstRead = performance.now();
+                expect(first).toMatchObject({ sessions: [{ id: sparse.matchIds[0] }], hasNext: true });
+                const cursor = first && "nextCursor" in first ? first.nextCursor : null;
+                expect(cursor).toBeTypeOf("string");
+                expect(await read(cursor ?? undefined)).toMatchObject({
+                    sessions: [{ id: sparse.matchIds[1] }], hasNext: false,
+                });
+                const finished = performance.now();
+                samples.push({ countMs: counted - started, firstPageMs: firstRead - counted, nextPageMs: finished - firstRead });
+            }
+            // Measurement evidence only: no guessed wall-clock budget becomes a product/test limit.
+            console.info("personal-attention-sqlite-measurement", JSON.stringify({ quietCount, exactMatches: 2, samples }));
+        }
+    });
+
     it("filters non-attention rows before the candidate window", async () => {
         const owner = await db.account.create({
             data: {

@@ -1,10 +1,36 @@
 import { describe, expect, it } from "vitest";
+import type { RouteOptions } from "fastify";
 
 import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 
 import { registerSessionDataKeyEnvelopeRoutes } from "./registerSessionDataKeyEnvelopeRoutes";
 
 describe("Session data-key envelope route validation", () => {
+    it("declares authentication-unavailable as a 503 for both envelope routes", async () => {
+        const app = createAuthenticatedTestApp();
+        const responseSchemas: unknown[] = [];
+        app.addHook("onRoute", (route: RouteOptions) => {
+            if (
+                route.url === "/v2/sessions/:sessionId/data-key/envelopes"
+                && (route.method === "GET" || route.method === "PATCH")
+            ) {
+                responseSchemas.push(route.schema?.response);
+            }
+        });
+        registerSessionDataKeyEnvelopeRoutes(app);
+        try {
+            expect(responseSchemas).toHaveLength(2);
+            for (const response of responseSchemas) {
+                expect(response).toHaveProperty("503");
+                expect(response).not.toEqual(expect.objectContaining({
+                    409: expect.objectContaining({ error: "session_access_authentication_unavailable" }),
+                }));
+            }
+        } finally {
+            await app.close();
+        }
+    });
+
     it("uses the resource error vocabulary for malformed queries and writes", async () => {
         const app = createAuthenticatedTestApp();
         registerSessionDataKeyEnvelopeRoutes(app);

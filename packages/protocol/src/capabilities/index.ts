@@ -75,3 +75,17 @@ export {
   type CodexPassiveRealtimeSetupResultV1,
   type CodexPassiveRealtimeSetupStatusV1,
 } from './codexPassiveRealtimeSetup.js';
+
+export {
+  MachineAgentInventoryItemSchema,
+  MachinesAgentsListInputSchema,
+  MachinesAgentsListOutputSchema,
+  buildMachineAgentsDetectRequest,
+  buildMachineAgentInventoryDescriptors,
+  projectMachineAgentsDetectResponse,
+  MachineAgentInventoryUnavailableError,
+  type MachineAgentInventoryItem,
+  type MachineAgentInventoryDescriptor,
+  type MachinesAgentsListInput,
+  type MachinesAgentsListOutput,
+} from './machineAgentInventory.js';

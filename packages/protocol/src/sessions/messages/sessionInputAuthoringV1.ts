@@ -29,12 +29,17 @@ export function hasSessionInputContentV1(input: Readonly<{
 
 /** Applies the canonical content rule to Session-input authoring shapes. */
 export function requireSessionInputContent(
-  value: Readonly<{ text?: unknown; message?: unknown; attachments?: unknown }>,
+  value: Readonly<{ text?: unknown; message?: unknown; attachments?: unknown; structuredInput?: unknown }>,
   context: z.RefinementCtx,
 ): void {
   const raw = typeof value.text === 'string' ? value.text : value.message;
   const text = typeof raw === 'string' ? raw : '';
-  const attachmentCount = Array.isArray(value.attachments) ? value.attachments.length : 0;
+  const structuredInput = value.structuredInput;
+  const structuredAttachments = structuredInput !== null && typeof structuredInput === 'object'
+    ? (structuredInput as { composerAttachments?: unknown }).composerAttachments
+    : undefined;
+  const attachmentCount = (Array.isArray(value.attachments) ? value.attachments.length : 0)
+    + (Array.isArray(structuredAttachments) ? structuredAttachments.length : 0);
   if (hasSessionInputContentV1({ text, attachmentCount })) return;
   context.addIssue({
     code: 'custom',

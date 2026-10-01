@@ -73,6 +73,7 @@ export const BrowserSidecarErrorCodeV1Schema = z.enum([
   'resource_limit_exceeded',
   'capture_unavailable',
   'cdp_unavailable',
+  'sandbox_unavailable',
 ]);
 export type BrowserSidecarErrorCodeV1 = z.infer<typeof BrowserSidecarErrorCodeV1Schema>;
 

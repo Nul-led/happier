@@ -180,4 +180,32 @@ describe('MachineOperationProtocolCapabilitiesV1', () => {
     expect(readAuthority?.({ capabilities, revision: null })).toBeNull();
     expect(readAuthority?.({ capabilities: {}, revision: 4 })).toBeNull();
   });
+
+  it('preserves bounded Iroh connection hints in the endpoint authority', () => {
+    const endpoint = {
+      protocolVersions: [1],
+      endpointId: 'a'.repeat(64),
+      relayUrls: ['https://relay.example.test'],
+      directAddresses: ['192.0.2.10:443'],
+    };
+    const capabilities = { irohMachineEndpoint: endpoint };
+    expect(protocol.MachineOperationProtocolCapabilitiesV1Schema.safeParse(capabilities).success).toBe(true);
+    expect(protocol.readMachineIrohEndpointAuthorityV1({ capabilities, revision: 5 })).toEqual({
+      endpointId: endpoint.endpointId,
+      relayUrls: endpoint.relayUrls,
+      directAddresses: endpoint.directAddresses,
+      revision: 5,
+    });
+    for (const invalid of [
+      { relayUrls: ['https://user:secret@relay.example.test'] },
+      { relayUrls: ['https://relay.example.test', 'https://relay.example.test/'] },
+      { directAddresses: ['relay.example.test:443'] },
+      { directAddresses: ['192.0.2.10:0'] },
+      { token: 'secret' },
+    ]) {
+      expect(protocol.MachineOperationProtocolCapabilitiesV1Schema.safeParse({
+        irohMachineEndpoint: { ...endpoint, ...invalid },
+      }).success).toBe(false);
+    }
+  });
 });

@@ -44,6 +44,8 @@ import {
   AutomationTriggerDefinitionInputSchema,
 } from './automationTriggerDefinition.js';
 import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
+import type { AutomationTriggerDetail, AutomationTriggerListItem } from './automationTriggerProjectionV1.js';
+import { WorkflowDefinitionRefV1StringSchema } from '../workflows/workflowDefinitionRefV1.js';
 
 export {
   AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
@@ -79,20 +81,9 @@ const TIMESTAMP_SCHEMA = z.number().int().nonnegative().safe();
 const IDENTIFIER_SCHEMA = z.string().min(1);
 const UTF8_ENCODER = new TextEncoder();
 
-/**
- * List/detail-safe catalog reconciliation facts for the current Event source.
- * Routing, Account, source, and materialization identity remain server-owned.
- */
-export const AutomationEventSourceCatalogStatusSchema = z.object({
-  observedRevision: UNSIGNED_DECIMAL_BIGINT_SCHEMA,
-  adoptedRevision: UNSIGNED_DECIMAL_BIGINT_SCHEMA.nullable(),
-  state: AutomationEventSourceCatalogStatusStateV1Schema,
-  scanStartedAt: TIMESTAMP_SCHEMA.nullable(),
-  nextRetryAt: TIMESTAMP_SCHEMA.nullable(),
-}).strict();
-export type AutomationEventSourceCatalogStatus = z.infer<
-  typeof AutomationEventSourceCatalogStatusSchema
->;
+import { AutomationEventSourceCatalogStatusSchema, AutomationPluginEventRefSchema, AutomationCheckpointedPullObservationSchema, AutomationSocketObservationSchema, AutomationDurablePushObservationSchema, AutomationPluginEventTriggerSchema, AutomationScheduleTriggerProjectionSchema, AutomationPluginEventTriggerProjectionSchema, AutomationSessionLifecycleTriggerStatusSchema, AutomationSessionLifecycleTriggerProjectionSchema, AutomationTriggerListItemSchema, AutomationTriggerDetailSchema } from './automationTriggerProjectionV1.js';
+export { AutomationEventSourceCatalogStatusSchema, AutomationPluginEventRefSchema, AutomationCheckpointedPullObservationSchema, AutomationSocketObservationSchema, AutomationDurablePushObservationSchema, AutomationPluginEventTriggerSchema, AutomationScheduleTriggerProjectionSchema, AutomationPluginEventTriggerProjectionSchema, AutomationSessionLifecycleTriggerStatusSchema, AutomationSessionLifecycleTriggerProjectionSchema, AutomationTriggerListItemSchema, AutomationTriggerDetailSchema } from './automationTriggerProjectionV1.js';
+export type { AutomationEventSourceCatalogStatus, AutomationPluginEventRef, AutomationCheckpointedPullObservation, AutomationSocketObservation, AutomationDurablePushObservation, AutomationPluginEventTrigger, AutomationSessionLifecycleTriggerStatus, AutomationTriggerListItem, AutomationTriggerDetail } from './automationTriggerProjectionV1.js';
 
 export const AutomationTargetTypeV2Schema = z.enum(['new_session', 'existing_session']);
 export type AutomationTargetTypeV2 = z.infer<typeof AutomationTargetTypeV2Schema>;
@@ -237,6 +228,8 @@ export const AutomationDefinitionCreateRequestSchema = z.object({
   name: z.string().trim().min(1).max(128),
   description: z.string().max(2_000).nullable().optional(),
   enabled: z.boolean(),
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.nullable().optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
   executionRecipe: AutomationDefinitionExecutionRecipeSchema,
   assignments: z.array(AutomationAssignmentInputSchema).optional(),
   triggers: z.array(AutomationTriggerCreateRequestSchema),
@@ -262,6 +255,8 @@ export const AutomationDefinitionPatchRequestSchema = z.object({
   name: z.string().trim().min(1).max(128).optional(),
   description: z.string().max(2_000).nullable().optional(),
   enabled: z.boolean().optional(),
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.nullable().optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
   executionRecipe: AutomationDefinitionExecutionRecipeSchema.optional(),
   assignments: z.array(AutomationAssignmentInputSchema).optional(),
 }).strict();
@@ -315,6 +310,8 @@ export const AutomationDefinitionReconcileRequestSchema = z.object({
   name: z.string().trim().min(1).max(128),
   description: z.string().max(2_000).nullable(),
   enabled: z.boolean(),
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.nullable().optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
   executionRecipe: AutomationDefinitionExecutionRecipeSchema.optional(),
   assignments: z.array(AutomationAssignmentInputSchema),
   triggers: z.array(z.union([
@@ -385,130 +382,14 @@ export type AutomationTriggerDeleteRequest = z.infer<
   typeof AutomationTriggerDeleteRequestSchema
 >;
 
-export const AutomationPluginEventRefSchema = z.object({
-  pluginId: IDENTIFIER_SCHEMA,
-  localId: IDENTIFIER_SCHEMA,
-}).strict();
-export type AutomationPluginEventRef = z.infer<typeof AutomationPluginEventRefSchema>;
-
-export const AutomationCheckpointedPullObservationSchema = z.object({
-  kind: z.literal('checkpointedPull'),
-  watcher: z.object({
-    machineId: IDENTIFIER_SCHEMA,
-    machineInstallationId: IDENTIFIER_SCHEMA,
-    pluginId: IDENTIFIER_SCHEMA,
-    materializationId: IDENTIFIER_SCHEMA,
-  }).strict().nullable(),
-}).strict();
-export type AutomationCheckpointedPullObservation = z.infer<
-  typeof AutomationCheckpointedPullObservationSchema
->;
-
-export const AutomationSocketObservationSchema = z.object({
-  kind: z.literal('socket'),
-  /** Exact materialization hosting the provider's observation session; null when unavailable. */
-  watcher: z.object({
-    machineId: IDENTIFIER_SCHEMA,
-    machineInstallationId: IDENTIFIER_SCHEMA,
-    pluginId: IDENTIFIER_SCHEMA,
-    materializationId: IDENTIFIER_SCHEMA,
-  }).strict().nullable(),
-}).strict();
-export type AutomationSocketObservation = z.infer<
-  typeof AutomationSocketObservationSchema
->;
-
-export const AutomationDurablePushObservationSchema = z.object({
-  kind: z.literal('durablePush'),
-  webhookEndpointId: IDENTIFIER_SCHEMA,
-  /** Safe current endpoint target; null when that exact endpoint is no longer available. */
-  endpointMaterializationRef: PluginMachineMaterializationRefV1Schema.nullable(),
-  observationStartsAt: TIMESTAMP_SCHEMA,
-}).strict();
-export type AutomationDurablePushObservation = z.infer<
-  typeof AutomationDurablePushObservationSchema
->;
-
-export const AutomationPluginEventTriggerSchema = z.object({
-  kind: z.literal('pluginEvent'),
-  eventRef: AutomationPluginEventRefSchema,
-  sourceSelectorId: IDENTIFIER_SCHEMA,
-  sourceContractVersion: AutomationEventPositiveSafeIntegerV1Schema,
-  observation: z.union([
-    AutomationCheckpointedPullObservationSchema,
-    AutomationSocketObservationSchema,
-    AutomationDurablePushObservationSchema,
-  ]),
-}).strict();
-export type AutomationPluginEventTrigger = z.infer<typeof AutomationPluginEventTriggerSchema>;
-
-const AutomationTriggerProjectionBaseSchema = z.object({
-  id: AutomationTriggerIdSchema,
-  revision: AutomationTriggerRevisionSchema,
-  enabled: z.boolean(),
-  createdAt: TIMESTAMP_SCHEMA,
-  updatedAt: TIMESTAMP_SCHEMA,
-}).strict();
-
-export const AutomationScheduleTriggerProjectionSchema = AutomationTriggerProjectionBaseSchema.extend({
-  ...AutomationScheduleTriggerSchema.shape,
-  nextRunAt: TIMESTAMP_SCHEMA.nullable(),
-}).strict();
-
-export const AutomationPluginEventTriggerProjectionSchema = AutomationTriggerProjectionBaseSchema.extend({
-  ...AutomationPluginEventTriggerSchema.shape,
-  sourceStatus: AutomationEventSourceStatusV1Schema.nullable(),
-  sourceCatalogStatus: AutomationEventSourceCatalogStatusSchema.nullable(),
-}).strict();
-
-export const AutomationSessionLifecycleTriggerStatusSchema = z.discriminatedUnion('state', [
-  z.object({
-    state: z.enum(['waiting', 'paused', 'sourceFailed', 'sourceCancelled', 'sourceUnavailable']),
-    runId: z.null(),
-  }).strict(),
-  z.object({
-    state: z.enum(['triggered', 'running']),
-    runId: IDENTIFIER_SCHEMA,
-  }).strict(),
-  z.object({
-    state: z.literal('finished'),
-    runId: IDENTIFIER_SCHEMA.nullable(),
-  }).strict(),
-]);
-export type AutomationSessionLifecycleTriggerStatus = z.infer<
-  typeof AutomationSessionLifecycleTriggerStatusSchema
->;
-
-export const AutomationSessionLifecycleTriggerProjectionSchema = AutomationTriggerProjectionBaseSchema.extend({
-  kind: z.literal('sessionLifecycle'),
-  ...AutomationSessionLifecycleConfigurationSchema.shape,
-  remainingOccurrences: z.number().int().nonnegative().max(2_147_483_647).nullable(),
-  status: AutomationSessionLifecycleTriggerStatusSchema,
-}).strict();
-
-export const AutomationTriggerListItemSchema = z.discriminatedUnion('kind', [
-  AutomationScheduleTriggerProjectionSchema,
-  AutomationPluginEventTriggerProjectionSchema,
-  AutomationSessionLifecycleTriggerProjectionSchema,
-]);
-export type AutomationTriggerListItem = z.infer<typeof AutomationTriggerListItemSchema>;
-
-export const AutomationTriggerDetailSchema = z.discriminatedUnion('kind', [
-  AutomationScheduleTriggerProjectionSchema.extend({ triggerDefinitionEnvelope: z.null() }).strict(),
-  AutomationPluginEventTriggerProjectionSchema.extend({
-    triggerDefinitionEnvelope: z.string().min(1),
-  }).strict(),
-  AutomationSessionLifecycleTriggerProjectionSchema.extend({
-    triggerDefinitionEnvelope: z.null(),
-  }).strict(),
-]);
-export type AutomationTriggerDetail = z.infer<typeof AutomationTriggerDetailSchema>;
 
 const AutomationDefinitionBaseSchema = z.object({
   id: IDENTIFIER_SCHEMA,
   name: z.string(),
   description: z.string().nullable(),
   enabled: z.boolean(),
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.nullable().optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
   /** Null only for a strict V2 managed-workflow recipe, which has no single legacy target. */
   targetType: AutomationTargetTypeV3Schema.nullable(),
   /**
@@ -571,7 +452,14 @@ export const AutomationDefinitionListRequestSchema = z.object({
   limit: z.coerce.number().int().min(1).max(AUTOMATION_V3_DEFINITION_LIST_MAX_ITEMS)
     .default(AUTOMATION_V3_DEFINITION_LIST_MAX_ITEMS),
   cursor: OPAQUE_CURSOR_SCHEMA.optional(),
-}).strict();
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.optional(),
+  scope: z.literal('account_inline').optional(),
+}).strict().superRefine((value, context) => {
+  if (value.scope !== undefined && (value.workflowDefinitionId !== undefined || value.scopeSessionId !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['scope'], message: 'Account inline scope cannot be combined with a workflow or Session filter' });
+  }
+});
 export type AutomationDefinitionListRequest = z.infer<typeof AutomationDefinitionListRequestSchema>;
 
 export const AutomationDefinitionListResponseSchema = z.object({
@@ -651,6 +539,8 @@ const AutomationV3WorkerMachineAttemptSchema = z.object({
 export const AutomationV3WorkerClaimRequestSchema = z.object({
   machineId: IDENTIFIER_SCHEMA,
   leaseDurationMs: z.number().int().min(5_000).max(15 * 60_000).optional(),
+  /** At ordinary worker capacity, admit only session-scoped trigger runs. */
+  scope: z.literal('session_scoped').optional(),
 }).strict();
 export type AutomationV3WorkerClaimRequest = z.infer<typeof AutomationV3WorkerClaimRequestSchema>;
 
@@ -741,7 +631,9 @@ function addRunTriggerCauseCorrespondenceIssue(
 ): void {
   const corresponds = value.cause.kind === 'trigger'
     ? value.triggerId === value.cause.triggerId
-    : value.triggerId === null && value.triggerRetired === false;
+    : value.cause.kind === 'conversation' && value.cause.triggerId !== undefined
+      ? value.triggerId === value.cause.triggerId
+      : value.triggerId === null && value.triggerRetired === false;
   if (!corresponds) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -751,12 +643,14 @@ function addRunTriggerCauseCorrespondenceIssue(
   }
 }
 
-const AutomationV3WorkerClaimedAutomationRunSchema = z.object({
+const AutomationV3WorkerClaimedAutomationRunBaseSchema = z.object({
   id: IDENTIFIER_SCHEMA,
   automationId: IDENTIFIER_SCHEMA,
   attempt: z.number().int().positive().safe(),
   /** Exact post-claim parent CAS revision for workflow snapshot finalization. */
   revision: z.number().int().nonnegative().safe(),
+  /** Boundary Resume request consumed by this claim; absent on unrelated claims. */
+  workflowResumeRequestedRevision: z.number().int().nonnegative().safe().optional(),
   /** Explicit program epoch; workers never infer execution semantics from optional envelopes. */
   recipeKind: z.enum(['legacy', 'workflow-v2']),
   // Retained predecessor Runs may lack a recipe. A V3 worker must fail those
@@ -768,9 +662,22 @@ const AutomationV3WorkerClaimedAutomationRunSchema = z.object({
   triggerRetired: z.boolean(),
   /** Immutable Run-owned cause consumed by the strict recipe materializer. */
   cause: AutomationRunCauseSchema,
+  /** Host-stamped firing cause depth; captured in the claim receipt, never caller input. */
+  causeWorkDepth: z.number().int().nonnegative().safe().optional(),
+  /** Scoped trigger only: the last succeeded run's final review checkpoint. */
+  lastSucceededRun: z.object({
+    runId: IDENTIFIER_SCHEMA,
+    checkpointEnvelope: AutomationRunExecutionInputEnvelopeSchema,
+  }).strict().optional(),
   /** Omitted for ordinary claims. */
   resultDelivery: AutomationV3WorkerResultDeliverySchema.optional(),
-}).strict().superRefine((value, context) => {
+}).strict();
+
+function validateAutomationV3WorkerClaimedAutomationRun(
+  value: Pick<z.infer<typeof AutomationV3WorkerClaimedAutomationRunBaseSchema>,
+    'triggerId' | 'triggerRetired' | 'cause' | 'recipeKind' | 'executionInputEnvelope' | 'automationEvidenceEnvelope'>,
+  context: z.RefinementCtx,
+) {
   addRunTriggerCauseCorrespondenceIssue(value, context);
   if (value.recipeKind === 'workflow-v2') {
     if (value.executionInputEnvelope === null) {
@@ -794,13 +701,18 @@ const AutomationV3WorkerClaimedAutomationRunSchema = z.object({
       message: 'A legacy claim cannot carry workflow trigger evidence',
     });
   }
-});
+}
+
+const AutomationV3WorkerClaimedAutomationRunSchema = AutomationV3WorkerClaimedAutomationRunBaseSchema
+  .superRefine(validateAutomationV3WorkerClaimedAutomationRun);
 
 const AutomationV3WorkerClaimedDirectWorkflowRunSchema = z.object({
   id: IDENTIFIER_SCHEMA,
   automationId: z.null(),
   attempt: z.number().int().positive().safe(),
   revision: z.number().int().nonnegative().safe(),
+  /** Boundary Resume request consumed by this claim; absent on unrelated claims. */
+  workflowResumeRequestedRevision: z.number().int().nonnegative().safe().optional(),
   recipeKind: z.literal('workflow-v2'),
   origin: z.object({
     kind: z.literal('direct'),
@@ -816,7 +728,14 @@ const AutomationV3WorkerClaimedDirectWorkflowRunSchema = z.object({
  * receipt and are re-read from their transition-censused Run row on replay.
  */
 export const AutomationV3WorkerClaimReceiptRunSchema = z.union([
-  AutomationV3WorkerClaimedAutomationRunSchema,
+  // A receipt carries correspondence, not private workflow definition/evidence.
+  // The claim owner reopens those bytes from the canonical Run on replay.
+  AutomationV3WorkerClaimedAutomationRunBaseSchema.extend({
+    lastSucceededRun: z.object({
+      runId: IDENTIFIER_SCHEMA,
+      checkpointEnvelope: z.null(),
+    }).strict().optional(),
+  }).superRefine(addRunTriggerCauseCorrespondenceIssue),
   AutomationV3WorkerClaimedDirectWorkflowRunSchema.extend({
     workflowAcceptedSnapshotEnvelope: AutomationRunExecutionInputEnvelopeSchema.nullable(),
   }).strict(),
@@ -834,6 +753,8 @@ export const AutomationV3WorkerClaimedAutomationSchema = z.object({
   id: IDENTIFIER_SCHEMA,
   name: z.string(),
   enabled: z.boolean(),
+  workflowDefinitionId: WorkflowDefinitionRefV1StringSchema.nullable().optional(),
+  scopeSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
 }).strict();
 export type AutomationV3WorkerClaimedAutomation = z.infer<
   typeof AutomationV3WorkerClaimedAutomationSchema
@@ -890,6 +811,8 @@ export const AutomationV3WorkerFailRequestSchema = AutomationV3WorkerMachineAtte
   /** A known canonical new-Session id survives input failure/cancellation settlement. */
   producedSessionId: IDENTIFIER_SCHEMA.nullable().optional(),
   errorCode: z.string().min(1).max(128).nullable().optional(),
+  /** Claimed-only trigger admission refusal; ordinary failures remain failed. */
+  terminalState: z.literal('skipped').optional(),
   /** Private Account-mode-correct detail; errorCode remains the structural outcome. */
   errorDetailEnvelope: z.string().min(1).max(MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES).nullable().optional(),
 }).strict();

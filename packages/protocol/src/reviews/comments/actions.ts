@@ -12,11 +12,15 @@ import {
   ReviewCommentSetDispositionRequestV1Schema,
   ReviewCommentSnapshotV1Schema,
   ReviewCommentStateV1Schema,
+  ReviewCommentScopeV1Schema,
+  ReviewCommentWorkspaceV1Schema,
+  validateReviewCommentScopeV1,
   ReviewCommentTransitionRequestV1Schema,
   ReviewCommentV1Schema,
   reviewCommentStateTransitionRequiresEvidenceV1,
 } from './v1.js';
 import { StoredJsonContentEnvelopeSchema } from '../../storage/storedJsonContentEnvelope.js';
+import { PluginSourceCustodyV1Schema } from '../../plugins/runtime/sourceCustody.js';
 
 export const REVIEW_COMMENT_ACTION_IDS_V1 = Object.freeze([
   'reviews.comments.create',
@@ -50,7 +54,7 @@ export type ReviewCommentPrincipalProofV1 = z.infer<typeof ReviewCommentPrincipa
 
 const ReviewCommentCurrentIntentIdV1Schema = z.string().trim().min(1).max(512);
 
-export const ReviewCommentCurrentIntentV1Schema = z.object({
+const ReviewCommentPluginCurrentIntentV1Schema = z.object({
   v: z.literal(1),
   kind: z.literal('execution_run_host_action'),
   actionId: z.literal('reviews.comments.create'),
@@ -64,8 +68,28 @@ export const ReviewCommentCurrentIntentV1Schema = z.object({
   agentId: ReviewCommentCurrentIntentIdV1Schema,
   projectId: ReviewCommentCurrentIntentIdV1Schema,
   workspaceId: ReviewCommentCurrentIntentIdV1Schema,
-  immutableGenerationId: ReviewCommentCurrentIntentIdV1Schema,
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
+const ReviewCommentMaterializationIntentV1Schema = z.object({
+  v: z.literal(1),
+  kind: z.literal('review_findings_materialization'),
+  actionId: z.literal('reviews.comments.create'),
+  effectBodySha256Base64Url: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  sessionId: ReviewCommentCurrentIntentIdV1Schema.optional(),
+  workflowRunId: ReviewCommentCurrentIntentIdV1Schema.optional(),
+  runId: ReviewCommentCurrentIntentIdV1Schema,
+  callId: ReviewCommentCurrentIntentIdV1Schema,
+  agentId: ReviewCommentCurrentIntentIdV1Schema,
+  ...ReviewCommentScopeV1Schema.shape,
+}).strict().superRefine(validateReviewCommentScopeV1).superRefine((value, ctx) => {
+  if (!value.sessionId && !value.workflowRunId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sessionId'], message: 'A Session or Workflow Run is required' });
+  }
+});
+export const ReviewCommentCurrentIntentV1Schema = z.union([
+  ReviewCommentPluginCurrentIntentV1Schema,
+  ReviewCommentMaterializationIntentV1Schema,
+]);
 export type ReviewCommentCurrentIntentV1 = z.infer<typeof ReviewCommentCurrentIntentV1Schema>;
 
 export const ReviewCommentPrincipalHeaderV1Schema = z.object({
@@ -117,8 +141,8 @@ export type ReviewCommentActionIdV1 = z.infer<typeof ReviewCommentActionIdV1Sche
 
 const ReviewCommentListTaxonomyIdsV1Schema = z.preprocess(
   (value) => typeof value === 'string' ? [value] : value,
-  z.array(z.string().min(1)).optional(),
-);
+  z.array(z.string().min(1)),
+).optional();
 
 export const ReviewCommentOperationErrorCodeV1Schema = z.enum([
   'review_comment_not_found',
@@ -137,12 +161,13 @@ export const ReviewCommentOperationErrorCodeV1Schema = z.enum([
 export type ReviewCommentOperationErrorCodeV1 = z.infer<typeof ReviewCommentOperationErrorCodeV1Schema>;
 
 export const ReviewCommentListRequestV1Schema = z.object({
+  workspace: ReviewCommentWorkspaceV1Schema.optional(),
   workspaceId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
   runId: z.string().min(1).optional(),
   states: z.array(ReviewCommentStateV1Schema).default([]),
-  authorKind: z.enum(['user', 'plugin', 'agent']).optional(),
+  authorKind: z.enum(['user', 'plugin', 'agent', 'workflow']).optional(),
   authorId: z.string().min(1).optional(),
   engineId: z.string().min(1).optional(),
   filePath: z.string().min(1).optional(),
@@ -154,6 +179,11 @@ export const ReviewCommentListRequestV1Schema = z.object({
   limit: z.number().int().positive().max(200).default(50),
 }).strict();
 export type ReviewCommentListRequestV1 = z.infer<typeof ReviewCommentListRequestV1Schema>;
+
+/** Action orchestration may drain the existing paged transport; the wire request stays unchanged. */
+export const ReviewCommentListActionRequestV1Schema = ReviewCommentListRequestV1Schema.extend({
+  allPages: z.literal(true).optional(),
+}).strict();
 
 export const ReviewCommentGetRequestV1Schema = z.object({
   commentId: z.string().min(1),
@@ -594,7 +624,7 @@ export const ReviewCommentReplyResponseV1Schema = z.object({
 export type ReviewCommentReplyResponseV1 = z.infer<typeof ReviewCommentReplyResponseV1Schema>;
 
 export const ReviewCommentBulkTransitionRequestV1Schema = z.object({
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   commentIds: z.array(z.string().min(1)).min(1),
   toState: ReviewCommentStateV1Schema,
   expectedState: ReviewCommentStateV1Schema,
@@ -606,7 +636,7 @@ export const ReviewCommentBulkTransitionRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict().superRefine((value, ctx) => {
+}).strict().superRefine(validateReviewCommentScopeV1).superRefine((value, ctx) => {
   if (reviewCommentStateTransitionRequiresEvidenceV1(value.toState) && value.evidence.length === 0 && !value.reason) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -648,7 +678,7 @@ export type ReviewCommentAttachEvidenceResponseV1 = z.infer<typeof ReviewComment
 
 export const ReviewCommentActionInputSchemasV1 = Object.freeze({
   'reviews.comments.create': ReviewCommentCreateRequestV1Schema,
-  'reviews.comments.list': ReviewCommentListRequestV1Schema,
+  'reviews.comments.list': ReviewCommentListActionRequestV1Schema,
   'reviews.comments.get': ReviewCommentGetRequestV1Schema,
   'reviews.comments.transition': ReviewCommentTransitionRequestV1Schema,
   'reviews.comments.edit': ReviewCommentEditRequestV1Schema,

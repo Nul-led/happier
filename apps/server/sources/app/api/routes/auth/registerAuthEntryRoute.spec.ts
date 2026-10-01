@@ -13,7 +13,10 @@ const verifyRequestPrincipal = vi.hoisted(() => vi.fn<
     (input: unknown) => Promise<RequestPrincipalVerification>
 >(async () => ({ status: 'absent' })));
 
-vi.mock('@/app/auth/entry/resolveAuthEntry', () => ({ resolveAuthEntry }));
+vi.mock('@/app/auth/entry/resolveAuthEntry', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/app/auth/entry/resolveAuthEntry')>(),
+    resolveAuthEntry,
+}));
 vi.mock('@/app/api/utils/verifyRequestPrincipal', () => ({ verifyRequestPrincipal }));
 
 import { registerAuthEntryRoute } from './registerAuthEntryRoute';
@@ -38,6 +41,7 @@ function verified(
 function mountAuthEntryRoute() {
     let handler: ((request: any, reply: any) => Promise<unknown>) | undefined;
     const app = {
+        log: { error: vi.fn() },
         post: vi.fn((path: string, _options: unknown, next: typeof handler) => {
             expect(path).toBe('/v1/auth/entry');
             handler = next;
@@ -56,8 +60,11 @@ function mountAuthEntryRoute() {
         get statusCode() {
             return statusCode;
         },
-        call: async (headers: Record<string, string> = {}) => await handler?.(
-            { body: { v: 1, scope: { kind: 'team', teamId: 'team-1' } }, headers, ip: '203.0.113.9' },
+        call: async (
+            headers: Record<string, string> = {},
+            body: Record<string, unknown> = { v: 1, scope: { kind: 'team', teamId: 'team-1' } },
+        ) => await handler?.(
+            { body, headers, ip: '203.0.113.9' },
             { code, header, send },
         ),
     };

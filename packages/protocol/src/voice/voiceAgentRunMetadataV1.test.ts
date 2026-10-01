@@ -114,6 +114,23 @@ describe('parseVoiceAgentRunMetadataV1', () => {
 });
 
 describe('buildVoiceAgentRunMetadataV1', () => {
+  it('retains the previous stamp only for unchanged run content', () => {
+    const previous = buildVoiceAgentRunMetadataV1({
+      runId: 'run-1', backendTarget: builtInTarget, resumeHandle: null, updatedAtMs: 100,
+    });
+    expect(previous).not.toBeNull();
+    const same = buildVoiceAgentRunMetadataV1({
+      runId: 'run-1', backendTarget: builtInTarget, resumeHandle: null, updatedAtMs: 200,
+      previous,
+    });
+    const changed = buildVoiceAgentRunMetadataV1({
+      runId: 'run-2', backendTarget: builtInTarget, resumeHandle: null, updatedAtMs: 200,
+      previous,
+    });
+    expect(same?.updatedAtMs).toBe(100);
+    expect(changed?.updatedAtMs).toBe(200);
+  });
+
   it('derives backendId from a builtInAgent target and never writes streamId', () => {
     const built = buildVoiceAgentRunMetadataV1({
       runId: 'run-1',

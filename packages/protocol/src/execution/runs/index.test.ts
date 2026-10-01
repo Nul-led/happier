@@ -30,7 +30,6 @@ import { ReviewFollowUpInputSchema } from '../../reviews/reviewFollowUp.js';
 import { ReviewFindingsV1Schema } from '../../messages/structured/reviewFindingsV1.js';
 import { ReviewFindingsV2Schema } from '../../messages/structured/reviewFindingsV2.js';
 import { ReviewFollowUpV1Schema } from '../../messages/structured/reviewFollowUpV1.js';
-import { ReviewPublishRequestV1Schema } from '../../messages/structured/reviewPublishRequestV1.js';
 import { ExecutionRunStructuredRunRefSchema } from '../../messages/structured/executionRunStructuredRunRef.js';
 import { PlanOutputV1Schema } from '../../messages/structured/planOutputV1.js';
 import { DelegateOutputV1Schema } from '../../messages/structured/delegateOutputV1.js';
@@ -65,6 +64,16 @@ describe('executionRuns protocol', () => {
       kind: 'decision',
       decisions: ['continue', 'continue'],
     }).success).toBe(false);
+  });
+
+  it('interprets raw and typed results through the public Protocol codec', () => {
+    const contract = { kind: 'json' as const, schema: { type: 'string' as const } };
+    expect(Protocol.decodeExecutionRunResultObservation({ encoding: 'raw_text', value: '"value"' }, contract))
+      .toEqual({ ok: true, value: 'value' });
+    expect(Protocol.decodeExecutionRunResultObservation({ encoding: 'typed', value: 'value' }, contract))
+      .toEqual({ ok: true, value: 'value' });
+    expect(Protocol.decodeExecutionRunResultObservation({ encoding: 'typed', value: 7 }, contract))
+      .toMatchObject({ ok: false, reason: 'schema_mismatch', issues: [{ pointer: '' }] });
   });
 
   it('carries exact input identity and result contract on the native send seam', () => {
@@ -383,7 +392,7 @@ describe('executionRuns protocol', () => {
       teamId: 'team-1',
       expectedResourceRevision: 7,
       deliveryMode: 'brokered',
-      agentTargetKey: 'backend:codex',
+      agentTargetKey: 'agent:happier.agent.codex/codex',
       modelId: 'gpt-5.6',
     } as const;
 
@@ -401,14 +410,14 @@ describe('executionRuns protocol', () => {
     expect(ExecutionRunStartRequestSchema.safeParse({
       ...base,
       instructions: 'Reject a different Agent target.',
-      teamCredentialModel: { ...teamCredentialModel, agentTargetKey: 'backend:claude' },
+      teamCredentialModel: { ...teamCredentialModel, agentTargetKey: 'agent:happier.agent.claude/claude' },
     }).success).toBe(false);
     expect(ExecutionRunStartRequestSchema.safeParse({
       ...base,
       instructions: 'Reject ambiguous Provider owners.',
       teamCredentialModel,
       modelSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'connection-1',
         modelId: teamCredentialModel.modelId,
       },
@@ -719,7 +728,7 @@ describe('executionRuns protocol', () => {
       ioMode: 'streaming',
       modelId: 'gpt-5.1-codex',
       modelSelection: {
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         providerConnectionId: 'pc_openai',
         modelId: 'gpt-5.1-codex',
       },
@@ -732,7 +741,7 @@ describe('executionRuns protocol', () => {
       ...request,
       modelSelection: {
         ...request.modelSelection,
-        agentTargetKey: 'backend:claude',
+        agentTargetKey: 'agent:happier.agent.claude/claude',
       },
     }).success).toBe(false);
     expect(ExecutionRunStartRequestSchema.safeParse({
@@ -757,7 +766,7 @@ describe('executionRuns protocol', () => {
         teamId: 'team-1',
         expectedResourceRevision: 7,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
       teamCredentialSessionBindingConsent: {
@@ -898,13 +907,13 @@ describe('executionRuns protocol', () => {
       ioMode: 'streaming',
       modelId: 'chat-model',
       modelSelection: {
-        agentTargetKey: 'backend:opencode',
+        agentTargetKey: 'agent:happier.agent.opencode/opencode',
         providerConnectionId: 'provider-chat',
         modelId: 'chat-model',
       },
       intentInput: {
         commitModelSelection: {
-          agentTargetKey: 'backend:opencode',
+          agentTargetKey: 'agent:happier.agent.opencode/opencode',
           providerConnectionId: 'provider-commit',
           modelId: 'commit-model',
         },
@@ -919,7 +928,7 @@ describe('executionRuns protocol', () => {
       intentInput: {
         commitModelSelection: {
           ...request.intentInput.commitModelSelection,
-          agentTargetKey: 'backend:claude',
+          agentTargetKey: 'agent:happier.agent.claude/claude',
         },
       },
     }).success).toBe(false);
@@ -1542,38 +1551,6 @@ describe('executionRuns protocol', () => {
     expect(parsed.updatedFindings?.[0]?.confidence).toBe(0.9);
   });
 
-  it('validates review_publish_request.v1 structured payload', () => {
-    const parsed = ReviewPublishRequestV1Schema.parse({
-      sourceRunRef: {
-        runId: 'run_1',
-        callId: 'subagent_run_1',
-        backendId: 'claude',
-        backendTarget: { kind: 'builtInAgent', agentId: 'claude' },
-        futureSourceRunRefField: 'keep-me',
-      },
-      findingIds: ['f1'],
-      publishedFindings: [
-        {
-          id: 'f1',
-          title: 'Example',
-          severity: 'medium',
-          category: 'correctness',
-          summary: 'Ship this fix.',
-          whyItMatters: 'It crashes production input.',
-          evidence: 'Reproduced locally.',
-          confidence: 0.95,
-          futureFindingField: 'keep-me',
-        },
-      ],
-      threadRefs: ['thread_1'],
-      futurePublishRequestField: 'keep-me',
-    });
-    expect(parsed.publishedFindings[0]?.id).toBe('f1');
-    expect((parsed as any).futurePublishRequestField).toBe('keep-me');
-    expect((parsed.sourceRunRef as any).futureSourceRunRefField).toBe('keep-me');
-    expect((parsed.publishedFindings[0] as any).futureFindingField).toBe('keep-me');
-  });
-
   it('exports the shared structured run ref schema from the protocol root entrypoint', () => {
     expect(Protocol.ExecutionRunStructuredRunRefSchema).toBe(ExecutionRunStructuredRunRefSchema);
   });
@@ -1741,11 +1718,11 @@ describe('executionRuns protocol', () => {
       runClass: 'bounded',
       ioMode: 'streaming',
       profileId: 'acme.review/profile',
-      profileGenerationId: 'generation-2',
+      profileSourceCustody: { kind: 'development', registeredRootId: '/plugins/review' },
     });
 
     expect(parsed.profileId).toBe('acme.review/profile');
-    expect(parsed.profileGenerationId).toBe('generation-2');
+    expect(parsed.profileSourceCustody).toEqual({ kind: 'development', registeredRootId: '/plugins/review' });
   });
 
   it('rejects a selected execution-run profile without its committed generation', () => {

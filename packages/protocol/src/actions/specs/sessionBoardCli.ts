@@ -7,7 +7,7 @@ import {
   SessionBoardLayoutOperationV1Schema,
 } from '../../sessions/board/layoutOperations.js';
 import { SessionSystemRecordRevisionSchema } from '../../sessions/system/records/sessionSystemRecordRevision.js';
-import type { ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliProjection } from '../actionCliProjection.js';
 
 /**
  * The canonical Board Actions leave `sessionId` optional because an in-Session
@@ -62,7 +62,7 @@ export function bindSessionBoardItemUpsertCliInput(
   return {
     sessionId: value.sessionId,
     itemId: value.itemId,
-    expectedItemRevision: value.expectedItemRevision ?? null,
+    expectedItemRevision: value.expectedItemRevision ?? actionCliDerivedDefault(null),
     item: value.item,
     ...(value.placement ? { placement: value.placement } : {}),
   };
@@ -73,7 +73,7 @@ export function bindSessionBoardLayoutUpdateCliInput(
 ): Readonly<Record<string, unknown>> {
   return {
     sessionId: value.sessionId,
-    expectedLayoutRevision: value.expectedLayoutRevision ?? null,
+    expectedLayoutRevision: value.expectedLayoutRevision ?? actionCliDerivedDefault(null),
     operation: value.operation,
   };
 }

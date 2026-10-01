@@ -18,7 +18,7 @@ import { db } from "@/storage/db";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import {
-    resolveCachedPublicServerUrl,
+    resolveInferredPublicServerAccess,
     resetPublicServerUrlInferenceCacheForTests,
 } from "@/app/integrations/publicUrl/publicServerUrlInference";
 import { resolveFeaturesFromEnv } from '@/app/features/registry';
@@ -36,7 +36,6 @@ const resetEnvToDeploymentBase = createEnvReset({
     HAPPIER_CANONICAL_SERVER_URL: undefined,
     HAPPIER_PUBLIC_SERVER_URL: undefined,
     HAPPIER_PUBLIC_SERVER_URL_INFER_TTL_MS: undefined,
-    HAPPIER_PUBLIC_SERVER_URL_INFERRED: undefined,
     HAPPIER_WEBAPP_URL: undefined,
     HAPPY_WEBAPP_URL: undefined,
     HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL: "0",
@@ -182,11 +181,97 @@ describe("featuresRoutes", () => {
         descriptorContinuityDir = await mkdtemp(join(tmpdir(), "features-descriptor-"));
     });
 
+    it('publishes the server-proven host fact only to an authenticated Account', async () => {
+        const { featuresRoutes } = await import('./featuresRoutes');
+        const known = { kind: 'known' as const, machineName: 'Studio', platform: 'darwin' as const, mobility: 'stationary' as const };
+        resetEnv({ HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home' });
+        const makeRoute = (path: string) => createRouteTestBuilder({
+            method: 'GET',
+            path,
+            registerRoutes(app) {
+                app.authenticate.mockImplementation(async (request: any) => {
+                    request.userId = 'account_1';
+                    request.authTokenKind = request.headers.authorization === 'Bearer restricted'
+                        ? 'ephemeral_session_runner' : 'account';
+                });
+                featuresRoutes(app as any, { resolveHomeHostFact: async () => known });
+            },
+        });
+        const publicRoute = makeRoute('/v1/features');
+        const authenticatedRoute = makeRoute('/v1/features/authenticated');
+        expect((await publicRoute.invoke()).response).not.toHaveProperty('homeHostFact');
+        expect((await authenticatedRoute.invoke({ headers: { authorization: 'Bearer account' } })).response)
+            .toHaveProperty('homeHostFact', known);
+        expect((await authenticatedRoute.invoke({ headers: { authorization: 'Bearer restricted' } })).response)
+            .not.toHaveProperty('homeHostFact');
+
+        await withAuthenticatedTestApp((app) => featuresRoutes(app, { resolveHomeHostFact: async () => known }), async (app) => {
+            const publicResponse = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(publicResponse.statusCode, publicResponse.body).toBe(200);
+            expect(publicResponse.json()).not.toHaveProperty('homeHostFact');
+            const accountResponse = await app.inject({
+                method: 'GET', url: '/v1/features/authenticated', headers: { 'x-test-user-id': 'account_1' },
+            });
+            expect(accountResponse.statusCode, accountResponse.body).toBe(200);
+            expect(accountResponse.json().homeHostFact).toEqual(known);
+        });
+
+        resetEnv({ HAPPIER_MANAGED_RELAY_PURPOSE: 'generic' });
+        expect((await authenticatedRoute.invoke({ headers: { authorization: 'Bearer account' } })).response)
+            .not.toHaveProperty('homeHostFact');
+        const genericProbe = vi.fn(async () => known);
+        const genericRoute = createRouteTestBuilder({
+            method: 'GET', path: '/v1/features/authenticated', registerRoutes(app) {
+                app.authenticate.mockImplementation(async (request: any) => {
+                    request.userId = 'account_1';
+                    request.authTokenKind = 'account';
+                });
+                featuresRoutes(app as any, { resolveHomeHostFact: genericProbe });
+            },
+        });
+        expect((await genericRoute.invoke({ headers: { authorization: 'Bearer account' } })).response)
+            .not.toHaveProperty('homeHostFact');
+        expect(genericProbe).not.toHaveBeenCalled();
+    });
+
+    it('serves unknown immediately while host detection is pending or fails', async () => {
+        const { featuresRoutes } = await import('./featuresRoutes');
+        let rejectProbe!: (error: Error) => void;
+        const probe = new Promise<{ kind: 'unknown' }>((_resolve, reject) => { rejectProbe = reject; });
+        resetEnv({ HAPPIER_MANAGED_RELAY_PURPOSE: 'personal-home' });
+        const route = createRouteTestBuilder({ method: 'GET', path: '/v1/features/authenticated', registerRoutes(app) {
+            app.authenticate.mockImplementation(async (request: any) => { request.userId = 'account_1'; request.authTokenKind = 'account'; });
+            featuresRoutes(app as any, { resolveHomeHostFact: () => probe });
+        } });
+        const pending = await route.invoke({ headers: { authorization: 'Bearer account' } });
+        expect(pending.response).toHaveProperty('homeHostFact', { kind: 'unknown' });
+        rejectProbe(new Error('OS probe unavailable'));
+        await Promise.resolve();
+        const failed = await route.invoke({ headers: { authorization: 'Bearer account' } });
+        expect(failed.response).toHaveProperty('homeHostFact', { kind: 'unknown' });
+
+        const probeCapture: { signal: AbortSignal | null } = { signal: null };
+        await withAuthenticatedTestApp((app) => featuresRoutes(app, {
+            resolveHomeHostFact: (signal) => {
+                probeCapture.signal = signal;
+                return new Promise<never>(() => {});
+            },
+        }), async (app) => {
+            const response = await app.inject({
+                method: 'GET', url: '/v1/features/authenticated', headers: { 'x-test-user-id': 'account_1' },
+            });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json().homeHostFact).toEqual({ kind: 'unknown' });
+        });
+        expect(probeCapture.signal?.aborted).toBe(true);
+    });
+
     afterEach(async () => {
         serverIdentityOverride.value = null;
         resetPublicServerUrlInferenceCacheForTests();
         // The Home governance row is the one piece of shared state a case writes.
         await db.homeGovernancePolicy.deleteMany({});
+        await db.homeSettings.deleteMany({});
         resetEnv();
         await rm(descriptorContinuityDir, { recursive: true, force: true });
         descriptorContinuityDir = "";
@@ -205,6 +290,20 @@ describe("featuresRoutes", () => {
         capability = { enabled: true };
         const ready = await getFeaturesPayload({}, undefined, resolveCapability);
         expect(ready.payload.capabilities.homeSearch).toEqual({ enabled: true });
+    });
+
+    it("publishes the persisted Home name across devices without presenting it as an Account Service", async () => {
+        await db.homeSettings.create({
+            data: { id: "home", revision: 1, values: { HAPPIER_HOME_DISPLAY_NAME: "Studio" } },
+        });
+        const { featuresRoutes } = await import("./featuresRoutes");
+        await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+            const response = await app.inject({ method: "GET", url: "/v1/features" });
+            expect(response.statusCode, response.body).toBe(200);
+            const payload = response.json();
+            expect(payload.homePresentation).toEqual({ v: 1, displayName: "Studio" });
+            expect(payload.accountServicePresentation).toBeUndefined();
+        });
     });
 
     it.each(['external', 'self'] as const)('publishes policy and own presentation through serialized HTTP for %s', async (mode) => {
@@ -252,9 +351,9 @@ describe("featuresRoutes", () => {
                 ?.actions.every((action: { enabled: boolean }) => !action.enabled)).toBe(true);
             expect(auth.login.methods.find((method: { id: string }) => method.id === 'key_challenge'))
                 .toEqual({ id: 'key_challenge', enabled: false });
-            // R-COMPAT (2026-09-22): no released 0.2 client reads this payload
-            // any more, so the Home's effective email/password decision is
-            // published like every other method.
+            // The approved all-component 0.3 upgrade does not support mixed
+            // 0.2/0.3 operation, so native password is published like every
+            // other effective method; old-reader omission is not required.
             expect(auth.methods.find((method: { id: string }) => method.id === 'email_password')
                 ?.actions.find((action: { id: string }) => action.id === 'login'))
                 .toMatchObject({ id: 'login', enabled: true });
@@ -551,6 +650,52 @@ describe("featuresRoutes", () => {
             expect((restricted.response as any).homeConnectionDescriptor.endpoints[0])
                 .not.toHaveProperty("directAddresses");
             expect(route.app.authenticate).toHaveBeenCalledTimes(2);
+        });
+
+        it("publishes a Home-stored public address in the descriptor, never as the sign-in audience (§3.2, I1)", async () => {
+            resetEnv({
+                HAPPIER_SERVER_IDENTITY_ID: "srv_storedAddressHome",
+                HAPPIER_CANONICAL_SERVER_URL: undefined,
+            });
+            await db.homeSettings.create({
+                data: { id: "home", revision: 1, values: { HAPPIER_PUBLIC_SERVER_URL: "https://stored.example.test" } },
+            });
+            try {
+                const { featuresRoutes } = await import("./featuresRoutes");
+                const route = createRouteTestBuilder({
+                    method: "GET",
+                    path: "/v1/features/authenticated",
+                    registerRoutes(app) {
+                        app.authenticate.mockImplementation(async (request: any) => {
+                            request.userId = "account_1";
+                            request.authTokenKind = "account";
+                        });
+                        featuresRoutes(app as any, {
+                            resolveHomeIrohEndpointState: () => ({ status: "unavailable", snapshot: null, failureReason: null }),
+                            homeConnectionDescriptorContinuityStore:
+                                createFileHomeConnectionDescriptorContinuityStore(descriptorContinuityPath()),
+                        });
+                    },
+                });
+                const { response } = await route.invoke({ headers: { authorization: "Bearer trusted-home-token" } });
+                // A stored address is ingress only: with no deployment canonical address there is no
+                // audience, so no descriptor, and the stored address is never promoted to one.
+                expect((response as any).capabilities.server.canonicalServerUrl).toBeUndefined();
+                expect(response).not.toHaveProperty("homeConnectionDescriptor");
+
+                resetEnv({
+                    HAPPIER_SERVER_IDENTITY_ID: "srv_storedAddressHome",
+                    HAPPIER_CANONICAL_SERVER_URL: "https://home.example.test",
+                });
+                const published = await route.invoke({ headers: { authorization: "Bearer trusted-home-token" } });
+                expect((published.response as any).capabilities.server.canonicalServerUrl).toBe("https://home.example.test");
+                expect((published.response as any).homeConnectionDescriptor).toMatchObject({
+                    canonicalServerUrl: "https://home.example.test",
+                    endpoints: [{ kind: "https", url: "https://stored.example.test" }],
+                });
+            } finally {
+                await db.homeSettings.deleteMany({});
+            }
         });
 
         it("binds an authenticated descriptor to the current server identity", async () => {
@@ -1196,17 +1341,19 @@ describe("featuresRoutes", () => {
                     HAPPIER_HOME_DIR: undefined,
                     HAPPIER_STACK_CLI_HOME_DIR: undefined,
                     HAPPIER_PUBLIC_SERVER_URL: undefined,
-                    HAPPIER_PUBLIC_SERVER_URL_INFERRED: undefined,
                     HAPPIER_TAILSCALE_BIN: tailscaleBin,
                     HAPPIER_TAILSCALE_INFER_PUBLIC_URL: "0",
                     HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL: "1",
                     PORT: "3005",
                 });
 
-                await resolveCachedPublicServerUrl(process.env);
+                await expect(resolveInferredPublicServerAccess(process.env)).resolves.toMatchObject({
+                    inferred: { url: "https://my-machine.tailnet.ts.net", source: "relay_access" },
+                });
 
                 const { payload } = await getFeaturesPayload();
-                expect(process.env.HAPPIER_PUBLIC_SERVER_URL).toBe("https://my-machine.tailnet.ts.net");
+                // Inference is read-only: the address reaches readers through the overlay, never the env.
+                expect(process.env.HAPPIER_PUBLIC_SERVER_URL).toBeUndefined();
                 expect(payload.capabilities.server.canonicalServerUrl).toBeUndefined();
             } finally {
                 await rm(homeDir, { recursive: true, force: true });

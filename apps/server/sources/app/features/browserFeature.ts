@@ -39,12 +39,7 @@ const FEATURE_DISABLED_REASON = "feature_disabled";
  * omission nobody notices.
  */
 
-/**
- * `streamedBrowser` is deliberately withheld: there is no streamed renderer or producer for the
- * human browser view surface, which is the same fact `streamedSurfaceAvailable: false` publishes
- * below. Headless managed Chromium is represented by the `sidecar` + `automation` capabilities.
- */
-const BROWSER_TARGET_KINDS = BrowserViewTargetKindV1Schema.exclude(["streamedBrowser"]).options;
+const BROWSER_TARGET_KINDS = BrowserViewTargetKindV1Schema.options;
 
 const BROWSER_ADAPTER_KINDS = BrowserSemanticAdapterKindV1Schema.options;
 
@@ -110,10 +105,7 @@ function resolveBrowserCapabilities(config: BrowserFeatureEnv): BrowserCapabilit
             supportedTargetKinds: valuesWhenEnabled(viewTargetsEnabled, BROWSER_TARGET_KINDS),
             iframeAvailable: viewTargetsEnabled,
             webViewAvailable: viewTargetsEnabled,
-            // Headless managed Chromium is represented by `sidecar` + `automation` capabilities.
-            // Do not advertise a human `streamedBrowser` target until a streamed renderer/producer
-            // exists for the browser view surface.
-            streamedSurfaceAvailable: false,
+            streamedSurfaceAvailable: sidecarEnabled,
             disabledReasons: disabledReasons(viewTargetsEnabled),
         },
         internal: {

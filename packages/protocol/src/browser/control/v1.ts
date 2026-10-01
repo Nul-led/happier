@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MachineLiveStreamCaptureSourceV1Schema } from '../../machines/peer/mediation/stream/captureV1.js';
 
 import { BrowserSemanticAdapterKindV1Schema } from '../adapters/kinds.js';
 import { BrowserEventV1Schema } from '../events/v1.js';
@@ -30,6 +31,8 @@ export const BrowserCommandKindV1Schema = z.enum([
   'reload',
   'stop',
   'setTarget',
+  'takeControl',
+  'handBack',
 ]);
 export type BrowserCommandKindV1 = z.infer<typeof BrowserCommandKindV1Schema>;
 
@@ -78,6 +81,9 @@ export const BrowserSetTargetCommandV1Schema = BrowserViewCommandBaseV1Schema.ex
   currentUrl: BrowserHttpUrlV1Schema.optional(),
 });
 
+export const BrowserTakeControlCommandV1Schema = BrowserViewCommandBaseV1Schema.extend({ kind: z.literal('takeControl') });
+export const BrowserHandBackCommandV1Schema = BrowserViewCommandBaseV1Schema.extend({ kind: z.literal('handBack') });
+
 export const BrowserCommandV1Schema = z.discriminatedUnion('kind', [
   BrowserOpenViewCommandV1Schema,
   BrowserCloseViewCommandV1Schema,
@@ -88,11 +94,14 @@ export const BrowserCommandV1Schema = z.discriminatedUnion('kind', [
   BrowserReloadCommandV1Schema,
   BrowserStopCommandV1Schema,
   BrowserSetTargetCommandV1Schema,
+  BrowserTakeControlCommandV1Schema,
+  BrowserHandBackCommandV1Schema,
 ]);
 export type BrowserCommandV1 = z.infer<typeof BrowserCommandV1Schema>;
 
 export const BrowserCommandErrorCodeV1Schema = z.enum([
   'adapter_unavailable',
+  'sandbox_unavailable',
   'command_malformed',
   'feature_disabled',
   'permission_denied',
@@ -165,3 +174,26 @@ export const DaemonBrowserControlDispatchResponseV1Schema = z
 export type DaemonBrowserControlDispatchResponseV1 = z.infer<
   typeof DaemonBrowserControlDispatchResponseV1Schema
 >;
+
+/** Read-only projection of an owned view, never a CDP handle or a second view registry. */
+export const BrowserDaemonViewV1Schema = z.object({
+  browserSessionId: IdSchema,
+  viewId: IdSchema,
+  sourceId: z.string().min(1),
+  target: BrowserViewTargetV1Schema,
+  platform: BrowserPlatformV1Schema,
+  adapterKind: BrowserSemanticAdapterKindV1Schema.extract(['chromiumSidecar', 'streamedBrowserSurface']),
+  events: z.array(BrowserEventV1Schema),
+  captureSource: MachineLiveStreamCaptureSourceV1Schema.optional(),
+}).strict();
+export type BrowserDaemonViewV1 = z.infer<typeof BrowserDaemonViewV1Schema>;
+
+export const DaemonBrowserViewListRequestV1Schema = z.object({
+  machineId: IdSchema,
+  browserSessionId: IdSchema,
+}).strict();
+export const DaemonBrowserViewListResponseV1Schema = z.object({
+  protocolVersion: z.literal(1),
+  views: z.array(BrowserDaemonViewV1Schema),
+}).strict();
+export type DaemonBrowserViewListResponseV1 = z.infer<typeof DaemonBrowserViewListResponseV1Schema>;

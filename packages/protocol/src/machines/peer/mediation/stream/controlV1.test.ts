@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import { validateMachineLiveStreamControlLeaseV1 } from './controlV1';
 
 describe('Machine live-stream control sideband V1', () => {
+  it('uses browser automation custody rather than a simulator lease, without permitting another source', () => {
+    const input = { source: { sourceId: 'view', inputMode: 'shared' }, sourceKind: 'browser' as const,
+      control: { v: 1, streamId: 'stream', sourceId: 'view', eventId: 'click', kind: 'tap', x: 0.5, y: 0.5 },
+      activeLease: null, nowMs: 1000 };
+    expect(validateMachineLiveStreamControlLeaseV1(input)).toEqual({ ok: true });
+    expect(validateMachineLiveStreamControlLeaseV1({ ...input, control: { ...input.control, sourceId: 'other' } }))
+      .toEqual({ ok: false, reasonCode: 'input_lease_mismatch' });
+    expect(validateMachineLiveStreamControlLeaseV1({ ...input, sourceKind: 'simulator' }))
+      .toEqual({ ok: false, reasonCode: 'input_lease_required' });
+  });
   it('denies input control when the exclusive source has no active lease', async () => {
     const mod = await import('./controlV1').catch((error: unknown) => ({ importError: error }));
 

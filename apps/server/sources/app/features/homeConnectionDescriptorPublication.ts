@@ -209,12 +209,15 @@ export function composeHomeConnectionDescriptor(
         endpoints,
     });
     if (!parsed.success) return undefined;
+    // An explicit retirement retires the identity with the endpoint: it is never published again,
+    // so the pinned EndpointId (kept for key-loss and drift detection) is dropped with it and a
+    // later composition may present a new identity (plan 2026-09-26-home-owner-console §3.2, AM-2).
     revisionOwner = {
         revision,
         contentKey,
         ...(iroh
             ? { irohEndpointId: iroh.endpoint.endpointId }
-            : priorEndpointId
+            : priorEndpointId && facts.iroh.status !== "retired"
                 ? { irohEndpointId: priorEndpointId }
                 : {}),
     };

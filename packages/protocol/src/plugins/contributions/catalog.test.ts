@@ -15,6 +15,15 @@ import {
 } from './v2.js';
 
 describe('plugin contribution catalog', () => {
+  it('treats a page column renderer as a declared renderer reference', () => {
+    const entry = PLUGIN_CONTRIBUTION_CATALOG_V2.find((candidate) => candidate.manifestKey === 'ui.views')!;
+    expect(entry.extractReferences({
+      id: 'review', container: 'appPage', target: { kind: 'app' },
+      renderer: 'page-renderer', column: { renderer: 'column-renderer' },
+    })).toContainEqual({
+      targetFamily: 'ui.renderers', reference: 'column-renderer', path: ['column', 'renderer'],
+    });
+  });
   it('admits only the strict data-only ACP definition contract', () => {
     const declarativeRuntime = {
       kind: 'acp' as const,
@@ -55,6 +64,13 @@ describe('plugin contribution catalog', () => {
           default: null,
           'safe-yolo': 'smart',
         },
+        permissionModeArgv: {
+          flag: '--approval-mode',
+          map: {
+            default: null,
+            'safe-yolo': 'auto-edit',
+          },
+        },
       },
     };
 
@@ -77,7 +93,7 @@ describe('plugin contribution catalog', () => {
     expect(PLUGIN_CORE_CONTRIBUTION_FAMILIES_V2.map((entry) => entry.family)).toEqual([
       'agents', 'providers', 'actions', 'commands', 'tools', 'resources', 'transcriptActivities', 'sessionInfoSections',
       'sessionHeaderActions', 'browserTargets', 'browserActions', 'settings', 'events',
-      'executionRunProfiles', 'notifications', 'notificationChannels', 'scmHostingProviders',
+      'executionRunProfiles', 'roles', 'notifications', 'notificationChannels', 'scmHostingProviders',
       'scmBackends', 'connectedAccountDescriptors', 'managedDependencies', 'systemTools',
       'promptAssets', 'hooks', 'requestInterceptors', 'voiceModelPacks', 'voiceProviders',
       'backgroundServices', 'daemonDatabases', 'composerReferences', 'searchProviders',
@@ -127,6 +143,7 @@ describe('plugin contribution catalog', () => {
       'providers',
       'pluginUi',
       'pluginBrowser',
+      'roles',
       'scmHostingProviders',
       'scmBackends',
       'connectedAccounts',
@@ -202,7 +219,7 @@ describe('plugin contribution catalog', () => {
       capabilities: {
         turn: { cancelResponse: true, bargeIn: true },
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     }).platforms).toEqual(['web']);
   });
 
@@ -295,7 +312,6 @@ describe('plugin contribution catalog', () => {
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
       }],
@@ -304,7 +320,6 @@ describe('plugin contribution catalog', () => {
 
     expect(derivePluginClientContributionRegistrationRights(contributes, {
       artifactId: 'voice-runtime-web',
-      modulePath: './voiceRuntime',
       exportName: 'activate',
       platform: 'web',
     })).toEqual([{
@@ -313,7 +328,6 @@ describe('plugin contribution catalog', () => {
       target: {
         realm: 'client',
         artifactId: 'voice-runtime-web',
-        modulePath: './voiceRuntime',
         exportName: 'activate',
         platforms: ['web'],
       },
@@ -326,7 +340,7 @@ describe('plugin contribution catalog', () => {
     expect(entry('voiceProviders').registrationHost).toBe('discriminated');
     expect(entry('voiceProviders').runtimeRegistrationHost({
       kind: 'conversation',
-      client: { artifactId: 'voice-web', modulePath: './voice', exportName: 'activate' },
+      client: { artifactId: 'voice-web', exportName: 'activate' },
       platforms: ['web'],
     })).toBe('client');
     expect(entry('voiceProviders').runtimeRegistrationHost({ kind: 'speech' })).toBe('daemon');
@@ -338,7 +352,7 @@ describe('plugin contribution catalog', () => {
       id: 'open-client-preview',
       execution: {
         target: 'client',
-        client: { artifactId: 'preview-client', modulePath: './previewClient', exportName: 'activatePreview' },
+        client: { artifactId: 'preview-client', exportName: 'activatePreview' },
         platforms: ['web'],
       },
     })).toBe('client');
@@ -358,7 +372,7 @@ describe('plugin contribution catalog', () => {
           id: 'open-client-preview',
           execution: {
             target: 'client',
-            client: { artifactId: 'preview-client', modulePath: './previewClient', exportName: 'activatePreview' },
+            client: { artifactId: 'preview-client', exportName: 'activatePreview' },
             platforms: ['web'],
           },
         },
@@ -375,7 +389,6 @@ describe('plugin contribution catalog', () => {
         target: {
           realm: 'client',
           artifactId: 'preview-client',
-          modulePath: './previewClient',
           exportName: 'activatePreview',
           platforms: ['web'],
         },
@@ -389,7 +402,6 @@ describe('plugin contribution catalog', () => {
     ]);
     expect(derivePluginClientContributionRegistrationRights(contributes, {
       artifactId: 'preview-client',
-      modulePath: './previewClient',
       exportName: 'activatePreview',
       platform: 'web',
     })).toEqual([{
@@ -398,7 +410,6 @@ describe('plugin contribution catalog', () => {
       target: {
         realm: 'client',
         artifactId: 'preview-client',
-        modulePath: './previewClient',
         exportName: 'activatePreview',
         platforms: ['web'],
       },

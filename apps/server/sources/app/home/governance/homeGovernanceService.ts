@@ -1,11 +1,13 @@
 import {
     decodeKeysetCursorV1,
     encodeKeysetCursorV1,
+    HOME_ACCOUNT_DETAIL_RECENT_EVENTS_LIMIT_V1,
     HOME_ACCOUNT_PAGE_LIMIT_DEFAULT_V1,
     isActiveHomeAccountStatus,
     normalizeVerifiedEmail,
     readKeysetCursorIdV1,
     readKeysetCursorTimeV1,
+    type HomeAccountDetailV1,
     type HomeAccountListResultV1,
     type HomeAccountPickerRowV1,
     type HomeAccountRowV1,
@@ -30,10 +32,12 @@ import {
 import { resolveAllowedAccountProvisionModes, resolveRecommendedAccountProvisionMode } from "@/app/auth/methods/accountProvisionModes";
 import { isAuthEmailDeliveryReady } from "@/app/auth/email/resolveAuthEmailDelivery";
 import { resolveWorkosPlatformRuntimeMetadata } from "@/app/integrations/workos/workosPlatform";
+import { resolveAuthProviderInstancesFromEnv } from "@/app/auth/providers/oidc/oidcProviderConfig";
 import { buildAccountTextPrefixFilter } from "@/app/account/accountTextPrefixFilter";
 import {
     ACCOUNT_DISPLAY_PROFILE_SELECT,
     projectAccountDisplayProfileV1,
+    resolveAccountDisplayLabelV1,
     type AccountDisplayProfileRow,
 } from "@/app/account/profile/accountDisplayProfile";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
@@ -49,17 +53,52 @@ import {
 import type { Tx } from "@/storage/inTx";
 import { getDbProviderFromEnv } from "@/storage/prisma";
 
+import {
+    listHomeAdministrationEventsInTx,
+    recordHomeAdministrationEventInTx,
+} from "@/app/home/audit/homeAdministrationEvents";
+import { persistentMachineWhere } from "@/app/machines/machineSelection";
+import { listTeamMembershipsForAccountInTx } from "@/app/teams/memberships/memberAdministration";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
+import {
+    HOME_ANONYMOUS_SIGNUP_KEY,
+    HOME_AUTH_METHOD_ENABLE_KEYS,
+    HOME_AUTH_METHOD_PREREQUISITE_KEYS,
+    HOME_STORAGE_POLICY_KEY,
+    applyHomeAuthenticationPolicyToEnv,
+    homeAuthenticationCeilingEnv,
+    readHomeAuthenticationLock,
+} from "./homeAuthenticationPolicyEnv";
+import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { readHomeGovernancePolicyInTx, type HomeGovernancePolicyRecord } from "./governancePolicy";
 import {
     assertHomeOwnershipSurvivesTransitionInTx,
+    authorizeHomeAccountErasureActorInTx,
     authorizeHomeGovernanceMutationInTx,
     countActiveHomeOwnersInTx,
     readHomeGovernanceAccountInTx,
     resolveHomeAccountMutationCapabilitiesV1,
     resolveHomeCapabilitiesV1,
     resolveHomeGovernanceAuthority,
+    type HomeGovernanceAccountFacts,
 } from "./homeCapabilities";
+
+/** One server-authoritative answer for the empty Personal Home affordance. */
+export async function readHomeEmptinessInTx(tx: Tx, input: Readonly<{ actorAccountId: string }>): Promise<
+    Readonly<{ status: "ok"; isEmpty: boolean }> | Readonly<{ status: "forbidden" }>
+> {
+    const actor = await authorizeHomeAccountErasureActorInTx(tx, input.actorAccountId);
+    if (actor.status === "rejected") return { status: "forbidden" };
+    // Invitations belong to Teams, so an existing Team already makes the Home
+    // nonempty regardless of whether its invitations are pending or accepted.
+    const [session, otherAccount, team] = await Promise.all([
+        tx.session.findFirst({ select: { id: true } }),
+        tx.account.findFirst({ where: { id: { not: input.actorAccountId } }, select: { id: true } }),
+        tx.team.findFirst({ select: { id: true } }),
+    ]);
+    return { status: "ok", isEmpty: !session && !otherAccount && !team };
+}
 
 /** Every rejection these services can produce, as the wire already names them. */
 export type HomeGovernanceRejectionCode =
@@ -93,6 +132,9 @@ function projectHomeAuthenticationPolicyV1(
         recommendedProvisioningMode: read.policy.recommendedProvisioningMode ?? null,
         admission: read.policy.admission ?? null,
         signInServiceDisabled: read.policy.signInService?.mode === "disabled",
+        // Stored, never effective: an editor that replaces the document carries these over (§3.4).
+        anonymousSignup: read.policy.anonymousSignup ?? null,
+        storagePolicy: read.policy.storagePolicy ?? null,
     };
 }
 
@@ -107,6 +149,7 @@ export function projectHomeGovernancePolicyV1(
     return {
         revision: record.revision,
         teamCreationPolicy: record.teamCreationPolicy,
+        teamsVisibleToMembers: record.teamsVisibleToMembers,
         authentication: projectHomeAuthenticationPolicyV1(record.authentication),
         teamProviders: record.teamProviders,
         identityNetwork: record.identityNetwork,
@@ -125,6 +168,9 @@ function projectHomeIdentityDeploymentServicesV1(
     env: NodeJS.ProcessEnv,
 ): HomeIdentityDeploymentServicesV1 {
     const workos = resolveWorkosPlatformRuntimeMetadata(env);
+    const deploymentOidcSourceKey = (env.AUTH_PROVIDERS_CONFIG_PATH ?? "").trim()
+        ? "AUTH_PROVIDERS_CONFIG_PATH" as const
+        : "AUTH_PROVIDERS_CONFIG_JSON" as const;
     return {
         workos: workos.available
             ? "configured"
@@ -133,6 +179,11 @@ function projectHomeIdentityDeploymentServicesV1(
                 : "not_configured",
         privateIdentityNetworkAllowed: deploymentAllowsPrivateIdentityNetwork(env),
         teamProviderKinds: [...resolveDeploymentTeamProviderKinds(env)],
+        deploymentOidcProviders: resolveAuthProviderInstancesFromEnv(env).instances.map((instance) => ({
+            id: instance.id,
+            displayName: instance.displayName,
+            sourceKey: deploymentOidcSourceKey,
+        })),
     };
 }
 
@@ -140,38 +191,59 @@ async function projectHomeAuthenticationOptionsV1(
     tx: Tx,
     env: NodeJS.ProcessEnv,
 ): Promise<HomeAuthenticationOptionsV1> {
-    // The deployment decision defines which choices an administrator may save;
-    // the persisted-Home decision supplies their current action state. Both are
-    // projections of the same canonical resolver, never parallel availability
-    // formulas. Keeping disabled Home choices in the list is what lets an
-    // administrator repair or re-enable them.
-    const deployment = await resolveEffectiveHomeAuthMethodsInTx(tx, {
-        env,
+    // The choices are what this Home could offer if it turned everything on that the deployment
+    // leaves unset (§3.4: both directions within the env locks); the persisted-Home decision supplies
+    // their current action state. Both are projections of the same canonical resolver, never
+    // parallel availability formulas. A method that can never run here stays in the list as fixed
+    // (its enable key is set by the deployment) or unavailable (a prerequisite is missing), so the
+    // console can say why instead of hiding it.
+    const emailDeliveryReady = await isAuthEmailDeliveryReady({ env, tx });
+    const stored = (await readHomeGovernancePolicyInTx(tx)).authentication;
+    const ceilingEnv = homeAuthenticationCeilingEnv(env);
+    const ceiling = await resolveEffectiveHomeAuthMethodsInTx(tx, {
+        env: ceilingEnv,
         homeAuthenticationPolicyOverride: { status: "inherited" },
-        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
+        emailDeliveryReady,
     });
-    const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
-        env,
-        emailDeliveryReady: await isAuthEmailDeliveryReady(env),
-    });
-    const permittedAccountModes = [...resolveAllowedAccountProvisionModes(env)];
+    const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, { env, emailDeliveryReady });
+    const permittedAccountModes = [...resolveAllowedAccountProvisionModes(ceilingEnv)];
     const recommendedProvisioningMode = resolveRecommendedAccountProvisionMode(env);
-    if (deployment.status !== "ready" || effective.status !== "ready") {
+    const anonymousSignup = {
+        enabled: resolveAuthPolicyFromEnv(applyHomeAuthenticationPolicyToEnv(env, stored)).anonymousSignupEnabled,
+        fixedBy: readHomeAuthenticationLock(env, HOME_ANONYMOUS_SIGNUP_KEY),
+    };
+    // The storage policy applies at the next start: `running` is what this process uses.
+    const runningStoragePolicy = readEncryptionFeatureEnv(env).storagePolicy;
+    const storagePolicyFixedBy = readHomeAuthenticationLock(env, HOME_STORAGE_POLICY_KEY);
+    const storedStoragePolicy = stored.status === "narrowed" ? stored.policy.storagePolicy : undefined;
+    const storagePolicy = {
+        running: runningStoragePolicy,
+        pending: !storagePolicyFixedBy && storedStoragePolicy && storedStoragePolicy !== runningStoragePolicy
+            ? storedStoragePolicy
+            : null,
+        fixedBy: storagePolicyFixedBy,
+    };
+    if (ceiling.status !== "ready" || effective.status !== "ready") {
         return {
             methods: [],
             permittedAccountModes,
             recommendedProvisioningMode,
             signInService: { deploymentMode: null, canDisable: false },
+            anonymousSignup,
+            storagePolicy,
         };
     }
     const effectiveById = new Map(effective.decisions.map((decision) => [decision.id, decision]));
     return {
-        methods: deployment.decisions.flatMap((decision) => {
+        methods: ceiling.decisions.map((decision) => {
             const viable = decision.actions.some((action) =>
                 action.enabled && (action.id === "login" || action.id === "provision"));
-            if (!viable) return [];
+            const enableKey = Object.prototype.hasOwnProperty.call(HOME_AUTH_METHOD_ENABLE_KEYS, decision.id)
+                ? HOME_AUTH_METHOD_ENABLE_KEYS[decision.id]!
+                : null;
+            const fixedBy = enableKey ? readHomeAuthenticationLock(env, enableKey) : null;
             const current = effectiveById.get(decision.id) ?? decision;
-            return [{
+            return {
                 id: decision.id,
                 actions: current.actions.map(({ id, enabled, mode, reason }) => ({
                     id,
@@ -181,14 +253,20 @@ async function projectHomeAuthenticationOptionsV1(
                 })),
                 ...(decision.ui?.displayName ? { displayName: decision.ui.displayName } : {}),
                 ...(decision.ui?.iconHint !== undefined ? { iconHint: decision.ui.iconHint } : {}),
-            }];
+                ...(fixedBy ? { fixedBy } : {}),
+                ...(!viable && !fixedBy
+                    ? { unavailable: { requires: [...(HOME_AUTH_METHOD_PREREQUISITE_KEYS[decision.id] ?? [])] } }
+                    : {}),
+            };
         }),
         permittedAccountModes,
         recommendedProvisioningMode,
         signInService: {
-            deploymentMode: deployment.signInService?.mode ?? null,
-            canDisable: deployment.signInService !== null && deployment.signInService.mode !== "disabled",
+            deploymentMode: ceiling.signInService?.mode ?? null,
+            canDisable: ceiling.signInService !== null && ceiling.signInService.mode !== "disabled",
         },
+        anonymousSignup,
+        storagePolicy,
     };
 }
 
@@ -237,9 +315,16 @@ export async function readHomeGovernanceProjectionInTx(tx: Tx, input: Readonly<{
 }
 
 /**
- * Projects only the two effective Team eligibility facts ordinary members
- * consume. Policy, role, deployment-service, and owner-count facts never enter
- * this result, so transport serialization is not relied on for nondisclosure.
+ * Projects only the effective Team eligibility facts ordinary members
+ * consume. Role, deployment-service, owner-count and every other policy fact
+ * never enter this result, so transport serialization is not relied on for
+ * nondisclosure.
+ *
+ * An active Account additionally learns how Teams are created here (the policy
+ * class) and who administers the Home (display names only, never ids or
+ * emails), so a member who cannot create a Team is told whom to ask, and
+ * whether its Teams destination is shown. That disclosure is a 2026-09-26 user
+ * ruling; an Account that is not active on this Home receives none of it.
  */
 export async function readHomeGovernanceEligibilityInTx(tx: Tx, input: Readonly<{
     viewerAccountId: string;
@@ -248,14 +333,64 @@ export async function readHomeGovernanceEligibilityInTx(tx: Tx, input: Readonly<
     const viewer = await readHomeGovernanceAccountInTx(tx, input.viewerAccountId);
     if (!viewer) return null;
     const policy = await readHomeGovernancePolicyInTx(tx);
+    const createTeam = resolveHomeCapabilitiesV1({
+        account: viewer,
+        teamCreationPolicy: policy.teamCreationPolicy,
+        teamsEnabled: input.teamsEnabled,
+    }).createTeam;
     return {
         teamsEnabled: input.teamsEnabled,
-        createTeam: resolveHomeCapabilitiesV1({
-            account: viewer,
+        createTeam,
+        // Managed creation must name its first owner (`createTeamInTx` refuses it
+        // otherwise). Only a viewer who may create learns this, and such a viewer
+        // already administers the policy it reflects.
+        createTeamForChosenAccount: createTeam && policy.teamCreationPolicy === "managed_only",
+        ...(isActiveHomeAccountStatus(viewer.status) ? {
             teamCreationPolicy: policy.teamCreationPolicy,
-            teamsEnabled: input.teamsEnabled,
-        }).createTeam,
+            administratorNames: await readActiveHomeAdministratorNamesInTx(tx),
+            showTeams: input.teamsEnabled && await resolveTeamsDestinationShownInTx(tx, { viewer, policy }),
+        } : {}),
     };
+}
+
+/**
+ * Whether this viewer is offered the Teams destination on this Home.
+ *
+ * Belonging to a Team always keeps it: those Teams stay reachable whatever the
+ * policy says. Otherwise creation turned off leaves nothing to find there, and
+ * a Home may hide it from members who are in no Team; its administrators keep
+ * it so they can still create Teams for others.
+ */
+async function resolveTeamsDestinationShownInTx(tx: Tx, input: Readonly<{
+    viewer: HomeGovernanceAccountFacts;
+    policy: HomeGovernancePolicyRecord;
+}>): Promise<boolean> {
+    const membership = await tx.teamMembership.findFirst({
+        where: { accountId: input.viewer.accountId, status: "active" },
+        select: { id: true },
+    });
+    if (membership) return true;
+    if (input.policy.teamCreationPolicy === "disabled") return false;
+    return input.policy.teamsVisibleToMembers || resolveHomeGovernanceAuthority(input.viewer).viewAdministration;
+}
+
+/**
+ * The active Home owners and administrators as a member would name them:
+ * owners first, then administrators, each in the order they joined. Only the
+ * canonical display label crosses; an administrator without one is omitted
+ * rather than identified another way.
+ */
+async function readActiveHomeAdministratorNamesInTx(tx: Tx): Promise<string[]> {
+    const rows = await tx.account.findMany({
+        where: { homeRole: { in: ["owner", "admin"] }, status: "active" },
+        select: { homeRole: true, firstName: true, lastName: true, username: true },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    return [...rows.filter((row) => row.homeRole === "owner"), ...rows.filter((row) => row.homeRole !== "owner")]
+        .flatMap((row) => {
+            const label = resolveAccountDisplayLabelV1(row);
+            return label ? [label] : [];
+        });
 }
 
 type HomeAccountRow = AccountDisplayProfileRow & Readonly<{
@@ -314,7 +449,7 @@ async function projectHomeAccountRowForViewerInTx(tx: Tx, input: Readonly<{
     const authentication = input.authentication ?? (await readHomeAccountAuthenticationByIdInTx(tx, {
         accountIds: [input.row.id],
         env: input.env,
-    })).get(input.row.id) ?? { signInEmail: null, usableMethodIds: [] };
+    })).get(input.row.id) ?? { signInEmail: null, usableMethodIds: [], linkedProviderIds: [] };
     return projectHomeAccountRowV1(input.row, {
         actor,
         activeOwnerCount,
@@ -329,7 +464,7 @@ async function readHomeAccountAuthenticationByIdInTx(
 ): Promise<ReadonlyMap<string, AccountAdministrationAuthenticationProjection>> {
     const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, {
         env: input.env,
-        emailDeliveryReady: await isAuthEmailDeliveryReady(input.env),
+        emailDeliveryReady: await isAuthEmailDeliveryReady({ env: input.env, tx }),
     });
     return await readAccountAdministrationAuthenticationByIdInTx(tx, {
         accountIds: input.accountIds,
@@ -414,7 +549,7 @@ export async function listHomeAccountsInTx(tx: Tx, input: Readonly<{
                     activeOwnerCount,
                     teamOwnershipAllowsErasure: teamOwnership?.get(row.id)?.status === "ok",
                     authentication: authenticationByAccountId.get(row.id)
-                        ?? { signInEmail: null, usableMethodIds: [] },
+                        ?? { signInEmail: null, usableMethodIds: [], linkedProviderIds: [] },
                     env: input.env,
                     row,
                 });
@@ -570,6 +705,11 @@ export async function setHomeRoleInTx(tx: Tx, input: Readonly<{
             where: { id: target.accountId },
             data: { homeRole: input.homeRole },
         });
+        await recordHomeAdministrationEventInTx(tx, {
+            actor: { kind: "account", accountId: input.actorAccountId },
+            target: { kind: "account", id: target.accountId },
+            detail: { action: "account.role.set", summary: { from: target.homeRole, to: input.homeRole } },
+        });
         await markAccountChanged(tx, { accountId: target.accountId, kind: "account", entityId: "self" });
         await publishHomeGovernanceChangedInTx(tx, { excludeAccountIds: [target.accountId] });
     }
@@ -590,12 +730,81 @@ export async function setHomeRoleInTx(tx: Tx, input: Readonly<{
 /** Reads one Account row with capabilities for the currently authenticated actor. */
 export async function readHomeAccountRowInTx(
     tx: Tx,
-    input: Readonly<{ actorAccountId: string; accountId: string }>,
+    input: Readonly<{ actorAccountId: string; accountId: string; env?: NodeJS.ProcessEnv }>,
 ): Promise<HomeAccountRowV1 | null> {
     const row = await tx.account.findUnique({ where: { id: input.accountId }, select: HOME_ACCOUNT_ROW_SELECT });
     return row ? await projectHomeAccountRowForViewerInTx(tx, {
         actorAccountId: input.actorAccountId,
-        env: process.env,
+        env: input.env ?? process.env,
         row,
     }) : null;
+}
+
+/**
+ * One person as Home administration sees them (plan §3.12), in one read.
+ *
+ * The row half is the People row with its capabilities, unchanged. The rest comes from each fact's
+ * own owner: sign-in facts and linked provider ids from the authentication domain, Team names and
+ * roles from the Team membership owner, the latest events about this person from the audit reader,
+ * and two indexed counts. Nothing here is a second decision: no device model exists (D-8), so the
+ * detail carries Machine and API-token counts, never token labels, prefixes or provider user ids.
+ */
+export async function readHomeAccountDetailInTx(tx: Tx, input: Readonly<{
+    actorAccountId: string;
+    accountId: string;
+    env: NodeJS.ProcessEnv;
+}>): Promise<HomeGovernanceResult<HomeAccountDetailV1>> {
+    const actor = await readHomeGovernanceAccountInTx(tx, input.actorAccountId);
+    if (!actor || !resolveHomeGovernanceAuthority(actor).viewAdministration) {
+        return { status: "rejected", code: "home_governance_forbidden" };
+    }
+    const row = await tx.account.findUnique({ where: { id: input.accountId }, select: HOME_ACCOUNT_ROW_SELECT });
+    if (!row) return { status: "rejected", code: "home_account_not_found" };
+
+    const authentication = (await readHomeAccountAuthenticationByIdInTx(tx, {
+        accountIds: [row.id],
+        env: input.env,
+    })).get(row.id) ?? { signInEmail: null, usableMethodIds: [], linkedProviderIds: [] };
+    const account = await projectHomeAccountRowForViewerInTx(tx, {
+        actorAccountId: input.actorAccountId,
+        actor,
+        env: input.env,
+        row,
+        authentication,
+    });
+    if (!account) return { status: "rejected", code: "home_governance_forbidden" };
+
+    const teams = await listTeamMembershipsForAccountInTx(tx, {
+        actorAccountId: input.actorAccountId,
+        accountId: row.id,
+    });
+    if (!teams.ok) return { status: "rejected", code: "home_governance_forbidden" };
+    const machineCount = await tx.machine.count({ where: { accountId: row.id, ...persistentMachineWhere } });
+    const apiTokens = await tx.accountApiToken.aggregate({
+        where: { accountId: row.id },
+        _count: { _all: true },
+        _max: { lastUsedAt: true },
+    });
+    const events = await listHomeAdministrationEventsInTx(tx, {
+        targetId: row.id,
+        limit: HOME_ACCOUNT_DETAIL_RECENT_EVENTS_LIMIT_V1,
+    });
+
+    return {
+        status: "ok",
+        result: {
+            ...account,
+            authentication: {
+                ...account.authentication,
+                linkedProviderIds: [...authentication.linkedProviderIds],
+            },
+            teams: teams.value.map((team) => ({ ...team })),
+            machines: { count: machineCount },
+            apiTokens: {
+                count: apiTokens._count._all,
+                lastUsedAt: apiTokens._max.lastUsedAt?.getTime() ?? null,
+            },
+            recentEvents: events.status === "ok" ? [...events.result.items] : [],
+        },
+    };
 }

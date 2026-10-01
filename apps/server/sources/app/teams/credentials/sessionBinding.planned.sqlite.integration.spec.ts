@@ -7,6 +7,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 
 import {
     admitSessionTeamCredentialBindingInTx,
+    grantRequiredTeamVisibilityAndValidateBindingInTx,
     resolvePlannedRunnerCredentialSelectionBindingInTx,
     validatePlannedSessionTeamCredentialResourceInTx,
 } from "./sessionBinding";
@@ -17,6 +18,8 @@ import {
 import { recordUsageEvent } from "@/app/usage/usageWriteService";
 import { deleteMachinePool } from "@/app/machines/pools/machinePoolService";
 import type { MachineDaemonPresenceSocketServer } from "@/app/machines/machineDaemonPresence";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { registerSessionAccessGrantRoutes } from "@/app/api/routes/session/registerSessionAccessGrantRoutes";
 
 const TEST_AUTHENTICATION = {
     env: process.env,
@@ -141,6 +144,81 @@ describe("planned Session Team credential selection (SQLite)", () => {
         await expect(current.validate(plannedSession)).resolves.toEqual({ ok: false, reason: "access_removed" });
     });
 
+    it("validates conditional Team visibility before writing access without a parent model binding", async () => {
+        const current = await fixture("team_visibility_required");
+        const session = await db.session.create({ data: {
+            accountId: current.creator.id, tag: `run-visibility-${crypto.randomUUID()}`,
+            encryptionMode: "plain", metadata: "unchanged-parent-model", currentStorageState: "hosted",
+        } });
+        const grant = () => inTx(tx => grantRequiredTeamVisibilityAndValidateBindingInTx(tx, {
+            accountId: current.creator.id,
+            sessionId: session.id,
+            consentTeamId: current.team.id,
+            intent: {
+                v: 1, slot: { kind: "provider_model" }, resourceId: current.resource.id,
+                expectedResourceRevision: current.resource.revision, deliveryMode: "brokered",
+            },
+            authentication: TEST_AUTHENTICATION,
+        }));
+
+        await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: false } });
+        await expect(grant()).resolves.toEqual({ ok: false, reason: "disabled" });
+        await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: true, revision: 1 } });
+        await expect(grant()).resolves.toEqual({ ok: false, reason: "resource_changed" });
+        await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { revision: 0, sessionUsePolicy: "personal_allowed" } });
+        await expect(grant()).resolves.toEqual({ ok: false, reason: "invalid_input" });
+        await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { sessionUsePolicy: "team_visibility_required" } });
+
+        await expect(grant()).resolves.toMatchObject({ ok: true });
+        await expect(db.sessionTeamGrant.findUnique({ where: { sessionId_teamId: { sessionId: session.id, teamId: current.team.id } } }))
+            .resolves.toMatchObject({ accessLevel: "edit", canApprovePermissions: false });
+        await expect(db.sessionTeamCredentialBinding.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await expect(db.session.findUniqueOrThrow({ where: { id: session.id }, select: { metadata: true, metadataVersion: true } }))
+            .resolves.toEqual({ metadata: "unchanged-parent-model", metadataVersion: 0 });
+    });
+
+    it("admits the exact Run credential condition through the Session access transport", async () => {
+        const current = await fixture("team_visibility_required");
+        const session = await db.session.create({ data: {
+            accountId: current.creator.id, tag: `run-http-${crypto.randomUUID()}`,
+            encryptionMode: "plain", metadata: "unchanged-parent-model", currentStorageState: "hosted",
+        } });
+        const payload = {
+            sessionId: session.id, subject: { kind: "team", teamId: current.team.id },
+            accessLevel: "edit", canApprovePermissions: false,
+            requiredTeamCredential: {
+                resourceId: current.resource.id, expectedResourceRevision: current.resource.revision,
+                deliveryMode: "brokered",
+            },
+        };
+        await withAuthenticatedTestApp(registerSessionAccessGrantRoutes, async app => {
+            const post = () => app.inject({ method: "POST", url: "/v2/sessions/access-grants/set",
+                headers: { "x-test-user-id": current.creator.id }, payload });
+            await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: false } });
+            const rejected = await post();
+            expect(rejected.statusCode, rejected.body).toBe(409);
+            expect(rejected.json()).toEqual({ error: "session_team_credential_binding_rejected", reason: "disabled" });
+            await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+            await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: true } });
+            const granted = await post();
+            expect(granted.statusCode, granted.body).toBe(200);
+            expect(granted.json()).toMatchObject({ changed: true, grant: { subject: payload.subject, accessLevel: "edit", canApprovePermissions: false } });
+            const repeated = await post();
+            expect(repeated.statusCode, repeated.body).toBe(200);
+            expect(repeated.json()).toMatchObject({ changed: false });
+            // A later failed attempt does not undo an already accepted share.
+            await db.teamCredentialResource.update({ where: { id: current.resource.id }, data: { enabled: false } });
+            expect((await post()).statusCode).toBe(409);
+            await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(1);
+        });
+        await expect(db.sessionTeamCredentialBinding.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await expect(db.session.findUniqueOrThrow({ where: { id: session.id }, select: { metadata: true, metadataVersion: true } }))
+            .resolves.toEqual({ metadata: "unchanged-parent-model", metadataVersion: 0 });
+    });
+
     it("atomically grants required Team visibility with the model intent and witness", async () => {
         const current = await fixture("team_visibility_required");
         const sharedMetadata = JSON.stringify({ v: 1 });
@@ -187,8 +265,8 @@ describe("planned Session Team credential selection (SQLite)", () => {
             select: { metadataVersion: true, agentStateVersion: true },
         })).resolves.toEqual({ metadataVersion: 0, agentStateVersion: 0 });
 
-        // Exact consent and matching revision, rejected by a check that only
-        // runs after the grant is written: the grant must not survive either.
+        // Exact consent and matching revision cannot share a Session when the
+        // selected resource is no longer usable.
         await db.teamCredentialResource.update({
             where: { id: current.resource.id },
             data: { enabled: false },

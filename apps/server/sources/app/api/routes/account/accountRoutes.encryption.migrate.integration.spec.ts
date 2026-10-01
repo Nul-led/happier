@@ -1,7 +1,6 @@
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
-import { z } from "zod";
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
@@ -97,22 +96,6 @@ const ROUTE_PLUGIN_EVENT_SOURCE_SELECTOR_ID =
     AutomationSourceSelectorIdV1Schema.parse(
         "8a2e26d2-5b2b-4e9b-a57f-68ca5e575dc7",
     );
-
-const FAE505_ACCOUNT_ENCRYPTION_MIGRATE_BAD_REQUEST_READER =
-    z.discriminatedUnion("error", [
-        z.object({
-            error: z.literal("invalid-params"),
-            reason: z
-                .enum(["restore_required", "key_proof_required"])
-                .optional(),
-        }).strict(),
-        z.object({
-            error: z.literal("connected_services_not_empty"),
-        }).strict(),
-        z.object({
-            error: z.literal("automations_not_empty"),
-        }).strict(),
-    ]);
 
 function encodePlainStoredJson(value: unknown): string {
     return Buffer.from(
@@ -1042,6 +1025,23 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it("reads the complete current Automation inventory without a client-version declaration", async () => {
+        const account = await db.account.create({ data: { encryptionMode: "plain" } });
+        const app = createTestApp({ accountStoredContentCaller: "legacy" });
+        registerAccountEncryptionMigrateRoutes(app as any);
+        await app.ready();
+        try {
+            const response = await app.inject({ method: "GET",
+                url: "/v1/account/encryption/migrate/automations/inventory",
+                headers: { "x-test-user-id": account.id },
+            });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toEqual({ templates: [], runs: [] });
+        } finally {
+            await app.close();
+        }
     });
 
     it("migrates e2ee -> plain atomically and stores v2 settings in plaintext", async () => {
@@ -2242,143 +2242,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
             runtimeStateRevision:
                 unrelatedGroupBeforeClear.runtimeStateRevision,
         });
-    });
-
-    it("returns an old-reader-safe refusal for a predecessor same-mode credential rewrite", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_CREDENTIALS_AT_REST: "none",
-        });
-        const account = await db.account.create({
-            data: { publicKey: null, encryptionMode: "plain", settings: null, settingsVersion: 0 },
-            select: { id: true },
-        });
-        await db.serviceAccountToken.create({
-            data: {
-                accountId: account.id,
-                vendor: "openai-codex",
-                profileId: "work",
-                ...createLegacyCredentialFixtureIdentity({
-                    serviceId: "openai-codex",
-                    profileId: "work",
-                }),
-                token: new TextEncoder().encode(JSON.stringify({
-                    v: 1,
-                    serviceId: "openai-codex",
-                    profileId: "work",
-                    kind: "oauth",
-                    createdAt: 1,
-                    updatedAt: 1,
-                    expiresAt: null,
-                    oauth: {
-                        accessToken: "before",
-                        refreshToken: "refresh-before",
-                        idToken: null,
-                        scope: null,
-                        tokenType: null,
-                        providerAccountId: "acct-retained",
-                        providerEmail: null,
-                        raw: null,
-                    },
-                    token: null,
-                })),
-                // The arrange step seeds usage through the legacy boundary, and
-                // `resolveQualifiedCredential` refuses an unfenced credential there.
-                // The subject of this test is the route's stored-content refusal, so
-                // the credential carries a revision like every other fixture here.
-                metadata: { v: 3, storage: "plain_json_v1", kind: "oauth", providerAccountId: "acct-retained", providerEmail: null, credentialRevision: "csr_AAAAAAAAAAAAAAAAAAAAAA" },
-            },
-        });
-        const snapshot = createUsageSnapshot({
-            fetchedAt: Date.now(),
-            recordKey: createProviderAccountUsageRecordKey({ accountSubjectId: "acct-retained" }),
-            profileId: "work",
-        });
-        await writeQualifiedProviderAccountUsageRecordFromLegacyBoundary({
-            accountId: account.id,
-            recordId: snapshot.recordId,
-            recordKey: snapshot.recordKey,
-            payloadMode: "plain_json_v1",
-            status: "ok",
-            fetchedAt: snapshot.fetchedAtMs,
-            staleAfterMs: snapshot.staleAfterMs,
-            snapshot,
-            source: {
-                ref: {
-                    service:
-                        resolveLegacyQualifiedConnectedAccountService(
-                            "openai-codex",
-                        ),
-                    accountId: "work",
-                },
-                bindingKind: "account",
-            },
-        });
-        const app = createTestApp();
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        const res = await app.inject({
-            method: "POST",
-            url: "/v1/account/encryption/migrate",
-            headers: { "content-type": "application/json", "x-test-user-id": account.id },
-            payload: {
-                toMode: "plain",
-                expectedSettingsVersion: 0,
-                settingsContent: { t: "plain", v: { schemaVersion: 2 } },
-                connectedServices: {
-                    action: "migrate",
-                    credentials: [{
-                        serviceId: "openai-codex",
-                        profileId: "work",
-                        kind: "plain",
-                        record: {
-                            v: 1,
-                            serviceId: "openai-codex",
-                            profileId: "work",
-                            createdAt: 1,
-                            updatedAt: 2,
-                            expiresAt: null,
-                            kind: "oauth",
-                            oauth: {
-                                accessToken: "after",
-                                refreshToken: "refresh-after",
-                                idToken: null,
-                                scope: null,
-                                tokenType: null,
-                                providerAccountId: "acct-retained",
-                                providerEmail: null,
-                                raw: null,
-                            },
-                            token: null,
-                        },
-                    }],
-                },
-                automations: { action: "assert_empty" },
-            },
-        });
-        expect(res.statusCode, res.body).toBe(426);
-        expect(res.json()).toEqual({
-            error: "client-upgrade-required",
-            requirement: {
-                v: 1,
-                kind: "account-stored-content",
-                minimumProtocolVersion: 2,
-            },
-        });
-        const retainedCredential =
-            await db.serviceAccountToken.findFirstOrThrow({
-                where: { accountId: account.id },
-                select: { token: true },
-            });
-        expect(
-            new TextDecoder().decode(
-                retainedCredential.token,
-            ),
-        ).toContain('"accessToken":"before"');
-        expect(await db.providerAccountUsageRecord.count({ where: { accountId: account.id } })).toBe(1);
-        expect(await db.connectedServiceUsageSource.count({ where: { accountId: account.id } })).toBe(1);
-        await app.close();
     });
 
     it("rejects a plaintext migration item whose embedded credential binding differs from its outer key", async () => {
@@ -4764,98 +4627,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
         }
     });
 
-    it("refuses a current migration payload from a legacy caller before any write", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-            select: {
-                id: true,
-                encryptionMode: true,
-                settingsVersion: true,
-                seq: true,
-                updatedAt: true,
-            },
-        });
-        const machine = await db.machine.create({
-            data: {
-                id: "machine-marker-activation-legacy",
-                accountId: account.id,
-                metadata: "encrypted-machine-metadata",
-                metadataVersion: 2,
-                daemonState: "encrypted-daemon-state",
-                daemonStateVersion: 3,
-                dataEncryptionKey: new Uint8Array([1, 2, 3]),
-            },
-        });
-
-        const app = createTestApp({
-            accountStoredContentCaller: "legacy",
-        });
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: {
-                    toMode: "plain",
-                    expectedSettingsVersion: 0,
-                    settingsContent: null,
-                    connectedServices: { action: "assert_empty" },
-                    automations: { action: "assert_empty" },
-                    machines: { action: "migrate", items: [] },
-                    todos: { action: "assert_empty" },
-                    artifacts: { action: "assert_empty" },
-                },
-            });
-
-            expect(response.statusCode, response.body).toBe(426);
-            expect(response.json()).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-                select: {
-                    encryptionMode: true,
-                    settingsVersion: true,
-                    seq: true,
-                    updatedAt: true,
-                },
-            })).resolves.toEqual({
-                encryptionMode: account.encryptionMode,
-                settingsVersion: account.settingsVersion,
-                seq: account.seq,
-                updatedAt: account.updatedAt,
-            });
-            await expect(db.machine.findUniqueOrThrow({
-                where: { id: machine.id },
-            })).resolves.toEqual(machine);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-            expect(emitUpdate).not.toHaveBeenCalled();
-        } finally {
-            await app.close();
-        }
-    });
-
     it("admits a current all-empty request without operator activation", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
@@ -4939,60 +4710,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
             await expect(db.accountChange.count({
                 where: { accountId: account.id },
             })).resolves.toBeGreaterThan(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("retains the exact-empty predecessor migration path", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-        });
-        const signingKey = tweetnacl.sign.keyPair();
-        const contentBinding =
-            createSignedContentKeyBinding(signingKey.secretKey);
-        const account = await db.account.create({
-            data: {
-                publicKey: privacyKit.encodeHex(
-                    new Uint8Array(signingKey.publicKey),
-                ),
-                contentPublicKey: contentBinding.contentPublicKeyBytes,
-                contentPublicKeySig: contentBinding.contentPublicKeySigBytes,
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-            select: { id: true },
-        });
-        const app = createTestApp({
-            accountStoredContentCaller: "legacy",
-        });
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: {
-                    toMode: "plain",
-                    expectedSettingsVersion: 0,
-                    settingsContent: null,
-                    connectedServices: { action: "assert_empty" },
-                    automations: { action: "assert_empty" },
-                },
-            });
-
-            expect(response.statusCode, response.body).toBe(200);
-            expect(response.json()).toEqual({
-                success: true,
-                mode: "plain",
-                settingsVersion: 1,
-            });
         } finally {
             await app.close();
         }
@@ -5823,6 +5540,8 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
                             artifactId,
                             expectedHeaderVersion: 5,
                             expectedBodyVersion: 6,
+                            expectedDataEncryptionKey: privacyKit.encodeBase64(new Uint8Array([4, 5, 6])),
+                            recipientKeyEnvelopes: [],
                             header: artifactHeader,
                             body: artifactBody,
                             dataEncryptionKey:
@@ -5890,165 +5609,6 @@ describe("registerAccountEncryptionMigrateRoutes (integration)", () => {
             expect(
                 Buffer.from(storedArtifact!.body).toString("base64"),
             ).toBe(artifactBody);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("returns the fae505 reader-compatible proof refusal before reading an Account", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-        });
-        const app = createTestApp();
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": "missing-fae505-predecessor-account",
-                },
-                payload: {
-                    toMode: "e2ee",
-                    expectedSettingsVersion: 0,
-                    settingsContent: {
-                        t: "encrypted",
-                        c: "opaque-fae505-settings",
-                    },
-                    connectedServices: { action: "assert_empty" },
-                    automations: { action: "assert_empty" },
-                },
-            });
-
-            expect(response.statusCode, response.body).toBe(426);
-            expect(response.json()).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("returns an old-reader-safe refusal for an oversized fae505 request", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-        });
-        const templateCiphertext = "x".repeat(220_000);
-        const app = createTestApp();
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id":
-                        "missing-oversized-fae505-predecessor-account",
-                },
-                payload: {
-                    toMode: "plain",
-                    expectedSettingsVersion: 0,
-                    settingsContent: null,
-                    connectedServices: { action: "assert_empty" },
-                    automations: {
-                        action: "migrate",
-                        templates: Array.from(
-                            { length: 40 },
-                            (_, index) => ({
-                                automationId: `oversized-${index}`,
-                                templateCiphertext,
-                            }),
-                        ),
-                    },
-                },
-            });
-
-            expect(response.statusCode, response.body).toBe(400);
-            expect(
-                FAE505_ACCOUNT_ENCRYPTION_MIGRATE_BAD_REQUEST_READER
-                    .parse(response.json()),
-            ).toEqual({ error: "invalid-params" });
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("rejects the predecessor request before mutation when a newly-covered domain is populated", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-            select: { id: true },
-        });
-        await db.machine.create({
-            data: {
-                id: "machine-predecessor-populated",
-                accountId: account.id,
-                metadata: "encrypted-machine-metadata",
-            },
-        });
-
-        const app = createTestApp();
-        registerAccountEncryptionMigrateRoutes(app as any);
-        await app.ready();
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: {
-                    toMode: "plain",
-                    expectedSettingsVersion: 0,
-                    settingsContent: {
-                        t: "plain",
-                        v: { schemaVersion: 2 },
-                    },
-                    connectedServices: { action: "assert_empty" },
-                    automations: { action: "assert_empty" },
-                },
-            });
-
-            expect(response.statusCode, response.body).toBe(426);
-            expect(response.json()).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUnique({
-                where: { id: account.id },
-                select: {
-                    encryptionMode: true,
-                    settings: true,
-                    settingsVersion: true,
-                },
-            })).resolves.toEqual({
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            });
         } finally {
             await app.close();
         }

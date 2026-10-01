@@ -1,6 +1,8 @@
 import {
     computeTeamCredentialSourceMemberKeyV1,
+    matchesTeamCredentialSourceVersionBasisV1,
     parseTeamCredentialDirectMaterialStoredV1,
+    parseTeamCredentialSourceVersionV1,
     TeamCredentialSourceBindingV1Schema,
     type TeamCredentialDirectMaterialUseV1,
     type TeamCredentialDirectMaterialStoredV1,
@@ -48,7 +50,8 @@ function isStoredTeamCredentialRecipientTupleCurrent(
     }>,
 ): boolean {
     return row.sourceVersion === input.publishedSourceVersion
-        && (input.homeSourceVersion === null || row.sourceVersion === input.homeSourceVersion)
+        && (input.homeSourceVersion === null || (input.homeSourceVersion !== undefined
+            && matchesTeamCredentialSourceVersionBasisV1(row.sourceVersion, input.homeSourceVersion)))
         && matchesTeamCredentialRecipientBinding(row, input.recipient);
 }
 
@@ -373,6 +376,46 @@ export async function prepareTeamCredentialRecipientMaterialInTx(
     };
 }
 
+/** Withdraw a failed source snapshot without erasing a replacement or another Pool member. */
+export async function withdrawTeamCredentialRecipientMaterialInTx(
+    tx: Tx,
+    input: Readonly<{
+        actorAccountId: string;
+        teamId: string;
+        resourceId: string;
+        sourceMemberKey: string;
+        expectedResourceRevision: number;
+        expectedPublishedSourceVersion: string;
+        authentication?: TeamOperationAuthenticationContext;
+    }>,
+) {
+    const resource = await tx.teamCredentialResource.findUnique({
+        where: { id: input.resourceId },
+        select: { id: true, teamId: true, custodianAccountId: true, revision: true, directSourceVersionsJson: true },
+    });
+    if (!resource || resource.teamId !== input.teamId) return { ok: false as const, reason: 'resource_not_found' as const };
+    if (resource.custodianAccountId !== input.actorAccountId) return { ok: false as const, reason: 'source_owner_required' as const };
+    const qualification = await qualifyCurrentTeamCredentialSourceCustodianInTx(tx, input);
+    if (!qualification.ok) return qualification;
+    if (resource.revision !== input.expectedResourceRevision) return { ok: false as const, reason: 'resource_changed' as const };
+    const published = parsePublishedTeamCredentialSourceVersions(resource.directSourceVersionsJson);
+    if (!published) return { ok: false as const, reason: 'resource_corrupt' as const };
+    if (published[input.sourceMemberKey] === undefined) return { ok: true as const, changed: false };
+    if (published[input.sourceMemberKey] !== input.expectedPublishedSourceVersion) {
+        return { ok: false as const, reason: 'source_changed' as const };
+    }
+    delete published[input.sourceMemberKey];
+    const updated = await tx.teamCredentialResource.updateMany({
+        where: { id: resource.id, revision: resource.revision, directSourceVersionsJson: resource.directSourceVersionsJson },
+        data: { directSourceVersionsJson: JSON.stringify(published) },
+    });
+    if (updated.count !== 1) return { ok: false as const, reason: 'source_changed' as const };
+    await tx.teamCredentialRecipientMaterial.deleteMany({
+        where: { resourceId: resource.id, sourceMemberKey: input.sourceMemberKey, sourceVersion: input.expectedPublishedSourceVersion },
+    });
+    return { ok: true as const, changed: true };
+}
+
 /**
  * Reads one recipient projection only after rechecking the current grant.
  * Stored bytes are never an authority: revocation and delivery-mode changes
@@ -391,7 +434,7 @@ export async function readTeamCredentialRecipientMaterialInTx(
 ): Promise<TeamCredentialRecipientMaterialReadResult> {
     const resource = await tx.teamCredentialResource.findUnique({
         where: { id: input.resourceId },
-        select: { custodianAccountId: true, enabled: true, sourceBindingJson: true },
+        select: { custodianAccountId: true, enabled: true, sourceBindingJson: true, directSourceVersionsJson: true },
     });
     if (!resource) return { ok: false, reason: "access_removed" };
     if (!resource.enabled) return { ok: false, reason: "disabled" };
@@ -404,9 +447,12 @@ export async function readTeamCredentialRecipientMaterialInTx(
     });
     if (sourceCurrentness.status !== "current") return { ok: false, reason: "source_changed" };
     if (sourceCurrentness.sourceVersion !== null
-        && input.expectedSourceVersion !== sourceCurrentness.sourceVersion) {
+        && !matchesTeamCredentialSourceVersionBasisV1(input.expectedSourceVersion, sourceCurrentness.sourceVersion)) {
         return { ok: false, reason: "source_changed" };
     }
+    const published = parsePublishedTeamCredentialSourceVersions(resource.directSourceVersionsJson);
+    if (!published) return { ok: false, reason: 'resource_corrupt' };
+    if (published[input.sourceMemberKey] !== input.expectedSourceVersion) return { ok: false, reason: 'source_changed' };
     const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
         resourceId: input.resourceId,
         accountId: input.recipientAccountId,
@@ -562,7 +608,7 @@ export async function readCurrentTeamCredentialRecipientMaterialInTx(
     if (!publishedSourceVersions) return { ok: false as const, outcome: "unavailable" as const, reason: "resource_corrupt" as const };
     const publishedSourceVersion = publishedSourceVersions[sourceMemberKey] ?? null;
     if (sourceCurrentness.sourceVersion !== null
-        && publishedSourceVersion !== sourceCurrentness.sourceVersion) {
+        && (publishedSourceVersion === null || !matchesTeamCredentialSourceVersionBasisV1(publishedSourceVersion, sourceCurrentness.sourceVersion))) {
         return { ok: false as const, outcome: "unavailable" as const, reason: "source_changed" as const };
     }
     const [recipient, row] = await Promise.all([
@@ -675,6 +721,7 @@ export async function upsertTeamCredentialRecipientMaterialInTx(
     }
     let stored: TeamCredentialDirectMaterialStoredV1;
     try {
+        parseTeamCredentialSourceVersionV1(input.sourceVersion);
         stored = parseTeamCredentialDirectMaterialStoredV1(input.stored);
     } catch {
         return { ok: false, reason: "invalid_material" };
@@ -693,7 +740,7 @@ export async function upsertTeamCredentialRecipientMaterialInTx(
         return { ok: false, reason: "source_changed" };
     }
     if (sourceCurrentness.sourceVersion !== null
-        && input.sourceVersion !== sourceCurrentness.sourceVersion) {
+        && !matchesTeamCredentialSourceVersionBasisV1(input.sourceVersion, sourceCurrentness.sourceVersion)) {
         return { ok: false, reason: "source_changed" };
     }
     const publishedSourceVersions = parsePublishedTeamCredentialSourceVersions(resource.directSourceVersionsJson);

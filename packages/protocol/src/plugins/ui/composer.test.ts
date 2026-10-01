@@ -346,11 +346,11 @@ describe('Composer protocol surface', () => {
     }).success).toBe(false);
   });
 
-  it('admits one closed, generation-fenced composer mount and rejects a mismatched role or contributor', () => {
+  it('admits one closed, occurrence-fenced composer mount and rejects a mismatched role or contributor', () => {
     const mount = {
       kind: 'composer',
       contribution: { pluginId: 'com.acme.review', localId: 'review' },
-      immutableGenerationId: 'review-generation-1',
+      occurrenceId: 'review-occurrence-1',
       projectionGeneration: 4,
       role: 'attachmentPreview',
       selectedRenderer: { pluginId: 'com.acme.review', localId: 'review-preview' },

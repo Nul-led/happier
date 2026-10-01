@@ -12,11 +12,24 @@ import {
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
 } from "@happier-dev/protocol";
 import { createFakeRouteApp, createReplyStub, getRouteHandler } from "@/app/api/testkit/routeHarness";
-import { describe, expect, it, vi } from "vitest";
+import { createDbMocks, installDbModuleMock } from "@/app/api/testkit/dbMocks";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { peerMediationGrantSigningEnv } from "@/testkit/env";
 import tweetnacl from "tweetnacl";
 
 import { FEATURE_ENV_KEYS } from "@/app/features/catalog/featureEnvSchema";
+import { createLocalServicePreviewRuntime } from '@/app/local/services/preview/runtime';
+
+// Database boundary only: the fixture Machine belongs to user_1. Registration
+// still executes its real Machine-owner check.
+const storage = createDbMocks({ machine: ["findFirst"] });
+installDbModuleMock({ db: storage.db });
+beforeEach(() => {
+    storage.reset();
+    storage.db.machine.findFirst.mockImplementation(async (query: { where: { id: string; accountId: string } }) => (
+        query.where.id === "machine_1" && query.where.accountId === "user_1" ? { id: "machine_1" } : null
+    ));
+});
 
 type LocalServiceRoutesModule = typeof import("./registerRoutes");
 
@@ -40,6 +53,13 @@ const preview: LocalServicePreviewResourceV1 = {
 
 const ROUTE_WEBSOCKET_KEY = "client-key";
 const VALID_ROUTE_WEBSOCKET_ACCEPT = "3JXE6q0TVDdbiIJlVyvPfGkLkho=";
+
+function createRegisteredPreviewRuntime() {
+    const runtime = createLocalServicePreviewRuntime({ tokenSecret: 'test-secret', publicBaseUrl: 'https://app.happier.test', hostOriginBaseDomain: 'preview.happier.test' });
+    const registered = runtime.registerPreview({ resource: preview, accountId: 'user_1' });
+    if (!registered.ok) throw new Error(registered.reasonCode);
+    return runtime;
+}
 
 function switchingProtocolsResponse(extraHeaders: readonly string[] = []): string {
     return [
@@ -193,13 +213,14 @@ async function exchangePreviewTokenForCookie(input: Readonly<{
     app: ReturnType<typeof createFakeRouteApp>;
     previewToken: string;
     path?: string;
+    previewHost?: string;
 }>): Promise<string> {
     const exchangeReply = createReplyStub();
-    await getRouteHandler(input.app, "GET", "/v1/local-services/preview/:previewId/*")({
+    await getRouteHandler(input.app, "GET", input.previewHost ? "/*" : "/v1/local-services/preview/:previewId/*")({
         method: "GET",
-        params: { previewId: "preview_1", "*": input.path ?? "" },
+        params: input.previewHost ? { "*": input.path ?? "" } : { previewId: "preview_1", "*": input.path ?? "" },
         query: { previewToken: input.previewToken },
-        headers: { host: "app.happier.test" },
+        headers: { host: input.previewHost ?? "app.happier.test" },
     }, exchangeReply);
 
     expect(exchangeReply.statusCode).toBe(303);
@@ -263,18 +284,11 @@ describe("local service API route composition", () => {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "0",
             } as NodeJS.ProcessEnv,
             runtimes: {
-                preview: {
-                    registerPreview: vi.fn(),
-                    resolvePreview: vi.fn(() => preview),
-                    resolvePreviewByHost: vi.fn(() => null),
-                    resolvePreviewContext: vi.fn(() => ({ resource: preview, accountId: "user_1" })),
-                    validateAccess: vi.fn(() => ({ ok: true as const })),
-                    exchangeAccessToken: vi.fn(),
-                    unregisterPreview: vi.fn(),
-                },
+                preview: createRegisteredPreviewRuntime(),
                 public: {
                     createExposure: vi.fn(),
                     resolveExposure: vi.fn(),
+                    retainConnection: vi.fn(() => () => {}),
                     validateAccess: vi.fn(),
                     exchangeAccessToken: vi.fn(),
                     revokeExposure: vi.fn(),
@@ -295,9 +309,10 @@ describe("local service API route composition", () => {
             rawHeaders: [],
         }, socket, new Uint8Array());
 
+        // The server's upgrade listener does not await its handler; the feature decision is async.
+        await vi.waitFor(() => expect(socket.destroy).toHaveBeenCalled());
         const socketResponse = socket.write.mock.calls.map((call) => new TextDecoder().decode(call[0])).join("");
         expect(socketResponse).toContain("404 Not Found");
-        expect(socket.destroy).toHaveBeenCalled();
     });
 
     it("keeps public preview WebSocket upgrades behind the canonical feature gate", async () => {
@@ -314,18 +329,11 @@ describe("local service API route composition", () => {
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
             runtimes: {
-                preview: {
-                    registerPreview: vi.fn(),
-                    resolvePreview: vi.fn(() => preview),
-                    resolvePreviewByHost: vi.fn(() => null),
-                    resolvePreviewContext: vi.fn(() => ({ resource: preview, accountId: "user_1" })),
-                    validateAccess: vi.fn(() => ({ ok: true as const })),
-                    exchangeAccessToken: vi.fn(),
-                    unregisterPreview: vi.fn(),
-                },
+                preview: createRegisteredPreviewRuntime(),
                 public: {
                     createExposure: vi.fn(),
                     resolveExposure: vi.fn(),
+                    retainConnection: vi.fn(() => () => {}),
                     validateAccess: vi.fn(() => ({ ok: true as const, preview })),
                     exchangeAccessToken: vi.fn(),
                     revokeExposure: vi.fn(),
@@ -365,6 +373,7 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.example.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
@@ -383,8 +392,8 @@ describe("local service API route composition", () => {
             authentication: expect.objectContaining({ authority: "present_user" }),
         }));
         expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
-            resource: preview,
-            accessUrl: expect.stringContaining("https://app.happier.test/v1/local-services/preview/preview_1/"),
+            resource: { ...preview, originMode: "host" },
+            accessUrl: expect.stringContaining("https://preview-1.preview.example.test/?previewToken="),
         }));
     });
 
@@ -993,6 +1002,7 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.example.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
@@ -1013,14 +1023,15 @@ describe("local service API route composition", () => {
             app,
             previewToken: previewToken!,
             path: "index.html",
+            previewHost: "preview-1.preview.example.test",
         });
 
         const dataReply = createReplyStub();
-        await getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*")({
+        await getRouteHandler(app, "GET", "/*")({
             method: "GET",
-            params: { previewId: "preview_1", "*": "index.html" },
+            params: { "*": "index.html" },
             query: { vite: "1" },
-            headers: { host: "app.happier.test", cookie: previewCookie },
+            headers: { host: "preview-1.preview.example.test", cookie: previewCookie },
         }, dataReply);
 
         expect(openTunnel).toHaveBeenCalledWith({
@@ -1059,6 +1070,7 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.example.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
@@ -1078,14 +1090,15 @@ describe("local service API route composition", () => {
             app,
             previewToken: previewToken!,
             path: "index.html",
+            previewHost: "preview-1.preview.example.test",
         });
 
         const dataReply = createReplyStub();
-        await getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*")({
+        await getRouteHandler(app, "GET", "/*")({
             method: "GET",
-            params: { previewId: "preview_1", "*": "index.html" },
+            params: { "*": "index.html" },
             query: { vite: "1" },
-            headers: { host: "app.happier.test", cookie: previewCookie },
+            headers: { host: "preview-1.preview.example.test", cookie: previewCookie },
         }, dataReply);
 
         expect(emitted.map((event) => event.kind)).toEqual([
@@ -1128,6 +1141,7 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.happier.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
@@ -1138,22 +1152,24 @@ describe("local service API route composition", () => {
         const registerReply = createReplyStub();
         await getRouteHandler(app, "POST", "/v1/local-services/preview")({
             userId: "user_1",
-            body: preview,
+            body: { ...preview, originMode: "host" },
         }, registerReply);
         const registered = registerReply.send.mock.calls[0]?.[0] as { accessUrl?: string } | undefined;
         const previewToken = registered?.accessUrl ? new URL(registered.accessUrl).searchParams.get("previewToken") : null;
         expect(previewToken).toBeTypeOf("string");
+        const previewHost = new URL(registered!.accessUrl!).host;
         const previewCookie = await exchangePreviewTokenForCookie({
             app: app as ReturnType<typeof createFakeRouteApp>,
             previewToken: previewToken!,
             path: "@vite/client",
+            previewHost,
         });
 
         const socket = createUpgradeSocket();
         await app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/@vite/client",
+            url: "/@vite/client",
             headers: {
-                host: "app.happier.test",
+                host: previewHost,
                 cookie: previewCookie,
                 upgrade: "websocket",
                 connection: "Upgrade",
@@ -1162,7 +1178,7 @@ describe("local service API route composition", () => {
                 "sec-websocket-protocol": "vite-hmr",
             },
             rawHeaders: [
-                "Host", "app.happier.test",
+                "Host", previewHost,
                 "Cookie", previewCookie,
                 "Upgrade", "websocket",
                 "Connection", "Upgrade",
@@ -1199,11 +1215,11 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.example.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -1224,14 +1240,15 @@ describe("local service API route composition", () => {
             app,
             previewToken: previewToken!,
             path: "index.html",
+            previewHost: "preview-1.preview.example.test",
         });
 
         const dataReply = createReplyStub();
-        await getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*")({
+        await getRouteHandler(app, "GET", "/*")({
             method: "GET",
-            params: { previewId: "preview_1", "*": "index.html" },
+            params: { "*": "index.html" },
             query: {},
-            headers: { host: "app.happier.test", cookie: previewCookie },
+            headers: { host: "preview-1.preview.example.test", cookie: previewCookie },
         }, dataReply);
 
         expect(relay.createRelayTransport).toHaveBeenCalledWith({ accountId: "user_1" });
@@ -1268,11 +1285,11 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.happier.test",
                 HAPPIER_PUBLIC_SERVER_URL: "https://app.happier.test",
                 HANDY_MASTER_SECRET: "master-secret",
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -1283,23 +1300,25 @@ describe("local service API route composition", () => {
         const registerReply = createReplyStub();
         await getRouteHandler(app, "POST", "/v1/local-services/preview")({
             userId: "user_1",
-            body: preview,
+            body: { ...preview, originMode: "host" },
         }, registerReply);
 
         const registered = registerReply.send.mock.calls[0]?.[0] as { accessUrl?: string } | undefined;
         const previewToken = registered?.accessUrl ? new URL(registered.accessUrl).searchParams.get("previewToken") : null;
         expect(previewToken).toBeTypeOf("string");
+        const previewHost = new URL(registered!.accessUrl!).host;
         const previewCookie = await exchangePreviewTokenForCookie({
             app: app as ReturnType<typeof createFakeRouteApp>,
             previewToken: previewToken!,
             path: "@vite/client",
+            previewHost,
         });
 
         const socket = createUpgradeSocket();
         await app.upgradeHandlers[0]?.({
-            url: "/v1/local-services/preview/preview_1/@vite/client",
+            url: "/@vite/client",
             headers: {
-                host: "app.happier.test",
+                host: previewHost,
                 cookie: previewCookie,
                 upgrade: "websocket",
                 connection: "Upgrade",
@@ -1308,7 +1327,7 @@ describe("local service API route composition", () => {
                 "sec-websocket-protocol": "vite-hmr",
             },
             rawHeaders: [
-                "Host", "app.happier.test",
+                "Host", previewHost,
                 "Cookie", previewCookie,
                 "Upgrade", "websocket",
                 "Connection", "Upgrade",
@@ -1334,19 +1353,15 @@ describe("local service API route composition", () => {
         });
         const socketResponse = socket.write.mock.calls.map((call) => new TextDecoder().decode(call[0])).join("");
         expect(socketResponse).toContain("HTTP/1.1 101 Switching Protocols");
-        expect(socketResponse).toContain("Sec-WebSocket-Protocol: vite-hmr");
+        expect(socketResponse).toMatch(/\r\nsec-websocket-protocol: vite-hmr\r\n/iu);
     });
 
-    // F-5 (review gate R1). The preview package's own `it.each` passes `publicBaseUrlSecure` as a
-    // direct option, so it pins the CONSUMER — it stays green if this composition site is rewired
-    // to a constant. What actually has to hold is the derivation at `registerRoutes.ts:212`:
-    // `isHttpsUrl(resolvePublicBaseUrl(env))`. So this drives the whole composition from `env` and
-    // nothing else. `env` is the only input that differs between the two rows, so no constant can
-    // satisfy both, and wiring the option to the wrong consumer drops `Secure` on the https row.
+    // Private guest content requires an isolated HTTPS host. An HTTP deployment is refused
+    // rather than minting an access URL or exchanging it for an insecure cookie.
     it.each([
         { name: "https deployment", publicServerUrl: "https://app.happier.test", expectSecure: true },
         { name: "http deployment", publicServerUrl: "http://app.happier.test", expectSecure: false },
-    ])("derives the path-mode exchange cookie's Secure flag from the env public base URL on an $name", async ({ publicServerUrl, expectSecure }) => {
+    ])("requires an isolated secure preview origin on an $name", async ({ publicServerUrl, expectSecure }) => {
         const mod = await loadLocalServiceRoutesModule();
         expect(mod?.registerLocalServiceRoutes).toBeTypeOf("function");
         if (!mod?.registerLocalServiceRoutes) return;
@@ -1355,6 +1370,7 @@ describe("local service API route composition", () => {
         mod.registerLocalServiceRoutes(app as never, {
             env: {
                 HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+                HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__HOST_ORIGIN_DOMAIN: "preview.example.test",
                 HAPPIER_PUBLIC_SERVER_URL: publicServerUrl,
                 HANDY_MASTER_SECRET: "master-secret",
             } as NodeJS.ProcessEnv,
@@ -1366,18 +1382,34 @@ describe("local service API route composition", () => {
             userId: "user_1",
             body: preview,
         }, registerReply);
-        expect(registerReply.statusCode).toBe(201);
+        expect(registerReply.statusCode).toBe(expectSecure ? 201 : 400);
 
-        const registered = registerReply.send.mock.calls[0]?.[0] as { accessUrl?: string } | undefined;
-        const previewToken = registered?.accessUrl ? new URL(registered.accessUrl).searchParams.get("previewToken") : null;
+        // Legacy path-mode registration is normalized; the API-origin data path is refused.
+        const apiReply = createReplyStub();
+        await getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*")({
+            method: "GET", params: { previewId: "preview_1", "*": "" },
+            query: {}, headers: { host: "app.happier.test" },
+        }, apiReply);
+        expect(apiReply.statusCode).toBe(404);
+        expect(apiReply.headers["Set-Cookie"]).toBeUndefined();
+        if (!expectSecure) {
+            expect(registerReply.send).toHaveBeenCalledWith(expect.objectContaining({ reasonCode: "https_required" }));
+            expect(registerReply.headers["Set-Cookie"]).toBeUndefined();
+            return;
+        }
+        const registered = registerReply.send.mock.calls[0]?.[0];
+        expect(registered.resource.originMode).toBe("host");
+        const accessUrl = new URL(registered.accessUrl);
+        expect(accessUrl.origin).toBe("https://preview-1.preview.example.test");
+        const previewToken = accessUrl.searchParams.get("previewToken");
         expect(previewToken).toBeTypeOf("string");
 
         const exchangeReply = createReplyStub();
-        await getRouteHandler(app, "GET", "/v1/local-services/preview/:previewId/*")({
+        await getRouteHandler(app, "GET", "/*")({
             method: "GET",
-            params: { previewId: "preview_1", "*": "" },
+            params: { "*": "" },
             query: { previewToken: previewToken! },
-            headers: { host: "app.happier.test" },
+            headers: { host: accessUrl.host },
         }, exchangeReply);
 
         expect(exchangeReply.statusCode).toBe(303);

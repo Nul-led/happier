@@ -200,11 +200,12 @@ describe("Team routes (SQLite integration)", () => {
         const updated = await post("/v1/teams/credential-resources/update", owner.id, {
             resourceId: "route-resource", expectedRevision: 1, displayName: "Renamed subscription",
         });
-        expect(updated.json()).toEqual({ resourceId: "route-resource", revision: 2 });
+        // Presentation-only edits preserve the authority revision.
+        expect(updated.json()).toEqual({ resourceId: "route-resource", revision: 1 });
         await expect(db.teamCredentialResource.findUniqueOrThrow({
             where: { id: "route-resource" },
             select: { displayName: true, revision: true },
-        })).resolves.toEqual({ displayName: "Renamed subscription", revision: 2 });
+        })).resolves.toEqual({ displayName: "Renamed subscription", revision: 1 });
         const activity = await post("/v1/teams/credential-resources/activity/list", owner.id, {
             resourceId: "route-resource", limit: 10,
         });
@@ -214,8 +215,8 @@ describe("Team routes (SQLite integration)", () => {
         ]);
         const deleted = await post("/v1/teams/credential-resources/delete", owner.id, { resourceId: "route-resource", expectedRevision: 0 });
         expect(deleted.statusCode).toBe(409);
-        const deletedAfterUpdate = await post("/v1/teams/credential-resources/delete", owner.id, { resourceId: "route-resource", expectedRevision: 2 });
-        expect(deletedAfterUpdate.json()).toEqual({ resourceId: "route-resource", revision: 2 });
+        const deletedAfterUpdate = await post("/v1/teams/credential-resources/delete", owner.id, { resourceId: "route-resource", expectedRevision: 1 });
+        expect(deletedAfterUpdate.json()).toEqual({ resourceId: "route-resource", revision: 1 });
     });
 
     it("qualifies Team-derived credential-resource operations while preserving custodian withdrawal", async () => {
@@ -366,9 +367,9 @@ describe("Team routes (SQLite integration)", () => {
         });
         expect({ status: narrowed.statusCode, body: narrowed.json() })
             .toEqual({
-                status: 409,
+                status: 403,
                 body: {
-                    error: "team_authentication_policy_unavailable",
+                    error: "team_authentication_required",
                 },
             });
 
@@ -409,13 +410,12 @@ describe("Team routes (SQLite integration)", () => {
             authenticationPolicy: { v: 1, mode: "inherit" },
         });
         expect({ status: inherited.statusCode, body: inherited.json() }).toEqual({
-            status: 503,
-            body: { error: "team_authentication_unavailable" },
+            status: 403,
+            body: { error: "team_authentication_required" },
         });
-        // A valid-but-currently-unavailable policy must remain fail-closed until
-        // the authentication/recovery producer supplies a qualifying recovery
-        // operation. Reset only this direct-DB fixture so the unrelated route
-        // lifecycle below can continue.
+        // The available Home method still requires qualifying evidence before
+        // the owner can remove the restriction. Reset only this direct-DB
+        // fixture so the unrelated route lifecycle below can continue.
         await db.team.update({
             where: { id: team.id },
             data: { authenticationPolicy: null },
@@ -581,6 +581,59 @@ describe("Team routes (SQLite integration)", () => {
             { teamAuthentication: "key_challenge" },
         );
         expect(allowedRestore.statusCode).toBe(200);
+    });
+
+    it("keeps mutation projections credential-qualified without blocking independent Home administration", async () => {
+        const owner = await account("e2ee");
+        const created = await post("/v1/teams/create", owner.id, {
+            v: 1, name: "Combined authority", requestKey: crypto.randomUUID(),
+        });
+        const teamId = created.json().id as string;
+        await db.account.update({ where: { id: owner.id }, data: { homeRole: "admin" } });
+        await db.team.update({ where: { id: teamId }, data: { authenticationPolicy: {
+            v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+        } } });
+        const image = {
+            mimeType: "image/jpeg" as const,
+            dataBase64: (await sharp({
+                create: { width: 32, height: 32, channels: 3, background: { r: 1, g: 2, b: 3 } },
+            }).jpeg().toBuffer()).toString("base64"),
+        };
+        for (const [path, fields] of [
+            ["update", { name: "Home-admin edit" }],
+            ["logo/set", { image }],
+            ["logo/remove", {}],
+            ["archive", {}],
+            ["restore", {}],
+        ] as const) {
+            const mutation = await post(`/v1/teams/${path}`, owner.id, { v: 1, teamId, ...fields });
+            expect(mutation.statusCode, mutation.body).toBe(200);
+            const readback = await post("/v1/teams/get", owner.id, { v: 1, teamId });
+            expect(readback.statusCode).toBe(200);
+            expect(mutation.json().capabilities, path).toEqual(readback.json().capabilities);
+            expect(mutation.json().capabilities.managePolicy, path).toBe(false);
+            expect(mutation.json().capabilities.manageAuthentication, path).toBe(false);
+            expect(mutation.json().capabilities.manageMembers, path).toBe(false);
+        }
+        const readback = await post("/v1/teams/get", owner.id, { v: 1, teamId });
+        const administered = await post("/v1/teams/list", owner.id, {
+            v: 1, scope: "administered", archived: "active",
+        });
+        expect(administered.statusCode).toBe(200);
+        expect(administered.json().items.find((item: { id: string }) => item.id === teamId)?.capabilities)
+            .toEqual(readback.json().capabilities);
+        const qualified = await post("/v1/teams/update", owner.id, {
+            v: 1, teamId, name: "Qualified edit",
+        }, { teamAuthentication: "key_challenge" });
+        expect(qualified.statusCode).toBe(200);
+        expect(qualified.json().capabilities.managePolicy).toBe(true);
+        expect(qualified.json().capabilities.manageAuthentication).toBe(true);
+        expect(qualified.json().capabilities.manageMembers).toBe(true);
+        const qualifiedPage = await post("/v1/teams/list", owner.id, {
+            v: 1, scope: "administered", archived: "active",
+        }, { teamAuthentication: "key_challenge" });
+        expect(qualifiedPage.json().items.find((item: { id: string }) => item.id === teamId)?.capabilities)
+            .toEqual(qualified.json().capabilities);
     });
 
     it("exposes malformed policy only to structural Team administrators for canonical repair", async () => {

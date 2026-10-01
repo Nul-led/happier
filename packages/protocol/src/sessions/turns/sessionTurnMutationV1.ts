@@ -9,6 +9,20 @@ import {
   AgentSessionProviderCheckpointV1Schema,
 } from '../../runtime/agentSessionV1.js';
 import { AgentIdV1Schema } from '../../agents/agentIdV1.js';
+import { ExecutionRunIdSchema } from '../idsV1.js';
+import { SessionWorkDepthV1Schema } from '../creation/sessionCreateOriginV1.js';
+
+export const SessionTurnInitiatorV1Schema = z.enum(['user', 'agent_session', 'host', 'workflow']);
+export const SessionTurnWorkflowInvocationV1Schema = z.object({
+  runId: ExecutionRunIdSchema,
+  invocationRecordId: z.string().min(1).max(SessionIndexedIdentifierMaxLengthV1),
+}).strict();
+export const SessionTurnFactsV1Schema = z.object({
+  initiator: SessionTurnInitiatorV1Schema,
+  workDepth: SessionWorkDepthV1Schema,
+  workflowInvocation: SessionTurnWorkflowInvocationV1Schema.optional(),
+}).strict();
+export type SessionTurnFactsV1 = z.infer<typeof SessionTurnFactsV1Schema>;
 
 const SessionTurnMutationIdV1Schema = z.string().trim().min(1).max(SessionIndexedIdentifierMaxLengthV1);
 const SessionTurnAgentIdV1Schema = AgentIdV1Schema;
@@ -97,6 +111,9 @@ const TurnScopedMutationBaseV1Schema = SessionTurnMutationBaseV1Schema.extend({
 const CanonicalSessionTurnMutationV1Schema = z.discriminatedUnion('action', [
   TurnScopedMutationBaseV1Schema.extend({
     action: z.literal('begin'),
+    initiator: SessionTurnInitiatorV1Schema.optional(),
+    workDepth: SessionWorkDepthV1Schema.optional(),
+    workflowInvocation: SessionTurnWorkflowInvocationV1Schema.optional(),
     transcriptAnchors: SessionTurnTranscriptAnchorsV1Schema.optional(),
   }).strict(),
   TurnScopedMutationBaseV1Schema.extend({

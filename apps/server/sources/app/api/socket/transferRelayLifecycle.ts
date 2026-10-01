@@ -42,7 +42,6 @@ class TransferRelayLifecycle {
   private readonly entriesByKey = new Map<string, TransferRelayLifecycleEntry>();
   private readonly activeTransferKeysByScope = new Map<string, Set<string>>();
   private readonly transferKeysBySocket = new Map<string, Set<string>>();
-
   trackTransferFrame(params: Readonly<{
     identity: TransferRelayLogicalIdentity;
     scopeKey: string;

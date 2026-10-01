@@ -110,7 +110,15 @@ function authorizedSavedSecretRowWhere(accountId: string): Prisma.SavedSecretRes
                         teamGroup: {
                             archivedAt: null,
                             team: { archivedAt: null },
-                            memberships: { some: { teamMembership: { accountId, status: "active" } } },
+                            memberships: {
+                                some: {
+                                    teamMembership: {
+                                        accountId,
+                                        status: "active",
+                                        account: { status: "active" },
+                                    },
+                                },
+                            },
                         },
                     },
                 },
@@ -157,7 +165,7 @@ function authorizedSavedSecretRowSelect(accountId: string) {
                         name: true,
                         team: { select: { id: true, name: true } },
                         memberships: {
-                            where: { teamMembership: { accountId, status: "active" } },
+                            where: { teamMembership: { accountId, status: "active", account: { status: "active" } } },
                             select: { teamMembership: { select: { accountId: true } } },
                         },
                     },
@@ -382,7 +390,7 @@ async function listAuthorizedAccountIdsForResourceInTx(
                     team: {
                         select: {
                             memberships: {
-                                where: { status: "active" },
+                                where: { status: "active", account: { status: "active" } },
                                 select: { accountId: true, role: true },
                             },
                         },
@@ -395,7 +403,7 @@ async function listAuthorizedAccountIdsForResourceInTx(
                     teamGroup: {
                         select: {
                             memberships: {
-                                where: { teamMembership: { status: "active" } },
+                                where: { teamMembership: { status: "active", account: { status: "active" } } },
                                 select: { teamMembership: { select: { accountId: true } } },
                             },
                         },

@@ -50,7 +50,7 @@ import {
   type PluginDeclarativeToneV2,
 } from './v2.js';
 import {
-  MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1,
+  MAX_PLUGIN_DECLARATIVE_DOCUMENT_OCCURRENCE_LENGTH_V1,
   PluginDeclarativeSettingsInventoryEntryV1Schema,
 } from './declarativeDocument.js';
 import { PluginUiIconTokenV1Schema, type PluginUiIconTokenV1 } from './tokens.js';
@@ -68,7 +68,7 @@ const PluginContributionIdentityV1ZodSchema = asProtocolZod(PluginContributionId
  * instead of re-deriving structural admission from opaque records. It is
  * `closed`: the model carries qualified identity references and availability
  * decisions, so unknown fields are rejected rather than preserved. Relational
- * scope/currentness checks (same-plugin inventories, mount generation match,
+ * scope/currentness checks (same-plugin inventories, mount occurrenceId match,
  * byte-equal Settings reattachment) remain at the consumers owning those
  * lifetimes.
  *
@@ -83,13 +83,13 @@ export type PluginDeclarativeProjectedQualifiedReferenceV1 = Readonly<{
     localId: string;
   };
   qualifiedId: string;
-  generation: string;
+  occurrenceId: string;
 }>;
 
 export const PluginDeclarativeProjectedQualifiedReferenceV1Schema = z.object({
   identity: PluginContributionIdentityV1ZodSchema,
   qualifiedId: z.string().trim().min(1).max(1_024),
-  generation: z.string().trim().min(1).max(MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1),
+  occurrenceId: z.string().trim().min(1).max(MAX_PLUGIN_DECLARATIVE_DOCUMENT_OCCURRENCE_LENGTH_V1),
 }).strict();
 
 export type PluginDeclarativeProjectedActionBindingV1 =
@@ -466,7 +466,7 @@ export type PluginDeclarativeProjectedModelV1 = Readonly<{
     pluginId: string;
     localId: string;
     qualifiedId: string;
-    generation: string;
+    occurrenceId: string;
   }>;
   visible: boolean;
   requiredHostMethods: readonly PluginUiHostMethodV1[];
@@ -485,7 +485,7 @@ export const PluginDeclarativeProjectedModelV1Schema: z.ZodType<PluginDeclarativ
       pluginId: asProtocolZod(PluginIdSchema),
       localId: asProtocolZod(PluginContributionLocalIdSchema),
       qualifiedId: z.string().trim().min(1).max(1_024),
-      generation: z.string().trim().min(1).max(MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1),
+      occurrenceId: z.string().trim().min(1).max(MAX_PLUGIN_DECLARATIVE_DOCUMENT_OCCURRENCE_LENGTH_V1),
     }).strict(),
     visible: z.boolean(),
     requiredHostMethods: z.array(PluginUiHostMethodV1Schema),

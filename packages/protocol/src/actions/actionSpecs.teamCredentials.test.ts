@@ -18,6 +18,7 @@ import { serializeActionSpec } from './actionCatalog.js';
 describe('Team credential Action contracts', () => {
   const externalKeyActionIds = [
     'teams.credentials.externalKeys.create',
+    'teams.credentials.externalKeys.authorize',
     'teams.credentials.externalKeys.list',
     'teams.credentials.externalKeys.revoke',
     'teams.credentials.externalKeys.revokeAll',
@@ -200,6 +201,8 @@ describe('Team credential Action contracts', () => {
       createdAt: '2026-09-14T10:00:00.000Z',
       lastUsedAt: null,
       expiresAt: null,
+      authenticationStatus: 'satisfied',
+      canAuthorize: false,
     };
     const result = {
       token: `hapek_v1_${key.keyId}_${'a'.repeat(43)}`,

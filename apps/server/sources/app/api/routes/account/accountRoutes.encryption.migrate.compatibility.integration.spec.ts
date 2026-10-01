@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
 import {
     afterAll,
     afterEach,
@@ -16,11 +15,7 @@ import {
 import {
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-    AccountEncryptionMigratePredecessorSuccessResponseSchema,
-    AccountStoredContentUpgradeRequiredV1Schema,
-    encodeSessionOwnerMetadataEnvelopeV1,
     sealPluginCollectionPrivatePayloadV1,
-    sealSessionOwnerMetadataEnvelopeV1,
 } from "@happier-dev/protocol";
 
 import { enableErrorHandlers } from "@/app/api/utils/enableErrorHandlers";
@@ -28,10 +23,6 @@ import {
     captureAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { deriveAccountEncryptionMigrationKeyFingerprints } from "@/app/encryption/accountEncryptionTransition";
-import {
-    PLUGIN_ACCOUNT_STORAGE_KEY_PREFIX,
-    PLUGIN_DECLARATIVE_SETTINGS_KEY_PREFIX,
-} from "@/app/kv/accountScopedKv";
 import {
     materializePluginCollectionContractsFromManifestTx,
 } from "@/app/plugins/data/collections/contracts";
@@ -43,13 +34,10 @@ import {
 } from "@/testkit/lightSqliteHarness";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { registerAccountEncryptionMigrateRoutes } from "./registerAccountEncryptionMigrateRoutes";
-import { mutateSessionDraft, readSessionDraft } from "@/app/account/sessionDrafts/sessionDraftService";
-import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 
-const authentication = createPresentUserSessionAccessAuthentication();
-
-// Exact wire from cli-v0.2.1, the 0.2.2 preview, and the current
-// ../remote-dev@41f22ebf7dbd3af41d944c941f31267197f08fa5 predecessor.
+// Exact request shape observed in ../0.2 at
+// 17ba05df68d4d3d4cad1c1241b58e63805db37ed, account/encryptionMigrate.ts.
+// The supported upgrade retains its data, with all components updated together.
 const PREDECESSOR_REQUEST = {
     toMode: "plain",
     expectedSettingsVersion: 0,
@@ -202,42 +190,6 @@ async function createLiveIdentityCollectionBlocker(accountId: string) {
     });
 }
 
-async function createResidualCollectionTombstoneBlocker(accountId: string) {
-    const contract = await db.pluginCollectionContract.findFirstOrThrow({
-        where: {
-            pluginId: COLLECTION_BLOCKER_PLUGIN_ID,
-            collectionId: COLLECTION_BLOCKER_COLLECTION_ID,
-            schemaVersion: 1,
-        },
-        select: { id: true, contractDigest: true },
-    });
-    return await db.pluginCollectionRow.create({
-        data: {
-            accountId,
-            pluginId: COLLECTION_BLOCKER_PLUGIN_ID,
-            collectionId: COLLECTION_BLOCKER_COLLECTION_ID,
-            rowId: "residual-private-tombstone",
-            schemaVersion: 1,
-            revision: 5,
-            contractId: contract.id,
-            contractDigest: contract.contractDigest,
-            contentEnvelope: {
-                t: "encrypted",
-                c: sealPluginCollectionPrivatePayloadV1({
-                    material: {
-                        type: "legacy",
-                        secret: new Uint8Array(32).fill(29),
-                    },
-                    payload: { privateNote: "residual tombstone" },
-                    randomBytes: (length) =>
-                        new Uint8Array(length).fill(31),
-                }),
-            },
-            deletedAt: new Date("2026-08-14T00:00:00.000Z"),
-        },
-    });
-}
-
 function createTestApp() {
     const app = Fastify({ logger: false });
     app.setValidatorCompiler(validatorCompiler);
@@ -283,19 +235,7 @@ function createTestApp() {
     return typed;
 }
 
-function createEncryptedOwnerEnvelope(marker: number) {
-    return sealSessionOwnerMetadataEnvelopeV1({
-        material: {
-            type: "legacy",
-            secret: new Uint8Array(32).fill(61),
-        },
-        ownerMetadata: { v: 1 },
-        randomBytes: (length) =>
-            new Uint8Array(length).fill(marker),
-    });
-}
-
-describe("Account encryption migration predecessor compatibility", () => {
+describe("Account encryption migration current wire and retained data", () => {
     let harness: LightSqliteHarness;
 
     beforeAll(async () => {
@@ -325,12 +265,10 @@ describe("Account encryption migration predecessor compatibility", () => {
         await harness.close();
     });
 
-    it.each([false, true])("admits the exact immutable request with V1 draft coverage %s when layout-1 inventory is empty", async (withDraft) => {
+    it("rejects the 0.2 request at ingress without changing retained layout-zero data", async () => {
         harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
         });
         const account = await db.account.create({
             data: {
@@ -339,553 +277,52 @@ describe("Account encryption migration predecessor compatibility", () => {
                 settings: null,
                 settingsVersion: 0,
             },
-            select: { id: true },
         });
-        const layoutZero = await db.session.create({
+        const session = await db.session.create({
             data: {
                 accountId: account.id,
-                tag: "predecessor-layout-zero",
-                metadata: "shared-layout-zero",
+                tag: "retained-0.2-layout-zero",
+                metadata: "retained-0.2-metadata",
                 metadataVersion: 3,
                 metadataLayoutVersion: 0,
                 ownerMetadata: null,
-                agentState: "agent-layout-zero",
+                agentState: "retained-0.2-agent-state",
                 agentStateVersion: 4,
             },
         });
-        // server-v0.2.11@98ea8fb76733b1dd785d38c31360179cafa84824 adds this
-        // optional directive to the earlier predecessor request above.
-        const address = { kind: "newSession" as const, draftId: randomUUID() };
-        const mutationId = randomUUID();
-        const content = { t: "plain" as const, v: { v: 1 as const, address, document: {
-            v: 1 as const,
-            composer: {
-                text: { mutationId, value: "Predecessor draft" },
-                mentions: { mutationId, value: [] },
-                attachments: { mutationId, value: [] },
-            },
-            target: { kind: "newSession" as const, authoring: {} }, extensions: {},
-        } } };
-        if (withDraft) {
-            expect(await mutateSessionDraft({
-                accountId: account.id, address, expectedRevision: "absent", content: { t: "encrypted", c: "predecessor-draft" },
-                authentication,
-            })).toMatchObject({ status: "updated" });
-        }
         const app = createTestApp();
-        await app.ready();
-
         try {
-            if (withDraft) {
-                for (const [directive, status, body] of [
-                    [undefined, 400, { error: "session_drafts_require_upgrade" }],
-                    [{ items: [] }, 400, { error: "session_drafts_migration_incomplete" }],
-                    [{ items: [{ address, expectedRevision: 1, content }] }, 409,
-                        { error: "session_drafts_version_mismatch", address, currentRevision: 0 }],
-                ] as const) {
-                    const rejected = await app.inject({
-                        method: "POST", url: "/v1/account/encryption/migrate",
-                        headers: { "content-type": "application/json", "x-test-user-id": account.id },
-                        payload: { ...PREDECESSOR_REQUEST, ...(directive ? { sessionDrafts: directive } : {}) },
-                    });
-                    expect(rejected.statusCode, rejected.body).toBe(status);
-                    expect(rejected.json()).toEqual(body);
-                    expect(await readSessionDraft({ accountId: account.id, address, epoch: "v1", authentication }))
-                        .toMatchObject({ status: "present", record: { revision: 0 } });
-                }
-            }
             const response = await app.inject({
                 method: "POST",
                 url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
+                headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                payload: PREDECESSOR_REQUEST,
+            });
+            expect(response.statusCode, response.body).toBe(400);
+            expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toEqual(account);
+            expect(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toEqual(session);
+            const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints(account);
+            const currentResponse = await app.inject({
+                method: "POST",
+                url: "/v1/account/encryption/migrate",
+                headers: { "content-type": "application/json", "x-test-user-id": account.id },
                 payload: {
                     ...PREDECESSOR_REQUEST,
-                    ...(withDraft ? { sessionDrafts: { items: [{ address, expectedRevision: 0, content }] } } : {}),
+                    expectedAccountVersion: account.seq,
+                    expectedSigningKeyFingerprint: fingerprints.signingKeyFingerprint,
+                    expectedContentKeyFingerprint: fingerprints.contentKeyFingerprint,
+                    machines: { action: "assert_empty" },
+                    todos: { action: "assert_empty" },
+                    artifacts: { action: "assert_empty" },
+                    sessions: { action: "assert_empty" },
+                    reviewComments: { action: "assert_empty" },
+                    sessionOrganization: { action: "assert_empty" },
+                    pets: { action: "assert_empty" },
                 },
             });
-
-            expect(response.statusCode, response.body)
-                .toBe(200);
-            expect(
-                AccountEncryptionMigratePredecessorSuccessResponseSchema
-                    .parse(response.json()),
-            ).toMatchObject({
-                success: true,
-                mode: "plain",
-                settingsVersion: 1,
-                ...(withDraft ? { sessionDrafts: { records: [{ address, revision: 1, content }] } } : {}),
-            });
-            if (withDraft) {
-                expect(await readSessionDraft({ accountId: account.id, address, epoch: "v1", authentication }))
-                    .toMatchObject({ status: "present", record: { revision: 1, content } });
-            }
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-                select: {
-                    encryptionMode: true,
-                    settingsVersion: true,
-                },
-            })).resolves.toEqual({
-                encryptionMode: "plain",
-                settingsVersion: 1,
-            });
-            await expect(db.session.findUniqueOrThrow({
-                where: { id: layoutZero.id },
-            })).resolves.toEqual(layoutZero);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("returns typed upgrade-required for active and archived layout-1 rows before mutation", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-            select: { id: true },
-        });
-        const ownerMetadata =
-            encodeSessionOwnerMetadataEnvelopeV1(
-                createEncryptedOwnerEnvelope(67),
-            );
-        await Promise.all([
-            db.session.create({
-                data: {
-                    accountId: account.id,
-                    tag: "active-layout-one",
-                    metadata: "active-shared",
-                    metadataVersion: 5,
-                    metadataLayoutVersion: 1,
-                    ownerMetadata,
-                    agentState: "active-agent",
-                    agentStateVersion: 6,
-                    archivedAt: null,
-                },
-            }),
-            db.session.create({
-                data: {
-                    accountId: account.id,
-                    tag: "archived-layout-one",
-                    metadata: "archived-shared",
-                    metadataVersion: 7,
-                    metadataLayoutVersion: 1,
-                    ownerMetadata,
-                    agentState: "archived-agent",
-                    agentStateVersion: 8,
-                    archivedAt:
-                        new Date(1_700_000_000_000),
-                },
-            }),
-        ]);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            sessions: await db.session.findMany({
-                where: { accountId: account.id },
-                orderBy: { tag: "asc" },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(426);
-            expect(
-                AccountStoredContentUpgradeRequiredV1Schema.parse(
-                    response.json(),
-                ),
-            ).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.session.findMany({
-                where: { accountId: account.id },
-                orderBy: { tag: "asc" },
-            })).resolves.toEqual(before.sessions);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("returns the predecessor operation-level upgrade requirement for a live Collection before mutation", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-        });
-        const collection = await createLiveCollectionBlocker(account.id);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            collection: await db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(426);
-            expect(
-                AccountStoredContentUpgradeRequiredV1Schema.parse(
-                    response.json(),
-                ),
-            ).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            })).resolves.toEqual(before.collection);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("returns the predecessor operation-level upgrade requirement when a retained Collection tombstone reaches the size refusal", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-        });
-        await inTx(async (tx) => {
-            await materializePluginCollectionContractsFromManifestTx({
-                tx,
-                manifest: COLLECTION_BLOCKER_MANIFEST,
-            });
-        });
-        const collection = await createResidualCollectionTombstoneBlocker(
-            account.id,
-        );
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            collection: await db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(426);
-            expect(
-                AccountStoredContentUpgradeRequiredV1Schema.parse(
-                    response.json(),
-                ),
-            ).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            })).resolves.toEqual(before.collection);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it.each([
-        {
-            name: "plugin Account-KV",
-            populate: async (accountId: string) => {
-                await db.userKVStore.create({
-                    data: {
-                        accountId,
-                        key: `${PLUGIN_ACCOUNT_STORAGE_KEY_PREFIX}compat.predecessor-blocker`,
-                        value: new TextEncoder().encode("mode-bound-plugin-data"),
-                    },
-                });
-            },
-        },
-        {
-            name: "plugin declarative settings",
-            populate: async (accountId: string) => {
-                await db.userKVStore.create({
-                    data: {
-                        accountId,
-                        key: `${PLUGIN_DECLARATIVE_SETTINGS_KEY_PREFIX}compat.predecessor-blocker`,
-                        value: new TextEncoder().encode("mode-bound-plugin-settings"),
-                    },
-                });
-            },
-        },
-        {
-            name: "a residual private tombstone",
-            populate: async (accountId: string) => {
-                await createResidualCollectionTombstoneBlocker(accountId);
-            },
-        },
-    ])("returns predecessor 426 for a live Collection beside $name", async ({ populate }) => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-        });
-        await createLiveCollectionBlocker(account.id);
-        await populate(account.id);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            collections: await db.pluginCollectionRow.findMany({
-                where: { accountId: account.id },
-                orderBy: { rowId: "asc" },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(426);
-            expect(
-                AccountStoredContentUpgradeRequiredV1Schema.parse(
-                    response.json(),
-                ),
-            ).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.pluginCollectionRow.findMany({
-                where: { accountId: account.id },
-                orderBy: { rowId: "asc" },
-            })).resolves.toEqual(before.collections);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("authenticates before evaluating a live Collection compatibility refusal", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-        });
-        const collection = await createLiveCollectionBlocker(account.id);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            collection: await db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: { "content-type": "application/json" },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(401);
-            expect(response.json()).toEqual({ error: "Unauthorized" });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            })).resolves.toEqual(before.collection);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it("keeps the predecessor settings currentness conflict ahead of a live Collection refusal", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 1,
-            },
-        });
-        const collection = await createLiveCollectionBlocker(account.id);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            collection: await db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(409);
-            expect(response.json()).toEqual({
-                error: "version-mismatch",
-                currentVersion: 1,
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.pluginCollectionRow.findUniqueOrThrow({
-                where: { id: collection.id },
-            })).resolves.toEqual(before.collection);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
+            expect(currentResponse.statusCode, currentResponse.body).toBe(200);
+            expect(currentResponse.json()).toMatchObject({ success: true, mode: "plain", settingsVersion: 1 });
+            expect(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toEqual(session);
         } finally {
             await app.close();
         }
@@ -1067,166 +504,6 @@ describe("Account encryption migration predecessor compatibility", () => {
                     pluginId: IDENTITY_BLOCKER_PLUGIN_ID,
                 },
             })).resolves.toEqual(before.collection);
-            await expect(db.accountChange.count({
-                where: { accountId: account.id },
-            })).resolves.toBe(0);
-        } finally {
-            await app.close();
-        }
-    });
-
-    it.each([
-        {
-            domain: "Review Comments",
-            populate: async (accountId: string) => {
-                await db.reviewComment.create({
-                    data: {
-                        id: "review-comment-predecessor-blocker",
-                        accountId,
-                        projectId: "project-predecessor-blocker",
-                        threadId: "thread-predecessor-blocker",
-                        state: "open",
-                        flagsJson: "{}",
-                        anchorJson: JSON.stringify({
-                            kind: "file",
-                            filePath: "src/predecessor.ts",
-                        }),
-                        anchorFilePath: "src/predecessor.ts",
-                        snapshotEnvelopeJson: JSON.stringify({
-                            t: "encrypted",
-                            c: "snapshot-predecessor-blocker",
-                        }),
-                        bodyEnvelopeJson: JSON.stringify({
-                            t: "encrypted",
-                            c: "body-predecessor-blocker",
-                        }),
-                        bodyVersion: 1,
-                        authorJson: JSON.stringify({
-                            kind: "user",
-                            userId: "user-predecessor-blocker",
-                        }),
-                        editsJson: "[]",
-                        dispositionsJson: "{}",
-                        transitionsJson: "[]",
-                        serverRevision: 1,
-                        createdAt: 1n,
-                        updatedAt: 1n,
-                    },
-                });
-            },
-        },
-        {
-            domain: "Session Organization",
-            populate: async (accountId: string) => {
-                await db.sessionOrganizationFolder.create({
-                    data: {
-                        id: "folder-predecessor-blocker",
-                        accountId,
-                        folderKey: "folder-predecessor-blocker",
-                        folderHash:
-                            "folder-predecessor-blocker-hash",
-                        displayDbValue: JSON.stringify({
-                            t: "encrypted",
-                            c: "folder-predecessor-blocker",
-                        }),
-                    },
-                });
-            },
-        },
-        {
-            domain: "Account Pets",
-            populate: async (accountId: string) => {
-                await db.accountPetPackage.create({
-                    data: {
-                        id: "pet-predecessor-blocker",
-                        accountId,
-                        packageFormat: "codexAtlasV1",
-                        contentMode: "plain",
-                        manifest: {
-                            id: "pet-predecessor-blocker",
-                        },
-                        digest: "sha256:pet-predecessor-blocker",
-                        sizeBytes: 1,
-                        origin: { kind: "manualImport" },
-                    },
-                });
-            },
-        },
-    ])("returns typed upgrade-required before mutation when $domain is populated", async ({
-        populate,
-    }) => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
-                "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT:
-                "1",
-        });
-        const account = await db.account.create({
-            data: {
-                ...createSignedAccountContentBinding(),
-                encryptionMode: "e2ee",
-                settings: null,
-                settingsVersion: 0,
-            },
-        });
-        await populate(account.id);
-        const before = {
-            account: await db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            }),
-            reviewComments: await db.reviewComment.findMany({
-                where: { accountId: account.id },
-            }),
-            sessionOrganizationFolders:
-                await db.sessionOrganizationFolder.findMany({
-                    where: { accountId: account.id },
-                }),
-            petPackages: await db.accountPetPackage.findMany({
-                where: { accountId: account.id },
-            }),
-        };
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": account.id,
-                },
-                payload: PREDECESSOR_REQUEST,
-            });
-
-            expect(response.statusCode, response.body)
-                .toBe(426);
-            expect(
-                AccountStoredContentUpgradeRequiredV1Schema.parse(
-                    response.json(),
-                ),
-            ).toEqual({
-                error: "client-upgrade-required",
-                requirement: {
-                    v: 1,
-                    kind: "account-stored-content",
-                    minimumProtocolVersion: 2,
-                },
-            });
-            await expect(db.account.findUniqueOrThrow({
-                where: { id: account.id },
-            })).resolves.toEqual(before.account);
-            await expect(db.reviewComment.findMany({
-                where: { accountId: account.id },
-            })).resolves.toEqual(before.reviewComments);
-            await expect(db.sessionOrganizationFolder.findMany({
-                where: { accountId: account.id },
-            })).resolves.toEqual(
-                before.sessionOrganizationFolders,
-            );
-            await expect(db.accountPetPackage.findMany({
-                where: { accountId: account.id },
-            })).resolves.toEqual(before.petPackages);
             await expect(db.accountChange.count({
                 where: { accountId: account.id },
             })).resolves.toBe(0);

@@ -4,6 +4,7 @@ import {
     decodeExternalActionResolvedTargetV1,
     encodeExternalActionResolvedTargetV1,
     getActionSpec,
+    parseQualifiedPluginActionId,
     isExternalActionResolvedTargetAllowedV1,
     PublicActionIdSchema,
     verifyExternalActionMachineRpcRequestV1,
@@ -11,23 +12,56 @@ import {
     type ExternalActionExecutionAuthorizationBindingV1,
     type ExternalActionMachineRpcExecutionV1,
     type ExternalActionTargetV1,
+    type ExternalActionMachineRpcEventV1,
 } from "@happier-dev/protocol/actions";
 import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
+import { evaluateApiTokenGrantV1, isApiTokenGrantWithinV1, resolveCredentialActionAdmissionV1 } from "@happier-dev/protocol";
 
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
+import type { Tx } from "@/storage/inTx";
 import { enforceLoginEligibility } from "./enforceLoginEligibility";
 
 import { auth, type VerifiedApiTokenPrincipal } from "./auth";
 
-async function verifyCurrentExternalActionPrincipal(
+async function readCurrentExternalActionPrincipal(
+    binding: ExternalActionExecutionAuthorizationBindingV1,
+    reader: Pick<Tx, "accountApiToken">,
+): Promise<VerifiedApiTokenPrincipal | null> {
+    const principal = await auth.verifyCurrentApiTokenPrincipal(binding, undefined, reader);
+    if (!principal || !isApiTokenGrantWithinV1(binding.grant, principal.grant)) return null;
+    const qualifiedAction = parseQualifiedPluginActionId(binding.actionId);
+    if (!evaluateApiTokenGrantV1({
+        grant: principal.grant,
+        actionId: qualifiedAction ? "action.invoke" : binding.actionId,
+        contributedActionAdmission: 'pre_open',
+        ...(qualifiedAction ? { contributedQualifiedId: binding.actionId } : {}),
+        target: binding.target,
+        targetMachineId: binding.machineId,
+    }).ok) return null;
+    return principal;
+}
+
+export async function verifyCurrentExternalActionPrincipal(
     binding: ExternalActionExecutionAuthorizationBindingV1,
 ): Promise<VerifiedApiTokenPrincipal | null> {
-    const principal = await auth.verifyCurrentApiTokenPrincipal(binding);
+    const principal = await readCurrentExternalActionPrincipal(binding, db);
     if (!principal) return null;
     const eligibility = await enforceLoginEligibility({ accountId: principal.accountId, env: process.env });
     return eligibility.ok ? principal : null;
+}
+
+/**
+ * Transaction-only current-row recheck for a host invocation already admitted
+ * by verifyCurrentExternalActionPrincipal before entering the transaction.
+ * Never accepts a raw header as proof and never repeats provider/network I/O.
+ */
+export async function verifyCurrentExternalActionPrincipalInTx(
+    tx: Tx,
+    alreadyVerifiedInvocation: ExternalActionExecutionAuthorizationBindingV1,
+): Promise<VerifiedApiTokenPrincipal | null> {
+    return readCurrentExternalActionPrincipal(alreadyVerifiedInvocation, tx);
 }
 
 export type VerifiedExternalActionExecutionRequest = Readonly<{
@@ -103,13 +137,14 @@ export async function verifyExternalActionDomainExecutionRequest(
     const verified = await verifyCommon(proof);
     if (!verified) return null;
     const effect = PublicActionIdSchema.safeParse(verified.effectActionId);
-    if (!effect.success || getActionSpec(effect.data).requiredAuthority !== "account_automation") return null;
+    if (!effect.success || !resolveCredentialActionAdmissionV1({ spec: getActionSpec(effect.data),
+        authority: verified.principal.authority, grant: verified.binding.grant }).ok) return null;
     return verified;
 }
 
 export async function verifyExternalActionMachineRpcExecution(
     execution: ExternalActionMachineRpcExecutionV1,
-    request: Readonly<{ method: string; requestId?: string; params?: unknown }>,
+    request: Readonly<{ method: string; requestId?: string; params?: unknown; event?: ExternalActionMachineRpcEventV1 }>,
 ): Promise<VerifiedExternalActionExecutionRequest | null> {
     if (!request.requestId) return null;
     const binding = await auth.verifyExternalActionExecutionAuthorization(execution.authorization.token);
@@ -133,7 +168,7 @@ export async function verifyExternalActionMachineRpcExecution(
     ) return null;
 
     const effect = PublicActionIdSchema.safeParse(execution.effectActionId);
-    if (!effect.success || getActionSpec(effect.data).requiredAuthority !== "account_automation") return null;
+    if (!effect.success) return null;
     const machine = await db.machine.findFirst({
         where: { id: binding.machineId, accountId: binding.accountId },
         select: {
@@ -153,7 +188,7 @@ export async function verifyExternalActionMachineRpcExecution(
             effectActionId: execution.effectActionId,
             target: execution.target,
             installationId: execution.installationId,
-            event: SOCKET_RPC_EVENTS.CALL,
+            event: request.event ?? SOCKET_RPC_EVENTS.CALL,
             method: request.method,
             requestId: request.requestId,
             ...(request.params === undefined ? {} : { params: request.params }),
@@ -162,7 +197,8 @@ export async function verifyExternalActionMachineRpcExecution(
         })
     ) return null;
     const principal = await verifyCurrentExternalActionPrincipal(binding);
-    return principal
+    return principal && resolveCredentialActionAdmissionV1({ spec: getActionSpec(effect.data),
+        authority: principal.authority, grant: binding.grant }).ok
         ? { binding, effectActionId: execution.effectActionId, target: execution.target, principal }
         : null;
 }
@@ -179,6 +215,7 @@ export async function verifyExternalActionExecutionAuthorizationCurrentness(
         return null;
     }
     const effect = PublicActionIdSchema.safeParse(verified.effectActionId);
-    if (!effect.success || getActionSpec(effect.data).requiredAuthority !== "account_automation") return null;
+    if (!effect.success || !resolveCredentialActionAdmissionV1({ spec: getActionSpec(effect.data),
+        authority: verified.principal.authority, grant: verified.binding.grant }).ok) return null;
     return verified;
 }

@@ -9,6 +9,7 @@ import {
     type SessionAccountChangeCursor,
 } from "./markAccountChangesForSessionAccounts";
 import { invalidateSessionFollowDestinationsForSourceChangeInTx } from "@/app/session/follow/sessionFollowEdgeService";
+import { invalidateSessionReportsToForSourceChangeInTx } from "@/app/session/relations/sessionReportsToService";
 
 export type SessionRecipientCursor = SessionAccountChangeCursor;
 
@@ -56,5 +57,6 @@ export async function markSessionProjectionRecipientsChanged(params: {
     await invalidateSessionFollowDestinationsForSourceChangeInTx(params.tx, {
         sourceSessionId: params.sessionId,
     });
+    await invalidateSessionReportsToForSourceChangeInTx(params.tx, { sessionId: params.sessionId });
     return cursors;
 }

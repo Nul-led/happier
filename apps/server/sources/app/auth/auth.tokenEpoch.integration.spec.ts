@@ -215,7 +215,7 @@ describe("auth (token epoch)", () => {
         await expect(auth.verifyToken(signed)).resolves.toBeNull();
         const freshSigned = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
-        await expect(inTx((tx) => auth.revokeAllApiTokensInTx(tx, account.id))).resolves.toBe(1);
+        await expect(inTx((tx) => auth.revokeAllApiTokensInTx(tx, account.id))).resolves.toMatchObject({ revokedCount: 1 });
         await expect(auth.verifyToken(freshSigned)).resolves.toMatchObject({ userId: account.id });
         await expect(auth.verifyPat(pat.token)).resolves.toEqual({ ok: false, reason: "invalid_token" });
     });

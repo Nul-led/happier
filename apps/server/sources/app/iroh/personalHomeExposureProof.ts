@@ -1,5 +1,6 @@
 import { isAnonymousSignupExplicitlyDisabled } from '@/app/auth/authPolicy';
 import type { BoundServerListener } from '@/app/runtime/startupReceipt';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
 const PERSONAL_HOME_LOOPBACK_HOST = '127.0.0.1';
 
@@ -23,7 +24,7 @@ export function verifyPersonalHomeExposureProof(params: Readonly<{
     env: NodeJS.ProcessEnv;
     listener: BoundServerListener | null;
 }>): boolean {
-    if (params.env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return false;
+    if (!isPersonalHomeRuntimePurpose(params.env.HAPPIER_MANAGED_RELAY_PURPOSE)) return false;
     if (!isAnonymousSignupExplicitlyDisabled(params.env)) return false;
     if (!params.listener || params.listener.host !== PERSONAL_HOME_LOOPBACK_HOST) return false;
 

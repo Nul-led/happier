@@ -6,8 +6,6 @@ import {
     CredentialAccessSelectedRawAccessDigestSchema,
     GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
     PluginCredentialAccessSlotIdSchema,
-    PluginInstallReviewPrincipalDigestSchema,
-    PluginPermissionInstalledGenerationIdSchema,
     REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
     type PluginPermissionGrantAuditEventV1,
     type PluginPermissionGrantV1,
@@ -75,8 +73,6 @@ describe("plugin permission grant active identity", () => {
                 accessDeclarationDigest: CredentialAccessDeclarationDigestSchema.parse("a".repeat(64)),
                 selectedAuthorityDigest: CredentialAccessSelectedAuthorityDigestSchema.parse("c".repeat(64)),
                 selectedRawAccessDigest: CredentialAccessSelectedRawAccessDigestSchema.parse("d".repeat(64)),
-                installedGenerationId: PluginPermissionInstalledGenerationIdSchema.parse("generation-1"),
-                installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse("b".repeat(64)),
             },
         });
 

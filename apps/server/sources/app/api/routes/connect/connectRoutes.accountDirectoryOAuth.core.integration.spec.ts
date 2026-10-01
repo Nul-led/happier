@@ -1224,6 +1224,15 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
             authTokenKind: "account_directory",
             authority: "present_user",
         });
+        expect(await db.accountHomeDirectoryEntry.findMany({ where: { accountId: account.id } })).toEqual([
+            expect.objectContaining({ homeServerIdentityId: serverIdentityId }),
+        ]);
+        expect(await db.accountDirectoryLink.findMany({ where: { accountId: account.id } })).toEqual([
+            expect.objectContaining({ issuerServerIdentityId: serverIdentityId, issuerSubjectId: account.id }),
+        ]);
+        expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+            preferredHomeServerIdentityId: serverIdentityId,
+        });
 
         await app.close();
     });

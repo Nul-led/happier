@@ -1032,7 +1032,7 @@ describe("pendingMessageService (shared sessions)", () => {
         })).resolves.toBe(0);
     });
 
-    it("classifies replaced, revoked, malformed, withdrawn, and missing-access exact targets as update-required before enqueue", async () => {
+    it("distinguishes unavailable exact targets from unsupported capabilities before enqueue", async () => {
         const owner = await createAccount("target-capability-preflight-owner");
         const session = await createSession(owner.id);
         const targetMachineId = `target-capability-${randomUUID()}`;
@@ -1055,24 +1055,23 @@ describe("pendingMessageService (shared sessions)", () => {
             content: { t: "encrypted" as const, c: "ciphertext" },
             requestedAction: { v: 1 as const, kind: "enqueue" as const },
         });
-        const expectUpdateRequired = async (localId: string) => {
+        const expectRejection = async (localId: string, code: "session_input_target_unavailable" | "session_input_target_update_required") => {
             await expect(enqueue(localId)).resolves.toMatchObject({
                 ok: false,
-                error: "invalid-params",
-                admissionRejectionCode: "session_input_target_update_required",
+                admissionRejectionCode: code,
             });
             await expect(db.sessionPendingMessage.count({ where: { sessionId: session.id } })).resolves.toBe(0);
         };
 
         await db.machine.update({ where: { id: targetMachineId }, data: { replacedByMachineId: "replacement-machine" } });
-        await expectUpdateRequired("replaced-target");
+        await expectRejection("replaced-target", "session_input_target_unavailable");
         await db.machine.update({ where: { id: targetMachineId }, data: { replacedByMachineId: null, revokedAt: new Date() } });
-        await expectUpdateRequired("revoked-target");
+        await expectRejection("revoked-target", "session_input_target_unavailable");
         await db.machine.update({
             where: { id: targetMachineId },
             data: { revokedAt: null, operationProtocolCapabilities: "malformed", operationProtocolCapabilitiesRevision: 2 },
         });
-        await expectUpdateRequired("malformed-target");
+        await expectRejection("malformed-target", "session_input_target_update_required");
         await db.machine.update({
             where: { id: targetMachineId },
             data: {
@@ -1080,14 +1079,14 @@ describe("pendingMessageService (shared sessions)", () => {
                 operationProtocolCapabilitiesRevision: 3,
             },
         });
-        await expectUpdateRequired("withdrawn-target");
+        await expectRejection("withdrawn-target", "session_input_target_update_required");
         await db.accessKey.delete({
             where: { accountId_machineId_sessionId: { accountId: owner.id, machineId: targetMachineId, sessionId: session.id } },
         });
-        await expectUpdateRequired("missing-access-target");
+        await expectRejection("missing-access-target", "session_input_target_unavailable");
     });
 
-    it("returns update-required without mutation when the strict target Machine is unavailable", async () => {
+    it("returns target-unavailable without mutation when the strict target Machine is unavailable", async () => {
         const owner = await createAccount("target-route-rejection-owner");
         const session = await createSession(owner.id);
         const localId = `target-route-rejection-${randomUUID()}`;
@@ -1105,10 +1104,10 @@ describe("pendingMessageService (shared sessions)", () => {
                     requestedAction: { v: 1, kind: "enqueue" },
                 },
             });
-            expect(response.statusCode).toBe(400);
+            expect(response.statusCode).toBe(404);
             expect(response.json()).toEqual({
-                error: "invalid-params",
-                code: "session_input_target_update_required",
+                error: "session-not-found",
+                code: "session_input_target_unavailable",
             });
         });
 
@@ -5658,9 +5657,7 @@ describe("pendingMessageService (shared sessions)", () => {
             },
         });
 
-        const previousCollaborationFeature = process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
         const previousKeyChallengeFeature = process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
-        process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = "1";
         const requiredAuthentication = createPresentUserSessionAccessAuthentication({
             env: { HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1" },
             authenticationEvidence: [],
@@ -5732,11 +5729,6 @@ describe("pendingMessageService (shared sessions)", () => {
                 delete process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
             } else {
                 process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = previousKeyChallengeFeature;
-            }
-            if (previousCollaborationFeature === undefined) {
-                delete process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
-            } else {
-                process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = previousCollaborationFeature;
             }
         }
     });

@@ -13,6 +13,7 @@ import type { VoiceMintRateLimitHandler } from "./voiceMintRateLimit";
 import { createVoiceRouteAbortScope } from "./voiceRouteAbortScope";
 import { voiceSessionCorrelationIdSchema } from "./voiceSessionLifecycleSchemas";
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 type VoiceDenyReason =
     | "voice_disabled"
@@ -121,13 +122,14 @@ export function registerVoiceMintRoute(
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId; // CUID from JWT
         const { sessionId: rawSessionId } = (request.body ?? {}) as { sessionId?: string };
         const sessionId = typeof rawSessionId === "string" ? rawSessionId : null;
 
         log({ module: "voice" }, "Voice token request");
 
-        const env = process.env;
+        const env = requestHomeEnv;
 
         const serverFeatures = resolveServerFeaturesForGating(env);
         const voiceCaps = serverFeatures.capabilities.voice;

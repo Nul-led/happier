@@ -5,6 +5,11 @@ import { z } from 'zod';
 import { AgentRuntimeJsonValueV1Schema } from '../../runtime/agentSessionV1.js';
 import { PluginContributionLocalIdSchema } from '../../plugins/contributionIdentity.js';
 import { PluginIdSchema } from '../../plugins/pluginId.js';
+import {
+  normalizePluginSourceCustodyV1,
+  PluginSourceCustodyV1Schema,
+  type PluginSourceCustodyV1,
+} from '../../plugins/runtime/sourceCustody.js';
 import { SubagentStatusV1Schema } from './subagentRefV1.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 
@@ -49,7 +54,7 @@ export type SessionSubagentCustodyDetailV1 = Extract<SessionSubagentCustodyConte
 export const SessionSubagentCustodyScopeV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   contributionId: asProtocolZod(PluginContributionLocalIdSchema),
-  immutableGenerationId: IndexedKeySchema,
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
 export type SessionSubagentCustodyScopeV1 = z.infer<typeof SessionSubagentCustodyScopeV1Schema>;
 
@@ -61,15 +66,37 @@ export function createSessionSubagentCustodyKeyV1(
   const scope = SessionSubagentCustodyScopeV1Schema.parse({
     pluginId: params.pluginId,
     contributionId: params.contributionId,
-    immutableGenerationId: params.immutableGenerationId,
+    sourceCustody: params.sourceCustody,
   });
   const sessionId = IndexedKeySchema.parse(params.sessionId);
   return `sha256:${bytesToHex(sha256(utf8ToBytes(`${SESSION_SUBAGENT_CUSTODY_KEY_DOMAIN_V1}${JSON.stringify([
     scope.pluginId,
     scope.contributionId,
-    scope.immutableGenerationId,
+    normalizePluginSourceCustodyV1(scope.sourceCustody),
     sessionId,
   ])}`)))}`;
+}
+
+export function createSessionSubagentSourceCustodyStorageIdentityV1(
+  custody: PluginSourceCustodyV1,
+): Readonly<{ kind: PluginSourceCustodyV1['kind']; id: string }> {
+  const normalized = normalizePluginSourceCustodyV1(custody);
+  // Preserve current-development managed custody keys so retained rows remain
+  // reachable after the additive source-discriminator backfill.
+  if (normalized.kind === 'managed' && normalized.immutableGenerationId.length <= 191) {
+    return Object.freeze({ kind: normalized.kind, id: normalized.immutableGenerationId });
+  }
+  const identity = normalized.kind === 'managed'
+    ? [normalized.kind, normalized.immutableGenerationId]
+    : normalized.kind === 'development'
+      ? [normalized.kind, normalized.registeredRootId]
+      : normalized.packagedRuntime.kind === 'cli_version_root'
+    ? [normalized.kind, normalized.packagedRuntime.kind, normalized.packagedRuntime.versionRootId]
+    : [normalized.kind, normalized.packagedRuntime.kind, normalized.packagedRuntime.snapshotId];
+  return Object.freeze({
+    kind: normalized.kind,
+    id: `sha256:${bytesToHex(sha256(utf8ToBytes(JSON.stringify(identity))))}`,
+  });
 }
 
 const SESSION_SUBAGENT_CUSTODY_DETAIL_DOMAIN_V1 = 'happier:session-subagent-custody-detail:v1\0';
@@ -154,7 +181,10 @@ export type SessionSubagentCustodyMutationResponseV1 = z.infer<typeof SessionSub
 export const SessionSubagentCustodyListQueryV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   contributionId: asProtocolZod(PluginContributionLocalIdSchema),
-  immutableGenerationId: IndexedKeySchema,
+  sourceCustody: z.preprocess((value) => {
+    if (typeof value !== 'string') return value;
+    try { return JSON.parse(value) as unknown; } catch { return null; }
+  }, PluginSourceCustodyV1Schema),
   custodyKey: CustodyKeySchema,
 }).strict();
 export type SessionSubagentCustodyListQueryV1 = z.infer<typeof SessionSubagentCustodyListQueryV1Schema>;
@@ -166,7 +196,7 @@ export type SessionSubagentCustodyPageV1 = z.infer<typeof SessionSubagentCustody
 
 export const SessionSubagentCustodyRetirementRequestV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
-  immutableGenerationId: IndexedKeySchema,
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
 export type SessionSubagentCustodyRetirementRequestV1 = z.infer<typeof SessionSubagentCustodyRetirementRequestV1Schema>;
 

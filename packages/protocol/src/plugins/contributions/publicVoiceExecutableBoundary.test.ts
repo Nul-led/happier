@@ -104,7 +104,7 @@ describe('public voice executable contribution boundary', () => {
             interruptionPolicy: 'provider_immediate',
           },
         },
-        client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+        client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
       }],
     }).voiceProviders).toEqual([expect.objectContaining({
       id: 'conversation',
@@ -131,7 +131,7 @@ describe('public voice executable contribution boundary', () => {
       capabilities: {
         turn: { cancelResponse: false, bargeIn: false },
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.parse({
@@ -185,7 +185,7 @@ describe('public voice executable contribution boundary', () => {
       capabilities: {
         turn: { cancelResponse: false, bargeIn: false },
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     for (const agent of [
@@ -288,7 +288,7 @@ describe('public voice executable contribution boundary', () => {
           serviceIds: ['openai-codex'],
         },
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.parse({
@@ -353,7 +353,7 @@ describe('public voice executable contribution boundary', () => {
         capabilities: {
           turn: { cancelResponse: true, bargeIn: false },
         },
-        client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+        client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
       }],
     });
 
@@ -364,7 +364,6 @@ describe('public voice executable contribution boundary', () => {
         target: {
           realm: 'client',
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
           platforms: ['web'],
         },
@@ -374,7 +373,6 @@ describe('public voice executable contribution boundary', () => {
     expect(protocol.derivePluginDaemonContributionRegistrationRights(contributes)).toEqual([]);
     expect(protocol.derivePluginClientContributionRegistrationRights(contributes, {
       artifactId: 'voice-runtime-web',
-      modulePath: './voiceRuntime',
       exportName: 'activate',
       platform: 'web',
     })).toEqual([
@@ -386,7 +384,6 @@ describe('public voice executable contribution boundary', () => {
     ]);
     expect(protocol.derivePluginClientContributionRegistrationRights(contributes, {
       artifactId: 'voice-runtime-web',
-      modulePath: './voiceRuntime',
       exportName: 'wrongExport',
       platform: 'web',
     })).toEqual([]);
@@ -446,7 +443,7 @@ describe('public voice executable contribution boundary', () => {
     ]);
   });
 
-  it('rejects qualified ids, empty/duplicate/unknown/desktop platforms, non-activate exports, and duplicate local ids', () => {
+  it('rejects qualified ids, empty/duplicate/unknown/desktop platforms, and non-activate exports', () => {
     const valid = {
       id: 'conversation',
       title: 'Conversation',
@@ -456,7 +453,7 @@ describe('public voice executable contribution boundary', () => {
       capabilities: {
         turn: { cancelResponse: false, bargeIn: false },
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.safeParse({ voiceProviders: [valid] }).success).toBe(true);
@@ -470,9 +467,6 @@ describe('public voice executable contribution boundary', () => {
     }
     expect(PluginContributesV2Schema.safeParse({
       voiceProviders: [{ ...valid, client: { ...valid.client, exportName: 'createVoiceRuntime' } }],
-    }).success).toBe(false);
-    expect(PluginContributesV2Schema.safeParse({
-      voiceProviders: [valid, valid],
     }).success).toBe(false);
   });
 
@@ -503,7 +497,7 @@ describe('public voice executable contribution boundary', () => {
           }],
         }],
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.safeParse({
@@ -553,7 +547,7 @@ describe('public voice executable contribution boundary', () => {
           presentation: { control: 'switch' },
         }],
       },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.parse({
@@ -641,7 +635,7 @@ describe('public voice executable contribution boundary', () => {
         turn: { cancelResponse: true, bargeIn: false },
       },
       credentials: voiceCredentials,
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.safeParse({
@@ -660,7 +654,7 @@ describe('public voice executable contribution boundary', () => {
         turn: { cancelResponse: true, bargeIn: false },
       },
       credentials: voiceCredentials,
-      client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
     } as const;
 
     expect(PluginContributesV2Schema.safeParse({
@@ -730,7 +724,7 @@ describe('public voice executable contribution boundary', () => {
         capabilities: {
           turn: { cancelResponse: false, bargeIn: false },
         },
-        client: { artifactId: 'voice-runtime-web', modulePath: './voiceRuntime', exportName: 'activate' },
+        client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
       }],
     }).success).toBe(false);
   });

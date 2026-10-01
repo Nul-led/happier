@@ -156,6 +156,8 @@ export const KeyChallengeV2AuthRequestSchema = z
     expectedAccountId: ExpectedAccountIdSchema.optional(),
     admission: TeamInvitationAccountAdmissionV1Schema.optional(),
     requireExistingAccount: z.literal(true).optional(),
+    /** Narrows a Home login to a terminal credential; never widens authority. */
+    credentialKind: z.literal('terminal').optional(),
   })
   .strict()
   .superRefine(validateContentKeyPair);

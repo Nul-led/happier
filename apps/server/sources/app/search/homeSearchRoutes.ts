@@ -7,6 +7,7 @@ import { createServerFeatureGatedRouteApp } from '@/app/features/catalog/serverF
 import type { HomeSearchCapability } from './homeSearchCapability';
 import type { HomeSearchRequestContext } from './homeSearchService';
 import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
 const HomeSearchRebuildResponseSchema = z.object({ ok: z.literal(true) }).strict();
 
@@ -37,7 +38,7 @@ export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
     })));
     // This is a local Personal Home maintenance operation. Hosted deployments
     // have no present-user authority to rebuild the shared derived index.
-    if (env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return;
+    if (!isPersonalHomeRuntimePurpose(env.HAPPIER_MANAGED_RELAY_PURPOSE)) return;
     gated.post('/v1/home/search/rebuild', {
         schema: { response: { 200: HomeSearchRebuildResponseSchema } },
         preHandler: [app.authenticate, requirePresentUser],

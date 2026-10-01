@@ -48,7 +48,11 @@ describe('plugin UI surface context', () => {
       },
       translations: { 'plugin.title': 'Preview' },
       targetedContributions: {
-        target: { pluginId: 'acme.preview', immutableGenerationId: 'target-generation-a' },
+        target: {
+          pluginId: 'acme.preview',
+          occurrenceId: 'target-occurrence-a',
+          sourceCustody: { kind: 'development', registeredRootId: 'preview-root' },
+        },
         points: [],
       },
     } as const;
@@ -63,6 +67,19 @@ describe('plugin UI surface context', () => {
       ...surface,
       target: { kind: 'browser', targetId: 'browser-1', origin: 'https://happier.dev', extra: true },
     }).success).toBe(false);
+    const appPage = {
+      ...surface,
+      mount: {
+        kind: 'destination',
+        destination: { pluginId: 'acme.preview', localId: 'inbox' },
+        container: 'appPage',
+      },
+      target: { kind: 'app' },
+      page: { columnVisible: true },
+    } as const;
+    expect(PluginUiHostApiSurfaceContextV1Schema.parse(appPage)).toEqual(appPage);
+    expect(PluginUiHostApiSurfaceContextV1Schema.parse({ ...appPage, page: { columnVisible: false } }).page).toEqual({ columnVisible: false });
+    expect(PluginUiHostApiSurfaceContextV1Schema.safeParse({ ...appPage, page: { columnVisible: true, extra: true } }).success).toBe(false);
   });
 
   it('models one closed public destination-or-embedded mount context', () => {

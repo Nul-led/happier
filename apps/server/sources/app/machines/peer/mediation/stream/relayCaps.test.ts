@@ -6,7 +6,9 @@ import {
 } from './relayCaps';
 
 describe('machine live-stream relay caps', () => {
-    it('requires positive finite relay caps before server relay can be enabled', () => {
+    it('accepts absent limits and requires configured relay caps to be positive', () => {
+        expect(normalizeMachineLiveStreamRelayCaps({})).toEqual({});
+        expect(hasMachineLiveStreamRelayCaps({})).toBe(true);
         expect(normalizeMachineLiveStreamRelayCaps({
             maxBitrateBps: 64_000,
             maxFramesPerSecond: 12,

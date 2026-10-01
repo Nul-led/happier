@@ -1,15 +1,10 @@
 import {
-    AutomationApiV2Schema,
     AutomationDefinitionDetailSchema,
     AutomationDefinitionListItemSchema,
-    AutomationRunApiV2Schema,
-    AutomationRunStateV2Schema,
     AutomationRunResultStoredV1Schema,
-    AutomationV2ScheduleSchema,
     AutomationV3RunDetailSchema,
     AutomationV3RunListItemSchema,
     createCanonicalJsonSigningInput,
-    normalizeAutomationTemplateEnvelopeStoredRead,
     parseAutomationStoredDefinitionExecutionRecipeV1,
     parseAutomationStoredWorkflowDefinitionRecipeV2,
     parseAutomationRunFailureDetailStoredEnvelopeV1,
@@ -22,22 +17,19 @@ import {
 import type { AutomationEventStatusProjection } from "./automationEventStatusProjection";
 import type { AutomationSessionLifecycleTriggerStatus } from "@happier-dev/protocol";
 import { classifyAutomationReplyHandoffDispatchability } from "./automationReplyHandoffDispatchability";
-import { decodeAutomationRunCause } from "./automationRunCauseCodec";
+import { decodeAutomationRunCause, retainedV2OriginKindForRun } from "./automationRunCauseCodec";
 import {
     assertAutomationExecutionInputEnvelopeOuterForMode,
     assertAutomationStoredContentEnvelopeOuterForMode,
     assertAutomationTriggerDefinitionEnvelopeOuterForMode,
     AutomationStoredContentReadError,
     readAutomationTriggerDefinitionBinding,
-    readRetainedAutomationRunExecutionInputV2,
 } from "./automationStoredContentRead";
 import type {
-    AutomationLegacyTargetType,
     AutomationListItem,
     AutomationRunDetailItem,
     AutomationRunEventRow,
     AutomationRunItem,
-    AutomationRunV2ListItem,
     AutomationRunV3ListItem,
     AutomationTargetType,
     AutomationTriggerItem,
@@ -68,148 +60,6 @@ function targetTypeV3(targetType: AutomationTargetType | null) {
             : "executionRun" as const;
 }
 
-function hasRetainedV2TemplateEnvelope(raw: string): boolean {
-    try { return normalizeAutomationTemplateEnvelopeStoredRead(JSON.parse(raw)) !== null; } catch { return false; }
-}
-
-/** Released V2 represents one retained schedule or a manual-only zero-trigger definition. */
-type AutomationV2RepresentabilityFacts = Pick<AutomationListItem, "targetType" | "templateCiphertext"> & Readonly<{
-    // Prisma's physical enum can contain unreleased values while this adapter
-    // remains intentionally constrained to the released V2 schedule shape.
-    triggers: ReadonlyArray<Pick<AutomationTriggerItem, "kind" | "enabled"> & Readonly<{
-        scheduleKind: string | null;
-    }>>;
-}>;
-
-export function isAutomationDefinitionRepresentableInV2<T extends AutomationV2RepresentabilityFacts>(
-    item: T,
-): item is T & Readonly<{ targetType: AutomationLegacyTargetType }> {
-    const trigger = item.triggers.length === 1 ? item.triggers[0] : undefined;
-    const hasRepresentableSchedule = item.triggers.length === 0
-        || (trigger?.kind === "schedule"
-            && trigger.enabled
-            && (trigger.scheduleKind === "cron" || trigger.scheduleKind === "interval"));
-    return hasRepresentableSchedule
-        && item.targetType !== null
-        && item.targetType !== "execution_run"
-        && parseAutomationStoredDefinitionExecutionRecipeV1(item.templateCiphertext).kind !== "available"
-        && hasRetainedV2TemplateEnvelope(item.templateCiphertext);
-}
-
-function retainedV2CauseKind(item: AutomationRunV2ListItem | AutomationRunItem): "scheduled" | "manual" | null {
-    const cause = decodeAutomationRunCause(item);
-    if (cause.kind === "manual") return "manual";
-    return cause.kind === "trigger" && cause.triggerKind === "schedule" ? "scheduled" : null;
-}
-
-/**
- * Strict released-V2 execution representability. Every V2 mutation/effect
- * boundary requires the exact frozen predecessor input and must never infer it
- * from current Automation bytes.
- */
-export function isAutomationRunV2ExecutionRepresentable(
-    item: AutomationRunV2ListItem | AutomationRunItem,
-): boolean {
-    const retainedV2OriginKind = retainedV2CauseKind(item);
-    return retainedV2OriginKind !== null
-        && item.executionInputEnvelope !== null
-        && readRetainedAutomationRunExecutionInputV2({
-            raw: item.executionInputEnvelope,
-            retainedV2OriginKind,
-        }) !== null;
-}
-
-/**
- * Released-V2 history representability. A migrated predecessor Run that was
- * already terminal at activation may intentionally have no frozen execution
- * input: history can still project its retained V2 cause and public terminal
- * facts, while every execution boundary remains guarded by the strict
- * predicate above. Current-only V3 states remain invisible to the V2 wire.
- */
-export function isAutomationRunV2HistoryRepresentable(
-    item: AutomationRunV2ListItem | AutomationRunItem,
-): boolean {
-    if (isAutomationRunV2ExecutionRepresentable(item)) {
-        return AutomationRunStateV2Schema.safeParse(item.state).success;
-    }
-    return item.executionInputEnvelope === null
-        && retainedV2CauseKind(item) !== null
-        && isTerminalAutomationRunState(item.state)
-        && AutomationRunStateV2Schema.safeParse(item.state).success;
-}
-
-type AutomationV2ScheduleProjectionTrigger = Readonly<{
-    scheduleKind: string | null;
-    scheduleExpr: string | null;
-    everyMs: number | null;
-    timezone: string | null;
-}>;
-
-/** One released-V2 schedule projection; absence is the canonical manual shape. */
-export function toAutomationV2ScheduleDto(
-    trigger: AutomationV2ScheduleProjectionTrigger | undefined,
-) {
-    if (trigger && trigger.scheduleKind !== "cron" && trigger.scheduleKind !== "interval") {
-        throw new Error("Automation schedule trigger has no representable schedule kind");
-    }
-    return AutomationV2ScheduleSchema.parse(trigger ? {
-        kind: trigger.scheduleKind,
-        scheduleExpr: trigger.scheduleExpr,
-        everyMs: trigger.everyMs,
-        timezone: trigger.timezone,
-    } : {
-        kind: "manual",
-        scheduleExpr: null,
-        everyMs: null,
-        timezone: null,
-    });
-}
-
-export function toAutomationV2ApiDto(item: AutomationListItem) {
-    if (!isAutomationDefinitionRepresentableInV2(item)) {
-        throw new Error("Automation is not representable by the V2 contract");
-    }
-    const trigger = item.triggers[0];
-    return AutomationApiV2Schema.parse({
-        id: item.id, name: item.name, description: item.description, enabled: item.enabled,
-        schedule: toAutomationV2ScheduleDto(trigger),
-        targetType: item.targetType,
-        templateCiphertext: item.templateCiphertext,
-        templateVersion: item.templateVersion,
-        nextRunAt: trigger?.nextRunAt?.getTime() ?? null,
-        lastRunAt: item.lastRunAt?.getTime() ?? null,
-        createdAt: item.createdAt.getTime(), updatedAt: item.updatedAt.getTime(),
-        assignments: item.assignments.map((assignment) => ({
-            machineId: assignment.machineId, enabled: assignment.enabled, priority: assignment.priority,
-            updatedAt: assignment.updatedAt?.getTime() ?? null,
-        })),
-    });
-}
-
-export function toAutomationRunV2ApiDto(item: AutomationRunV2ListItem | AutomationRunItem) {
-    if (!isAutomationRunV2HistoryRepresentable(item)) {
-        throw new Error("Automation Run history is not representable by the V2 contract");
-    }
-    let summaryCiphertext: string | null = null;
-    if (item.resultEnvelope !== null) {
-        const result = AutomationRunResultStoredV1Schema.safeParse(parseStoredContentEnvelope(item.resultEnvelope));
-        if (!result.success) throw new AutomationStoredContentReadError("contentInvalid");
-        summaryCiphertext = result.data.t === "legacySummaryCiphertext" ? result.data.c : null;
-    }
-    return AutomationRunApiV2Schema.parse({
-        id: item.id, automationId: item.automationId, state: item.state,
-        scheduledAt: item.scheduledAt.getTime(), dueAt: item.dueAt.getTime(),
-        claimedAt: item.claimedAt?.getTime() ?? null, startedAt: item.startedAt?.getTime() ?? null,
-        finishedAt: item.finishedAt?.getTime() ?? null, claimedByMachineId: item.claimedByMachineId,
-        leaseExpiresAt: item.leaseExpiresAt?.getTime() ?? null, attempt: item.attempt,
-        summaryCiphertext, errorCode: item.errorCode,
-        errorMessage: item.errorMessage !== null
-            && parseAutomationRunFailureDetailStoredEnvelopeV1(item.errorMessage) === null
-            ? item.errorMessage : null,
-        producedSessionId: item.producedSessionId,
-        createdAt: item.createdAt.getTime(), updatedAt: item.updatedAt.getTime(),
-    });
-}
 
 function triggerProjection(
     trigger: AutomationTriggerItem,
@@ -291,6 +141,7 @@ function definitionCommon(
     return {
         id: item.id, name: item.name, description: item.description, enabled: item.enabled,
         targetType: targetTypeV3(item.targetType), existingSessionId: readExistingSessionId(item),
+        workflowDefinitionId: item.workflowDefinitionId, scopeSessionId: item.scopeSessionId,
         templateVersion: item.templateVersion, lastRunAt: item.lastRunAt?.getTime() ?? null,
         createdAt: item.createdAt.getTime(), updatedAt: item.updatedAt.getTime(),
         assignments: item.assignments.map((assignment) => ({
@@ -486,7 +337,7 @@ export function toAutomationRunV3DetailApiDto(
     assertAutomationStoredContentEnvelopeOuterForMode({ raw: item.triggerEvidenceEnvelope, mode });
     assertAutomationExecutionInputEnvelopeOuterForMode({
         raw: item.executionInputEnvelope, mode,
-        retainedV2OriginKind: retainedV2CauseKind(item) ?? undefined,
+        retainedV2OriginKind: retainedV2OriginKindForRun(item),
     });
     return AutomationV3RunDetailSchema.parse({
         ...common, triggerEvidenceEnvelope: item.triggerEvidenceEnvelope,

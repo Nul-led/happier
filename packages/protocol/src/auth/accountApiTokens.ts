@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { ApiTokenGrantV1Schema } from './apiTokenGrant.js';
+import { EmbedConfigV1Schema } from '../embed/embedConfigV1.js';
 import { decodeBase64, encodeBase64, type Base64Variant } from '../crypto/base64.js';
 import { SERVER_IDENTITY_ID_PATTERN } from '../features/payload/capabilities/serverIdentityCapabilities.js';
 
@@ -62,6 +64,10 @@ export const AccountApiTokenSummaryV1Schema = z.object({
   expiresAt: AccountApiTokenInstantV1Schema.nullable(),
   hasEncryptionAccess: z.boolean(),
   hasUnattendedTeamAccess: z.boolean(),
+  grant: ApiTokenGrantV1Schema,
+  parentTokenId: AccountApiTokenIdV1Schema.nullable(),
+  activeChildCount: z.number().int().nonnegative(),
+  embedConfig: EmbedConfigV1Schema.nullable(),
 }).strict();
 export type AccountApiTokenSummaryV1 = z.infer<typeof AccountApiTokenSummaryV1Schema>;
 
@@ -72,8 +78,41 @@ export const AccountApiTokensCreateActionInputV1Schema = z.object({
   expiresAt: AccountApiTokenInstantV1Schema.nullable().optional(),
   encryption: AccountApiTokenCreateEncryptionV1Schema.optional(),
   authorizeUnattendedTeamAccess: z.boolean().optional(),
+  grant: ApiTokenGrantV1Schema.optional(),
+  embedConfig: EmbedConfigV1Schema.optional(),
 }).strict();
 export type AccountApiTokensCreateActionInputV1 = z.infer<typeof AccountApiTokensCreateActionInputV1Schema>;
+
+export const AccountApiTokensUpdateActionInputV1Schema = z.object({
+  tokenId: AccountApiTokenIdV1Schema,
+  label: z.string().trim().min(1).max(256).optional(),
+  grant: ApiTokenGrantV1Schema.optional(),
+  embedConfig: EmbedConfigV1Schema.nullable().optional(),
+}).strict().refine((value) => value.label !== undefined || value.grant !== undefined || value.embedConfig !== undefined, 'An update must contain at least one change.');
+export type AccountApiTokensUpdateActionInputV1 = z.infer<typeof AccountApiTokensUpdateActionInputV1Schema>;
+export const AccountApiTokensUpdateActionOutputV1Schema = z.object({ apiToken: AccountApiTokenSummaryV1Schema }).strict();
+export type AccountApiTokensUpdateActionOutputV1 = z.infer<typeof AccountApiTokensUpdateActionOutputV1Schema>;
+
+export const AccountApiTokenChildCreateRequestV1Schema = z.object({
+  tokenId: ApiTokenUuidV4Schema,
+  label: z.string().trim().min(1).max(256),
+  expiresAt: AccountApiTokenInstantV1Schema,
+  grant: ApiTokenGrantV1Schema,
+  requireCreatedByChildTokenId: AccountApiTokenIdV1Schema.optional(),
+}).strict();
+export type AccountApiTokenChildCreateRequestV1 = z.infer<typeof AccountApiTokenChildCreateRequestV1Schema>;
+export const AccountApiTokenChildRevokeRequestV1Schema = z.object({ tokenId: AccountApiTokenIdV1Schema }).strict();
+export type AccountApiTokenChildRevokeRequestV1 = z.infer<typeof AccountApiTokenChildRevokeRequestV1Schema>;
+export const AccountApiTokenSelfV1Schema = z.object({
+  accountId: z.string().min(1),
+  accountEncryptionMode: z.enum(['plain', 'e2ee']),
+  credentialId: AccountApiTokenIdV1Schema,
+  parentTokenId: AccountApiTokenIdV1Schema.nullable(),
+  expiresAt: AccountApiTokenInstantV1Schema.nullable(),
+  grant: ApiTokenGrantV1Schema,
+  embedConfig: EmbedConfigV1Schema.nullable(),
+}).strict();
+export type AccountApiTokenSelfV1 = z.infer<typeof AccountApiTokenSelfV1Schema>;
 
 /**
  * `token` is the sole plaintext bearer disclosure. The strict nested summary
@@ -95,8 +134,11 @@ export type AccountApiTokensCreateActionOutputV1 = z.infer<typeof AccountApiToke
 
 /** Observers receive the existing non-secret summary, never the one-time bearer. */
 export function projectAccountApiTokenCreationObservation(value: unknown): Readonly<{ apiToken: AccountApiTokenSummaryV1 }> {
-  const output = AccountApiTokensCreateActionOutputV1Schema.parse(value);
-  return { apiToken: output.apiToken };
+  const output = AccountApiTokensCreateActionOutputV1Schema.safeParse(value);
+  // Approval history already holds the safe summary. Re-observing it must not
+  // require (or recover) the one-shot bearer that was deliberately discarded.
+  return output.success ? { apiToken: output.data.apiToken }
+    : AccountApiTokensUpdateActionOutputV1Schema.parse(value);
 }
 
 export const AccountApiTokensListActionInputV1Schema = z.object({}).strict();
@@ -132,6 +174,11 @@ export const ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1 = '/v1/auth/api-tokens/list';
 export const ACCOUNT_API_TOKENS_REVOKE_HTTP_PATH_V1 = '/v1/auth/api-tokens/revoke';
 export const ACCOUNT_API_TOKENS_REVOKE_ALL_HTTP_PATH_V1 = '/v1/auth/api-tokens/revoke-all';
 export const ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1 = '/v1/auth/api-tokens/introspect';
+export const ACCOUNT_API_TOKENS_UPDATE_HTTP_PATH_V1 = '/v1/auth/api-tokens/update';
+export const ACCOUNT_API_TOKEN_CHILDREN_CREATE_HTTP_PATH_V1 = '/v1/auth/api-tokens/children/create';
+export const ACCOUNT_API_TOKEN_CHILDREN_REVOKE_HTTP_PATH_V1 = '/v1/auth/api-tokens/children/revoke';
+export const ACCOUNT_API_TOKEN_SELF_HTTP_PATH_V1 = '/v1/auth/api-tokens/self';
+export const SESSION_CREATION_AUTHORIZATION_HEADER_V1 = 'x-happier-session-creation-authorization' as const;
 /**
  * The canonical request is under 100 bytes. One KiB still admits a fully
  * escaped token plus ordinary JSON formatting while preventing this fixed-size
@@ -153,6 +200,9 @@ export const AccountApiTokenIntrospectionSuccessV1Schema = z.object({
   credentialId: AccountApiTokenIdV1Schema,
   expiresAt: AccountApiTokenInstantV1Schema.nullable(),
   authority: z.literal('account_automation'),
+  grant: ApiTokenGrantV1Schema,
+  parentTokenId: AccountApiTokenIdV1Schema.nullable(),
+  embedConfig: EmbedConfigV1Schema.nullable(),
 }).strict().superRefine((value, context) => {
   if (value.principalId !== value.accountId) {
     context.addIssue({
@@ -186,6 +236,8 @@ export const AccountApiTokensServerErrorV1Schema = z.object({
     'api_token_required', 'api_token_id_conflict',
     'api_token_encryption_unavailable', 'api_token_encryption_stale',
     'api_token_encryption_not_ready',
+    'api_token_child_forbidden', 'api_token_child_invalid',
+    'credential_scope_denied', 'credential_origin_denied', 'model_not_granted',
     'credential_authentication_evidence_limit',
     'credential_authentication_evidence_unavailable',
   ]),

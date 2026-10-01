@@ -422,8 +422,8 @@ const FEATURE_CATALOG_DEFINITION = {
     // Server-represented + default-ALLOW: the automation *capability* is on by default now that the
     // ActionExecutor front door + surface-keyed approval defaults have landed; dangerous
     // agent-initiated exercise stays approval-gated, and a server admin can still disable agent
-    // automation independently of human browsing/devtools. The finer injectedPage/eval tiers below
-    // stay client + fail-closed (operator opt-in on top of this gate).
+    // automation independently of human browsing/devtools. The injectedPage/eval ids below retain
+    // capability vocabulary and dependencies, not an additional environment opt-in decision.
     representation: 'server',
   },
   'browser.automation.injectedPage': {

@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { encodePasswordCredentialFieldV1, selectPasswordEnvelopeWriterProfileV1,
+import { AUTH_TOKEN_KIND_AUTHORITIES, encodePasswordCredentialFieldV1, selectPasswordEnvelopeWriterProfileV1,
     type NativeEmailPasswordPreloginResponseV1 } from "@happier-dev/protocol";
 import { acceptPasswordTextV1, normalizeVerifiedEmail, parseAccountPasswordCredentialV1 } from "@happier-dev/protocol";
 import { issueKeyChallengeV2 } from "@/app/auth/keyChallengeV2";
@@ -19,7 +19,7 @@ export async function findNativePasswordAccount(email: string, reader: Pick<Tx, 
     if (!normalized) return null;
     const identity = await reader.accountIdentity.findUnique({
         where: { provider_providerUserId: { provider: "email", providerUserId: normalized.normalizedEmail } },
-        select: { providerUserId: true, account: { select: {
+        select: { id: true, providerUserId: true, account: { select: {
             id: true, publicKey: true, encryptionMode: true, status: true,
             AccountPasswordCredential: { select: { credential: true, revision: true } },
         } } },
@@ -34,7 +34,7 @@ export async function findNativePasswordAccount(email: string, reader: Pick<Tx, 
         parsed.credential,
         account.publicKey,
     )) return null;
-    return { account, normalizedEmail: identity.providerUserId, revision: row.revision, parsed };
+    return { account, nativeIdentityId: identity.id, normalizedEmail: identity.providerUserId, revision: row.revision, parsed };
 }
 
 /** Verify outside locks, then fence credential currentness and ordinary token issuance together. */
@@ -50,7 +50,7 @@ export async function loginWithNativePlainPassword(params: Readonly<{
      * same-service Home entry is ensured in the token transaction, exactly as the Key Challenge and
      * OAuth Directory finalizers do.
      */
-    tokenKind?: "account" | "account_directory";
+    tokenKind?: "account" | "terminal" | "account_directory";
 }>) {
     const tokenKind = params.tokenKind ?? "account";
     const candidate = await findNativePasswordAccount(params.email);
@@ -76,7 +76,7 @@ export async function loginWithNativePlainPassword(params: Readonly<{
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, candidate.account.id);
             const current = await findNativePasswordAccount(candidate.normalizedEmail, tx);
             if (!current || current.account.id !== candidate.account.id || current.parsed.mode !== "plain"
-                || current.revision !== candidate.revision) {
+                || current.nativeIdentityId !== candidate.nativeIdentityId || current.revision !== candidate.revision) {
                 return { ok: false, statusCode: 401, error: "authentication_failed" } as const;
             }
             if (!await params.admitInTx(tx)) {
@@ -90,7 +90,7 @@ export async function loginWithNativePlainPassword(params: Readonly<{
                 });
             }
             const token = await auth.createTokenInTx(tx, candidate.account.id, undefined, {
-                kind: tokenKind, authority: "present_user",
+                kind: tokenKind, authority: AUTH_TOKEN_KIND_AUTHORITIES[tokenKind],
                 authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
             });
             return { ok: true, token } as const;
@@ -136,7 +136,7 @@ export async function unlockNativeE2eePassword(params: Readonly<{
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, candidate.account.id);
             const current = await findNativePasswordAccount(candidate.normalizedEmail, tx);
             if (!current || current.account.id !== candidate.account.id || current.parsed.mode !== "e2ee"
-                || current.revision !== candidate.revision) {
+                || current.nativeIdentityId !== candidate.nativeIdentityId || current.revision !== candidate.revision) {
                 return { ok: false, statusCode: 401, error: "authentication_failed" } as const;
             }
             assertAccountActive(current.account.status);
@@ -147,7 +147,7 @@ export async function unlockNativeE2eePassword(params: Readonly<{
                 purpose: "account",
                 expectedAccountId: current.account.id,
                 verifiedNativeMethodId: "email_password",
-                verifiedNativePasswordCredentialRevision: current.revision,
+                verifiedNativePasswordEvidence: { nativeIdentityId: current.nativeIdentityId, credentialRevision: current.revision },
                 env: params.env,
                 writer: tx,
             });

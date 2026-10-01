@@ -30,6 +30,7 @@ describe('RPC_METHODS scm surface', () => {
         expect(RPC_METHODS.SCM_REMOTE_PUSH).toBe('scm.remote.push');
         expect(RPC_METHODS.SCM_REMOTE_PUBLISH).toBe('scm.remote.publish');
         expect(RPC_METHODS.SCM_STASH_LIST).toBe('scm.stash.list');
+        expect(RPC_METHODS.SCM_STASH_CREATE).toBe('scm.stash.create');
         expect(RPC_METHODS.SCM_STASH_DROP).toBe('scm.stash.drop');
         expect(RPC_METHODS.SCM_STASH_POP).toBe('scm.stash.pop');
         expect(RPC_METHODS.SCM_STASH_APPLY).toBe('scm.stash.apply');

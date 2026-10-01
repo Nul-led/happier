@@ -10,7 +10,7 @@ const open = {
   grant: {
     payload: {
       v: 2, grantId: 'grant-1', accountId: 'account-1', machineId: 'machine-1', flowKind: 'tcp_tunnel',
-      routeKind: 'loopback_direct', scope: { kind: 'tcp_tunnel', tunnelId: 'tunnel-1', allowedPorts: [12_345], maxIdleMs: 1_000, maxDurationMs: 5_000 },
+      routeKind: 'loopback_direct', scope: { kind: 'tcp_tunnel', tunnelId: 'tunnel-1', allowedPorts: [12_345], },
       iat: 1_000, exp: 2_000, aud: 'happier-daemon-route-grant', endpointFingerprint: 'endpoint-1',
       proofKind: 'ephemeral_ed25519', ephemeralPublicKeyBase64Url: key32,
     },
@@ -20,6 +20,24 @@ const open = {
 } as const;
 
 describe('PeerTcpTunnelOpenV2', () => {
+  it('carries the same signed destination scope on the native Iroh carrier', () => {
+    const targetEndpointId = 'b'.repeat(64);
+    const nativeOpen = {
+      ...open,
+      routeKind: 'iroh_peer',
+      grant: { ...open.grant, payload: {
+        ...open.grant.payload,
+        routeKind: 'iroh_peer',
+        endpointFingerprint: targetEndpointId,
+        iroh: {
+          initiator: { kind: 'account_client', endpointId: 'a'.repeat(64) },
+          target: { machineId: open.targetMachineId, endpointId: targetEndpointId },
+          operationKind: 'tcp_tunnel',
+        },
+      } },
+    };
+    expect(PeerTcpTunnelOpenV2Schema.safeParse(nativeOpen).success).toBe(true);
+  });
   it('uses a strict proof-authorized open path without changing tunnel framing', () => {
     expect(PEER_TCP_TUNNEL_OPEN_PATH_V2).toBe('/peer-mediation/v2/tunnel/open');
     expect(PeerTcpTunnelOpenV2Schema.parse(open).v).toBe(2);

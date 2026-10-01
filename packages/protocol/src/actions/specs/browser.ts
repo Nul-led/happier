@@ -20,6 +20,8 @@ import {
   BrowserReloadCommandV1Schema,
   BrowserSetTargetCommandV1Schema,
   BrowserStopCommandV1Schema,
+  BrowserTakeControlCommandV1Schema,
+  BrowserHandBackCommandV1Schema,
 } from '../../browser/control/v1.js';
 import {
   BrowserAnnotationStyleIntentV1Schema,
@@ -111,6 +113,8 @@ const RuntimeBrowserRecordingAttachInputSchema = z
   .passthrough();
 
 export const BROWSER_RUNTIME_ACTION_TITLES: Readonly<Partial<Record<RuntimeActionIdV1, string>>> = Object.freeze({
+  'browser.control.takeControl': 'Yield browser control to the human',
+  'browser.control.handBack': 'Return browser control to the Session',
   'browser.view.open': 'Open browser view',
   'browser.view.close': 'Close browser view',
   'browser.view.focus': 'Focus browser view',
@@ -177,6 +181,8 @@ export const BROWSER_RUNTIME_ACTION_TITLES: Readonly<Partial<Record<RuntimeActio
 });
 
 export const BROWSER_RUNTIME_ACTION_DESCRIPTIONS: Readonly<Partial<Record<RuntimeActionIdV1, string>>> = Object.freeze({
+  'browser.control.takeControl': 'Interrupt browser automation and yield control to the human through the existing controller owner.',
+  'browser.control.handBack': 'Return browser control to the Session after accepted input settles. The agent must observe again before its next mutation.',
   'browser.view.open': 'Open a browser view inside an existing browser session.',
   'browser.view.close': 'Close a browser view and detach it from its session.',
   'browser.view.focus': 'Bring a browser view to the foreground of its session.',
@@ -229,6 +235,8 @@ export const BROWSER_RUNTIME_ACTION_DESCRIPTIONS: Readonly<Partial<Record<Runtim
  * its exact Zod input/output carrier in generated API and Plugin maps.
  */
 export const BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS = Object.freeze({
+  'browser.control.takeControl': BrowserTakeControlCommandV1Schema,
+  'browser.control.handBack': BrowserHandBackCommandV1Schema,
   'browser.view.open': BrowserOpenViewCommandV1Schema,
   'browser.view.close': BrowserCloseViewCommandV1Schema,
   'browser.view.focus': BrowserFocusViewCommandV1Schema,
@@ -295,6 +303,8 @@ export const BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS = Object.freeze({
 } as const satisfies Readonly<Record<BrowserRuntimeActionId, z.ZodTypeAny>>);
 
 export const BROWSER_RUNTIME_ACTION_OUTPUT_SCHEMAS = Object.freeze({
+  'browser.control.takeControl': BrowserCommandDispatchResultV1Schema,
+  'browser.control.handBack': BrowserCommandDispatchResultV1Schema,
   'browser.view.open': BrowserCommandDispatchResultV1Schema,
   'browser.view.close': BrowserCommandDispatchResultV1Schema,
   'browser.view.focus': BrowserCommandDispatchResultV1Schema,

@@ -5,6 +5,7 @@ import {
     computeTeamCredentialPoolMemberSourceVersionV1,
     computeTeamCredentialSourceMemberKeyV1,
     createTeamCredentialDirectMaterialStoredV1,
+    materializeTeamCredentialDirectMaterialV1,
     encodeSessionTeamCredentialSlotKeyV1,
 } from "@happier-dev/protocol/teams";
 import {
@@ -47,8 +48,11 @@ import {
     readCurrentTeamCredentialRecipientMaterialInTx,
     readTeamCredentialRecipientMaterialInTx,
     upsertTeamCredentialRecipientMaterialInTx,
+    withdrawTeamCredentialRecipientMaterialInTx,
 } from "./recipientMaterial";
 import { readTeamCredentialActivityInTx } from "./resourceActivity";
+import { readTeamCredentialCatalogInTx } from './resourceRead';
+import { updateTeamCredentialResourceInTx } from './resourceUpdate';
 
 function createE2eeAccountMaterial(
     signing = tweetnacl.sign.keyPair(),
@@ -84,7 +88,43 @@ describe("Team credential recipient material", () => {
     }, 120_000);
     afterAll(async () => { await harness?.close(); });
 
-    it("writes through the custodian and fails closed after the final direct grant is removed", async () => {
+    it('withdraws only the source owner’s exact publication and preserves other members and newer replacements', async () => {
+        const owner = await db.account.create({ data: { encryptionMode: 'plain', publicKey: null } });
+        const other = await db.account.create({ data: { encryptionMode: 'plain', publicKey: null } });
+        const team = await db.team.create({ data: { name: 'Withdrawal' } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: 'member' } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: other.id, role: 'owner' } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: owner.id, displayName: 'Withdrawal',
+            disclosureCeiling: 'direct_allowed', sessionUsePolicy: 'personal_allowed',
+            sourceBindingJson: '{}', directSourceVersionsJson: JSON.stringify({ member: 'new', sibling: 'sibling-version' }),
+        } });
+        for (const [sourceMemberKey, sourceVersion] of [['member', 'new'], ['sibling', 'sibling-version']]) {
+            await db.teamCredentialRecipientMaterial.create({ data: {
+                resourceId: resource.id, recipientAccountId: other.id, sourceMemberKey, sourceVersion,
+                recipientMode: 'plain', storedMaterial: Buffer.from('{}'),
+            } });
+        }
+        const input = { actorAccountId: owner.id, teamId: team.id, resourceId: resource.id,
+            sourceMemberKey: 'member', expectedResourceRevision: resource.revision, expectedPublishedSourceVersion: 'new' };
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, { ...input, actorAccountId: other.id })))
+            .resolves.toMatchObject({ ok: false, reason: 'source_owner_required' });
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, { ...input, teamId: 'wrong-team' })))
+            .resolves.toMatchObject({ ok: false, reason: 'resource_not_found' });
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, { ...input, expectedPublishedSourceVersion: 'old' })))
+            .resolves.toMatchObject({ ok: false, reason: 'source_changed' });
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, { ...input, expectedResourceRevision: resource.revision + 1 })))
+            .resolves.toMatchObject({ ok: false, reason: 'resource_changed' });
+        expect(await db.teamCredentialRecipientMaterial.count({ where: { resourceId: resource.id } })).toBe(2);
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, input))).resolves.toMatchObject({ ok: true, changed: true });
+        expect((await db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).directSourceVersionsJson)
+            .toBe(JSON.stringify({ sibling: 'sibling-version' }));
+        expect(await db.teamCredentialRecipientMaterial.findMany({ where: { resourceId: resource.id }, select: { sourceMemberKey: true } }))
+            .toEqual([{ sourceMemberKey: 'sibling' }]);
+        await expect(inTx(tx => withdrawTeamCredentialRecipientMaterialInTx(tx, input))).resolves.toMatchObject({ ok: true, changed: false });
+    });
+
+    it.each(["account", "service"] as const)("writes %s configuration through the custodian and fails closed after the final direct grant is removed", async (scope) => {
         const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
         const recipient = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
         const team = await db.team.create({ data: { name: "Direct material team" } });
@@ -121,6 +161,7 @@ describe("Team credential recipient material", () => {
             configurationRevision: null,
             authenticationModeId: "api-key",
             contributionContractVersion: TEST_DIRECT_CONTRIBUTION_CONTRACT_VERSION,
+            ...(scope === "service" ? { privateConfigurationFingerprint: "service-configuration-1" } : {}),
         });
         const payload = {
             v: 1 as const,
@@ -221,6 +262,15 @@ describe("Team credential recipient material", () => {
             }],
             nextCursor: null,
         });
+        await expect(inTx(tx => readTeamCredentialDirectMaterialCensusInTx(tx, {
+            actorAccountId: custodian.id,
+            teamId: team.id,
+            resourceId: resource.id,
+            cursor: null,
+        }))).resolves.toMatchObject({
+            ok: true,
+            recipients: [{ recipientAccountId: recipient.id, readiness: "ready" }],
+        });
         const concurrentFirstOpens = await Promise.all([readCurrent(), readCurrent(), readCurrent()]);
         expect(concurrentFirstOpens).toEqual(Array.from({ length: 3 }, () => expect.objectContaining({
             ok: true,
@@ -289,23 +339,24 @@ describe("Team credential recipient material", () => {
             expectedStoredSourceVersion: null,
             expectedPublishedSourceVersion: null,
         }))).resolves.toEqual({ ok: false, reason: "source_owner_required" });
-        await db.serviceAccountToken.update({
-            where: { id: sourceCredential.id },
-            data: { metadata: directCredentialMetadata("csr_dddddddddddddddddddddd") },
-        });
-        await expect(readCurrent()).resolves.toEqual({
-            ok: false,
-            outcome: "unavailable",
-            reason: "source_changed",
-        });
+        if (scope === 'account') {
+            await db.serviceAccountToken.update({
+                where: { id: sourceCredential.id },
+                data: { metadata: directCredentialMetadata("csr_dddddddddddddddddddddd") },
+            });
+            await expect(readCurrent()).resolves.toEqual({
+                ok: false, outcome: "unavailable", reason: "source_changed",
+            });
+        }
         const rotatedSourceVersion = computeTeamCredentialConnectedAccountSourceVersionV1({
             sourceAccountId: sourceAccount.accountId,
             credentialIncarnation: sourceCredential.id,
             sourceMember: payload.sourceMember,
-            credentialRevision: "csr_dddddddddddddddddddddd",
+            credentialRevision: scope === 'service' ? "csr_cccccccccccccccccccccc" : "csr_dddddddddddddddddddddd",
             configurationRevision: null,
             authenticationModeId: "api-key",
             contributionContractVersion: TEST_DIRECT_CONTRIBUTION_CONTRACT_VERSION,
+            ...(scope === "service" ? { privateConfigurationFingerprint: "service-configuration-2" } : {}),
         });
         const rotatedStored = createTeamCredentialDirectMaterialStoredV1({
             recipientMode: "plain",
@@ -338,6 +389,32 @@ describe("Team credential recipient material", () => {
             expectedPublishedSourceVersion: sourceVersion,
         }))).resolves.toEqual({ ok: false, reason: "source_changed" });
         await expect(readCurrent()).resolves.toMatchObject({ ok: true, sourceVersion: rotatedSourceVersion });
+        const readCatalog = () => inTx(tx => readTeamCredentialCatalogInTx(tx, {
+            teamId: team.id, actorAccountId: recipient.id,
+            authentication: { authenticationAuthority: 'present_user' },
+        }));
+        await expect(readCatalog()).resolves.toMatchObject({
+            ok: true, page: { resources: [expect.objectContaining({ id: resource.id, directMaterialState: 'current' })] },
+        });
+        // Even with an unchanged Home basis, callers cannot fetch the obsolete
+        // private snapshot by supplying its old full version, including a row
+        // not yet replaced after another recipient advances publication.
+        await db.teamCredentialRecipientMaterial.updateMany({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey },
+            data: { sourceVersion, storedMaterial: Buffer.from(JSON.stringify(stored)) },
+        });
+        await expect(inTx(tx => readTeamCredentialRecipientMaterialInTx(tx, {
+            resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey,
+            expectedSourceVersion: sourceVersion, recipientMode: 'plain',
+            expectedRecipientContentPublicKeyFingerprint: null,
+        }))).resolves.toMatchObject({ ok: false, reason: 'source_changed' });
+        await expect(readCatalog()).resolves.toMatchObject({
+            ok: true, page: { resources: [expect.objectContaining({ id: resource.id, directMaterialState: 'stale' })] },
+        });
+        await db.teamCredentialRecipientMaterial.updateMany({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey },
+            data: { sourceVersion: rotatedSourceVersion, storedMaterial: Buffer.from(JSON.stringify(rotatedStored)) },
+        });
 
         await expect(inTx(tx => readTeamCredentialDirectMaterialCensusInTx(tx, {
             actorAccountId: custodian.id,
@@ -348,6 +425,40 @@ describe("Team credential recipient material", () => {
             ok: true,
             recipients: [{ recipientAccountId: recipient.id, readiness: "ready" }],
         });
+
+        const overlappingGroup = await db.teamGroup.create({ data: {
+            teamId: team.id, name: 'Direct recipients', nameKey: 'direct-recipients',
+        } });
+        await db.teamGroupMembership.create({ data: {
+            teamId: team.id, teamGroupId: overlappingGroup.id, teamMembershipId: membership.id,
+        } });
+        await db.teamCredentialGroupGrant.create({ data: {
+            resourceId: resource.id, teamGroupId: overlappingGroup.id, deliveryMode: 'direct',
+        } });
+        const replacement = await inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id, authentication: { authenticationAuthority: 'present_user' },
+            patch: { resourceId: resource.id, expectedRevision: resource.revision, replacement: {
+                enabled: true, displayName: resource.displayName, sessionUsePolicy: 'team_visibility_required',
+                requestPolicy: null, allMembersDeliveryMode: null, groupGrants: [],
+                memberGrants: [{ teamMembershipId: membership.id, deliveryMode: 'direct' }],
+                usageLimitDelta: { upserts: [], deleteIds: [] },
+            } },
+        }));
+        expect(replacement).toMatchObject({ ok: true, revision: resource.revision + 1 });
+        const retained = await inTx(tx => readTeamCredentialRecipientMaterialInTx(tx, {
+            resourceId: resource.id, recipientAccountId: recipient.id, sourceMemberKey,
+            expectedSourceVersion: rotatedSourceVersion, recipientMode: 'plain',
+            expectedRecipientContentPublicKeyFingerprint: null,
+        }));
+        expect(retained).toMatchObject({ ok: true });
+        if (!retained.ok) throw new Error('Expected retained recipient material');
+        expect(materializeTeamCredentialDirectMaterialV1({
+            stored: retained.stored, recipientMode: 'plain', expected: {
+                homeServerIdentityId: 'home', teamId: team.id, resourceId: resource.id,
+                resourceRevision: resource.revision + 1, recipientAccountId: recipient.id,
+                sourceMemberKey, sourceVersion: rotatedSourceVersion,
+            },
+        })).toMatchObject({ sourceVersion: rotatedSourceVersion, material: payload.material });
 
         // Census readiness is bound to the recipient's current Account mode
         // and content key, just like the fetch path. A mode transition makes
@@ -448,11 +559,11 @@ describe("Team credential recipient material", () => {
         }))).resolves.toMatchObject({
             ok: true,
             page: {
-                items: [{
+                items: expect.arrayContaining([expect.objectContaining({
                     kind: "direct_delivered",
                     actorDisplayName: null,
                     subjectDisplayName: resource.displayName,
-                }],
+                })]),
                 nextCursor: null,
             },
         });
@@ -698,6 +809,7 @@ describe("Team credential recipient material", () => {
             configurationRevision: null,
             authenticationModeId: "api-key",
             contributionContractVersion: TEST_DIRECT_CONTRIBUTION_CONTRACT_VERSION,
+            privateConfigurationFingerprint: 'pool-service-configuration',
         });
         const poolSourceVersion = computeTeamCredentialPoolMemberSourceVersionV1({
             connectedAccountSourceVersion,

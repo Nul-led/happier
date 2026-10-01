@@ -15,6 +15,15 @@ async function importRpcPolicy() {
 }
 
 describe('MachineRpcRoutePolicyV1', () => {
+  it('admits session-filtered browser view discovery through exact-machine internal transport', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+    expect(resolveMachineRpcGovernance(RPC_METHODS.DAEMON_BROWSER_VIEW_LIST)).toEqual({ rpcClassification: 'internal_only' });
+    expect(protocol.resolveMachineRpcRoutePolicy(RPC_METHODS.DAEMON_BROWSER_VIEW_LIST)).toMatchObject({
+      routeClass: 'direct_ephemeral', rpcClassification: 'internal_only', commandReceiptRequired: false,
+      scope: { accountRequired: true, machineRequired: true, sessionRequired: false, serverRequired: false },
+    });
+  });
   it('keeps daemon_voice_audio as an RPC fallback classification outside peer media flows', () => {
     expect(PeerFlowKindV1Schema.safeParse('daemon_voice_audio').success).toBe(false);
     expect(PeerFlowKindV1Schema.safeParse('voice_media').success).toBe(true);
@@ -65,21 +74,22 @@ describe('MachineRpcRoutePolicyV1', () => {
     });
   });
 
-  it('routes approved Artifact replay directly to its exact daemon with a command receipt', async () => {
+  it('routes approved Artifact replay through authenticated server authority to its exact daemon', async () => {
     const protocol = await importRpcPolicy();
     if ('importError' in protocol) throw protocol.importError;
 
     expect(protocol.resolveMachineRpcRoutePolicy(
       RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED,
     )).toMatchObject({
-      routeClass: 'direct_medium_risk_receipted',
+      routeClass: 'server_required',
+      serverRequiredReason: 'auth',
       rpcClassification: 'internal_only',
-      commandReceiptRequired: true,
+      commandReceiptRequired: false,
       scope: {
         accountRequired: true,
         machineRequired: true,
         sessionRequired: false,
-        serverRequired: false,
+        serverRequired: true,
       },
     });
   });
@@ -286,6 +296,7 @@ describe('MachineRpcRoutePolicyV1', () => {
       RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_STATUS,
       RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL,
       RPC_METHODS.DAEMON_TERMINAL_STREAM_READ,
+      RPC_METHODS.DAEMON_TERMINAL_LIST,
       RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES,
       RPC_METHODS.DAEMON_TERMINAL_STREAM_ACK,
     ]) {

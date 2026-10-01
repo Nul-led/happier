@@ -1,4 +1,9 @@
 export {
+  BrowserDaemonViewV1Schema,
+  DaemonBrowserViewListRequestV1Schema,
+  DaemonBrowserViewListResponseV1Schema,
+  type BrowserDaemonViewV1,
+  type DaemonBrowserViewListResponseV1,
   BrowserCloseViewCommandV1Schema,
   BrowserCommandDispatchErrorV1Schema,
   BrowserCommandDispatchResultV1Schema,
@@ -13,6 +18,8 @@ export {
   BrowserReloadCommandV1Schema,
   BrowserSetTargetCommandV1Schema,
   BrowserStopCommandV1Schema,
+  BrowserTakeControlCommandV1Schema,
+  BrowserHandBackCommandV1Schema,
   DaemonBrowserControlDispatchRequestV1Schema,
   DaemonBrowserControlDispatchResponseV1Schema,
   type BrowserCommandDispatchErrorV1,

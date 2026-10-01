@@ -34,6 +34,44 @@ export const WorkflowReferenceScopeSchema = z.discriminatedUnion('kind', [
 ]);
 export type WorkflowReferenceScope = z.infer<typeof WorkflowReferenceScopeSchema>;
 
+/** Lexical block lists, rooted at the enclosing Workflow frame. */
+export type WorkflowLexicalScope = Readonly<{
+  loop?: Readonly<{
+    blockId: string;
+    kind: 'count' | 'items' | 'until' | 'evaluate';
+    execution?: 'sequential' | 'parallel';
+  }>;
+}>;
+
+export type WorkflowLexicalScopeSelection =
+  | Readonly<{ kind: 'current'; levelIndex: number }>
+  | Readonly<{ kind: 'previous_iteration'; levelIndex: number; loopBlockId: string }>
+  | Readonly<{ kind: 'invalid'; code: 'invalid_reference_scope' }>;
+
+/** Choose a lexical list, without loading or deciding availability of its rows. */
+export function selectWorkflowLexicalScope(
+  levels: readonly WorkflowLexicalScope[],
+  scope: WorkflowReferenceScope,
+): WorkflowLexicalScopeSelection {
+  if (levels.length > 0) {
+    if (scope.kind === 'current') return { kind: 'current', levelIndex: levels.length - 1 };
+    if (scope.kind === 'outer') {
+      const levelIndex = levels.length - 1 - scope.levels;
+      if (Number.isSafeInteger(scope.levels) && scope.levels > 0 && levelIndex >= 0) {
+        return { kind: 'current', levelIndex };
+      }
+    } else {
+      for (let levelIndex = levels.length - 1; levelIndex >= 0; levelIndex -= 1) {
+        const loop = levels[levelIndex]!.loop;
+        if (loop?.blockId !== scope.loopBlockId) continue;
+        if (loop.kind === 'items' && loop.execution === 'parallel') break;
+        return { kind: 'previous_iteration', levelIndex, loopBlockId: loop.blockId };
+      }
+    }
+  }
+  return { kind: 'invalid', code: 'invalid_reference_scope' };
+}
+
 /**
  * Authored producer reference. This exists before any invocation row does, so
  * it names the authored block plus the scope that selects which occurrence of
@@ -53,6 +91,7 @@ export const WorkflowAuthoredResultReferenceSchema = z.object({
   kind: z.literal('result'),
   producer: WorkflowAuthoredProducerRefSchema,
   path: WorkflowResultPathSchema,
+  optional: z.literal(true).optional(),
 }).strict();
 export type WorkflowAuthoredResultReference = z.infer<typeof WorkflowAuthoredResultReferenceSchema>;
 
@@ -68,12 +107,24 @@ export const WorkflowAuthoredWorkspaceReferenceSchema = z.object({
 }).strict();
 export type WorkflowAuthoredWorkspaceReference = z.infer<typeof WorkflowAuthoredWorkspaceReferenceSchema>;
 
+/** Count consecutive matching results in the nearest loop's committed history. */
+export const WorkflowLoopTrailingCountReferenceSchema = z.object({
+  kind: z.literal('loop_trailing_count'),
+  producer: WorkflowAuthoredProducerRefSchema,
+  path: WorkflowResultPathSchema,
+  equals: StrictJsonValueSchema,
+}).strict();
+export type WorkflowLoopTrailingCountReference = z.infer<typeof WorkflowLoopTrailingCountReferenceSchema>;
+
 export type WorkflowValueReference =
   | Readonly<{ kind: 'literal'; value: JsonValue }>
   | Readonly<{ kind: 'input'; name: string }>
   | WorkflowAuthoredResultReference
   | WorkflowAuthoredWorkspaceReference
-  | Readonly<{ kind: 'item'; field: 'value' | 'index' | 'position' | 'count' }>
+  | WorkflowLoopTrailingCountReference
+  | Readonly<{ kind: 'session_context'; recentTurns: number }>
+  | Readonly<{ kind: 'session_context_field'; field: 'usage.tokensUsed' | 'goal.tokenBudget' }>
+  | Readonly<{ kind: 'item'; field: 'value' | 'index' | 'position' | 'count'; path?: (string | number)[] }>
   | Readonly<{ kind: 'iteration'; field: 'index' | 'position' | 'count' | 'stopReason' }>;
 
 export const WorkflowValueReferenceSchema: z.ZodType<WorkflowValueReference> = z.discriminatedUnion('kind', [
@@ -81,7 +132,15 @@ export const WorkflowValueReferenceSchema: z.ZodType<WorkflowValueReference> = z
   z.object({ kind: z.literal('input'), name: WorkflowInputNameSchema }).strict(),
   WorkflowAuthoredResultReferenceSchema,
   WorkflowAuthoredWorkspaceReferenceSchema,
-  z.object({ kind: z.literal('item'), field: z.enum(['value', 'index', 'position', 'count']) }).strict(),
+  WorkflowLoopTrailingCountReferenceSchema,
+  z.object({ kind: z.literal('session_context'), recentTurns: z.number().int().nonnegative().safe() }).strict(),
+  z.object({ kind: z.literal('session_context_field'), field: z.enum(['usage.tokensUsed', 'goal.tokenBudget']) }).strict(),
+  z.object({ kind: z.literal('item'), field: z.enum(['value', 'index', 'position', 'count']),
+    path: WorkflowResultPathSchema.optional() }).strict().superRefine((reference, ctx) => {
+      if (reference.path !== undefined && reference.field !== 'value') {
+        ctx.addIssue({ code: 'custom', path: ['path'], message: 'Only the item value has a field path' });
+      }
+    }),
   z.object({ kind: z.literal('iteration'), field: z.enum(['index', 'position', 'count', 'stopReason']) }).strict(),
 ]) as unknown as z.ZodType<WorkflowValueReference>;
 
@@ -121,6 +180,7 @@ export const WorkflowConditionSchema: z.ZodType<WorkflowCondition> = z.lazy(() =
 export const WorkflowConversationSelectionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('shared_run') }).strict(),
   z.object({ kind: z.literal('fresh') }).strict(),
+  z.object({ kind: z.literal('origin_session') }).strict(),
   z.object({ kind: z.literal('from_step'), producer: WorkflowAuthoredProducerRefSchema }).strict(),
   z.object({
     kind: z.literal('existing_session'),
@@ -147,7 +207,7 @@ export function collectWorkflowConditionValueReferences(
         break;
       case 'all':
       case 'any':
-        pending.push(...current.conditions);
+        for (const nested of current.conditions) pending.push(nested);
         break;
       case 'not':
         pending.push(current.condition);

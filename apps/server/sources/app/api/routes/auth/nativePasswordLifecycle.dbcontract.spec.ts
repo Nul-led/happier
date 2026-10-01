@@ -60,7 +60,7 @@ function createApp(): FastifyInstance {
     app.setSerializerCompiler(serializerCompiler);
     enableAuthentication(app);
     const delivery: AuthEmailDelivery = {
-        isReady: true,
+        isReady: async () => true,
         deliver: async () => ({ status: "sent" }),
     };
     emailPasswordAuthMethodModule.registerRoutes(app, {
@@ -195,13 +195,14 @@ describe("native password public-owner provider contract", () => {
             });
             expect(initialLogin.statusCode, initialLogin.body).toBe(200);
 
-            const changeProof = await inTx((tx) => issueNativeAuthOneTimeOperationInTx(tx, {
+            const changeProof = await inTx(async (tx) => issueNativeAuthOneTimeOperationInTx(tx, {
                 v: 1,
                 purpose: "verify_native_email",
                 normalizedEmail: changedEmail,
                 consumer: {
                     kind: "sign_in_email_change",
                     accountId: provisionedBody.accountId,
+                    nativeIdentityId: (await tx.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: provisionedBody.accountId, provider: "email" } } })).id,
                     expectedNativeIdentity: originalEmail,
                 },
             }));

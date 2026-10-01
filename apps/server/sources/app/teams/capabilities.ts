@@ -55,8 +55,9 @@ export function resolveTeamCredentialCapabilities(facts: TeamViewerFacts): TeamC
  * Compose the canonical membership capabilities with Home metadata/lifecycle
  * administration. The membership owner alone maps Team roles to capabilities.
  *
- * Home authority does not grant Team membership, authentication policy, Group,
- * invitation, or ordinary owner management. The membership mutation owner must check
+ * Home authority does not grant Team membership, authentication policy, Group
+ * mutation, invitation, or ordinary owner management. Safe Group/roster recovery
+ * reads have their own ownerless-Team read branch; the membership mutation owner must check
  * its separate, bounded owner-required recovery operation; a broad projected
  * manageOwners capability cannot stand in for that target-specific decision.
  */

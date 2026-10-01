@@ -10,7 +10,7 @@ import { createTransientInteractionOwner } from './owner.js';
 const requester = Object.freeze({
   pluginId: 'acme.voice',
   contributionId: 'elevenlabs',
-  generationId: 'generation-1',
+  occurrenceId: 'occurrence-1',
   invocationId: 'settings-invocation-1',
 });
 
@@ -21,7 +21,7 @@ describe('host transient interaction lifecycle owner', () => {
     const owner = createTransientInteractionOwner({
       scope: Object.freeze({ kind: 'execution_run', executionRunId: 'run-1' }),
       executionRunSignal: executionRun.signal,
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: null,
       createRequestId: () => 'run-request-1',
       present: async (nextRequest) => {
@@ -59,7 +59,7 @@ describe('host transient interaction lifecycle owner', () => {
     let resolvePresenter!: (result: InteractionTransientResultV1) => void;
     const owner = createTransientInteractionOwner({
       scope: Object.freeze({ kind: 'app' }),
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       now: () => 10,
       createRequestId: () => 'app-request-1',
@@ -109,7 +109,7 @@ describe('host transient interaction lifecycle owner', () => {
     for (const status of ['sessionEnded', 'requesterAborted', 'unavailable'] as const) {
       const owner = createTransientInteractionOwner({
         scope: Object.freeze({ kind: 'app' }),
-        isGenerationCurrent: () => true,
+        isOccurrenceCurrent: () => true,
         deadlineMs: 1_000,
         now: () => 10,
         createRequestId: () => `app-owner-only-${status}`,
@@ -136,7 +136,7 @@ describe('host transient interaction lifecycle owner', () => {
     const capacityError = Object.assign(new Error('capacity'), { code: 'capacity' });
     const owner = createTransientInteractionOwner({
       scope: Object.freeze({ kind: 'app' }),
-      isGenerationCurrent: () => true,
+      isOccurrenceCurrent: () => true,
       deadlineMs: 1_000,
       createRequestId: () => 'app-capacity-1',
       propagatePresentationError: (error) => error === capacityError,

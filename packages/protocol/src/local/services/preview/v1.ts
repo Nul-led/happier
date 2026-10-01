@@ -70,7 +70,7 @@ export type LocalServicePreviewOriginModeV1 = z.infer<typeof LocalServicePreview
 export const LocalServicePreviewResourceV1Schema = z
   .object({
     previewId: z.string().trim().min(1).max(256),
-    sessionId: z.string().trim().min(1).max(256),
+    sessionId: z.string().trim().min(1).max(256).optional(),
     machineId: z.string().trim().min(1).max(256),
     owner: LocalServicePreviewOwnerV1Schema,
     target: LocalServicePreviewTargetV1Schema,
@@ -83,6 +83,25 @@ export const LocalServicePreviewResourceV1Schema = z
   .strict();
 export type LocalServicePreviewResourceV1 = z.infer<typeof LocalServicePreviewResourceV1Schema>;
 
+// The authority-bearing subset stays bound to one registered resource. Display and
+// navigation changes do not retarget an admitted preview.
+export const LocalServicePreviewDirectBindingV1Schema = LocalServicePreviewResourceV1Schema.pick({
+  previewId: true, machineId: true, sessionId: true, owner: true, target: true, policy: true,
+}).strict();
+export type LocalServicePreviewDirectBindingV1 = z.infer<typeof LocalServicePreviewDirectBindingV1Schema>;
+
+export function localServicePreviewDirectBindingV1(resource: LocalServicePreviewResourceV1): LocalServicePreviewDirectBindingV1 {
+  const { previewId, machineId, sessionId, owner, target, policy } = resource;
+  return { previewId, machineId, ...(sessionId ? { sessionId } : {}), owner, target, ...(policy ? { policy } : {}) };
+}
+
+export const LocalServicePreviewNativeDirectDescriptorV1Schema = z.object({
+  v: z.literal(1), kind: z.literal('iroh_preview'),
+  previewId: z.string().trim().min(1).max(256),
+  machineId: z.string().trim().min(1).max(256),
+}).strict();
+export type LocalServicePreviewNativeDirectDescriptorV1 = z.infer<typeof LocalServicePreviewNativeDirectDescriptorV1Schema>;
+
 function hasPreviewHttpProtocol(value: string): boolean {
   try {
     const protocol = new URL(value).protocol;
@@ -92,9 +111,7 @@ function hasPreviewHttpProtocol(value: string): boolean {
   }
 }
 
-// The minted location a private preview iframe/WebView should load. For an own
-// (private) dev server this is the loopback origin itself; only http(s) is allowed
-// so no javascript:/data: location can be smuggled into the embed.
+// The server-issued isolated-origin location a private preview iframe/WebView loads.
 export const LocalServicePreviewAccessUrlV1Schema = z
   .string()
   .trim()
@@ -112,6 +129,8 @@ export const LocalServicePreviewSnapshotRowV1Schema = z
     resource: LocalServicePreviewResourceV1Schema,
     accessUrl: LocalServicePreviewAccessUrlV1Schema.nullable().default(null),
     expiresAt: z.number().int().nonnegative().nullable().default(null),
+    accessUnavailableReasonCode: z.literal('preview_private_route_unavailable').optional(),
+    nativeDirect: LocalServicePreviewNativeDirectDescriptorV1Schema.optional(),
     diagnostics: z.array(LocalServicePreviewDiagnosticV1Schema).default([]),
   })
   .strict();
@@ -123,12 +142,11 @@ export const LocalServicePreviewSnapshotV1Schema = z
     machineId: z.string().trim().min(1).max(256),
     generatedAt: z.number().int().nonnegative(),
     refreshState: z.enum(['idle', 'refreshing', 'error']),
-    // Legacy registered-resource list, retained for backward compatibility: an
-    // old-daemon snapshot omits `previews`, so consumers fall back to `resources`.
+    // Registered resources are metadata, not browser locations. Browser consumers
+    // use only the server-issued render rows below; no resources fallback is authorized.
     resources: z.array(LocalServicePreviewResourceV1Schema),
-    // Canonical render rows carrying the minted `accessUrl`. Optional (no default) so an
-    // old-daemon snapshot without this key parses unchanged and the consumer's
-    // resources-fallback path stays live (§12.13 backward compatibility).
+    // Canonical render rows carrying the server-issued `accessUrl`. A snapshot without
+    // rows supplies no browser admission; consumers must never reconstruct a location.
     previews: z.array(LocalServicePreviewSnapshotRowV1Schema).optional(),
     diagnostics: z.array(z.record(z.string(), z.unknown())).default([]),
   })
@@ -159,18 +177,21 @@ export const LocalServicePreviewTokenV1Schema = z
     kind: z.literal('preview_access'),
     tokenId: z.string().trim().min(1).max(256),
     previewId: z.string().trim().min(1).max(256),
-    sessionId: z.string().trim().min(1).max(256),
+    sessionId: z.string().trim().min(1).max(256).optional(),
     machineId: z.string().trim().min(1).max(256),
     issuedAt: z.number().int().nonnegative(),
-    expiresAt: z.number().int().nonnegative(),
+    expiresAt: z.number().int().nonnegative().nullable(),
     exchangeMode: z.enum(['url', 'cookie']),
   })
-  .strict();
+  .strict()
+  .refine((token) => token.exchangeMode === 'cookie' || token.expiresAt !== null, {
+    message: 'URL admissions require an expiry.', path: ['expiresAt'],
+  });
 export type LocalServicePreviewTokenV1 = z.infer<typeof LocalServicePreviewTokenV1Schema>;
 
 // ---------------------------------------------------------------------------
 // Private-preview lifecycle requests/responses (PRV-2). `openOrCreate` resolves a
-// canonical launch/inventory target into a registered private (loopback) preview and
+// canonical launch/inventory target into a server-registered private preview and
 // returns its minted-row projection; `revoke` removes a registered preview. These are
 // the daemon-owned counterparts to the public-preview create/revoke shape — never a raw
 // token, only the `BrowserViewTarget`-bearing snapshot row.

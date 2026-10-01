@@ -393,7 +393,7 @@ describe('updates transcript vNext payloads', () => {
           },
           generation: 'source-1',
         },
-        contributionGeneration: 'contribution-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
         cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
       },
     });

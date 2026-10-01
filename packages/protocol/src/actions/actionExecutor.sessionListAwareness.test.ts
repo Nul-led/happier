@@ -61,6 +61,11 @@ const agentContext = {
 } as const;
 
 describe('session.list execution', () => {
+  it('requires a marked server query for a subtree read instead of accepting an ignored selector', async () => {
+    const executor = createExecutor({ sessionList: async () => ({ sessions: [], nextCursor: null, hasNext: false }) });
+    await expect(executor.execute('session.list', { underSessionId: 'lead' }, agentContext))
+      .resolves.toMatchObject({ ok: false, errorCode: 'session_list_query_update_required' });
+  });
   it('validates list output as a summary or closed marked awareness result', () => {
     const schema = getActionSpec('session.list').outputSchema;
     expect(schema.safeParse({ unrelated: 'not a list' }).success).toBe(false);

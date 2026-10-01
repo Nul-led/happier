@@ -11,7 +11,7 @@ import {
   SESSION_LIST_SUMMARY_VIEW_V1,
   SessionListViewV1Schema,
 } from '../../sessions/awareness/action.js';
-import type { ActionCliBindContext, ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliBindContext, type ActionCliProjection } from '../actionCliProjection.js';
 
 const SelectorSchema = z.string().trim().min(1);
 const GroupSelectorSchema = SelectorSchema.refine((value) => {
@@ -26,6 +26,7 @@ const GroupSelectorSchema = SelectorSchema.refine((value) => {
  */
 export const SessionListCliInputSchema = z.object({
   query: SessionListQueryV1Schema.optional(),
+  underSessionId: SelectorSchema.optional(),
   view: SessionListViewV1Schema.optional(),
   limit: z.number().int().min(1).optional(),
   cursor: z.string().min(1).optional(),
@@ -56,6 +57,7 @@ export const SessionListCliInputSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['awareness'], message: 'view and awareness cannot be combined' });
   }
   const querySelectors = [
+    value.underSessionId,
     value.scope,
     value.team,
     value.group,
@@ -103,6 +105,7 @@ export function bindSessionListCliInput(
   context?: Pick<ActionCliBindContext, 'output'>,
 ): Readonly<Record<string, unknown>> {
   const hasFriendlyQuery = [
+    value.underSessionId,
     value.scope,
     value.team,
     value.group,
@@ -121,11 +124,12 @@ export function bindSessionListCliInput(
     ? SessionListQueryV1Schema.parse({
         v: 1,
         storage: value.archivedOnly ? 'archived' : 'active',
-        includeInactive: value.includeInactive === true,
-        scope: value.scope ?? (audiences.length > 0 ? 'all_accessible' : 'my_work'),
+        includeInactive: value.includeInactive ?? (value.underSessionId !== undefined),
+        scope: value.scope ?? (audiences.length > 0 || value.underSessionId ? 'all_accessible' : 'my_work'),
         attention: value.attention ? 'needs_my_attention' : 'any',
         audiences,
         tagIds: value.tag ?? [],
+        ...(value.underSessionId === undefined ? {} : { underSessionId: value.underSessionId }),
         ...(value.cursor === undefined ? {} : { cursor: value.cursor }),
         ...(value.attentionCursor === undefined ? {} : { attentionCursor: value.attentionCursor }),
         ...(value.limit === undefined ? {} : { limit: value.limit }),
@@ -143,7 +147,7 @@ export function bindSessionListCliInput(
       : {}),
     ...(query === undefined && value.cursor !== undefined ? { cursor: value.cursor } : {}),
     ...(value.includeLastMessagePreview === undefined ? {} : { includeLastMessagePreview: value.includeLastMessagePreview }),
-    ...(context?.output === 'human' ? { includeRows: true } : {}),
+    ...(context?.output === 'human' ? { includeRows: actionCliDerivedDefault(true) } : {}),
     ...((value.awareness || value.view === SESSION_LIST_AWARENESS_VIEW_V1)
       ? { view: SESSION_LIST_AWARENESS_VIEW_V1 }
       : {}),
@@ -163,6 +167,7 @@ export const SESSION_LIST_CLI_PROJECTION: ActionCliProjection = {
     title: 'List sessions',
     fields: [
       { path: 'query', title: 'Canonical Session query', widget: 'json' },
+      { path: 'underSessionId', title: 'Session led subtree', widget: 'text' },
       { path: 'view', title: 'Result view', widget: 'select', options: [{ value: SESSION_LIST_SUMMARY_VIEW_V1, label: 'Summary' }, { value: SESSION_LIST_AWARENESS_VIEW_V1, label: 'Awareness' }] },
       { path: 'limit', title: 'Maximum sessions', widget: 'text' },
       { path: 'cursor', title: 'Ordinary continuation cursor', widget: 'text' },

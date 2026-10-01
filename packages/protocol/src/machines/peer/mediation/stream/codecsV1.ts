@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 import { readCanonicalPaddedBase64DecodedLength } from '../../../../crypto/base64.js';
-import { getMachineLiveStreamPayloadDecodedByteLength } from './v1.js';
 
 const PositiveIntSchema = z.number().int().positive();
 const NonNegativeIntSchema = z.number().int().nonnegative();
@@ -12,6 +11,10 @@ const Base64Schema = z.string().superRefine((value, context) => {
     message: 'Invalid base64 payload',
   });
 });
+
+export function getMachineLiveStreamPayloadDecodedByteLength(payloadBase64: string): number {
+  return readCanonicalPaddedBase64DecodedLength(payloadBase64) ?? 0;
+}
 
 export const MachineLiveStreamCodecIdV1Schema = z.enum([
   'image.frame.v1',

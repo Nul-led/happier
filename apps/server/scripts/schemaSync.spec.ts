@@ -8,6 +8,20 @@ import {
 import { generateMySqlSchemaFromPostgres, generateSqliteSchemaFromPostgres } from "./schemaSync";
 
 describe("schemaSync", () => {
+    it("preserves serialized review workspace references beyond MySQL's default string width", () => {
+        const postgres = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
+        const mysql = generateMySqlSchemaFromPostgres(postgres);
+        for (const name of ["ReviewComment", "ReviewCommentEvent"]) {
+            const model = mysql.match(new RegExp(`model ${name}\\s*\\{([\\s\\S]*?)^\\}`, "mu"))?.[1] ?? "";
+            expect(model).toMatch(/workspaceJson\s+String\?\s+@db\.LongText/u);
+        }
+    });
+    it("does not narrow serialized Workflow invocation identity to MySQL's default string width", () => {
+        const postgres = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
+        const mysql = generateMySqlSchemaFromPostgres(postgres);
+        const turn = mysql.match(/model SessionTurn\s*\{([\s\S]*?)^\}/mu)?.[1] ?? "";
+        expect(turn).toMatch(/workflowInvocationJson\s+String\?\s+@db\.LongText/u);
+    });
     it("keeps scoped governance enums and projects invitation and Team presentation storage without narrowing it", () => {
         const postgres = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
         const sqlite = generateSqliteSchemaFromPostgres(postgres);
@@ -457,7 +471,7 @@ model AutomationRun {
         expect(mysql).toContain("occurrenceKey String? @db.Char(43)");
     });
 
-    it("pins Automation reporter materialization and generation identities to their canonical MySQL width", () => {
+    it("preserves Automation reporter custody as provider-native JSON", () => {
         const master = `
 generator client { provider = "prisma-client-js" }
 
@@ -470,7 +484,7 @@ model AutomationEventSourceCatalogStatus {
     accountId                 String
     eventPluginId             String
     reporterMaterializationId String
-    reporterImmutableGenerationId String
+    reporterSourceCustody        Json
     scopeKey                  String
 
     @@id([accountId, eventPluginId, reporterMaterializationId, scopeKey])
@@ -478,13 +492,13 @@ model AutomationEventSourceCatalogStatus {
 
 model AutomationEventSourceStatus {
     triggerId                         String @id
-    reporterImmutableGenerationId     String
+    reporterSourceCustody              Json
 }
 `;
 
         const mysql = generateMySqlSchemaFromPostgres(master);
         expect(mysql).toContain("reporterMaterializationId String @db.VarChar(256)");
-        expect(mysql.match(/reporterImmutableGenerationId\s+String @db\.VarChar\(256\)/g)).toHaveLength(2);
+        expect(mysql.match(/reporterSourceCustody\s+Json/g)).toHaveLength(2);
     });
 
     it("matches every Account-transition Automation staging column to the width its migration already created", () => {
@@ -775,6 +789,38 @@ model Machine {
         expect(mysql).toContain("agentState String? @db.LongText");
         expect(mysql).toContain("settings String? @db.LongText");
         expect(mysql).toContain("daemonState String? @db.LongText");
+    });
+
+    it("uses LongText for Workflow parent and invocation envelopes in MySQL", () => {
+        const master = `
+generator client { provider = "prisma-client-js" }
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model AutomationRun {
+    id                               String @id
+    workflowAcceptedSnapshotEnvelope String?
+    workflowCheckpointEnvelope       String?
+}
+
+model WorkflowRunInvocation {
+    id              String @id
+    contentEnvelope String
+}
+`;
+
+        const mysql = generateMySqlSchemaFromPostgres(master);
+        expect(mysql).toMatch(/^\s*workflowAcceptedSnapshotEnvelope\s+String\?\s+@db\.LongText$/mu);
+        expect(mysql).toMatch(/^\s*workflowCheckpointEnvelope\s+String\?\s+@db\.LongText$/mu);
+        expect(mysql).toMatch(/^\s*contentEnvelope\s+String\s+@db\.LongText$/mu);
+
+        const regenerated = generateMySqlSchemaFromPostgres(mysql);
+        expect(regenerated.match(/workflowAcceptedSnapshotEnvelope\s+String\?\s+@db\.LongText/gmu)).toHaveLength(1);
+        expect(regenerated.match(/workflowCheckpointEnvelope\s+String\?\s+@db\.LongText/gmu)).toHaveLength(1);
+        expect(regenerated.match(/contentEnvelope\s+String\s+@db\.LongText/gmu)).toHaveLength(1);
     });
 
     it("uses LongText for RepeatKey values without widening other value fields", () => {

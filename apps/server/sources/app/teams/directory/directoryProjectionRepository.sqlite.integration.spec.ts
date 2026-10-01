@@ -13,9 +13,12 @@ import {
 import {
     claimDirectorySourceFullReconcile,
     markActiveWorkosDirectoryPollFailed,
+    removeDirectorySourceForObservedDeletion,
 } from "./directorySourceService";
 import { inTx } from "@/storage/inTx";
 import { bindDirectoryProvisionedIdentitiesInTx } from "./provisionedIdentityBinding";
+import { setIdentityProviderInstanceEnabledInTx } from "@/app/auth/providers/managed/identityProviderInstanceLifecycle";
+import { resolveTeamWorkosConnectionRuntimeInTx } from "@/app/auth/providers/workos/teamWorkosConnectionRuntime";
 
 describe("directoryProjectionRepository", () => {
     let harness: LightSqliteHarness;
@@ -27,6 +30,8 @@ describe("directoryProjectionRepository", () => {
             env: {
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
+                WORKOS_API_KEY: "sk_test_directory_currentness",
+                WORKOS_CLIENT_ID: "client_directory_currentness",
             },
         });
         await db.homeGovernancePolicy.create({
@@ -46,6 +51,155 @@ describe("directoryProjectionRepository", () => {
         if (harness) await harness.close();
     });
 
+    it.each(["full", "incremental", "snapshot_deletion", "event_deletion", "runtime_revision"] as const)("rejects stale WorkOS %s after read authority changes", async (mode) => {
+        const team = await db.team.create({ data: { name: `WorkOS stale ${mode}` } });
+        const account = await db.account.create({ data: { publicKey: `workos-stale-${mode}-${team.id}` } });
+        const provider = await db.identityProviderInstance.create({ data: {
+            ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS",
+            enabled: true, firstEnabledAt: new Date(), config: { v: 1, kind: "workos_sso" },
+        } });
+        const connection = await db.teamIdentityConnection.create({ data: {
+            teamId: team.id, providerInstanceId: provider.id, enabled: false,
+            externalReference: { v: 1, kind: "workos_sso", organizationId: "org_original", connectionId: null },
+            settings: { v: 1, kind: "workos_sso" },
+        } });
+        const source = await db.teamDirectorySource.create({ data: {
+            teamId: team.id, kind: "workos_directory", displayName: "Original directory",
+            externalSourceKey: `workos-currentness:${team.id}`,
+            bindingConfig: { v: 1, kind: "workos_directory", workosDirectoryId: "directory_original" },
+            teamIdentityConnectionId: connection.id, eventCursor: "event_before",
+            state: mode === "full" || mode === "snapshot_deletion" || mode === "runtime_revision" ? "initializing" : "active",
+            activeReconcileRunId: mode === "full" || mode === "snapshot_deletion" || mode === "runtime_revision" ? "workos-run" : null,
+            activeReconcileStartedAt: mode === "full" || mode === "snapshot_deletion" || mode === "runtime_revision"
+                ? new Date("2026-09-29T10:00:00Z") : null,
+        } });
+        const membership = await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: account.id, role: "member", status: "active",
+        } });
+        await db.teamProvisionedIdentity.create({ data: {
+            directorySourceId: source.id, teamId: team.id, externalUserId: "person",
+            state: "active", boundAccountId: account.id,
+            teamMembershipId: membership.id, teamMembershipTeamId: team.id,
+        } });
+        const runtime = await inTx((tx) => resolveTeamWorkosConnectionRuntimeInTx(tx, {
+            env: process.env, teamId: team.id, connectionId: connection.id, purpose: "directory",
+        }));
+        expect(runtime.status).toBe("ready");
+        if (runtime.status !== "ready") throw new Error("Expected WorkOS directory runtime");
+        const expectedCurrentness = {
+            kind: "workos_directory_read" as const,
+            directorySourceId: source.id,
+            teamIdentityConnectionId: connection.id,
+            workosDirectoryId: "directory_original",
+            organizationId: runtime.connection.externalReference.organizationId,
+            runtimeFingerprint: runtime.runtimeFingerprint,
+        };
+        if (mode === "full" || mode === "runtime_revision") {
+            expect(await commitDirectoryProjectionPage({
+                sourceId: source.id, reconcileRunId: "workos-run",
+                people: [{ externalUserId: "person", active: false }],
+            })).toEqual({ applied: true });
+        }
+        if (mode === "runtime_revision") {
+            await db.identityProviderInstance.update({
+                where: { id: provider.id }, data: { securityRevision: { increment: 1 } },
+            });
+        } else {
+            await db.teamIdentityConnection.update({
+                where: { id: connection.id },
+                data: {
+                    revision: { increment: 1 },
+                    externalReference: { v: 1, kind: "workos_sso", organizationId: "org_rebound", connectionId: null },
+                },
+            });
+        }
+        const outcome = mode === "full" || mode === "runtime_revision"
+            ? await completeDirectoryProjection({
+                sourceId: source.id, reconcileRunId: "workos-run", observedManualSyncRequestedAt: null,
+                expectedCurrentness,
+            })
+            : mode === "incremental"
+                ? await commitActiveWorkosProjectionEvent({
+                    sourceId: source.id, expectedPosition: { eventCursor: "event_before" },
+                    eventId: "event_after", people: [{ externalUserId: "person", active: false }],
+                    expectedCurrentness,
+                })
+                : await removeDirectorySourceForObservedDeletion({
+                    teamId: team.id, sourceId: source.id,
+                    expectedState: mode === "snapshot_deletion" ? "initializing" : "active",
+                    reconcileRunId: mode === "snapshot_deletion" ? "workos-run" : null,
+                    expectedPosition: { eventCursor: "event_before" },
+                    expectedCurrentness,
+                });
+        expect(outcome).toEqual({ applied: false, reason: "stale_run" });
+        expect(await db.teamMembership.findUniqueOrThrow({ where: { id: membership.id } })).toMatchObject({ status: "active" });
+        expect(await db.teamDirectorySource.findUniqueOrThrow({ where: { id: source.id } })).toMatchObject({
+            state: mode === "full" || mode === "snapshot_deletion" || mode === "runtime_revision" ? "initializing" : "active",
+            eventCursor: "event_before", lastSuccessAt: null,
+        });
+    });
+
+    it.each(["incremental", "full"] as const)("rejects %s native effects after the provider is disabled, without revoking retained access", async (mode) => {
+        const team = await db.team.create({ data: { name: `Provider currentness ${mode}` } });
+        const account = await db.account.create({ data: { publicKey: `provider-currentness-${team.id}` } });
+        const provider = await db.identityProviderInstance.create({ data: {
+            ownerTeamId: mode === "full" ? null : team.id,
+            kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" },
+        } });
+        const owner = mode === "full" ? { kind: "home" as const } : { kind: "team" as const, teamId: team.id };
+        const connection = await db.teamIdentityConnection.create({ data: {
+            teamId: team.id, providerInstanceId: provider.id,
+            // Disabling Team SSO is independent of directory provisioning.
+            enabled: false, externalReference: { v: 1 }, settings: { v: 1 },
+        } });
+        const source = await db.teamDirectorySource.create({ data: {
+            teamId: team.id, kind: "workos_directory", displayName: "Current provider directory",
+            externalSourceKey: `provider-currentness:${team.id}`,
+            bindingConfig: { v: 1, kind: "workos_directory", workosDirectoryId: "directory" },
+            teamIdentityConnectionId: connection.id, eventCursor: "before-disable",
+            state: mode === "full" ? "initializing" : "active",
+            activeReconcileRunId: mode === "full" ? "in-flight-run" : null,
+            activeReconcileStartedAt: mode === "full" ? new Date("2026-09-26T10:00:00Z") : null,
+        } });
+        const membership = await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: account.id, role: "member", status: "active",
+        } });
+        await db.teamProvisionedIdentity.create({ data: {
+            directorySourceId: source.id, teamId: team.id, externalUserId: "person",
+            state: "active", boundAccountId: account.id,
+            teamMembershipId: membership.id, teamMembershipTeamId: team.id,
+        } });
+        if (mode === "full") {
+            expect(await commitDirectoryProjectionPage({
+                sourceId: source.id, reconcileRunId: "in-flight-run",
+                people: [{ externalUserId: "person", active: false }],
+            })).toEqual({ applied: true });
+        }
+        const disable = await inTx((tx) => setIdentityProviderInstanceEnabledInTx(tx, {
+            id: provider.id, owner, enabled: false,
+            expectedRevision: provider.revision, expectedSecurityRevision: provider.securityRevision,
+        }));
+        expect(disable.status).toBe("applied");
+        if (disable.status !== "applied") throw new Error("Provider disable failed");
+        const complete = () => mode === "full"
+            ? completeDirectoryProjection({ sourceId: source.id, reconcileRunId: "in-flight-run", observedManualSyncRequestedAt: null })
+            : commitActiveWorkosProjectionEvent({
+                sourceId: source.id, expectedPosition: { eventCursor: "before-disable" },
+                eventId: "after-disable", people: [{ externalUserId: "person", active: false }],
+            });
+        expect(await complete()).toEqual({ applied: false, reason: "stale_run" });
+        expect(await db.teamMembership.findUniqueOrThrow({ where: { id: membership.id } })).toMatchObject({ status: "active" });
+        expect(await db.teamDirectorySource.findUniqueOrThrow({ where: { id: source.id } })).toMatchObject({
+            eventCursor: "before-disable", lastSuccessAt: null,
+        });
+        expect(await inTx((tx) => setIdentityProviderInstanceEnabledInTx(tx, {
+            id: provider.id, owner, enabled: true,
+            expectedRevision: disable.instance.revision, expectedSecurityRevision: disable.instance.securityRevision,
+        }))).toMatchObject({ status: "applied" });
+        expect(await complete()).toEqual({ applied: true });
+        expect(await db.teamMembership.findUniqueOrThrow({ where: { id: membership.id } })).toMatchObject({ status: "suspended" });
+    });
+
     it("fences stale pages, preserves newer object evidence, and finalizes only projection absence", async () => {
         const team = await db.team.create({ data: { name: "Directory Team" } });
         const provider = await db.identityProviderInstance.create({
@@ -53,7 +207,7 @@ describe("directoryProjectionRepository", () => {
                 ownerTeamId: team.id,
                 kind: "workos_sso",
                 displayName: "WorkOS",
-                config: { v: 1 },
+                config: { v: 1, kind: "workos_sso" },
             },
         });
         const connection = await db.teamIdentityConnection.create({
@@ -339,7 +493,7 @@ describe("directoryProjectionRepository", () => {
                 ownerTeamId: team.id,
                 kind: "workos_sso",
                 displayName: "WorkOS mixed lifecycle",
-                config: { v: 1 },
+                config: { v: 1, kind: "workos_sso" },
             },
         });
         const connection = await db.teamIdentityConnection.create({
@@ -496,7 +650,7 @@ describe("directoryProjectionRepository", () => {
             },
         });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "Archived Team WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "Archived Team WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: { teamId: team.id, providerInstanceId: provider.id, externalReference: { v: 1 }, settings: { v: 1 } },
@@ -587,7 +741,7 @@ describe("directoryProjectionRepository", () => {
     it("suppresses a new directory contribution while its mapped Group is archived without rolling back retained offboarding", async () => {
         const team = await db.team.create({ data: { name: "Archived Group directory suppression" } });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "Archived Group WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "Archived Group WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: { teamId: team.id, providerInstanceId: provider.id, externalReference: { v: 1 }, settings: { v: 1 } },
@@ -735,7 +889,7 @@ describe("directoryProjectionRepository", () => {
                 ownerTeamId: team.id,
                 kind: "workos_sso",
                 displayName: "WorkOS",
-                config: { v: 1 },
+                config: { v: 1, kind: "workos_sso" },
             },
         });
         const connection = await db.teamIdentityConnection.create({
@@ -1083,7 +1237,7 @@ describe("directoryProjectionRepository", () => {
     it("contributes Group rosters for a person whose Team lifetime another owner holds, without parking the source", async () => {
         const team = await db.team.create({ data: { name: "Natively seeded Team" } });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: {
@@ -1209,7 +1363,7 @@ describe("directoryProjectionRepository", () => {
     it("withdraws an inactive person's source contribution without touching a Team lifetime another owner keeps", async () => {
         const team = await db.team.create({ data: { name: "Offboarding Team" } });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: {

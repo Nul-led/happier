@@ -43,6 +43,27 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   };
 }
 
+it('rejects an app page whose column renderer is undeclared', () => {
+  const result = ingestPluginManifestV2(manifest({
+    contributes: {
+      ui: {
+        renderers: [{ id: 'page-renderer', kind: 'declarative', root: { kind: 'text', text: 'Page' } }],
+        views: [{
+          id: 'page', container: 'appPage', target: { kind: 'app' },
+          renderer: 'page-renderer', column: { renderer: 'missing-column' },
+        }],
+      },
+    },
+  }));
+  expect(result).toMatchObject({
+    ok: false,
+    diagnostics: expect.arrayContaining([expect.objectContaining({
+      code: 'plugin_manifest_dangling_reference',
+      path: ['contributes', 'ui', 'views', 0, 'column', 'renderer'],
+    })]),
+  });
+});
+
 function serializedManifestWithMetadataDepth(depth: number): string {
   const nested = `${'{"next":'.repeat(depth)}null${'}'.repeat(depth)}`;
   return JSON.stringify(manifest({ metadata: { chain: null } })).replace(
@@ -804,7 +825,7 @@ describe('canonical plugin manifest ingestion', () => {
     for (const execution of [
       { target: 'host' },
       { target: 'client' },
-      { target: 'daemon', client: { artifactId: 'a', modulePath: './a', exportName: 'a' } },
+      { target: 'daemon', client: { artifactId: 'a', exportName: 'a' } },
     ]) {
       expect(ingestPluginManifestV2(manifest({
         contributes: { actions: [{ ...actionWithoutExecution, execution }] },
@@ -1152,6 +1173,88 @@ describe('canonical plugin manifest ingestion', () => {
     });
   });
 
+  it('rejects duplicate local ids within one contribution family at the declaring path', () => {
+    const renderer = { id: 'panel-renderer', kind: 'declarative', root: { kind: 'text', text: 'Panel' } };
+    const result = ingestPluginManifestV2(manifest({
+      contributes: { ui: { renderers: [renderer, { ...renderer, root: { kind: 'text', text: 'Other' } }] } },
+    }));
+
+    expect(result).toEqual({
+      ok: false,
+      diagnostics: [expect.objectContaining({
+        code: 'plugin_manifest_duplicate_contribution_id',
+        path: ['contributes', 'ui', 'renderers', 1, 'id'],
+      })],
+    });
+  });
+
+  describe('Settings field identity', () => {
+    const settings = (id: string, scope: 'account' | 'daemon', fields: readonly Record<string, unknown>[]) => ({
+      id, title: id, target: { kind: 'plugin' }, scope, fields,
+    });
+    const field = (id: string, extra: Record<string, unknown> = {}) => ({
+      id, title: id, schema: { type: 'string' }, ...extra,
+    });
+
+    it('scopes non-secret field ids to their persistence scope', () => {
+      expect(ingestPluginManifestV2(manifest({
+        contributes: {
+          settings: [
+            settings('account-settings', 'account', [field('shared')]),
+            settings('daemon-settings', 'daemon', [field('shared')]),
+          ],
+        },
+      }))).toMatchObject({ ok: true });
+    });
+
+    it('rejects a same-scope field id at the declaring contribution path', () => {
+      expect(ingestPluginManifestV2(manifest({
+        contributes: {
+          settings: [
+            settings('one', 'account', [field('other'), field('shared')]),
+            settings('two', 'account', [field('shared')]),
+          ],
+        },
+      }))).toEqual({
+        ok: false,
+        diagnostics: [expect.objectContaining({
+          code: 'plugin_manifest_duplicate_contribution_id',
+          path: ['contributes', 'settings', 1, 'fields', 0, 'id'],
+        })],
+      });
+    });
+
+    it('keeps secret ids plugin-global across Settings scopes and direct secrets', () => {
+      expect(ingestPluginManifestV2(manifest({
+        contributes: {
+          settings: [
+            settings('account-settings', 'account', [field('shared')]),
+            settings('daemon-settings', 'daemon', [field('shared', { secret: { custody: 'daemon' } })]),
+          ],
+        },
+      }))).toEqual({
+        ok: false,
+        diagnostics: [expect.objectContaining({
+          code: 'plugin_manifest_duplicate_contribution_id',
+          path: ['contributes', 'settings', 1, 'fields', 0, 'id'],
+        })],
+      });
+
+      expect(ingestPluginManifestV2(manifest({
+        secrets: [{ id: 'credential' }],
+        contributes: {
+          settings: [settings('daemon-settings', 'daemon', [field('credential')])],
+        },
+      }))).toEqual({
+        ok: false,
+        diagnostics: [expect.objectContaining({
+          code: 'plugin_manifest_duplicate_contribution_id',
+          path: ['secrets', 0, 'id'],
+        })],
+      });
+    });
+  });
+
   it('does not place translation locales in the contribution local-id namespace', () => {
     expect(ingestPluginManifestV2(manifest({
       contributes: {
@@ -1173,7 +1276,7 @@ describe('canonical plugin manifest ingestion', () => {
 
   it('admits only a same-plugin packaged PNG asset as an optional brand icon', () => {
     const valid = manifest({
-      brand: { iconResourceId: 'brand-icon' },
+      brand: { iconResourceId: 'brand-icon', monochrome: true },
       contributes: {
         resources: [{
           id: 'brand-icon',
@@ -1186,7 +1289,7 @@ describe('canonical plugin manifest ingestion', () => {
 
     expect(ingestPluginManifestV2(valid)).toEqual({
       ok: true,
-      manifest: expect.objectContaining({ brand: { iconResourceId: 'brand-icon' } }),
+      manifest: expect.objectContaining({ brand: { iconResourceId: 'brand-icon', monochrome: true } }),
     });
 
     expect(ingestPluginManifestV2(manifest({

@@ -328,7 +328,7 @@ describe.skipIf(provider !== "mysql")("MySQL AutomationRun occurrence identity c
             eventPluginId: "com.happier.mysql-contract",
             reporterMachineId: "mysql-contract-machine",
             reporterMachineInstallationId: "mysql-contract-installation",
-            reporterImmutableGenerationId: "mysql-contract-generation",
+            reporterSourceCustody: { kind: "development", registeredRootId: "mysql-contract-generation" },
             scopeKey: "checkpointedPull",
             observedRevision: 1n,
             adoptedRevision: 1n,

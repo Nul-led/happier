@@ -3,9 +3,12 @@ import { featuresSchema, type FeaturesResponse } from '../types';
 import {
     applyFeatureDependencies,
     evaluateFeatureBuildPolicy,
+    evaluateServerFeatureDecisions,
     FEATURE_IDS,
     FeatureGatesSchema,
+    isFeatureServerRepresented,
     tryWriteServerEnabledBitInPlace,
+    type FeatureDecision,
 } from '@happier-dev/protocol';
 
 import type { ServerFeatureResolver } from './serverFeatureRegistry';
@@ -33,7 +36,8 @@ function mergeDeep<T extends Record<string, unknown>>(base: T, patch: Record<str
     return next as T;
 }
 
-export function resolveServerFeaturePayload(
+/** The resolvers' merged, validated payload: every bit is the resolvers' own answer (no policy, no closure). */
+function assembleServerFeaturePayload(
     env: NodeJS.ProcessEnv,
     resolvers: readonly ServerFeatureResolver[],
 ): FeaturesResponse {
@@ -75,6 +79,7 @@ export function resolveServerFeaturePayload(
     const accountServicePresentation = accountDirectoryCapable
         ? authPolicy.accountServicePresentation ?? undefined
         : undefined;
+    const homeDisplayName = env.HAPPIER_HOME_DISPLAY_NAME?.trim();
 
     // `turns` is advertised only while the transcript anchor projection is active: before that,
     // `SessionTurn` rows may still be v0 and their anchors cannot be trusted to describe turn
@@ -103,6 +108,7 @@ export function resolveServerFeaturePayload(
         capabilities: mergedCapabilities,
         ...(signInService ? { signInService } : {}),
         ...(accountServicePresentation ? { accountServicePresentation } : {}),
+        ...(homeDisplayName ? { homePresentation: { v: 1, displayName: homeDisplayName } } : {}),
     });
     if (!parsed.success) {
         throw new Error(`Invalid /v1/features payload: ${parsed.error.message}`);
@@ -117,6 +123,15 @@ export function resolveServerFeaturePayload(
             envVars: ['HAPPIER_AUTH_SIGN_IN_SERVICE_MODE'],
         });
     }
+
+    return payload;
+}
+
+export function resolveServerFeaturePayload(
+    env: NodeJS.ProcessEnv,
+    resolvers: readonly ServerFeatureResolver[],
+): FeaturesResponse {
+    const payload = assembleServerFeaturePayload(env, resolvers);
 
     // 1) Enforce build-policy denies on represented server features (fail-closed).
     const buildPolicy = resolveServerFeatureBuildPolicy(env);
@@ -135,4 +150,23 @@ export function resolveServerFeaturePayload(
     applyBrowserCapabilityFeatureGateClosure(payload);
 
     return payload;
+}
+
+/**
+ * Why each server feature is on or off for this configuration (plan §3.8, invariant I9): the same
+ * assembled payload, build policy and dependency engine as `resolveServerFeaturePayload`, answered
+ * as typed decisions (`blockedBy`, `blockingDependencyId`) instead of closed bits. The Home console
+ * reads these; it never reconstructs the closure.
+ */
+export function resolveServerFeatureDecisions(
+    env: NodeJS.ProcessEnv,
+    resolvers: readonly ServerFeatureResolver[],
+): FeatureDecision[] {
+    const payload = assembleServerFeaturePayload(env, resolvers);
+    const buildPolicy = resolveServerFeatureBuildPolicy(env);
+    const decisions = evaluateServerFeatureDecisions({
+        serverPayload: payload,
+        buildPolicy: (featureId) => evaluateFeatureBuildPolicy(buildPolicy, featureId),
+    });
+    return [...decisions.values()].filter((decision) => isFeatureServerRepresented(decision.featureId));
 }

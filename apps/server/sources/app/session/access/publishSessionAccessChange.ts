@@ -1,8 +1,5 @@
 import { afterTx, type Tx } from "@/storage/inTx";
-import {
-    scheduleSessionActivityRemoteAlerts,
-    type SubmitSessionActivityRemoteAlertsParams,
-} from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
+import { scheduleSessionPersonalEvent } from "@/app/session/personal/publishPersonalEvent";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import {
     buildSessionSharedUpdate,
@@ -74,13 +71,12 @@ export function projectReleasedDirectShareEvent(
  *
  * The event is derived from the same projected before/after result as the
  * released socket events, so the "is this a genuinely new direct grant" decision
- * stays with the one owner that already makes it. Recipient eligibility remains
- * `listSessionPersonalEventRecipients`, and the deliberate absence of any OS
- * alert for this kind remains the personal-event/alert owners' decision.
+ * stays with the one owner that already makes it. The live socket router checks
+ * current recipient authority; this fact is not an OS alert candidate.
  */
 export function projectDirectSharePersonalEvent(
     event: ReleasedDirectShareEvent | null,
-): SubmitSessionActivityRemoteAlertsParams | null {
+): Readonly<{ sessionId: string; event: "directly_shared"; targetAccountIds: readonly string[]; sourceAccountId: string }> | null {
     if (event?.kind !== "shared") return null;
     return {
         sessionId: event.share.sessionId,
@@ -118,9 +114,18 @@ export function scheduleReleasedDirectShareEvent(
     const { event } = params;
     if (!event) return;
 
+    const eventId = randomKeyNaked(12);
     const personalEvent = projectDirectSharePersonalEvent(event);
     if (personalEvent) {
-        afterTx(tx, () => scheduleSessionActivityRemoteAlerts(personalEvent));
+        for (const accountId of personalEvent.targetAccountIds) {
+            if (accountId === personalEvent.sourceAccountId) continue;
+            scheduleSessionPersonalEvent(tx, accountId, {
+                type: "session-personal-event",
+                sessionId: personalEvent.sessionId,
+                event: personalEvent.event,
+                eventId,
+            });
+        }
     }
 
     afterTx(tx, () => {
@@ -129,7 +134,7 @@ export function scheduleReleasedDirectShareEvent(
                 event.shareId,
                 event.sessionId,
                 params.cursor,
-                randomKeyNaked(12),
+                eventId,
             )
             : event.kind === "shared"
                 ? buildSessionSharedUpdate(
@@ -148,7 +153,7 @@ export function scheduleReleasedDirectShareEvent(
                         createdAt: event.share.createdAt,
                     },
                     params.cursor,
-                    randomKeyNaked(12),
+                    eventId,
                 )
                 : buildSessionShareUpdatedUpdate(
                     event.share.id,
@@ -157,7 +162,7 @@ export function scheduleReleasedDirectShareEvent(
                     event.share.canApprovePermissions,
                     event.share.updatedAt,
                     params.cursor,
-                    randomKeyNaked(12),
+                    eventId,
                 );
 
         eventRouter.emitUpdate({

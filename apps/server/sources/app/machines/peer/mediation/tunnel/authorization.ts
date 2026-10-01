@@ -5,6 +5,7 @@ import {
     PEER_TCP_TUNNEL_RELAY_AUTHORIZATION_AUDIENCE_V1,
     PeerTcpTunnelRelayAuthorizationPayloadV2Schema,
     createPeerTcpTunnelRelayAuthorizationSigningInputV2,
+    isLiteralLoopbackHostname,
     type PeerTcpTunnelDestinationV1,
     type PeerTcpTunnelRelayAuthorizationFlowKindV1,
     type PeerTcpTunnelRelayAuthorizationPayloadV2,
@@ -44,14 +45,15 @@ export type MintPeerTcpTunnelRelayAuthorizationV2Input = Readonly<{
     serverGateEnabled: boolean;
     serverCaps: Readonly<{
         allowedPorts: readonly number[];
-        maxBytes: number;
+        maxBytes?: number;
         maxFrameBytes: number;
-        maxIdleMs: number;
-        maxDurationMs: number;
+        maxIdleMs?: number;
+        maxDurationMs?: number;
     }>;
     capProfileId?: string;
     flowKind?: PeerTcpTunnelRelayAuthorizationFlowKindV1;
     applicationAuthority?: VoiceMediaApplicationAuthorityV1;
+    applicationBudgets?: Readonly<{ maxIdleMs: number; maxDurationMs: number; maxTotalBytes?: number }>;
     signingKey: Readonly<{
         keyId: string;
         secretKey: Uint8Array;
@@ -67,37 +69,12 @@ export type MintProviderBrokerRelayAuthorizationV2Input = Readonly<{
     nowMs: number;
     ttlMs: number;
     serverGateEnabled: boolean;
-    serverCaps: Readonly<{
-        maxBytes: number;
-        maxFrameBytes: number;
-        maxIdleMs: number;
-        maxDurationMs: number;
-    }>;
+    serverCaps: Omit<MintPeerTcpTunnelRelayAuthorizationV2Input['serverCaps'], 'allowedPorts'>;
     signingKey: Readonly<{ keyId: string; secretKey: Uint8Array }>;
 }>;
 
 function toBase64Url(bytes: Uint8Array): string {
     return Buffer.from(bytes).toString("base64url");
-}
-
-function normalizeHost(host: string): string {
-    const trimmed = host.trim().toLowerCase();
-    return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
-}
-
-function isIpv4LoopbackHost(host: string): boolean {
-    const parts = host.split(".");
-    if (parts.length !== 4 || parts[0] !== "127") return false;
-    return parts.slice(1).every((part) => {
-        if (!/^\d+$/.test(part)) return false;
-        const value = Number(part);
-        return Number.isInteger(value) && value >= 0 && value <= 255;
-    });
-}
-
-function isLoopbackHost(host: string): boolean {
-    const normalized = normalizeHost(host);
-    return normalized === "localhost" || normalized === "::1" || isIpv4LoopbackHost(normalized);
 }
 
 /** Dedicated Home-to-broker application authority. It deliberately has no
@@ -190,8 +167,9 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
     }
     const flowKind = input.flowKind ?? "tcp_tunnel";
     if (
-        (flowKind === "voice_media" && !input.applicationAuthority)
-        || (flowKind === "tcp_tunnel" && input.applicationAuthority)
+        (flowKind === "voice_media" && (!input.applicationAuthority || !input.applicationBudgets))
+        || (flowKind === "tcp_tunnel" && (input.applicationAuthority || input.applicationBudgets))
+        || flowKind === "provider_broker"
     ) {
         return {
             ok: false,
@@ -199,7 +177,7 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    if (!isLoopbackHost(input.destination.host)) {
+    if (!isLiteralLoopbackHostname(input.destination.host)) {
         return {
             ok: false,
             reasonCode: "destination_host_not_allowed",
@@ -216,11 +194,13 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    const maxTotalBytes = input.scope.maxTotalBytes ?? input.serverCaps.maxBytes;
+    const budgets = input.applicationBudgets;
     if (
-        input.scope.maxIdleMs > input.serverCaps.maxIdleMs
-        || input.scope.maxDurationMs > input.serverCaps.maxDurationMs
-        || maxTotalBytes > input.serverCaps.maxBytes
+        budgets && (
+            (input.serverCaps.maxIdleMs !== undefined && budgets.maxIdleMs > input.serverCaps.maxIdleMs)
+            || (input.serverCaps.maxDurationMs !== undefined && budgets.maxDurationMs > input.serverCaps.maxDurationMs)
+            || (input.serverCaps.maxBytes !== undefined && budgets.maxTotalBytes !== undefined && budgets.maxTotalBytes > input.serverCaps.maxBytes)
+        )
     ) {
         return {
             ok: false,
@@ -246,9 +226,11 @@ export function mintPeerTcpTunnelRelayAuthorizationV2(
         destination: input.destination,
         capProfileId: input.capProfileId ?? "default",
         maxFrameBytes: input.serverCaps.maxFrameBytes,
-        maxIdleMs: input.scope.maxIdleMs,
-        maxDurationMs: input.scope.maxDurationMs,
-        maxTotalBytes,
+        ...(budgets ? {
+            maxIdleMs: budgets.maxIdleMs,
+            maxDurationMs: budgets.maxDurationMs,
+            ...(budgets.maxTotalBytes !== undefined ? { maxTotalBytes: budgets.maxTotalBytes } : {}),
+        } : {}),
         iat: input.nowMs,
         exp: input.nowMs + input.ttlMs,
         aud: PEER_TCP_TUNNEL_RELAY_AUTHORIZATION_AUDIENCE_V1,

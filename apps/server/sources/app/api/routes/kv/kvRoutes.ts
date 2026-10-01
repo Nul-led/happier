@@ -13,12 +13,12 @@ import {
     readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import {
-    assertTodoKvStoredContentMatchesAccountMode,
-    classifyTodoKvStoredContent,
-    isTodoKvKey,
-    TodoKvStoredContentModeMismatchError,
-    TodoKvStoredContentUpgradeRequiredError,
-} from "@/app/kv/todoKvStoredContent";
+    assertAccountJsonKvStoredContentMatchesAccountMode,
+    classifyAccountJsonKvStoredContent,
+    isAccountJsonKvKey,
+    AccountJsonKvStoredContentModeMismatchError,
+    AccountJsonKvStoredContentUpgradeRequiredError,
+} from "@/app/kv/accountJsonKvStoredContent";
 import {
     deriveAccountEncryptionCurrentnessFromRow,
 } from "@/app/encryption/accountContentKeyAdmission";
@@ -27,28 +27,28 @@ import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 
-function containsCurrentTodoStoredContent(
+function containsCurrentAccountJsonKvStoredContent(
     items: ReadonlyArray<Readonly<{ key: string; value: string }>>,
 ): boolean {
     return items.some((item) => {
-        if (!isTodoKvKey(item.key)) {
+        if (!isAccountJsonKvKey(item.key)) {
             return false;
         }
-        const classification = classifyTodoKvStoredContent({
+        const classification = classifyAccountJsonKvStoredContent({
             key: item.key,
             value: privacyKit.decodeBase64(item.value),
         });
-        return classification.domain === "todo"
+        return classification.domain !== "generic"
             && classification.representation.startsWith("current_");
     });
 }
 
-async function assertTodoKvReadStoredContentMatchesAccount(
+async function assertAccountJsonKvReadStoredContentMatchesAccount(
     accountId: string,
     items: ReadonlyArray<Readonly<{ key: string; value: string }>>,
 ): Promise<void> {
-    const todoItems = items.filter((item) => isTodoKvKey(item.key));
-    if (todoItems.length === 0) return;
+    const accountJsonItems = items.filter((item) => isAccountJsonKvKey(item.key));
+    if (accountJsonItems.length === 0) return;
 
     const account = await db.account.findUnique({
         where: { id: accountId },
@@ -63,10 +63,10 @@ async function assertTodoKvReadStoredContentMatchesAccount(
         ? deriveAccountEncryptionCurrentnessFromRow(account)
         : null;
     if (!currentness || currentness.status !== "ready") {
-        throw new TodoKvStoredContentModeMismatchError();
+        throw new AccountJsonKvStoredContentModeMismatchError();
     }
-    for (const item of todoItems) {
-        assertTodoKvStoredContentMatchesAccountMode({
+    for (const item of accountJsonItems) {
+        assertAccountJsonKvStoredContentMatchesAccountMode({
             key: item.key,
             value: privacyKit.decodeBase64(item.value),
             accountMode: currentness.currentness.encryptionMode,
@@ -110,12 +110,12 @@ export function kvRoutes(app: Fastify) {
             if (!result) {
                 return reply.code(404).send({ error: 'Key not found' });
             }
-            await assertTodoKvReadStoredContentMatchesAccount(
+            await assertAccountJsonKvReadStoredContentMatchesAccount(
                 userId,
                 [result],
             );
             if (
-                containsCurrentTodoStoredContent([result])
+                containsCurrentAccountJsonKvStoredContent([result])
                 && !readAccountStoredContentCompatibilityForHttpRequest(request)
                     .supportsCurrentProtocol
             ) {
@@ -131,7 +131,7 @@ export function kvRoutes(app: Fastify) {
             if (error instanceof AccountScopedKvReservedKeyError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
-            if (error instanceof TodoKvStoredContentModeMismatchError) {
+            if (error instanceof AccountJsonKvStoredContentModeMismatchError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
             log({ module: 'api', level: 'error' }, `Failed to get KV value: ${error}`);
@@ -148,6 +148,7 @@ export function kvRoutes(app: Fastify) {
         schema: {
             querystring: z.object({
                 prefix: z.string().optional(),
+                afterKey: z.string().optional(),
                 limit: z.coerce.number().int().min(1).max(1000).default(100)
             }),
             response: {
@@ -169,16 +170,16 @@ export function kvRoutes(app: Fastify) {
         }
     }, async (request, reply) => {
         const userId = request.userId;
-        const { prefix, limit } = request.query;
+        const { prefix, limit, afterKey } = request.query;
 
         try {
-            const result = await kvList({ uid: userId }, { prefix, limit });
-            await assertTodoKvReadStoredContentMatchesAccount(
+            const result = await kvList({ uid: userId }, { prefix, limit, afterKey });
+            await assertAccountJsonKvReadStoredContentMatchesAccount(
                 userId,
                 result.items,
             );
             if (
-                containsCurrentTodoStoredContent(result.items)
+                containsCurrentAccountJsonKvStoredContent(result.items)
                 && !readAccountStoredContentCompatibilityForHttpRequest(request)
                     .supportsCurrentProtocol
             ) {
@@ -193,7 +194,7 @@ export function kvRoutes(app: Fastify) {
             if (error instanceof AccountScopedKvReservedKeyError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
-            if (error instanceof TodoKvStoredContentModeMismatchError) {
+            if (error instanceof AccountJsonKvStoredContentModeMismatchError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
             log({ module: 'api', level: 'error' }, `Failed to list KV items: ${error}`);
@@ -231,12 +232,12 @@ export function kvRoutes(app: Fastify) {
 
         try {
             const result = await kvBulkGet({ uid: userId }, keys);
-            await assertTodoKvReadStoredContentMatchesAccount(
+            await assertAccountJsonKvReadStoredContentMatchesAccount(
                 userId,
                 result.values,
             );
             if (
-                containsCurrentTodoStoredContent(result.values)
+                containsCurrentAccountJsonKvStoredContent(result.values)
                 && !readAccountStoredContentCompatibilityForHttpRequest(request)
                     .supportsCurrentProtocol
             ) {
@@ -251,7 +252,7 @@ export function kvRoutes(app: Fastify) {
             if (error instanceof AccountScopedKvReservedKeyError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
-            if (error instanceof TodoKvStoredContentModeMismatchError) {
+            if (error instanceof AccountJsonKvStoredContentModeMismatchError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
             log({ module: 'api', level: 'error' }, `Failed to bulk get KV values: ${error}`);
@@ -327,14 +328,14 @@ export function kvRoutes(app: Fastify) {
             if (error instanceof AccountScopedKvReservedKeyError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
-            if (error instanceof TodoKvStoredContentUpgradeRequiredError) {
+            if (error instanceof AccountJsonKvStoredContentUpgradeRequiredError) {
                 await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
                     request,
                     reply,
                 );
                 return;
             }
-            if (error instanceof TodoKvStoredContentModeMismatchError) {
+            if (error instanceof AccountJsonKvStoredContentModeMismatchError) {
                 return reply.code(400).send({ error: 'Invalid parameters' });
             }
             log({ module: 'api', level: 'error' }, `Failed to mutate KV values: ${error}`);

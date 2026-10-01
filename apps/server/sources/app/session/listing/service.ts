@@ -10,7 +10,7 @@ import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 import { fetchSessionOrganizationPinnedSessionIds } from "@/app/session/organization/organizationQueries";
 import { buildSessionAccessWhere, createApplicableAudienceWhere, resolveEffectiveSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { isSessionCollaborationEnabled } from "@/app/session/access/sessionAccess";
 import { hasSessionTranscriptPublicationLiveFacts } from "@/app/session/sessionTranscriptPublicationPolicy";
 import {
@@ -46,6 +46,8 @@ import {
 } from "./query";
 import type { createV2SessionListServerTiming } from "./timing";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { readSessionLedSubtreeSessionIdsInTx } from "@/app/session/relations/sessionReportsToSubtree";
+import { projectSessionReportsForRowsInTx } from "@/app/session/awareness/sessionReportsProjection";
 
 export class SessionListInvalidCursorError extends Error {
     constructor() {
@@ -142,7 +144,7 @@ export async function listSessionsForAccount(params: Readonly<{
                 captureObservedDiscussionFacts: true,
             })
             : undefined;
-        return await listSessionRowsForAccount({
+        const page = await listSessionRowsForAccount({
             ...params,
             storage: source.storage,
             activeOnly: source.activeOnly,
@@ -158,6 +160,16 @@ export async function listSessionsForAccount(params: Readonly<{
             observedAttentionDiscussionFacts: attentionQuery?.observedDiscussionFacts,
             now,
         });
+        return page && {
+            ...page,
+            sessions: await projectSessionReportsForRowsInTx(tx, {
+                accountId: params.userId,
+                authentication: params.authentication,
+                sessions: page.sessions,
+                accessMode: "legacy_owner_or_direct",
+                nowMs: now,
+            }),
+        };
     });
 }
 
@@ -353,7 +365,8 @@ async function listFilteredSessionsForAccount(params: Readonly<{
     timing: ReturnType<typeof createV2SessionListServerTiming>;
 }>): Promise<SessionListQueryResponseV1 | null> {
     const { query } = params.source;
-    if (query.scope === "following" && !isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+    // Decided before the listing transaction opens, on the Home-effective configuration.
+    if (query.scope === "following" && !await isServerFeatureEnabledForHome("sessions.following")) {
         throw new SessionListUnavailableQueryError("following");
     }
     if (query.audiences.some((audience) => audience.kind !== "outside_teams")
@@ -424,10 +437,18 @@ async function listFilteredSessionsForAccount(params: Readonly<{
             audienceWhere,
             attentionWhere,
         });
+        const subtreeWhere: Prisma.SessionWhereInput = query.underSessionId
+            ? { id: { in: await readSessionLedSubtreeSessionIdsInTx(tx, {
+                accountId: params.userId,
+                rootSessionId: query.underSessionId,
+                authentication: params.authentication,
+                collectiveAccessSnapshot: accessResolution.collectiveAccessSnapshot,
+            }) } }
+            : {};
         const readSource: SessionListReadSource = {
             kind: "effective",
             reader: tx,
-            baseWhere: conjoinSessionListWhereInputs(baseWhere, params.rowRepresentabilityWhere),
+            baseWhere: conjoinSessionListWhereInputs(baseWhere, subtreeWhere, params.rowRepresentabilityWhere),
             accessMode: "effective_access_v1",
             allowProjectionFallback: false,
             qualifiedTeamIds: accessResolution.qualifiedTeamIds,
@@ -452,7 +473,14 @@ async function listFilteredSessionsForAccount(params: Readonly<{
             timing: params.timing,
         });
         return page && SessionListQueryResponseV1Schema.parse({
-            sessions: page.sessions,
+            sessions: await projectSessionReportsForRowsInTx(tx, {
+                accountId: params.userId,
+                authentication: params.authentication,
+                sessions: page.sessions,
+                accessMode: "effective_access_v1",
+                collectiveAccessSnapshot: accessResolution.collectiveAccessSnapshot,
+                nowMs: now,
+            }),
             nextCursor: page.nextCursor ?? null,
             hasNext: page.hasNext ?? false,
             attentionNextCursor: page.attentionNextCursor ?? null,

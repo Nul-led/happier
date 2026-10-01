@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
     createStartServerDbMocks,
     installStartServerDbModuleMock,
@@ -15,6 +18,11 @@ const ensureHomeIrohEndpoint = vi.fn<(
     failureReason: null,
 }));
 const stopHomeIrohEndpoint = vi.fn(async () => {});
+const getHomeIrohEndpointState = vi.fn<() => Promise<HomeIrohEndpointState>>(async () => ({
+    status: "unavailable",
+    snapshot: null,
+    failureReason: null,
+}));
 const beginHomeIrohEndpointStartup = vi.fn();
 const markHomeIrohEndpointStartupUnavailable = vi.fn();
 vi.mock("@/app/iroh/homeIrohEndpoint", async () => {
@@ -23,6 +31,7 @@ vi.mock("@/app/iroh/homeIrohEndpoint", async () => {
         ...actual,
         ensureHomeIrohEndpoint,
         stopHomeIrohEndpoint,
+        getHomeIrohEndpointState,
         beginHomeIrohEndpointStartup,
         markHomeIrohEndpointStartupUnavailable,
     };
@@ -55,6 +64,7 @@ vi.mock("@/utils/process/shutdown", async () => {
 });
 
 describe("startServer managed Home Iroh composition", () => {
+    let descriptorDataDir: string | null = null;
     const startServerHarness = createStartServerHarness({
         SERVER_ROLE: undefined,
         REDIS_URL: undefined,
@@ -70,6 +80,7 @@ describe("startServer managed Home Iroh composition", () => {
         startServerDbMocks.reset();
         ensureHomeIrohEndpoint.mockClear();
         stopHomeIrohEndpoint.mockClear();
+        getHomeIrohEndpointState.mockClear();
         beginHomeIrohEndpointStartup.mockClear();
         markHomeIrohEndpointStartupUnavailable.mockClear();
         ensureHomeIrohEndpoint.mockImplementation(async () => ({
@@ -78,6 +89,11 @@ describe("startServer managed Home Iroh composition", () => {
             failureReason: null,
         }));
         stopHomeIrohEndpoint.mockImplementation(async () => {});
+        getHomeIrohEndpointState.mockImplementation(async () => ({
+            status: "unavailable",
+            snapshot: null,
+            failureReason: null,
+        }));
         vi.stubGlobal("fetch", vi.fn(() => {
             throw new Error("Personal Home exposure proof must not issue a signup request");
         }));
@@ -85,9 +101,87 @@ describe("startServer managed Home Iroh composition", () => {
         startServerHarness.reset();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         vi.unstubAllGlobals();
         startServerHarness.restore();
+        if (descriptorDataDir) {
+            await rm(descriptorDataDir, { recursive: true, force: true });
+            descriptorDataDir = null;
+        }
+    });
+
+    it("commits the restarted Home endpoint before public discovery without an authenticated request", async () => {
+        descriptorDataDir = await mkdtemp(join(tmpdir(), "happier-home-iroh-restart-"));
+        const endpointId = "a".repeat(64);
+        const canonicalServerUrl = "http://127.0.0.1:3005";
+        const serverIdentityId = "srv_home_restart";
+        const env = {
+            ...process.env,
+            HAPPIER_SERVER_LIGHT_DATA_DIR: descriptorDataDir,
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
+            HAPPIER_SERVER_IDENTITY_ID: serverIdentityId,
+        };
+        const { resolvePersonalHomeRuntimeLayout } = await import("@happier-dev/cli-common/firstPartyRuntime/server");
+        const { createFileHomeConnectionDescriptorContinuityStore, createHomeConnectionDescriptorContentKey, resolveHomeConnectionDescriptorContinuityPath } =
+            await import("@/app/features/homeConnectionDescriptorContinuity");
+        const continuityStore = createFileHomeConnectionDescriptorContinuityStore(
+            resolveHomeConnectionDescriptorContinuityPath(resolvePersonalHomeRuntimeLayout({ env }).irohEndpointKeyPath),
+        );
+        await continuityStore.write({
+            revision: 7,
+            contentKey: createHomeConnectionDescriptorContentKey({
+                homeServerIdentityId: serverIdentityId,
+                canonicalServerUrl,
+                endpoints: [{
+                    kind: "iroh",
+                    endpointId,
+                    relayUrls: ["https://relay.example.test"],
+                    directAddresses: ["192.0.2.1:41000"],
+                }],
+            }),
+            irohEndpointId: endpointId,
+        });
+        const restartedState: HomeIrohEndpointState = {
+            status: "active",
+            snapshot: {
+                endpoint: {
+                    endpointId,
+                    relayUrls: ["https://relay.example.test"],
+                    directAddresses: ["192.0.2.1:42000"],
+                },
+            },
+            failureReason: null,
+        };
+        ensureHomeIrohEndpoint.mockImplementationOnce(async () => restartedState);
+        getHomeIrohEndpointState.mockImplementation(async () => restartedState);
+
+        await startServerHarness.start("light", {
+            SERVER_ROLE: "all",
+            PORT: "3005",
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
+            HAPPIER_SERVER_IDENTITY_ID: serverIdentityId,
+            HAPPIER_SERVER_LIGHT_DATA_DIR: descriptorDataDir,
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+        });
+
+        const { readCommittedHomeConnectionDescriptor } = await import("@/app/features/homeConnectionDescriptorPublication");
+        const publicDescriptor = await readCommittedHomeConnectionDescriptor({
+            env,
+            continuityStore,
+            resolveIrohEndpointState: async () => restartedState,
+        });
+        expect(publicDescriptor).toMatchObject({
+            homeServerIdentityId: serverIdentityId,
+            canonicalServerUrl,
+            revision: 8,
+            endpoints: [{ kind: "iroh", endpointId, relayUrls: ["https://relay.example.test"] }],
+        });
+        expect(publicDescriptor?.endpoints[0]).not.toHaveProperty("directAddresses");
+
+        const { initiateShutdown } = await import("@/utils/process/shutdown");
+        await initiateShutdown("test");
     });
 
     it.each(["all", "api"] as const)("composes the Home Iroh endpoint from the actual bound API port for the light flavor with role %s once anonymous signup is explicitly disabled", async (role) => {

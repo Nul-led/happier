@@ -16,6 +16,10 @@ import {
 } from '../contributionIdentity.js';
 import { PluginJsonValueV2Schema } from '../contributions/publicTypes.js';
 import { PluginIdSchema } from '../pluginId.js';
+import {
+  PluginSourceCustodyV1ProtocolSchema,
+  pluginSourceCustodyV1Equal,
+} from '../runtime/sourceCustody.js';
 import type { PluginUiInstanceKeyV1 } from './semanticCommands.js';
 
 /** One mounted target can expose at most this many admitted contributors. */
@@ -44,18 +48,27 @@ export const PluginUiImmutableGenerationIdV1Schema = defineProtocolString({
 });
 export type PluginUiImmutableGenerationIdV1 = ReturnType<typeof PluginUiImmutableGenerationIdV1Schema.parse>;
 
-const PluginUiTargetedContributionTargetV1Schema = defineProtocolObject({
+export const PluginUiRuntimeOccurrenceIdV1Schema = defineProtocolString({
+  minLength: 1,
+  maxLength: 512,
+  pattern: NO_OUTER_WHITESPACE_PATTERN.source,
+});
+export type PluginUiRuntimeOccurrenceIdV1 = ReturnType<typeof PluginUiRuntimeOccurrenceIdV1Schema.parse>;
+
+export const PluginUiTargetedContributionTargetV1Schema = defineProtocolObject({
   pluginId: PluginIdSchema,
-  immutableGenerationId: PluginUiImmutableGenerationIdV1Schema,
+  occurrenceId: PluginUiRuntimeOccurrenceIdV1Schema,
+  sourceCustody: PluginSourceCustodyV1ProtocolSchema,
 }, { policy: 'closed' });
 const PluginUiTargetedContributionTargetV1ZodSchema = asProtocolZod(
   PluginUiTargetedContributionTargetV1Schema,
 );
 
-const PluginUiTargetedContributionContributorV1Schema = defineProtocolObject({
+export const PluginUiTargetedContributionContributorV1Schema = defineProtocolObject({
   pluginId: PluginIdSchema,
   contributionId: PluginContributionLocalIdSchema,
-  immutableGenerationId: PluginUiImmutableGenerationIdV1Schema,
+  occurrenceId: PluginUiRuntimeOccurrenceIdV1Schema,
+  sourceCustody: PluginSourceCustodyV1ProtocolSchema,
 }, { policy: 'closed' });
 const PluginUiTargetedContributionContributorV1ZodSchema = asProtocolZod(
   PluginUiTargetedContributionContributorV1Schema,
@@ -92,10 +105,21 @@ export type PluginUiTargetedContributionPointRefV1 = ReturnType<typeof PluginUiT
  * but it does not authorize a caller to look up or invoke an Action outside the
  * host-private selected-operation association.
  */
+const PluginUiTargetedContributionSelectionTargetV1Schema = defineProtocolObject({
+  pluginId: PluginIdSchema,
+  sourceCustody: PluginSourceCustodyV1ProtocolSchema,
+}, { policy: 'closed' });
+
+const PluginUiTargetedContributionSelectionContributorV1Schema = defineProtocolObject({
+  pluginId: PluginIdSchema,
+  contributionId: PluginContributionLocalIdSchema,
+  sourceCustody: PluginSourceCustodyV1ProtocolSchema,
+}, { policy: 'closed' });
+
 export const PluginTargetedContributionSelectionV1Schema = defineProtocolObject({
-  target: PluginUiTargetedContributionTargetV1Schema,
+  target: PluginUiTargetedContributionSelectionTargetV1Schema,
   point: PluginUiTargetedContributionPointRefV1Schema,
-  contributor: PluginUiTargetedContributionContributorV1Schema,
+  contributor: PluginUiTargetedContributionSelectionContributorV1Schema,
 }, { policy: 'closed' });
 export type PluginTargetedContributionSelectionV1 = ReturnType<typeof PluginTargetedContributionSelectionV1Schema.parse>;
 
@@ -204,7 +228,13 @@ export const PluginUiTargetedContributionV1Schema = z.object({
     if (
       operation.contributor.pluginId !== contribution.contributor.pluginId
       || operation.contributor.contributionId !== contribution.contributor.contributionId
-      || operation.contributor.immutableGenerationId !== contribution.contributor.immutableGenerationId
+      || operation.contributor.occurrenceId !== contribution.contributor.occurrenceId
+      || !operation.contributor.sourceCustody
+      || !contribution.contributor.sourceCustody
+      || !pluginSourceCustodyV1Equal(
+        operation.contributor.sourceCustody,
+        contribution.contributor.sourceCustody,
+      )
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -226,7 +256,13 @@ export const PluginUiTargetedContributionV1Schema = z.object({
     if (
       surface.contributor.pluginId !== contribution.contributor.pluginId
       || surface.contributor.contributionId !== contribution.contributor.contributionId
-      || surface.contributor.immutableGenerationId !== contribution.contributor.immutableGenerationId
+      || surface.contributor.occurrenceId !== contribution.contributor.occurrenceId
+      || !surface.contributor.sourceCustody
+      || !contribution.contributor.sourceCustody
+      || !pluginSourceCustodyV1Equal(
+        surface.contributor.sourceCustody,
+        contribution.contributor.sourceCustody,
+      )
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -281,7 +317,7 @@ export const PluginUiTargetedContributionProtocolSnapshotV1Schema = z.object({
     const key = [
       contribution.contributor.pluginId,
       contribution.contributor.contributionId,
-      contribution.contributor.immutableGenerationId,
+      contribution.contributor.occurrenceId,
     ].join('\u0000');
     if (previousContributorKey !== undefined && compareText(previousContributorKey, key) >= 0) {
       ctx.addIssue({
@@ -391,7 +427,7 @@ export type PluginUiTargetedContributionsV1 = z.infer<
  * The identity a target already knows about one contribution it can consume:
  * its own point, the protocol epoch it declared, and the contributor its own
  * domain selected. Generation is not an input — the mounted snapshot is
- * already exactly one target-filtered current generation.
+ * already exactly one target-filtered current occurrence.
  */
 export type PluginUiTargetedContributionSelectorV1 = Readonly<{
   pointId: string;
@@ -446,7 +482,7 @@ function selectAdmittedRoleEntry<
     contributor: Readonly<{
       pluginId: string;
       contributionId: string;
-      immutableGenerationId: string;
+      occurrenceId: string;
     }>;
     role: string;
   }>,
@@ -461,7 +497,7 @@ function selectAdmittedRoleEntry<
     && sameTargetedProtocol(entry.point.protocol, selector.protocol)
     && entry.contributor.pluginId === contribution.contributor.pluginId
     && entry.contributor.contributionId === contribution.contributor.contributionId
-    && entry.contributor.immutableGenerationId === contribution.contributor.immutableGenerationId
+    && entry.contributor.occurrenceId === contribution.contributor.occurrenceId
   )));
 }
 

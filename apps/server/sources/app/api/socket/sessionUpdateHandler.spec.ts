@@ -1395,6 +1395,29 @@ describe("sessionUpdateHandler", () => {
         await expect(handler({ sid: "s-1" })).resolves.toBeUndefined();
     });
 
+    it("rejects legacy transcript messages from a superseded machine-bound publisher", async () => {
+        const socket = createAuthenticatedSessionScopedSocket();
+        const runAsCurrentPublisher = vi.fn(async () => null);
+        registerSessionUpdateHandler(
+            "user-1",
+            socket as any,
+            { connectionType: "session-scoped", socket: socket as any, userId: "user-1", sessionId: "s-1" } as any,
+            {
+                presence: { runAsCurrentPublisher },
+                binding: { accountId: "user-1", machineId: "machine-1", sessionId: "s-1" },
+            } as any,
+        );
+
+        const callback = vi.fn();
+        await getSocketHandler(socket, "message")({
+            sid: "s-1",
+            message: { t: "plain", v: { type: "agent", text: "stale" } },
+        }, callback);
+
+        expect(callback).toHaveBeenCalledWith({ ok: false, error: "forbidden" });
+        expect(createSessionMessage).not.toHaveBeenCalled();
+    });
+
     it("rejects a reserved Agent-transition divider localId on the generic socket ingress", async () => {
         const socket = createFakeSocket();
         registerSessionUpdateHandler(

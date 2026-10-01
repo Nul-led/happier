@@ -287,6 +287,55 @@ describe("Team invitation service authority (SQLite integration)", () => {
         expect(all.find((row) => row.id === created[0])?.state).toBe("revoked");
     });
 
+    it("binds invitation cursors to the Team and derived state, including tied timestamps", async () => {
+        const firstTeam = await teamWith("owner");
+        const secondTeam = await teamWith("owner");
+        const created: string[] = [];
+        for (let index = 0; index < 3; index += 1) {
+            const result = await create(firstTeam.team.id, firstTeam.actor.id);
+            if (!result.ok) throw new Error("expected success");
+            created.push(result.value.invitation.id);
+        }
+        const tiedAt = new Date("2026-01-01T00:00:00.000Z");
+        await db.teamInvitation.updateMany({ where: { id: { in: created } }, data: { createdAt: tiedAt } });
+
+        const first = await inTx((tx) => listTeamInvitationsForActorInTx(tx, {
+            teamId: firstTeam.team.id, actorAccountId: firstTeam.actor.id, cursor: null, limit: 2,
+        }));
+        if (!first.ok) throw new Error("expected success");
+        const second = await inTx((tx) => listTeamInvitationsForActorInTx(tx, {
+            teamId: firstTeam.team.id, actorAccountId: firstTeam.actor.id, cursor: first.value.nextCursor, limit: 2,
+        }));
+        if (!second.ok) throw new Error("expected success");
+        expect(new Set([...first.value.items, ...second.value.items].map((row) => row.id)).size).toBe(3);
+
+        expect(await inTx((tx) => listTeamInvitationsForActorInTx(tx, {
+            teamId: secondTeam.team.id,
+            actorAccountId: secondTeam.actor.id,
+            cursor: first.value.nextCursor,
+            limit: 2,
+        }))).toEqual({ ok: false, error: "invalid_team_cursor" });
+
+        const revoked = await create(firstTeam.team.id, firstTeam.actor.id);
+        if (!revoked.ok) throw new Error("expected success");
+        await inTx((tx) => revokeTeamInvitationForActorInTx(tx, {
+            teamId: firstTeam.team.id,
+            actorAccountId: firstTeam.actor.id,
+            invitationId: revoked.value.invitation.id,
+        }));
+        const all = await inTx((tx) => listTeamInvitationsForActorInTx(tx, {
+            teamId: firstTeam.team.id, actorAccountId: firstTeam.actor.id, cursor: null, limit: 1,
+        }));
+        if (!all.ok || all.value.nextCursor === null) throw new Error("expected cursor");
+        expect(await inTx((tx) => listTeamInvitationsForActorInTx(tx, {
+            teamId: firstTeam.team.id,
+            actorAccountId: firstTeam.actor.id,
+            cursor: all.value.nextCursor,
+            limit: 2,
+            state: "revoked",
+        }))).toEqual({ ok: false, error: "invalid_team_cursor" });
+    });
+
     it("narrows the list to one derived state, using the same precedence the rows show", async () => {
         const f = await teamWith("owner");
         const active = await create(f.team.id, f.actor.id);

@@ -56,8 +56,8 @@ const pluginActor: ReviewCommentActorRefV1 = {
 
 const reviewAgentActor = { kind: "agent", agentId: "claude", sessionId: "session-1" } as const;
 
-function directWriteCreate(input: ReviewCommentCreateRequestV1) {
-    const boundInput: ReviewCommentCreateRequestV1 = {
+function directWriteCreate(input: ReviewCommentCreateRequestV1 & { projectId: string }) {
+    const boundInput: ReviewCommentCreateRequestV1 & { projectId: string } = {
         workspaceId: "workspace-1",
         sessionId: reviewAgentActor.sessionId,
         runId: "run-1",
@@ -83,13 +83,227 @@ function directWriteCreate(input: ReviewCommentCreateRequestV1) {
             agentId: reviewAgentActor.agentId,
             projectId: boundInput.projectId,
             workspaceId: "workspace-1",
-            immutableGenerationId: "generation-1",
+            sourceCustody: {
+                kind: "bundled_first_party" as const,
+                packagedRuntime: {
+                    kind: "cli_version_root" as const,
+                    versionRootId: "review-coderabbit-test-cli-root",
+                },
+            },
         },
         input: boundInput,
     };
 }
 
 describe("review comment operations", () => {
+    it("keeps authorized bulk targets reachable when another target is outside the principal Session scope", async () => {
+        const { operations } = createHarness();
+        const actor = { kind: "user", userId: "user-1" } as const;
+        const create = (sessionId: string) => operations.create({ accountId: "account-1", actor,
+            input: { projectId: "project-1", sessionId, anchor: { kind: "file", filePath: "src/example.ts" },
+                snapshot: textSnapshot(["return value;"]), body: "Check value", authorIntent: "open", clientMutationId: `bulk-scope-${sessionId}` } });
+        const own = (await create("session-1")).comment;
+        const other = (await create("session-2")).comment;
+        const result = await operations.bulkTransition({ accountId: "account-1", actor: reviewAgentActor,
+            input: { projectId: "project-1", commentIds: [own.id, other.id], expectedState: "open", toState: "dismissed", reason: "Verified",
+                expectedServerRevisions: { [own.id]: 1, [other.id]: 1 }, clientMutationId: "bulk-mixed-scope" } });
+        expect(result.updated).toMatchObject([{ id: own.id, state: "dismissed" }]);
+        expect(result.failed).toMatchObject([{ commentId: other.id, errorCode: "review_comment_permission_denied" }]);
+    });
+    it.each([
+        [{ kind: "user", userId: "user-1" }, { kind: "user", userId: "user-1" }, false],
+        [{ kind: "user", userId: "user-1" }, { kind: "user", userId: "user-2" }, false],
+        [{ kind: "user", userId: "user-1" }, reviewAgentActor, true],
+        [reviewAgentActor, reviewAgentActor, false],
+        [{ kind: "workflow", runId: "workflow-1" }, { kind: "workflow", runId: "workflow-1" }, false],
+    ] satisfies Array<[ReviewCommentActorRefV1, ReviewCommentActorRefV1, boolean]>)
+    ("decides a re-raise from persisted dismissal actor %j and reopening actor %j", async (dismissActor, reopenActor, disputed) => {
+        const { operations } = createHarness();
+        const created = await operations.create({ accountId: "account-1", actor: { kind: "user", userId: "user-1" }, input: {
+            projectId: "project-1", sessionId: "session-1", anchor: { kind: "file", filePath: "a.ts" },
+            snapshot: textSnapshot(["input();"]), body: "Guard input", authorIntent: "open", clientMutationId: "actor-create",
+        } });
+        const principal = { accountId: "account-1", workflowOriginSessionId: "session-1" };
+        const dismissed = await operations.transition({ ...principal, actor: dismissActor, input: {
+            projectId: "project-1", commentId: created.comment.id, expectedState: "open", toState: "dismissed",
+            expectedServerRevision: 1, reason: "No issue", clientMutationId: "actor-dismiss",
+        } });
+        // A same-state Decide later annotation must not replace dismissal provenance.
+        const deferred = await operations.transition({ ...principal, actor: { kind: "user", userId: "user-3" }, input: {
+            projectId: "project-1", commentId: created.comment.id, expectedState: "dismissed", toState: "dismissed",
+            expectedServerRevision: 2, reviewTriageStatus: "defer", clientMutationId: "actor-defer",
+        } });
+        const reopened = await operations.transition({ ...principal, actor: reopenActor, input: {
+            projectId: "project-1", commentId: created.comment.id, expectedState: "dismissed", toState: "open",
+            expectedServerRevision: deferred.comment.serverRevision, clientMutationId: "actor-reopen",
+        } });
+        expect(dismissed.comment.transitions.at(-1)?.transitionedBy).toEqual(dismissActor);
+        expect(reopened.comment.flags.disputed === true).toBe(disputed);
+    });
+    it("atomically coalesces semantic findings across engines and rounds without duplicate events", async () => {
+        const { operations, store } = createHarness();
+        const principal = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const input = { projectId: "project-1", workspace: { machineId: "machine-1", path: "/repo" },
+            sessionId: "session-1", findingIdentity: "b".repeat(64),
+            anchor: { kind: "file" as const, filePath: "src/example.ts" }, snapshot: textSnapshot(["return value.name;"]),
+            body: "Guard this value", authorIntent: "open" as const };
+        const results = await Promise.all([
+            operations.create({ ...principal, input: { ...input, engineId: "codex", runId: "round-1", clientMutationId: "engine-one" } }),
+            operations.create({ ...principal, input: { ...input, engineId: "claude", runId: "round-2", clientMutationId: "engine-two" } }),
+        ]);
+        expect(results[1]!.comment.id).toBe(results[0]!.comment.id);
+        expect(await store.listEvents({ accountId: principal.accountId, commentId: results[0]!.comment.id })).toHaveLength(1);
+        const anotherWorkspace = await operations.create({ ...principal, input: { ...input,
+            workspace: { machineId: "machine-1", path: "/other" }, clientMutationId: "different-workspace" } });
+        expect(anotherWorkspace.comment.id).not.toBe(results[0]!.comment.id);
+    });
+
+    it("retains later panel membership on a deduplicated comment through CAS without changing its verdict", async () => {
+        const { operations, store } = createHarness();
+        const principal = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const created = await operations.create({ ...principal, input: { projectId: "project-1", sessionId: "session-1",
+            anchor: { kind: "file", filePath: "a.ts" }, snapshot: textSnapshot(["input();"]), body: "Guard input",
+            metadata: { reviewGroupIds: ["panel-1"] }, authorIntent: "open", clientMutationId: "group-create" } });
+        const input = { projectId: "project-1", commentId: created.comment.id, expectedState: "open" as const,
+            toState: "open" as const, expectedServerRevision: 1, reviewGroupId: "panel-2", clientMutationId: "group-add" };
+        const updated = await operations.transition({ accountId: principal.accountId, actor: reviewAgentActor, input });
+        expect(updated.comment.metadata?.reviewGroupIds).toEqual(["panel-1", "panel-2"]);
+        expect(updated.comment.state).toBe("open");
+        expect(updated.comment.reviewTriageStatus).toBeUndefined();
+        expect(updated.comment.flags.disputed).toBeUndefined();
+        await expect(operations.transition({ accountId: principal.accountId, actor: reviewAgentActor, input }))
+            .rejects.toMatchObject({ code: "review_comment_conflict" });
+        expect((await store.listEvents({ accountId: principal.accountId, commentId: created.comment.id })).at(-1)?.eventKind).toBe("transitioned");
+    });
+
+    it("persists same-state triage annotations under CAS without allowing arbitrary self transitions", async () => {
+        const { operations } = createHarness();
+        const principal = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const created = await operations.create({ ...principal, input: { projectId: "project-1",
+            anchor: { kind: "file", filePath: "src/example.ts" }, snapshot: textSnapshot(["return value.name;"]),
+            body: "Guard this value", authorIntent: "open", clientMutationId: "triage-create" } });
+        const input = { projectId: "project-1", commentId: created.comment.id, expectedState: "open" as const,
+            toState: "open" as const, expectedServerRevision: 1, clientMutationId: "triage-defer" };
+        await expect(operations.transition({ ...principal, input })).rejects.toMatchObject({ code: "review_comment_invalid_transition" });
+        const deferred = await operations.transition({ ...principal, input: { ...input, reviewTriageStatus: "defer" } });
+        expect(deferred.comment.reviewTriageStatus).toBe("defer");
+        expect(deferred.comment.transitions.at(-1)?.reviewTriageStatus).toBe("defer");
+        await expect(operations.transition({ ...principal, input: { ...input, reviewTriageStatus: "needs_refinement" } }))
+            .rejects.toMatchObject({ code: "review_comment_conflict" });
+    });
+
+    it("confines agent reads and verdict writes to its session review scope under CAS", async () => {
+        const { operations } = createHarness();
+        const user = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const own = await operations.create({ ...user, input: {
+            projectId: "project-1", sessionId: "session-1", engineId: "codex",
+            anchor: { kind: "file", filePath: "src/example.ts" }, snapshot: textSnapshot(["return value.name;"]),
+            body: "Guard this value", authorIntent: "open", clientMutationId: "scope-own",
+        } });
+        const foreign = await operations.create({ ...user, input: {
+            projectId: "project-1", sessionId: "session-other",
+            anchor: { kind: "file", filePath: "src/example.ts" }, snapshot: textSnapshot(["return value.name;"]),
+            body: "Guard this value", authorIntent: "open", clientMutationId: "scope-foreign",
+        } });
+        const agent = { accountId: "account-1", actor: reviewAgentActor };
+        const filters = { states: [], includeHistory: false, limit: 50 };
+        expect((await operations.list({ ...agent, input: filters })).items.map((comment) => comment.id)).toEqual([own.comment.id]);
+        await expect(operations.list({ ...agent, input: { ...filters, sessionId: "session-other" } }))
+            .rejects.toMatchObject({ code: "review_comment_permission_denied" });
+        await expect(operations.transition({ ...agent, input: {
+            projectId: "project-1", commentId: foreign.comment.id, expectedState: "open", toState: "dismissed",
+            expectedServerRevision: 1, reason: "Already guarded", clientMutationId: "scope-denied",
+        } })).rejects.toMatchObject({ code: "review_comment_permission_denied" });
+        await expect(operations.setDisposition({ ...agent, input: {
+            projectId: "project-1", commentId: foreign.comment.id, expectedServerRevision: 1,
+            disposition: "blocking", clientMutationId: "scope-disposition-denied",
+        } })).rejects.toMatchObject({ code: "review_comment_permission_denied" });
+        const dismissed = await operations.transition({ ...agent, input: {
+            projectId: "project-1", commentId: own.comment.id, expectedState: "open", toState: "dismissed",
+            expectedServerRevision: 1, reason: "Already guarded", clientMutationId: "scope-dismiss",
+        } });
+        expect(dismissed.comment.state).toBe("dismissed");
+        await expect(operations.setDisposition({ ...agent, input: {
+            projectId: "project-1", commentId: own.comment.id, expectedServerRevision: 1,
+            disposition: "blocking", clientMutationId: "scope-stale",
+        } })).rejects.toMatchObject({ code: "review_comment_conflict" });
+    });
+
+    it("confines workflow review operations to the server-owned origin Session and fails originless scope closed", async () => {
+        const { operations } = createHarness();
+        const user = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const created = await operations.create({ ...user, input: { projectId: "project-1", sessionId: "session-1",
+            anchor: { kind: "file", filePath: "src/example.ts" }, snapshot: textSnapshot(["return value.name;"]),
+            body: "Guard this value", authorIntent: "open", clientMutationId: "workflow-scope-create" } });
+        const workflow = { accountId: "account-1", actor: { kind: "workflow", runId: "workflow-1" } as const };
+        const input = { states: [], includeHistory: false, limit: 50 };
+        await expect(operations.list({ ...workflow, input })).rejects.toMatchObject({ code: "review_comment_permission_denied" });
+        const scoped = { ...workflow, workflowOriginSessionId: "session-1" };
+        expect((await operations.list({ ...scoped, input })).items.map((comment) => comment.id)).toEqual([created.comment.id]);
+        await expect(operations.get({ ...scoped, workflowOriginSessionId: "session-other", input: { commentId: created.comment.id, includeHistory: true } }))
+            .rejects.toMatchObject({ code: "review_comment_permission_denied" });
+        const disposition = await operations.setDisposition({ ...scoped, input: { projectId: "project-1", commentId: created.comment.id,
+            expectedServerRevision: 1, disposition: "blocking", clientMutationId: "workflow-verdict" } });
+        expect(disposition.comment.dispositions["workflow:workflow-1"]).toBe("blocking");
+    });
+
+    it("keeps workspace-only scope through creation, CAS mutations, replies and events", async () => {
+        const { operations, store } = createHarness();
+        const workspace = { machineId: "machine-1", path: "/work/repo" };
+        const principal = { accountId: "account-1", actor: { kind: "user", userId: "user-1" } as const };
+        const created = await operations.create({
+            ...principal,
+            input: {
+                workspace,
+                sessionId: "session-1",
+                findingIdentity: "a".repeat(64),
+                findingSeverity: "high",
+                anchor: { kind: "file", filePath: "src/example.ts" },
+                snapshot: textSnapshot(["return value.name;"]),
+                body: "Null-check this value.",
+                authorIntent: "open",
+                clientMutationId: "workspace-create",
+            },
+        });
+        expect(created.comment).toMatchObject({ workspace, findingIdentity: "a".repeat(64), findingSeverity: "high" });
+        expect(created.comment.projectId).toBeUndefined();
+        await expect(operations.transition({
+            ...principal,
+            input: { commentId: created.comment.id, workspace: { ...workspace, path: "/other" },
+                expectedState: "open", toState: "dismissed", expectedServerRevision: 1,
+                reason: "Already guarded", clientMutationId: "wrong-workspace" },
+        })).rejects.toMatchObject({ code: "review_comment_conflict" });
+        const dismissed = await operations.transition({
+            ...principal,
+            input: { commentId: created.comment.id, workspace, expectedState: "open", toState: "dismissed",
+                expectedServerRevision: 1, reason: "Already guarded", clientMutationId: "workspace-dismiss" },
+        });
+        const disputed = await operations.transition({
+            ...principal,
+            actor: reviewAgentActor,
+            input: { commentId: created.comment.id, workspace, expectedState: "dismissed", toState: "open",
+                expectedServerRevision: 2, reason: "Raised in the next round", clientMutationId: "workspace-reraise" },
+        });
+        expect(dismissed.comment.state).toBe("dismissed");
+        expect(disputed.comment.flags.disputed).toBe(true);
+        const replied = await operations.reply({
+            ...principal,
+            input: { parentCommentId: created.comment.id, workspace, body: "Please verify this again.",
+                expectedParentServerRevision: 3, clientMutationId: "workspace-reply" },
+        });
+        expect(replied.comment.workspace).toEqual(workspace);
+        const bulkInput = { workspace, commentIds: [created.comment.id], expectedState: "open" as const,
+            toState: "dismissed" as const, expectedServerRevisions: { [created.comment.id]: 3 },
+            evidence: [], reason: "Verified after re-review", clientMutationId: "workspace-bulk" };
+        const wrongWorkspace = await operations.bulkTransition({ ...principal, input: { ...bulkInput, workspace: { ...workspace, path: "/other" } } });
+        expect(wrongWorkspace.failed).toMatchObject([{ commentId: created.comment.id, errorCode: "review_comment_conflict" }]);
+        const bulk = await operations.bulkTransition({ ...principal, input: bulkInput });
+        expect(bulk.updated).toMatchObject([{ id: created.comment.id, state: "dismissed", serverRevision: 4 }]);
+        const events = await store.listEvents({ accountId: principal.accountId, commentId: created.comment.id });
+        expect(events.length).toBeGreaterThan(0);
+        expect(events.every((event) => event.workspace?.machineId === workspace.machineId && event.workspace.path === workspace.path)).toBe(true);
+    });
+
     it("allows only one provider dispatch for simultaneous publication requests of one frozen review plan", async () => {
         const { operations } = createHarness();
         const firstComment = await operations.create({
@@ -1401,10 +1615,9 @@ describe("review comment operations", () => {
         expect(result.bulkActionId).toBe("bulk-1");
         expect(result.updated.map((comment) => comment.id)).toEqual([open.comment.id]);
         expect(result.updated[0]?.transitions.at(-1)?.bulkActionId).toBe("bulk-1");
-        expect(result.failed).toEqual([{
+        expect(result.failed).toMatchObject([{
             commentId: proposed.comment.id,
             errorCode: "review_comment_conflict",
-            error: "Review comment state did not match expectedState",
         }]);
         expect(await store.listEvents({ accountId: "account-1", commentId: open.comment.id }))
             .toMatchObject([
@@ -1420,6 +1633,7 @@ describe("review comment operations", () => {
             actor: pluginActor,
             input: {
                 projectId: "project-1",
+                sessionId: "session-1",
                 anchor: { kind: "file", filePath: "src/config.ts" },
                 snapshot: textSnapshot(["secret = readEnv();"]),
                 body: "Investigate secret handling.",

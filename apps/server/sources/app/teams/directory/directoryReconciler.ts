@@ -18,6 +18,7 @@ import {
     type InitializingWorkosProjectionEvent,
 } from "./directoryProjectionRepository";
 import type { DirectoryGroup, DirectoryGroupMember, DirectoryPerson } from "./directorySourceEvidence";
+import type { ExpectedDirectorySourceCurrentness } from "./directorySourcePolicy";
 
 export type DirectoryProjectionScanFailureCode =
     | "directory_cursor_expired"
@@ -29,8 +30,16 @@ export type DirectoryProjectionScanFailureCode =
     | "stale_run";
 
 export type DirectoryProjectionScanResult =
-    | Readonly<{ ok: true; sourceDeleted?: false }>
-    | Readonly<{ ok: true; sourceDeleted: true }>
+    | Readonly<{
+        ok: true;
+        sourceDeleted?: false;
+        expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+    }>
+    | Readonly<{
+        ok: true;
+        sourceDeleted: true;
+        expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+    }>
     | Readonly<{
         ok: false;
         code: DirectoryProjectionScanFailureCode;
@@ -38,9 +47,7 @@ export type DirectoryProjectionScanResult =
         reconcileRunId?: string;
     }>;
 
-export type DirectoryProjectionCatchUpResult =
-    | DirectoryProjectionScanResult
-    | Readonly<{ ok: true; sourceDeleted: true }>;
+export type DirectoryProjectionCatchUpResult = DirectoryProjectionScanResult;
 
 export type DirectoryProjectionScan = (params: Readonly<{
     source: ClaimedDirectorySource;
@@ -57,6 +64,7 @@ export type DirectoryProjectionCatchUp = (params: Readonly<{
     signal?: AbortSignal;
     writeWorkosEvent: (
         event: Omit<InitializingWorkosProjectionEvent, "sourceId" | "reconcileRunId">,
+        expectedCurrentness?: ExpectedDirectorySourceCurrentness,
     ) => Promise<boolean>;
     stageWorkosGroupMembersEventPage: (
         page: Omit<InitializingWorkosGroupMemberEventPage, "sourceId" | "reconcileRunId">,
@@ -74,6 +82,7 @@ export async function runActiveWorkosDirectoryIncremental(params: Readonly<{
     signal?: AbortSignal;
     completedAt?: Date;
     beforeProjectionWrite?: () => Promise<boolean>;
+    env?: NodeJS.ProcessEnv;
 }>): Promise<DirectoryProjectionReconcileResult> {
     let expectedPosition: InitializingWorkosProjectionEvent["expectedPosition"];
     if (params.source.eventCursor !== null) {
@@ -87,13 +96,15 @@ export async function runActiveWorkosDirectoryIncremental(params: Readonly<{
     const result = await params.catchUp({
         source: params.source,
         signal: params.signal,
-        writeWorkosEvent: async (event) => {
+        writeWorkosEvent: async (event, expectedCurrentness) => {
             if (params.signal?.aborted) return false;
             if (params.beforeProjectionWrite && !await params.beforeProjectionWrite()) return false;
             const committed = await commitActiveWorkosProjectionEvent({
                 sourceId: params.source.id,
                 ...event,
                 completedAt: params.completedAt,
+                expectedCurrentness,
+                env: params.env,
             });
             if (committed.applied) expectedPosition = { eventCursor: event.eventId };
             return committed.applied;
@@ -115,6 +126,8 @@ export async function runActiveWorkosDirectoryIncremental(params: Readonly<{
             expectedState: "active",
             reconcileRunId: null,
             expectedPosition,
+            expectedCurrentness: result.expectedCurrentness,
+            env: params.env,
         });
         return removed.applied ? { status: "completed" } : { status: "stale" };
     }
@@ -135,6 +148,8 @@ export async function runActiveWorkosDirectoryIncremental(params: Readonly<{
         sourceId: params.source.id,
         expectedPosition,
         completedAt: params.completedAt,
+        expectedCurrentness: result.expectedCurrentness,
+        env: params.env,
     });
     return completed.applied ? { status: "completed" } : { status: "stale" };
 }
@@ -151,6 +166,7 @@ export async function runClaimedDirectoryProjectionReconcile(params: Readonly<{
     signal?: AbortSignal;
     completedAt?: Date;
     beforeProjectionWrite?: () => Promise<boolean>;
+    env?: NodeJS.ProcessEnv;
 }>): Promise<DirectoryProjectionReconcileResult> {
     const writePage = async (page: Readonly<{
         people?: readonly DirectoryPerson[];
@@ -207,6 +223,8 @@ export async function runClaimedDirectoryProjectionReconcile(params: Readonly<{
             expectedState: "initializing",
             reconcileRunId: params.source.reconcileRunId,
             expectedPosition,
+            expectedCurrentness: scanResult.expectedCurrentness,
+            env: params.env,
         });
         return removed.applied ? { status: "completed" } : { status: "stale" };
     }
@@ -279,6 +297,8 @@ export async function runClaimedDirectoryProjectionReconcile(params: Readonly<{
                 expectedState: "initializing",
                 reconcileRunId: params.source.reconcileRunId,
                 expectedPosition,
+                expectedCurrentness: catchUpResult.expectedCurrentness ?? scanResult.expectedCurrentness,
+                env: params.env,
             });
             return removed.applied ? { status: "completed" } : { status: "stale" };
         }
@@ -289,6 +309,8 @@ export async function runClaimedDirectoryProjectionReconcile(params: Readonly<{
         reconcileRunId: params.source.reconcileRunId,
         observedManualSyncRequestedAt: params.source.observedManualSyncRequestedAt,
         completedAt: params.completedAt,
+        expectedCurrentness: scanResult.expectedCurrentness,
+        env: params.env,
     });
     if (completion.applied) return { status: "completed" };
     return { status: "stale" };

@@ -95,7 +95,7 @@ export function registerTeamRoutes(
     // Credential resources publish their own strict error vocabulary and own
     // feature gate. Register them on the base app so the Team-domain denial
     // projection cannot overwrite that distinct transport contract.
-    registerTeamCredentialResourceRoutes(app);
+    registerTeamCredentialResourceRoutes(app, env);
 
     teamsApp.post(homeDomainActionPathForMethod("teams.list", "POST"), {
         preHandler: app.authenticate,

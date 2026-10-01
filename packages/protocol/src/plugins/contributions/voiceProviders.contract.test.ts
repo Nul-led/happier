@@ -103,7 +103,7 @@ describe('canonical Voice provider declarations', () => {
       roles: ['realtime_conversation'],
       platforms: ['web'],
       capabilities: { turn: { cancelResponse: false, bargeIn: false } },
-      client: { artifactId: 'voice-runtime-web', modulePath: './voice', exportName: 'activate' },
+      client: { artifactId: 'voice-runtime-web', exportName: 'activate' },
       credentials: {
         slot: credential.slot,
         requirement: credential.requirement,
@@ -136,7 +136,6 @@ describe('canonical Voice provider declarations', () => {
       },
       client: {
         artifactId: 'voice-runtime-web',
-        modulePath: './voiceRuntime',
         exportName: 'activate',
       },
       credentials: {
@@ -249,7 +248,6 @@ describe('canonical Voice provider declarations', () => {
         },
         client: {
           artifactId: 'voice-runtime-web',
-          modulePath: './voiceRuntime',
           exportName: 'activate',
         },
         credentials: {

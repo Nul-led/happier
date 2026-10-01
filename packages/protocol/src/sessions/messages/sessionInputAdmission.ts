@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { CallerInputConstraintsV1Schema } from '../../auth/apiTokenGrant.js';
 import { sha256 } from '@noble/hashes/sha2';
 
 import {
@@ -14,6 +15,7 @@ import { PluginContributionLocalIdSchema } from '../../plugins/contributionIdent
 import { PluginIdSchema } from '../../plugins/pluginId.js';
 import { AgentPermissionIntentV1Schema } from '../../runtime/permissionIntentV1.js';
 import { SessionIdSchema, TurnIdSchema } from '../idsV1.js';
+import { SessionWorkDepthV1Schema } from '../creation/sessionCreateOriginV1.js';
 import {
   SessionMutationEqualityBase64UrlSha256V1Schema,
   SessionMutationEqualityEvidenceV1Schema,
@@ -137,7 +139,8 @@ export type PluginSessionInputSourceV1 = z.infer<typeof PluginSessionInputSource
  * Canonical authored fields shared by the trusted-plugin SessionHandle request
  * and its `session.message.send` Action projection. The two carriers
  * intentionally use different text/session field names, but must not drift on
- * recipient routing, idempotency, source provenance, or attachments.
+ * recipient routing, idempotency, source provenance, attachments, or tool
+ * answer delivery.
  *
  * This is a Zod raw shape, not another admission schema or decision-maker.
  */
@@ -146,6 +149,8 @@ export const PluginSessionUserTextAuthoredFieldSchemasV1 = Object.freeze({
   recipient: ParticipantRecipientRoutingIdentityV1Schema.optional(),
   source: PluginSessionInputSourceV1Schema.optional(),
   attachments: PluginSessionInputAttachmentsV1Schema.optional(),
+  /** Identifies a provider-facing reply whose visible answer belongs on its question tool. */
+  toolAnswerDelivery: z.object({ toolCallId: z.string().trim().min(1) }).strict().optional(),
 });
 
 /** Public plugin-authored intent. Caller identity and admitted authority are host-owned. */
@@ -241,6 +246,7 @@ const MessageProvenanceUnionSchema = z.discriminatedUnion('kind', [
     kind: z.literal('happierSession'),
     sourceSessionId: asProtocolZod(SessionIdSchema),
     via: z.enum(['action', 'mcp']),
+    callerDepth: SessionWorkDepthV1Schema.optional(),
   }).strict(),
   PluginSessionProvenanceSchema,
   z.object({
@@ -283,10 +289,7 @@ export const SessionMessageProvenanceV2Schema = z.discriminatedUnion('kind', [
     v: z.literal(2), kind: z.literal('workflow_invocation'),
     runId: BoundedAutomationRunIdSchema,
     invocationRecordId: WorkflowInvocationRecordIdSchema,
-  }).strict(),
-  z.object({
-    v: z.literal(2), kind: z.literal('workflow_result_delivery'),
-    runId: BoundedAutomationRunIdSchema,
+    workDepth: SessionWorkDepthV1Schema.optional(),
   }).strict(),
 ]).superRefine((value, context) => {
   if (UTF8_ENCODER.encode(JSON.stringify(value)).byteLength > MAX_PROVENANCE_BYTES) {
@@ -469,12 +472,12 @@ export const SessionInputWorkflowV2Schema = z.discriminatedUnion('purpose', [
     purpose: z.literal('invocation'),
     runId: BoundedAutomationRunIdSchema,
     invocationRecordId: WorkflowInvocationRecordIdSchema,
+    workDepth: SessionWorkDepthV1Schema.optional(),
   }).strict(),
-  z.object({ purpose: z.literal('result_delivery'), runId: BoundedAutomationRunIdSchema }).strict(),
 ]);
 export type SessionInputWorkflowV2 = z.infer<typeof SessionInputWorkflowV2Schema>;
 
-/** Durable Pending identity for an exact Workflow invocation or final delivery. */
+/** Durable Pending identity for an exact Workflow invocation. */
 export function deriveWorkflowSessionInputLocalIdV2(workflow: SessionInputWorkflowV2): string {
   const parsed = SessionInputWorkflowV2Schema.parse(workflow);
   const canonicalIdentity = JSON.stringify([
@@ -482,7 +485,7 @@ export function deriveWorkflowSessionInputLocalIdV2(workflow: SessionInputWorkfl
     2,
     parsed.purpose,
     parsed.runId,
-    ...(parsed.purpose === 'invocation' ? [parsed.invocationRecordId] : []),
+    parsed.invocationRecordId,
   ]);
   const localId = readPendingLocalId(
     `workflow-input-v2:${encodeBase64(sha256(UTF8_ENCODER.encode(canonicalIdentity)), 'base64url')}`,
@@ -527,10 +530,6 @@ export const SessionInputAuthorityV2Schema = SessionInputProtectedCommonV2Schema
 export type SessionInputAuthorityV2 = z.infer<typeof SessionInputAuthorityV2Schema>;
 
 export const SESSION_INPUT_ADMISSION_WORKFLOW_PROTOCOL_VERSION = 2 as const;
-export const WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED = 'workflow_input_admission_update_required' as const;
-export const WorkflowInputAdmissionUpdateRequiredSchema = z.literal(
-  WORKFLOW_INPUT_ADMISSION_UPDATE_REQUIRED,
-);
 
 /**
  * Sole builder for trusted host Pending admission. It stamps modality/source,
@@ -717,12 +716,14 @@ export const SessionInputAdmissionReceiptV1Schema = z.discriminatedUnion('issuer
   z.object({
     v: z.literal(1),
     issuer: z.literal('authenticatedAccount'),
+    callerInputConstraints: CallerInputConstraintsV1Schema.optional(),
     actorAccountId: AccountIdSchema,
     sessionRelationship: z.enum(['owner', 'sharedEditor', 'sharedAdmin']),
   }).strict(),
   z.object({
     v: z.literal(1),
     issuer: z.literal('authenticatedMachine'),
+    callerInputConstraints: CallerInputConstraintsV1Schema.optional(),
   }).strict(),
 ]);
 export type SessionInputAdmissionReceiptV1 = z.infer<typeof SessionInputAdmissionReceiptV1Schema>;
@@ -800,12 +801,10 @@ export function settleSessionMessageProvenanceV2(params: Readonly<{
     inputAdmissionReceipt: params.inputAdmissionReceipt,
   });
   const provenance = SessionMessageProvenanceV2Schema.parse(params.requestedProvenance);
-  const matches = request.workflow.purpose === 'invocation'
-    ? provenance.kind === 'workflow_invocation'
-      && provenance.runId === request.workflow.runId
-      && provenance.invocationRecordId === request.workflow.invocationRecordId
-    : provenance.kind === 'workflow_result_delivery'
-      && provenance.runId === request.workflow.runId;
+  const matches = provenance.kind === 'workflow_invocation'
+    && provenance.runId === request.workflow.runId
+    && provenance.invocationRecordId === request.workflow.invocationRecordId
+    && provenance.workDepth === request.workflow.workDepth;
   if (!matches) {
     throw new TypeError('Workflow Session input provenance does not match the protected request');
   }

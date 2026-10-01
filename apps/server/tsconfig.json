@@ -45,6 +45,7 @@
 
     /* Module Resolution Options */
     "moduleResolution": "bundler",
+    "resolveJsonModule": true,                      /* The server reads its own release version from package.json (Home console §3.7). */
     // "baseUrl": "./",                             /* Base directory to resolve non-absolute module names. */
     // "paths": {},                                 /* A series of entries which re-map imports to lookup locations relative to the 'baseUrl'. */
     // "rootDirs": [],                              /* List of root folders whose combined content represents the structure of the project at runtime. */
@@ -77,6 +78,7 @@
   "include": [
     "sources/**/*",
     "scripts/voiceProviderConversationIdentityMysqlUpgradeContract.ts",
-    "scripts/runtime/migrateFullRuntime.ts"
+    "scripts/runtime/migrateFullRuntime.ts",
+    "scripts/serverConfig/**/*"
   ]
 }

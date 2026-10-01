@@ -21,6 +21,19 @@ import {
 } from "./connectedAccountAttemptTransactions/registerConnectedAccountAttemptTransactionRoutes";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
+const oauthScope = {
+    machineId: "machine-a",
+    service: { pluginId: "acme.accounts", localId: "work" },
+    modeId: "oauth",
+    intent: "connect",
+    phase: "awaitingOAuth",
+    createdAtMs: 1,
+} as const;
+const deviceScope = {
+    ...oauthScope,
+    modeId: "device",
+    phase: "awaitingDeviceAuthorization",
+} as const;
 
 async function createE2eeAccount(): Promise<Readonly<{ id: string }>> {
     return await db.account.create({
@@ -72,6 +85,67 @@ describe("Connected Account attempt transaction routes", () => {
 
     afterAll(async () => await harness.close());
 
+    it("discovers only resumable attempts for the authenticated account, machine, and service without content", async () => {
+        const [accountA, accountB] = await Promise.all([
+            createE2eeAccount(),
+            createE2eeAccount(),
+        ]);
+        const app = createTestApp();
+        await app.ready();
+        const expiresAtMs = Date.now() + 15 * 60_000;
+        const scope = {
+            machineId: "machine-a",
+            service: { pluginId: "acme.accounts", localId: "work" },
+            modeId: "oauth",
+            intent: "connect",
+            phase: "awaitingOAuth",
+            createdAtMs: Date.now(),
+        } as const;
+        const create = async (attemptId: string, overrides: Record<string, unknown> = {}) => {
+            const response = await app.inject({
+                method: "POST",
+                url: `/v2/connect/connected-account-attempt-transactions/oauth/${attemptId}`,
+                headers: { "x-test-user-id": accountA.id },
+                payload: {
+                    content: { t: "encrypted", c: `secret-${attemptId}` },
+                    expiresAtMs,
+                    scope: { ...scope, ...overrides },
+                },
+            });
+            expect(response.statusCode, response.body).toBe(200);
+        };
+        await create("matching");
+        await create("other-machine", { machineId: "machine-b" });
+        await create("other-service", { service: { pluginId: "acme.accounts", localId: "other" } });
+        await create("not-resumable", { phase: "starting" });
+
+        const url = "/v2/connect/connected-account-attempt-transactions/pending?machineId=machine-a&pluginId=acme.accounts&localId=work";
+        const discovered = await app.inject({
+            method: "GET",
+            url,
+            headers: { "x-test-user-id": accountA.id },
+        });
+        expect(discovered.statusCode).toBe(200);
+        expect(discovered.json()).toEqual({ attempts: [{
+            attemptId: "matching",
+            kind: "oauth",
+            modeId: "oauth",
+            intent: "connect",
+            phase: "awaitingOAuth",
+            createdAtMs: scope.createdAtMs,
+            expiresAtMs,
+        }] });
+        expect(discovered.body).not.toContain("secret-");
+
+        const anotherAccount = await app.inject({
+            method: "GET",
+            url,
+            headers: { "x-test-user-id": accountB.id },
+        });
+        expect(anotherAccount.json()).toEqual({ attempts: [] });
+        expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);
+    });
+
     it("stores only the opaque E2EE envelope and isolates exact attempts by account", async () => {
         const [accountA, accountB] = await Promise.all([
             createE2eeAccount(),
@@ -91,7 +165,7 @@ describe("Connected Account attempt transaction routes", () => {
                 "content-type": "application/json",
                 "x-test-user-id": accountA.id,
             },
-            payload: { content, expiresAtMs },
+            payload: { content, expiresAtMs, scope: oauthScope },
         });
         expect(created.statusCode).toBe(200);
         expect(created.json()).toEqual({
@@ -102,10 +176,12 @@ describe("Connected Account attempt transaction routes", () => {
 
         const rows = await db.repeatKey.findMany();
         expect(rows).toHaveLength(1);
-        const canonicalKey = `caat_v1_${createHash("sha256")
+        const accountDigest = createHash("sha256")
+            .update(JSON.stringify(["connected-account-attempt-account-v2", accountA.id]))
+            .digest("base64url");
+        const canonicalKey = `caat_v2_${accountDigest}_${createHash("sha256")
             .update(JSON.stringify([
-                "connected-account-attempt-transaction-v1",
-                accountA.id,
+                "connected-account-attempt-transaction-v2",
                 "oauth",
                 "attempt_01HZX4T3Q7",
             ]))
@@ -153,6 +229,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "opaque-first" },
                 expiresAtMs: firstExpiry,
+                scope: deviceScope,
             },
         });
 
@@ -167,6 +244,7 @@ describe("Connected Account attempt transaction routes", () => {
                 expectedRevision: 1,
                 content: { t: "encrypted", c: "opaque-second" },
                 expiresAtMs: secondExpiry,
+                scope: deviceScope,
             },
         });
         expect(replaced.statusCode).toBe(200);
@@ -187,6 +265,7 @@ describe("Connected Account attempt transaction routes", () => {
                 expectedRevision: 1,
                 content: { t: "encrypted", c: "opaque-stale" },
                 expiresAtMs: secondExpiry,
+                scope: deviceScope,
             },
         });
         expect(staleReplace.statusCode).toBe(409);
@@ -249,6 +328,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "opaque" },
                 expiresAtMs: Date.now() + 60_000,
+                scope: oauthScope,
                 stagedCredentials: { token: "plaintext-secret" },
             },
         });
@@ -261,6 +341,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "x".repeat(524_289) },
                 expiresAtMs: Date.now() + 60_000,
+                scope: oauthScope,
             },
         });
         expect(oversized.statusCode).toBe(400);
@@ -298,7 +379,7 @@ describe("Connected Account attempt transaction routes", () => {
                 "content-type": "application/json",
                 "x-test-user-id": account.id,
             },
-            payload: { content, expiresAtMs },
+            payload: { content, expiresAtMs, scope: oauthScope },
         });
         expect(created.statusCode).toBe(200);
         expect(created.json()).toEqual({ revision: 1, content, expiresAtMs });
@@ -333,6 +414,7 @@ describe("Connected Account attempt transaction routes", () => {
                 expectedRevision: 1,
                 content: nextContent,
                 expiresAtMs,
+                scope: oauthScope,
             },
         });
         expect(replaced.statusCode).toBe(200);
@@ -363,7 +445,7 @@ describe("Connected Account attempt transaction routes", () => {
                 "content-type": "application/json",
                 "x-test-user-id": plainAccount.id,
             },
-            payload: { content: plainContent, expiresAtMs },
+            payload: { content: plainContent, expiresAtMs, scope: deviceScope },
         });
         expect(storedPlain.statusCode).toBe(200);
         expect(storedPlain.json()).toEqual({
@@ -382,6 +464,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "opaque" },
                 expiresAtMs,
+                scope: deviceScope,
             },
         });
         expect(plainAccountEncrypted.statusCode).toBe(409);
@@ -396,7 +479,7 @@ describe("Connected Account attempt transaction routes", () => {
                 "content-type": "application/json",
                 "x-test-user-id": e2eeAccount.id,
             },
-            payload: { content: plainContent, expiresAtMs },
+            payload: { content: plainContent, expiresAtMs, scope: deviceScope },
         });
         expect(e2eeAccountPlain.statusCode).toBe(409);
         expect(e2eeAccountPlain.json()).toEqual({
@@ -423,7 +506,7 @@ describe("Connected Account attempt transaction routes", () => {
             method: "POST",
             url,
             headers,
-            payload: { content, expiresAtMs },
+            payload: { content, expiresAtMs, scope: oauthScope },
         })).statusCode).toBe(200);
 
         await db.account.update({
@@ -437,6 +520,7 @@ describe("Connected Account attempt transaction routes", () => {
                 expectedRevision: 1,
                 content: { t: "plain", v: { replacement: true } },
                 expiresAtMs,
+                scope: oauthScope,
             },
         }, {
             method: "DELETE" as const,
@@ -473,6 +557,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "plain", v: { verifier: "preserve" } },
                 expiresAtMs,
+                scope: deviceScope,
             },
         })).statusCode).toBe(200);
         const stored = await db.repeatKey.findFirstOrThrow({
@@ -489,6 +574,7 @@ describe("Connected Account attempt transaction routes", () => {
                 expectedRevision: 1,
                 content: { t: "plain", v: { verifier: "replacement" } },
                 expiresAtMs,
+                scope: deviceScope,
             },
         }, {
             method: "DELETE" as const,
@@ -529,6 +615,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "opaque-abandoned" },
                 expiresAtMs: Date.now() + 40,
+                scope: oauthScope,
             },
         });
         expect(abandoned.statusCode).toBe(200);
@@ -557,6 +644,7 @@ describe("Connected Account attempt transaction routes", () => {
                 payload: {
                     content: { t: "encrypted", c: `opaque-live-${index}` },
                     expiresAtMs: Date.now() + 15 * 60_000,
+                    scope: oauthScope,
                 },
             })),
         );
@@ -571,6 +659,7 @@ describe("Connected Account attempt transaction routes", () => {
                 payload: {
                     content: { t: "encrypted", c: `opaque-live-${index}` },
                     expiresAtMs: Date.now() + 15 * 60_000,
+                    scope: oauthScope,
                 },
             });
             expect(response.statusCode, response.body).toBe(200);
@@ -584,6 +673,7 @@ describe("Connected Account attempt transaction routes", () => {
             payload: {
                 content: { t: "encrypted", c: "opaque-other" },
                 expiresAtMs: Date.now() + 15 * 60_000,
+                scope: oauthScope,
             },
         });
         expect(other.statusCode).toBe(200);
@@ -606,13 +696,15 @@ describe("Connected Account attempt transaction routes", () => {
             method: "POST",
             url,
             headers,
-            payload: { content, expiresAtMs },
+            payload: { content, expiresAtMs, scope: oauthScope },
         })).statusCode).toBe(200);
 
-        const canonicalKey = `caat_v1_${createHash("sha256")
+        const accountDigest = createHash("sha256")
+            .update(JSON.stringify(["connected-account-attempt-account-v2", account.id]))
+            .digest("base64url");
+        const canonicalKey = `caat_v2_${accountDigest}_${createHash("sha256")
             .update(JSON.stringify([
-                "connected-account-attempt-transaction-v1",
-                account.id,
+                "connected-account-attempt-transaction-v2",
                 "oauth",
                 attemptId,
             ]))

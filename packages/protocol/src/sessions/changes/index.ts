@@ -41,11 +41,12 @@ export type {
 } from './checkpointAttributionScope.js';
 export {
   combineChangedFilesAttribution,
+  projectChangedFilesAttribution,
   deriveSessionChangeAttribution,
   compareTurnChangeSetChronology,
   mergeCheckpointOverlap,
   mergeTurnChangeSets,
 } from './mergeTurnChangeSets.js';
-export type { ChangedFilesTurnEvidenceScope } from './mergeTurnChangeSets.js';
-export { reconcileWithScmSnapshot } from './reconcileWithScmSnapshot.js';
+export type { ChangedFilesTurnEvidenceScope, ChangedFilesAttributionProjection } from './mergeTurnChangeSets.js';
+export { reconcileWithScmSnapshot, normalizeRepositoryFilePath } from './reconcileWithScmSnapshot.js';
 export { excludeRolledBackTurns } from './rollbacks.js';

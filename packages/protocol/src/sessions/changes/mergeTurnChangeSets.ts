@@ -1,4 +1,5 @@
 import { normalizeCheckpointAttributionScope } from './checkpointAttributionScope.js';
+import { normalizeRepositoryFilePath } from './reconcileWithScmSnapshot.js';
 import type {
   ChangeConfidence,
   ChangeEvidenceSource,
@@ -201,6 +202,7 @@ export function deriveSessionChangeAttributionFromSource(
 
 type SelectedTurnFile = Readonly<{
   file: SessionChangeSetFile;
+  evidence: FileChangeEvidence[];
   attributionEvidence: FileChangeEvidence;
   checkpointEvidenceOverlap: CheckpointOverlapObservation | null;
 }>;
@@ -230,6 +232,7 @@ function mergeFileEvidence(
   next: FileChangeEvidence,
   turnId: string,
   turnCheckpointOverlap: CheckpointOverlapObservation,
+  originalEvidence: FileChangeEvidence,
 ): SelectedTurnFile {
   const nextCheckpointOverlap = next.source === 'scm_checkpoint' ? turnCheckpointOverlap : 'unknown';
   const nextAttribution = deriveSessionChangeAttribution(next, nextCheckpointOverlap);
@@ -243,6 +246,7 @@ function mergeFileEvidence(
         checkpointOverlap: nextCheckpointOverlap,
       },
       attributionEvidence: next,
+      evidence: [originalEvidence],
       checkpointEvidenceOverlap: next.source === 'scm_checkpoint' ? turnCheckpointOverlap : null,
     };
   }
@@ -261,6 +265,7 @@ function mergeFileEvidence(
       ? turnCheckpointOverlap
       : mergeCheckpointOverlap(current.checkpointEvidenceOverlap, turnCheckpointOverlap);
 
+  current.evidence.push(originalEvidence);
   return {
     file: {
       ...content,
@@ -272,6 +277,7 @@ function mergeFileEvidence(
       turns: current.file.turns.includes(turnId) ? current.file.turns : [...current.file.turns, turnId],
     },
     attributionEvidence,
+    evidence: current.evidence,
     checkpointEvidenceOverlap,
   };
 }
@@ -366,11 +372,20 @@ function orderTurnFilesForRenameLineage(files: Iterable<SelectedTurnFile>): Sele
   return ordered;
 }
 
-export function mergeTurnChangeSets(params: Readonly<{
+type MergeTurnChangeSetsInput = Readonly<{
   sessionId: string;
   turns: readonly TurnChangeSet[];
   rolledBackTurnIds?: readonly string[];
-}>): SessionChangeSet {
+  repoRootPath?: string | null;
+}>;
+
+/** Derived only; retained turns remain the serialized evidence owner. */
+export type ChangedFilesAttributionProjection = Readonly<{
+  changeSet: SessionChangeSet;
+  evidenceByFilePath: ReadonlyMap<string, readonly FileChangeEvidence[]>;
+}>;
+
+function projectTurnChangeSets(params: MergeTurnChangeSetsInput): ChangedFilesAttributionProjection {
   const byFilePath = new Map<string, SelectedTurnFile>();
   let summarySource: ChangeEvidenceSource | 'unavailable' = 'unavailable';
   let summaryConfidence: ChangeConfidence | 'unavailable' = 'unavailable';
@@ -381,8 +396,9 @@ export function mergeTurnChangeSets(params: Readonly<{
     // Resolve competing observations of one turn before composing chronological turns.
     // Otherwise an older checkpoint can mislabel later bytes or replace the Session's start text.
     const turnFiles = new Map<string, SelectedTurnFile>();
-    for (const file of turn.files) {
-      turnFiles.set(file.filePath, mergeFileEvidence(turnFiles.get(file.filePath) ?? null, file, turn.turnId, turnCheckpointOverlap));
+    for (const evidence of turn.files) {
+      const file = normalizeFileEvidencePaths(evidence, params.repoRootPath);
+      turnFiles.set(file.filePath, mergeFileEvidence(turnFiles.get(file.filePath) ?? null, file, turn.turnId, turnCheckpointOverlap, evidence));
     }
     for (const selected of orderTurnFilesForRenameLineage(turnFiles.values())) {
       const file = selected.file;
@@ -401,11 +417,24 @@ export function mergeTurnChangeSets(params: Readonly<{
         previous.checkpointEvidenceOverlap,
         selected.checkpointEvidenceOverlap,
       );
+      // These endpoints may be Edit fragments, not full files. A connecting nonempty comparison is
+      // useful best-effort span evidence; equality cannot prove the whole file reverted or is clean.
+      const hasNetText = !previous.file.binary && !file.binary
+        && !previous.file.truncated && !file.truncated
+        && typeof previous.file.oldText === 'string' && typeof previous.file.newText === 'string'
+        && typeof file.oldText === 'string' && typeof file.newText === 'string'
+        && previous.file.newText === file.oldText
+        && previous.file.oldText !== file.newText;
+      for (const evidence of selected.evidence) previous.evidence.push(evidence);
       byFilePath.set(file.filePath, {
         file: {
           ...file,
           previousFilePath: previous.file.previousFilePath ?? file.previousFilePath ?? null,
-          oldText: previous.file.oldText ?? file.oldText ?? null,
+          oldText: hasNetText ? previous.file.oldText : null,
+          newText: hasNetText ? file.newText : null,
+          unifiedDiff: null,
+          stats: undefined,
+          confidence: 'best_effort',
           provider: attributionOwner.provider,
           agentTurnId: attributionOwner.agentTurnId ?? null,
           providerMessageId: attributionOwner.providerMessageId ?? null,
@@ -416,6 +445,7 @@ export function mergeTurnChangeSets(params: Readonly<{
             : [...previous.file.turns, turn.turnId],
         },
         attributionEvidence: selected.attributionEvidence,
+        evidence: previous.evidence,
         checkpointEvidenceOverlap,
       });
     }
@@ -446,7 +476,7 @@ export function mergeTurnChangeSets(params: Readonly<{
     }
   }
 
-  return {
+  const changeSet: SessionChangeSet = {
     sessionId: params.sessionId,
     turns: chronologicalTurns,
     files,
@@ -458,6 +488,14 @@ export function mergeTurnChangeSets(params: Readonly<{
       checkpointOverlap: summaryCheckpointOverlap ?? 'unknown',
     },
   };
+  return {
+    changeSet,
+    evidenceByFilePath: new Map(aggregatedFiles.map((entry) => [entry.file.filePath, entry.evidence])),
+  };
+}
+
+export function mergeTurnChangeSets(params: MergeTurnChangeSetsInput): SessionChangeSet {
+  return projectTurnChangeSets(params).changeSet;
 }
 
 /**
@@ -467,41 +505,65 @@ export function mergeTurnChangeSets(params: Readonly<{
  * admitted only when no canonical file evidence exists, and their vocabulary is assigned here
  * rather than by a UI host.
  */
-export function combineChangedFilesAttribution(params: Readonly<{
+type ChangedFilesAttributionInput = Readonly<{
   sessionId: string;
   turns?: readonly TurnChangeSet[];
   evidenceScope?: ChangedFilesTurnEvidenceScope;
   canonicalChangeSet?: SessionChangeSet | null;
   rolledBackTurnIds?: readonly string[];
   workspaceTouchedFiles?: readonly WorkspaceTouchedFileEvidence[];
-}>): SessionChangeSet {
+  repoRootPath?: string | null;
+}>;
+
+export function combineChangedFilesAttribution(params: ChangedFilesAttributionInput): SessionChangeSet {
+  return projectChangedFilesAttribution(params).changeSet;
+}
+
+function normalizeFileEvidencePaths<T extends FileChangeEvidence>(file: T, repoRootPath?: string | null): T {
+  return {
+    ...file,
+    filePath: normalizeRepositoryFilePath(file.filePath, repoRootPath),
+    ...(file.previousFilePath ? {
+      previousFilePath: normalizeRepositoryFilePath(file.previousFilePath, repoRootPath),
+    } : {}),
+  };
+}
+
+export function projectChangedFilesAttribution(params: ChangedFilesAttributionInput): ChangedFilesAttributionProjection {
   const evidenceScope = params.evidenceScope ?? 'all';
   const rawTurns = (params.turns ?? []).map((turn) => ({
     ...turn,
     files: turn.files.filter((file) => sourceBelongsToTurnEvidenceScope(file.source, evidenceScope)),
   }));
   if (rawTurns.length > 0) {
-    const merged = mergeTurnChangeSets({
+    const merged = projectTurnChangeSets({
       sessionId: params.sessionId,
       turns: rawTurns,
       rolledBackTurnIds: params.rolledBackTurnIds,
+      repoRootPath: params.repoRootPath,
     });
-    if (merged.files.length > 0 || evidenceScope !== 'all') return merged;
+    if (merged.changeSet.files.length > 0 || evidenceScope !== 'all') return merged;
   }
 
   if (params.canonicalChangeSet && params.canonicalChangeSet.files.length > 0) {
-    return params.canonicalChangeSet.turns.length > 0
-      ? mergeTurnChangeSets({
+    if (params.canonicalChangeSet.turns.length > 0) {
+      return projectTurnChangeSets({
           sessionId: params.sessionId,
           turns: params.canonicalChangeSet.turns,
           rolledBackTurnIds: params.canonicalChangeSet.rolledBackTurnIds,
-        })
-      : params.canonicalChangeSet;
+          repoRootPath: params.repoRootPath,
+        });
+    }
+    const files = params.canonicalChangeSet.files.map((file) => normalizeFileEvidencePaths(file, params.repoRootPath));
+    return {
+      changeSet: { ...params.canonicalChangeSet, files },
+      evidenceByFilePath: new Map(files.map((file, index) => [file.filePath, [params.canonicalChangeSet!.files[index]!]])),
+    };
   }
 
   const workspaceFiles = params.workspaceTouchedFiles ?? [];
   if (workspaceFiles.length === 0) {
-    return mergeTurnChangeSets({
+    return projectTurnChangeSets({
       sessionId: params.sessionId,
       turns: [],
       rolledBackTurnIds: params.rolledBackTurnIds,
@@ -511,7 +573,7 @@ export function combineChangedFilesAttribution(params: Readonly<{
   const files = workspaceFiles
     .map((file): SessionChangeSetFile => {
       const evidence: FileChangeEvidence = {
-        ...file,
+        ...normalizeFileEvidencePaths({ ...file, source: 'inferred', confidence: 'best_effort', provider: 'workspace' }, params.repoRootPath),
         source: 'inferred',
         confidence: 'best_effort',
         provider: 'workspace',
@@ -525,7 +587,7 @@ export function combineChangedFilesAttribution(params: Readonly<{
     })
     .sort((left, right) => left.filePath.localeCompare(right.filePath));
 
-  return {
+  const changeSet: SessionChangeSet = {
     sessionId: params.sessionId,
     turns: [],
     files,
@@ -537,4 +599,5 @@ export function combineChangedFilesAttribution(params: Readonly<{
       checkpointOverlap: 'unknown',
     },
   };
+  return { changeSet, evidenceByFilePath: new Map(files.map((file) => [file.filePath, [file]])) };
 }

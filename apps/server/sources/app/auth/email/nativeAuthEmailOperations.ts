@@ -24,7 +24,14 @@ export type AuthEmailApplicationLinkTarget = Readonly<{
     serverId: string | null;
 }>;
 
-export type ResolveAuthEmailApplicationLinkTarget = () => Promise<AuthEmailApplicationLinkTarget>;
+/**
+ * Resolves where mail links open. `env` is the Home-effective configuration when the caller already
+ * holds it (for example inside a transaction, where a second Home-settings read would wait on the
+ * transaction's own SQLite connection); without it the resolver reads the Home's configuration.
+ */
+export type ResolveAuthEmailApplicationLinkTarget = (
+    env?: Readonly<Record<string, string | undefined>>,
+) => Promise<AuthEmailApplicationLinkTarget>;
 
 /**
  * The raw bearer belongs only in the canonical URL path, never a query
@@ -158,9 +165,9 @@ export async function requestNativeEmailVerification(
 
 /**
  * Creates and mails a Plain password-reset operation. The credential revision
- * and native sign-in identity are bound here; the owning reset transaction
- * rechecks both when it consumes the operation, so a later password change or
- * sign-in-email change makes stale links inert without any extra state.
+ * and native sign-in identity lifetime/address are bound here; the owning reset
+ * transaction rechecks them when it consumes the operation. Password change,
+ * email change, and removal/re-enrollment leave old links inert.
  */
 export async function requestPlainPasswordReset(
     deps: NativeAuthEmailDeps,
@@ -168,6 +175,7 @@ export async function requestPlainPasswordReset(
         recipient: NormalizedVerifiedEmail;
         accountId: string;
         credentialRevision: number;
+        nativeIdentityId: string;
         expectedNativeIdentity: string;
     }>,
 ): Promise<NativeAuthEmailRequestOutcome> {
@@ -178,6 +186,7 @@ export async function requestPlainPasswordReset(
         purpose: "reset_plain_password",
         accountId: params.accountId,
         credentialRevision: params.credentialRevision,
+        nativeIdentityId: params.nativeIdentityId,
         expectedNativeIdentity: params.expectedNativeIdentity,
     }));
     const resetUrl = buildPlainPasswordResetUrl(target, issued.rawBearer);

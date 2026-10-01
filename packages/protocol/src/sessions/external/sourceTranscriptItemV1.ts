@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { StrictJsonValueSchema } from '../../json/strictJsonValue.js';
 
 import { SidechainIdSchema } from '../idsV1.js';
 import { ExternalSessionUserProjectionSchema } from '../messages/agentExternalSessionTranscriptRawRecord.js';
@@ -59,3 +60,13 @@ export function createExternalSessionTranscriptSourceItemV1Schema<
     raw: options.raw,
   });
 }
+
+/** Nonvisual native evidence admitted only by an ordered terminal source follow. */
+export const ExternalSessionTerminalSourceObservationV1Schema = z.object({
+  id: ExternalSessionTranscriptItemIdV1Schema,
+  createdAtMs: ExternalSessionTranscriptSourceTimestampV1Schema,
+  raw: z.object({
+    role: z.literal('source_observation'),
+    content: StrictJsonValueSchema,
+  }).strict(),
+}).strict();

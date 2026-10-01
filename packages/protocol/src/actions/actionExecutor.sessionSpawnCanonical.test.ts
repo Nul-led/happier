@@ -4,12 +4,17 @@ import { RPC_ERROR_CODES } from '../rpc/index.js';
 import { RpcError } from '../rpc/errors.js';
 import { deriveSessionCreationTagV1 } from '../sessions/creation/sessionCreationIdentityV1.js';
 import { createActionExecutor } from './actionExecutor.js';
+import { actionSpecToActionDefinitionV1, projectActionDefinitionForExternalDiscovery } from './actionCatalog.js';
+import { getActionSpec } from './actionSpecs.js';
 import type { ActionExecutorDeps } from './executor/types.js';
+import type { ResolvedRolesSnapshotV1 } from '../prompts/roles/rolesV1.js';
+import { API_TOKEN_FULL_GRANT_V1 } from '../auth/apiTokenGrant.js';
+import { DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1 } from '../account/settings/sessionAgentSpawnPolicyV1.js';
 
 const canonicalInput = {
   creationKey: 'plugin-operation-7',
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-  directory: '/workspace/project',
+  directory: { kind: 'path', path: '/workspace/project' },
   organizationPlacement: { folderId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent',
@@ -19,12 +24,18 @@ const canonicalInput = {
 
 const apiSpawnInput = {
   creationKey: 'api-operation-7',
-  directory: '/workspace/project',
+  directory: { kind: 'path', path: '/workspace/project' },
   organizationPlacement: { folderId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent',
     identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
   },
+} as const;
+
+const agentStartContext = {
+  caller: { kind: 'session', sessionId: 'parent-session', starterDepth: 0, turnDepth: 0 },
+  baseline: { machineId: 'parent-machine', directory: canonicalInput.directory.path, configuration: { agentTarget: canonicalInput.agentTarget } },
+  roles: {}, ledSubtreeSessionIds: [], workDepthLimit: 4, callerPermissionCeiling: 'yolo',
 } as const;
 
 function createExternalSpawnApprovalContext(requestId: string) {
@@ -36,7 +47,7 @@ function createExternalSpawnApprovalContext(requestId: string) {
     actionCaller: { kind: 'host' as const },
     serverId: 'server-host',
     actionRequestId: requestId,
-    externalActionCredential: { accountId: 'account-1', principalId: 'account-1', credentialId },
+    externalActionCredential: { accountId: 'account-1', principalId: 'account-1', credentialId, grant: API_TOKEN_FULL_GRANT_V1 },
     externalActionTarget: target,
     externalActionExecutionAuthorization: {
       v: 1 as const,
@@ -46,6 +57,7 @@ function createExternalSpawnApprovalContext(requestId: string) {
         accountId: 'account-1',
         principalId: 'account-1',
         credentialId,
+        grant: API_TOKEN_FULL_GRANT_V1,
         machineId: target.machineId,
         actionId: 'session.spawn_new' as const,
         requestId,
@@ -58,6 +70,68 @@ function createExternalSpawnApprovalContext(requestId: string) {
 }
 
 describe('session.spawn_new canonical execution', () => {
+  it.each([{ FEATURE_FLAG: 'enabled' }, {}])('refuses the environment policy before approval or native spawn: %j', async (environmentVariables) => {
+    // Approval storage and native Session creation are genuine system boundaries.
+    const approvalsCreate = vi.fn();
+    const sessionSpawnNew = vi.fn();
+    // Unused transport dependencies are omitted: policy rejection precedes every effect.
+    const executor = createActionExecutor({ approvalsCreate, sessionSpawnNew, isActionApprovalRequired: () => true } as unknown as ActionExecutorDeps);
+    expect(await executor.execute('session.spawn_new', { ...canonicalInput, environmentVariables }, {
+      surface: 'agent', defaultSessionId: 'parent-session', agentStartContext,
+      callerPermissionMode: 'yolo',
+      causalPermissionAuthority: { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'yolo' },
+      sessionInputSource: { sourceSessionId: 'parent-session', sourceTurnId: 'parent-turn-1', via: 'action' },
+      sessionAgentSpawnPolicyV1: { ...DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1, allowEnvironmentVariables: false },
+    })).toMatchObject({ ok: false, errorCode: 'policy_denied_field',
+      details: { code: 'policy_denied_field', field: 'environmentVariables' } });
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('snapshots the host-resolved complete roles and notes without inheriting the lead role selection', async () => {
+    const roles: ResolvedRolesSnapshotV1 = {
+      builder: { roleId: 'builder', name: 'Builder', instructions: 'Resolved project and Account instructions',
+        engine: { agentTargetKey: 'agent:codex', modelId: 'worker-model', effort: 'high' },
+        runsAs: { kind: 'session' }, workspaceWrites: 'allow', secondOpinion: 'encouraged', enabled: true },
+      orchestrator: { roleId: 'orchestrator', name: 'Orchestrator', instructions: 'Lead only',
+        engine: { agentTargetKey: 'agent:codex' }, runsAs: { kind: 'session' },
+        workspaceWrites: 'deny', secondOpinion: 'off', enabled: true },
+    };
+    const sessionSpawnNew = vi.fn<ActionExecutorDeps['sessionSpawnNew']>(async () => ({ type: 'pending' as const,
+      retryWithSameCreationKey: true as const, outcome: 'accepted' as const }));
+    const executor = createActionExecutor({ sessionSpawnNew } as unknown as ActionExecutorDeps);
+    const context = {
+      surface: 'plugin' as const,
+      actionCaller: { kind: 'plugin' as const, pluginId: 'plugin.example', contributionLocalId: 'feature-a' },
+      defaultSessionId: 'parent-session',
+      agentStartContext: { ...agentStartContext, roles },
+      sessionRoleConfiguration: { sessionRoles: {}, overrides: {}, notes: 'Finish the bounded worker task',
+        memoryDocRef: { kind: 'doc' as const, artifactId: 'lead-memory' } },
+    };
+
+    expect((await executor.execute('session.spawn_new', { ...canonicalInput, roleId: 'builder' }, context)).ok).toBe(true);
+    expect(sessionSpawnNew.mock.calls[0]?.[0]).toMatchObject({ initialSessionRolesV1: {
+      roleId: 'builder', inheritedFrom: 'parent-session', overrides: {}, sessionRoles: roles,
+      notes: 'Finish the bounded worker task', memoryDocRef: { kind: 'doc', artifactId: 'lead-memory' },
+    } });
+    roles.builder!.instructions = 'A later edit';
+    expect(sessionSpawnNew.mock.calls[0]?.[0].initialSessionRolesV1?.sessionRoles.builder?.instructions)
+      .toBe('Resolved project and Account instructions');
+
+    expect((await executor.execute('session.spawn_new', canonicalInput, context)).ok).toBe(true);
+    expect(sessionSpawnNew.mock.calls[1]?.[0].initialSessionRolesV1).not.toHaveProperty('roleId');
+  });
+
+  it('rejects a caller-supplied role snapshot before spawn dispatch', async () => {
+    const sessionSpawnNew = vi.fn();
+    const executor = createActionExecutor({ sessionSpawnNew } as unknown as ActionExecutorDeps);
+    const result = await executor.execute('session.spawn_new', {
+      ...canonicalInput, initialSessionRolesV1: { overrides: {}, sessionRoles: {}, notes: 'forged' },
+    }, { surface: 'plugin', actionCaller: { kind: 'plugin', pluginId: 'plugin.example', contributionLocalId: 'feature-a' } });
+    expect(result).toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
   it('signs the exact materialized API spawn input persisted for deferred replay', async () => {
     const approvalsCreate = vi.fn(async () => ({ artifactId: 'approval-api-spawn' }));
     const signExternalActionApprovalInput = vi.fn(() => 'a'.repeat(86));
@@ -79,6 +153,7 @@ describe('session.spawn_new canonical execution', () => {
         accountId: 'account-1',
         principalId: 'account-1',
         credentialId: '11111111-1111-4111-8111-111111111111',
+        grant: API_TOKEN_FULL_GRANT_V1,
       },
       externalActionTarget: target,
       externalActionExecutionAuthorization: {
@@ -89,6 +164,7 @@ describe('session.spawn_new canonical execution', () => {
           accountId: 'account-1',
           principalId: 'account-1',
           credentialId: '11111111-1111-4111-8111-111111111111',
+          grant: API_TOKEN_FULL_GRANT_V1,
           machineId: 'machine-1',
           actionId: 'session.spawn_new',
           requestId: 'spawn-request-1',
@@ -120,20 +196,26 @@ describe('session.spawn_new canonical execution', () => {
   it('enforces the live Agent spawn policy before creating an approval artifact', async () => {
     const approvalsCreate = vi.fn();
     const sessionSpawnNew = vi.fn();
-    const sessionSpawnNewAgentPolicyPreflight = vi.fn(async () => ({
-      type: 'denied' as const,
-      field: 'executionTarget.machineId',
-    }));
     const executor = createActionExecutor({
       approvalsCreate,
       sessionSpawnNew,
-      sessionSpawnNewAgentPolicyPreflight,
+      resolveAgentStartContext: async () => agentStartContext,
       isActionApprovalRequired: () => true,
     } as unknown as ActionExecutorDeps);
 
     await expect(executor.execute('session.spawn_new', canonicalInput, {
       surface: 'agent',
       defaultSessionId: 'parent-session',
+      callerPermissionMode: 'yolo',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'yolo',
+      },
+      sessionInputSource: {
+        sourceSessionId: 'parent-session',
+        sourceTurnId: 'parent-turn-1',
+        via: 'action',
+      },
       sessionAgentSpawnPolicyV1: {
         v: 1,
         allowCustomDirectory: true,
@@ -151,11 +233,10 @@ describe('session.spawn_new canonical execution', () => {
       },
     })).resolves.toEqual({
       ok: false,
-      errorCode: 'session_spawn_policy_denied',
-      error: 'session_spawn_policy_denied',
-      details: { field: 'executionTarget.machineId' },
+      errorCode: 'policy_denied_field',
+      error: 'policy_denied_field',
+      details: { code: 'policy_denied_field', field: 'executionTarget.machineId' },
     });
-    expect(sessionSpawnNewAgentPolicyPreflight).toHaveBeenCalledOnce();
     expect(approvalsCreate).not.toHaveBeenCalled();
     expect(sessionSpawnNew).not.toHaveBeenCalled();
   });
@@ -168,11 +249,11 @@ describe('session.spawn_new canonical execution', () => {
     const executor = createActionExecutor({
       approvalsCreate,
       sessionSpawnNew: vi.fn(),
-      sessionSpawnNewAgentPolicyPreflight: vi.fn(async () => ({ type: 'allowed' as const })),
+      resolveAgentStartContext: async () => agentStartContext,
       isActionApprovalRequired: () => true,
     } as unknown as ActionExecutorDeps);
 
-    await executor.execute('session.spawn_new', canonicalInput, {
+    await executor.execute('session.spawn_new', { ...canonicalInput, permissionMode: 'read-only' }, {
       surface: 'agent',
       defaultSessionId: 'parent-session',
       callerPermissionMode: 'yolo',
@@ -269,6 +350,7 @@ describe('session.spawn_new canonical execution', () => {
         accountId: 'account-1',
         principalId: 'principal-1',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
       },
     })).resolves.toMatchObject({ ok: true });
 
@@ -308,6 +390,7 @@ describe('session.spawn_new canonical execution', () => {
         accountId: 'account-1',
         principalId: '',
         credentialId: 'credential-1',
+        grant: API_TOKEN_FULL_GRANT_V1,
       },
     })).resolves.toEqual({
       ok: false,
@@ -508,6 +591,11 @@ describe('session.spawn_new canonical execution', () => {
   });
 
   it('projects compact spawn input schemas and hints when API callers discover Action specs', async () => {
+    // Exercise the real catalog first so serialization failures retain their
+    // cause instead of the executor's generic invalid_parameters result.
+    projectActionDefinitionForExternalDiscovery(actionSpecToActionDefinitionV1(
+      getActionSpec('session.spawn_new'), { surface: 'api' },
+    ));
     const executor = createActionExecutor({
       isActionApprovalRequired: () => false,
     } as unknown as ActionExecutorDeps);
@@ -525,15 +613,30 @@ describe('session.spawn_new canonical execution', () => {
       limit: 1,
     }, context);
 
-    expect(getResult).toMatchObject({
+    expect(getResult, JSON.stringify(getResult)).toMatchObject({
       ok: true,
       result: {
         actionSpec: {
           kindVersion: 1,
-          description: 'Create a new coding session in a directory on the requested machine, using the selected Agent.',
           inputSchema: {
             properties: {
-              directory: expect.objectContaining({ type: 'string' }),
+              directory: expect.objectContaining({
+                anyOf: expect.arrayContaining([
+                  expect.objectContaining({
+                    type: 'object',
+                    properties: expect.objectContaining({
+                      kind: expect.objectContaining({ const: 'path' }),
+                      path: expect.objectContaining({ type: 'string', minLength: 1 }),
+                    }),
+                  }),
+                  expect.objectContaining({
+                    type: 'object',
+                    properties: expect.objectContaining({
+                      kind: expect.objectContaining({ const: 'managed' }),
+                    }),
+                  }),
+                ]),
+              }),
             },
           },
           inputHints: {
@@ -573,12 +676,11 @@ describe('session.spawn_new canonical execution', () => {
         },
       },
     });
-    expect(searchResult).toMatchObject({
+    expect(searchResult, JSON.stringify(searchResult)).toMatchObject({
       ok: true,
       result: {
         actionSpecs: [expect.objectContaining({
           id: 'session.spawn_new',
-          description: 'Create a new coding session in a directory on the requested machine, using the selected Agent.',
           inputHints: expect.objectContaining({
             fields: expect.arrayContaining([
               expect.objectContaining({ path: 'directory' }),
@@ -621,7 +723,7 @@ describe('session.spawn_new canonical execution', () => {
     }));
     const executor = createActionExecutor({ sessionSpawnNew } as unknown as ActionExecutorDeps);
 
-    const result = await executor.execute('session.spawn_new', canonicalInput, {
+    const context = {
       surface: 'plugin',
       actionCaller: {
         kind: 'plugin',
@@ -629,7 +731,8 @@ describe('session.spawn_new canonical execution', () => {
         contributionLocalId: 'feature-a',
       },
       actionRequestId: 'attempt-1',
-    });
+    } as const;
+    const result = await executor.execute('session.spawn_new', canonicalInput, context);
 
     expect(result).toEqual({
       ok: true,
@@ -647,6 +750,7 @@ describe('session.spawn_new canonical execution', () => {
         creationKey: 'plugin-operation-7',
       }),
       callerSurface: 'plugin',
+      context,
       actionCaller: {
         kind: 'plugin',
         pluginId: 'plugin.example',
@@ -926,7 +1030,7 @@ describe('session.spawn_new canonical execution', () => {
     const directoryApproval = {
       v: 1 as const,
       executionTarget: canonicalInput.executionTarget,
-      directory: canonicalInput.directory,
+      directory: canonicalInput.directory.path,
     };
     const sessionSpawnNew = vi.fn(async () => ({
       type: 'pending' as const,
@@ -990,7 +1094,7 @@ describe('session.spawn_new canonical execution', () => {
     const directoryApproval = {
       v: 1 as const,
       executionTarget: canonicalInput.executionTarget,
-      directory: canonicalInput.directory,
+      directory: canonicalInput.directory.path,
     };
     const sessionSpawnNew = vi.fn(async () => {
       throw new Error('ui_must_not_forward_directory_approval_as_spawn_input');

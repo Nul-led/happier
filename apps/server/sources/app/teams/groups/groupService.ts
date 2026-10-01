@@ -37,6 +37,7 @@ import {
 } from "../actorContext";
 import { publishTeamChangedInTx } from "../teamChanges";
 import { applyTeamGroupContributionInTx } from "./groupContributions";
+import { EFFECTIVE_TEAM_GROUP_MEMBERSHIP_WHERE } from "./effectiveGroupMembership";
 import {
     projectTeamGroupMemberV1,
     projectTeamGroupV1,
@@ -97,8 +98,17 @@ async function resolveTeamViewerContextInTx(
 
 async function qualifyTeamViewerInTx(
     tx: Tx,
-    input: Readonly<{ context: TeamActorContext; authentication?: TeamOperationAuthenticationContext }>,
+    input: Readonly<{
+        context: TeamActorContext;
+        authentication?: TeamOperationAuthenticationContext;
+        allowHomeRecovery?: boolean;
+    }>,
 ): Promise<TeamGroupServiceResult<TeamActorContext>> {
+    if (input.allowHomeRecovery
+        && input.context.ownerRequired
+        && input.context.homeAuthority.manageAllTeams) {
+        return { ok: true, value: input.context };
+    }
     const qualified = await qualifyTeamOperationAuthenticationInTx(tx, {
         context: input.context,
         ...input.authentication,
@@ -143,7 +153,12 @@ async function projectGroupInTx(
     input: Readonly<{ context: TeamActorContext; row: TeamGroupRow }>,
 ): Promise<TeamGroupV1> {
     const [memberCount, bindings] = await Promise.all([
-        tx.teamGroupMembership.count({ where: { teamGroupId: input.row.id } }),
+        tx.teamGroupMembership.count({
+            where: {
+                teamGroupId: input.row.id,
+                ...EFFECTIVE_TEAM_GROUP_MEMBERSHIP_WHERE,
+            },
+        }),
         readTeamGroupBindingsInTx(tx, { teamGroupId: input.row.id }),
     ]);
     return projectTeamGroupV1({
@@ -164,7 +179,10 @@ async function projectGroupPageInTx(
     const [counts, bindingsByGroup] = await Promise.all([
         tx.teamGroupMembership.groupBy({
             by: ["teamGroupId"],
-            where: { teamGroupId: { in: groupIds } },
+            where: {
+                teamGroupId: { in: groupIds },
+                ...EFFECTIVE_TEAM_GROUP_MEMBERSHIP_WHERE,
+            },
             _count: { _all: true },
         }),
         readTeamGroupBindingsForPageInTx(tx, { teamGroupIds: groupIds }),
@@ -195,6 +213,7 @@ export async function listTeamGroupsForActorInTx(
     const qualified = await qualifyTeamViewerInTx(tx, {
         context: authorized.value,
         authentication: input.authentication,
+        allowHomeRecovery: true,
     });
     if (!qualified.ok) return qualified;
     const context = qualified.value;
@@ -268,6 +287,7 @@ export async function listTeamMemberGroupsForActorInTx(
     const qualified = await qualifyTeamViewerInTx(tx, {
         context: authorized.value,
         authentication: input.authentication,
+        allowHomeRecovery: true,
     });
     if (!qualified.ok) return qualified;
     const context = qualified.value;
@@ -331,6 +351,7 @@ export async function getTeamGroupForActorInTx(
     const qualified = await qualifyTeamViewerInTx(tx, {
         context: authorized.value,
         authentication: input.authentication,
+        allowHomeRecovery: true,
     });
     if (!qualified.ok) return qualified;
 
@@ -582,6 +603,7 @@ export async function listTeamGroupMembersForActorInTx(
     const qualified = await qualifyTeamViewerInTx(tx, {
         context: authorized.value,
         authentication: input.authentication,
+        allowHomeRecovery: true,
     });
     if (!qualified.ok) return qualified;
 
@@ -602,6 +624,7 @@ export async function listTeamGroupMembersForActorInTx(
     const rows = await tx.teamGroupMembership.findMany({
         where: {
             teamGroupId: row.id,
+            ...EFFECTIVE_TEAM_GROUP_MEMBERSHIP_WHERE,
             ...(after
                 ? {
                     OR: [

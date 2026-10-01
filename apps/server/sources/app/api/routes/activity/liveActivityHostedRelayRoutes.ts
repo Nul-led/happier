@@ -18,6 +18,7 @@ import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCata
 import type { ApiRateLimitRequest } from "@/app/api/utils/apiRateLimitPolicy";
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import type { Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 const HostedRelayRequestSchema = z
     .object({
@@ -196,11 +197,12 @@ export function liveActivityHostedRelayRoutes(app: Fastify) {
             }),
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (!parseBooleanEnv(process.env.HAPPIER_LIVE_ACTIVITY_HOSTED_RELAY_SERVICE_ENABLED, false)) {
             return reply.code(404).send({ code: "live_activity_hosted_relay_disabled" });
         }
 
-        const accessKeys = relayAccessKeys(process.env);
+        const accessKeys = relayAccessKeys(requestHomeEnv);
         const bearerToken = readBearerToken(request);
         if (accessKeys.length === 0 || !bearerToken || !hasRelayAccessKey(accessKeys, bearerToken)) {
             return reply.code(401).send({ code: "live_activity_hosted_relay_unauthorized" });
@@ -213,11 +215,11 @@ export function liveActivityHostedRelayRoutes(app: Fastify) {
 
         const relayRequest = parsed.data;
         const now = Date.now();
-        if (Math.abs(now - relayRequest.createdAt) > maxSkewMs(process.env)) {
+        if (Math.abs(now - relayRequest.createdAt) > maxSkewMs(requestHomeEnv)) {
             return reply.code(409).send({ code: "live_activity_hosted_relay_stale" });
         }
 
-        const config = resolveLiveActivityRemoteTransportConfig(process.env);
+        const config = resolveLiveActivityRemoteTransportConfig(requestHomeEnv);
         if (!config.directApns.configured) {
             return reply.code(503).send({
                 code: "live_activity_hosted_relay_apns_unavailable",
@@ -236,8 +238,8 @@ export function liveActivityHostedRelayRoutes(app: Fastify) {
 
         const cacheKey = duplicateKey(relayRequest);
         const requestHash = duplicateRequestHash(relayRequest);
-        const ttlMs = duplicateTtlMs(process.env);
-        cleanupDuplicateCache(now, duplicateCacheMaxEntries(process.env));
+        const ttlMs = duplicateTtlMs(requestHomeEnv);
+        cleanupDuplicateCache(now, duplicateCacheMaxEntries(requestHomeEnv));
         const duplicateEntry = duplicateRequestCache.get(cacheKey);
         if (duplicateEntry) {
             if (duplicateEntry.requestHash !== requestHash) {

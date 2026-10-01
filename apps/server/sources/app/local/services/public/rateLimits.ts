@@ -11,12 +11,12 @@ export type LocalServicePublicRateLimitCheck = (
 ) => boolean;
 
 /**
- * Ceiling on simultaneously tracked buckets (F-3).
+ * Ceiling on simultaneously tracked client buckets per exposure (F-3/F-PLAN-08).
  *
  * The resource this protects is the relay process's memory. `clientKey` is `request.ip`, which
  * honours the server's `trustProxy` setting, so on a reverse-proxy deployment an UNAUTHENTICATED
  * visitor to a public exposure controls the key through `X-Forwarded-For`. A bucket is a short key
- * plus two numbers — order 150 bytes — so this ceiling bounds the limiter to a couple of megabytes
+ * plus two numbers — order 150 bytes — so this ceiling bounds each exposure to a couple of megabytes
  * while sitting far above the distinct-client count a single-process V1 self-hosted relay serves
  * inside one window.
  */
@@ -46,7 +46,7 @@ export function createLocalServicePublicRateLimitChecker(
     // Captured as a `const` so the `fixed_window` narrowing above reaches the helpers below;
     // narrowing on a mutable parameter binding does not propagate into hoisted declarations.
     const fixedWindow = dependency;
-    const buckets = new Map<string, RateLimitBucket>();
+    const bucketsByExposure = new Map<string, Map<string, RateLimitBucket>>();
     let nextReclaimAtMs = Number.NEGATIVE_INFINITY;
 
     function isWindowElapsed(bucket: RateLimitBucket, nowMs: number): boolean {
@@ -59,12 +59,15 @@ export function createLocalServicePublicRateLimitChecker(
     function reclaimElapsedBuckets(nowMs: number): void {
         if (nowMs < nextReclaimAtMs) return;
         nextReclaimAtMs = nowMs + fixedWindow.windowMs;
-        for (const [key, bucket] of buckets) {
-            if (isWindowElapsed(bucket, nowMs)) buckets.delete(key);
+        for (const [exposureId, buckets] of bucketsByExposure) {
+            for (const [key, bucket] of buckets) {
+                if (isWindowElapsed(bucket, nowMs)) buckets.delete(key);
+            }
+            if (buckets.size === 0) bucketsByExposure.delete(exposureId);
         }
     }
 
-    function resolveBucketKey(requestedKey: string): string {
+    function resolveBucketKey(buckets: Map<string, RateLimitBucket>, requestedKey: string): string {
         if (buckets.has(requestedKey) || buckets.size < LOCAL_SERVICE_PUBLIC_MAX_TRACKED_RATE_LIMIT_BUCKETS) {
             return requestedKey;
         }
@@ -73,9 +76,14 @@ export function createLocalServicePublicRateLimitChecker(
 
     return ({ exposure, clientKey, nowMs }) => {
         reclaimElapsedBuckets(nowMs);
+        let buckets = bucketsByExposure.get(exposure.exposureId);
+        if (!buckets) {
+            buckets = new Map();
+            bucketsByExposure.set(exposure.exposureId, buckets);
+        }
         // S-5: keyed by client AND exposure. A per-exposure-only bucket let one visitor consume
         // the whole window for everybody holding the link.
-        const key = resolveBucketKey(`${exposure.rateLimitProfileId}:${exposure.exposureId}:${clientKey}`);
+        const key = resolveBucketKey(buckets, `${exposure.rateLimitProfileId}:${clientKey}`);
         const current = buckets.get(key);
         if (!current || isWindowElapsed(current, nowMs)) {
             buckets.set(key, { windowStartedAtMs: nowMs, count: 1 });

@@ -1,4 +1,5 @@
 import type { AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
+import type { ApiTokenGrantV1, CallerInputConstraintsV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 
 import {
     qualifyTeamAuthenticationInTx,
@@ -13,22 +14,43 @@ export type SessionAccessAuthentication = Readonly<{
     env: NodeJS.ProcessEnv;
     authority: "present_user" | "account_automation";
     authenticationEvidence: readonly AuthTokenAuthenticationEvidenceV1[] | undefined;
+    tokenEpoch?: number;
     sessionRuntimePrincipal?: VerifiedEphemeralSessionRunnerPrincipal;
+    /** Direct PAT capability ceiling; a verified signed Action effect has its own admission. */
+    apiTokenGrant?: ApiTokenGrantV1;
+    /** Verified caller constraints also survive signed Action-effect admission. */
+    callerInputConstraints?: CallerInputConstraintsV1;
 }>;
 
 /** Exact request credential context stamped by the central authentication decorator. */
 export function readSessionAccessAuthenticationFromRequest(request: Readonly<{
     authAuthority?: "present_user" | "account_automation";
     authTokenAuthenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
+    authTokenEpoch?: number;
     sessionRuntimePrincipal?: VerifiedEphemeralSessionRunnerPrincipal;
+    apiTokenPrincipal?: Readonly<{ grant: ApiTokenGrantV1 }>;
+    externalActionExecutionAuthorized?: boolean;
+    externalActionInputConstraints?: CallerInputConstraintsV1;
 }>): SessionAccessAuthentication {
     if (!request.authAuthority) {
         throw new Error("Verified request authentication authority is unavailable");
+    }
+    if (request.externalActionExecutionAuthorized === true && !request.externalActionInputConstraints) {
+        throw new Error("Verified Action input constraints are unavailable");
     }
     return {
         env: process.env,
         authority: request.authAuthority,
         authenticationEvidence: request.authTokenAuthenticationEvidence,
+        ...(request.apiTokenPrincipal ? {
+            callerInputConstraints: request.externalActionExecutionAuthorized === true
+                ? request.externalActionInputConstraints : {
+                models: request.apiTokenPrincipal.grant.models,
+                permissionModes: request.apiTokenPrincipal.grant.permissionModes,
+            },
+            ...(request.externalActionExecutionAuthorized === true ? {} : { apiTokenGrant: request.apiTokenPrincipal.grant }),
+        } : {}),
+        ...(request.authTokenEpoch !== undefined ? { tokenEpoch: request.authTokenEpoch } : {}),
         ...(request.sessionRuntimePrincipal
             ? { sessionRuntimePrincipal: request.sessionRuntimePrincipal }
             : {}),
@@ -41,13 +63,20 @@ export function readSessionAccessAuthenticationFromSocket(socket: Pick<Socket, "
         throw new Error("Verified socket authentication authority is unavailable");
     }
     const admission = (socket.data as Readonly<{
-        ephemeralRunnerAdmission?: Readonly<{ principal?: VerifiedEphemeralSessionRunnerPrincipal }>;
+        ephemeralRunnerAdmission?: Readonly<{ kind?: string; principal?: VerifiedEphemeralSessionRunnerPrincipal }>;
+        apiTokenPrincipal?: Readonly<{ grant: ApiTokenGrantV1 }>;
     }>).ephemeralRunnerAdmission;
+    const runtimePrincipal = admission?.kind === "session-runtime" || admission?.kind === "machine-runtime"
+        ? admission.principal : undefined;
+    const apiTokenPrincipal = socket.data.apiTokenPrincipal as Readonly<{ grant: ApiTokenGrantV1 }> | undefined;
     return {
         env: process.env,
-        authority: admission?.principal ? "account_automation" : socket.data.authAuthority,
+        authority: runtimePrincipal ? "account_automation" : socket.data.authAuthority,
         authenticationEvidence: socket.data.authTokenAuthenticationEvidence,
-        ...(admission?.principal ? { sessionRuntimePrincipal: admission.principal } : {}),
+        ...(runtimePrincipal ? { sessionRuntimePrincipal: runtimePrincipal } : {}),
+        ...(apiTokenPrincipal ? { apiTokenGrant: apiTokenPrincipal.grant,
+            callerInputConstraints: { models: apiTokenPrincipal.grant.models, permissionModes: apiTokenPrincipal.grant.permissionModes },
+        } : {}),
     };
 }
 

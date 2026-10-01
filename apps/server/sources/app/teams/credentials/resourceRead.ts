@@ -1,5 +1,6 @@
 import {
     computeTeamCredentialSourceMemberKeyV1,
+    matchesTeamCredentialSourceVersionBasisV1,
     TeamCredentialDeliveryModeV1Schema,
     TeamCredentialDisclosureCeilingV1Schema,
     TeamCredentialResourceCatalogEntryV1Schema,
@@ -626,8 +627,8 @@ async function readCurrentDirectMaterialReferencesInTx(
         && published[material.sourceMemberKey] === material.sourceVersion
         && currentSourceVersions.has(material.sourceMemberKey)
         && (currentSourceVersions.get(material.sourceMemberKey) === null
-            || currentSourceVersions.get(material.sourceMemberKey)
-                === material.sourceVersion)
+            || matchesTeamCredentialSourceVersionBasisV1(material.sourceVersion,
+                currentSourceVersions.get(material.sourceMemberKey)!))
         && matchesTeamCredentialRecipientBinding(material, recipientCurrentness)
     )).flatMap(({ sourceMemberKey, sourceVersion }) => {
         const member = currentMembersByKey.get(sourceMemberKey);
@@ -667,7 +668,7 @@ function projectCurrentDirectMaterialReferences(input: Readonly<{
         current: input.materials.flatMap(material => {
             const current = currentByKey.get(material.sourceMemberKey);
             if (!current || published[material.sourceMemberKey] !== material.sourceVersion
-                || (current.sourceVersion !== null && current.sourceVersion !== material.sourceVersion)
+                || (current.sourceVersion !== null && !matchesTeamCredentialSourceVersionBasisV1(material.sourceVersion, current.sourceVersion))
                 || !matchesTeamCredentialRecipientBinding(material, recipientBinding.currentness)) return [];
             return [{ sourceMemberKey: material.sourceMemberKey, sourceVersion: material.sourceVersion,
                 ...(current.sourceMember.kind === 'connected_account' ? { disclosedMember: {
@@ -702,6 +703,24 @@ async function projectCatalogEntryInTx(
         memberGrants: audience.memberGrants,
         sessionUsePolicy: row.sessionUsePolicy,
     });
+
+    const projectCorruptCatalogEntry = () => TeamCredentialResourceCatalogEntryV1Schema.parse({
+        id: row.id,
+        teamId: row.teamId,
+        displayName: row.displayName,
+        resourceRevision: row.revision,
+        readiness: { kind: "resource_corrupt" },
+        recoveryAction: "source_owner_action",
+        mayBroker: false,
+        mayReceiveDirect: false,
+        directMaterialState: "revoked",
+        sessionUsePolicy: null,
+        providerModels: [],
+        connectedServiceSelections: [],
+        sourcePresentation: null,
+        usageCapabilities,
+    });
+
     const entitlement = prefetchedEntitlement ?? await resolveTeamCredentialEntitlementInTx(tx, { resourceId: row.id, accountId: actorAccountId });
     if (!entitlement.ok) {
         if ((entitlement.reason !== "resource_corrupt" && entitlement.reason !== "source_owner_required")
@@ -714,7 +733,7 @@ async function projectCatalogEntryInTx(
         } catch {
             source = null;
         }
-        return TeamCredentialResourceCatalogEntryV1Schema.parse({
+        const projected = TeamCredentialResourceCatalogEntryV1Schema.safeParse({
             id: row.id,
             teamId: row.teamId,
             displayName: row.displayName,
@@ -738,6 +757,7 @@ async function projectCatalogEntryInTx(
                     },
             usageCapabilities,
         });
+        return projected.success ? projected.data : projectCorruptCatalogEntry();
     }
 
     const policy = TeamCredentialResourceCatalogEntryV1Schema.shape.sessionUsePolicy.safeParse(row.sessionUsePolicy);
@@ -764,7 +784,8 @@ async function projectCatalogEntryInTx(
     // a silent `available`: the limit owner already resolved the exact metric and
     // reset, and the picker renders both. It stays behind the structural reasons
     // above, which no retry can clear.
-    const readiness = !policy.success || (sourceResolution?.status === "unavailable" && sourceResolution.reason === "invalid_source_binding")
+    const readiness = source === null || !policy.success
+        || (sourceResolution?.status === "unavailable" && sourceResolution.reason === "invalid_source_binding")
         ? { kind: "resource_corrupt" as const }
         : sourceResolution?.status === "unavailable"
             ? { kind: "source_unavailable" as const }
@@ -821,7 +842,7 @@ async function projectCatalogEntryInTx(
     const placementRead = readTeamCredentialBrokerPlacement(row);
     const hasBrokerPlacement = placementRead.ok && placementRead.placement !== null;
     captureProjectionFacts?.({ entitlement, source, directMaterialReferences: currentDirectReferences });
-    return TeamCredentialResourceCatalogEntryV1Schema.parse({
+    const projected = TeamCredentialResourceCatalogEntryV1Schema.safeParse({
         id: row.id,
         teamId: row.teamId,
         displayName: row.displayName,
@@ -865,6 +886,7 @@ async function projectCatalogEntryInTx(
         usageCapabilities,
         ...(usageLimit ? { usageLimit } : {}),
     });
+    return projected.success ? projected.data : projectCorruptCatalogEntry();
 }
 
 function credentialQualificationError(error: "team_authentication_required" | "team_authentication_unavailable") {

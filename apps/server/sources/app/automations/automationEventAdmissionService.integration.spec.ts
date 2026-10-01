@@ -86,6 +86,12 @@ const GITHUB_AUTOMATION_SOURCE_SELECTOR_ID = AutomationSourceSelectorIdV1Schema.
     "95e0d5ef-0d4f-40b5-b539-1b4a4e996313",
 );
 const GITHUB_IMMUTABLE_GENERATION_ID = "github-composed-admission-generation";
+const GITHUB_OCCURRENCE_ID = "github-composed-admission-occurrence";
+const GITHUB_SOURCE_CUSTODY = {
+    kind: "managed" as const,
+    immutableGenerationId: GITHUB_IMMUTABLE_GENERATION_ID,
+    installSource: "archive" as const,
+};
 const GITHUB_SOURCE_INSTANCE_ID = "github:repository:77";
 
 const EVENT_PAYLOAD_SCHEMA = {
@@ -110,7 +116,11 @@ const caller = {
     machineId: MACHINE_ID,
     machineInstallationId: MACHINE_INSTALLATION_ID,
     materializationId: MATERIALIZATION_ID,
-    immutableGenerationId: "generation-automation-event-admission",
+    sourceCustody: {
+        kind: "managed",
+        immutableGenerationId: "generation-automation-event-admission",
+        installSource: "archive",
+    },
 } as const;
 
 type DynamicRecord = Readonly<Record<string, unknown>>;
@@ -887,7 +897,7 @@ async function admitAutomationEventV1Raw(params: Readonly<{
                 v: 1,
                 caller: {
                     pluginId: params.caller.pluginId,
-                    immutableGenerationId: params.caller.immutableGenerationId,
+                    sourceCustody: params.caller.sourceCustody,
                     materialization: {
                         pluginId: params.caller.pluginId,
                         machineId: params.caller.machineId,
@@ -900,7 +910,7 @@ async function admitAutomationEventV1Raw(params: Readonly<{
                 v: 1,
                 caller: {
                     pluginId: params.caller.pluginId,
-                    immutableGenerationId: params.caller.immutableGenerationId,
+                    sourceCustody: params.caller.sourceCustody,
                     materialization: {
                         pluginId: params.caller.pluginId,
                         machineId: params.caller.machineId,
@@ -1339,7 +1349,8 @@ describe("Automation Event admission", () => {
             kind: "plugin" as const,
             pluginId: github.pluginId,
             contributionLocalId: github.backgroundServiceId,
-            immutableGenerationId: GITHUB_IMMUTABLE_GENERATION_ID,
+            occurrenceId: GITHUB_OCCURRENCE_ID,
+            sourceCustody: GITHUB_SOURCE_CUSTODY,
             materialization: githubMaterialization,
         };
         const credentials = {
@@ -1390,16 +1401,18 @@ describe("Automation Event admission", () => {
             const adoptedSet = params.sources.createAdoptedDefinitionSet({
                 credentials,
                 caller: githubMaterialization,
-                immutableGenerationId: GITHUB_IMMUTABLE_GENERATION_ID,
+                occurrenceId: GITHUB_OCCURRENCE_ID,
+                sourceCustody: GITHUB_SOURCE_CUSTODY,
                 transport: { kind: "checkpointedPull" },
                 generationSignal: new AbortController().signal,
                 isGenerationCurrent: () => true,
                 revalidateCallerMaterialization,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 readStoredDefinitions: async (request: DynamicRecord) => {
                     if (
                         !isRecord(request.caller)
-                        || typeof request.caller.immutableGenerationId !== "string"
+                        || typeof request.caller.occurrenceId !== "string"
+                        || !isRecord(request.caller.sourceCustody)
                         || !isRecord(request.caller.materialization)
                         || !isRecord(request.input)
                     ) {
@@ -1409,7 +1422,8 @@ describe("Automation Event admission", () => {
                         v: 1,
                         caller: {
                             pluginId: request.caller.pluginId,
-                            immutableGenerationId: request.caller.immutableGenerationId,
+                            occurrenceId: request.caller.occurrenceId,
+                            sourceCustody: request.caller.sourceCustody,
                             materialization: request.caller.materialization,
                         },
                         input: request.input,
@@ -1460,15 +1474,15 @@ describe("Automation Event admission", () => {
                 credentials,
                 transport,
                 revalidateCallerMaterialization,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
                 resolveAdoptedDefinitionSet: (
                     candidate: DynamicRecord,
-                    immutableGenerationId: string,
+                    occurrenceId: string,
                     transportKind: DynamicRecord,
                 ) => (
                     transportKind.kind === "checkpointedPull"
-                    && immutableGenerationId === GITHUB_IMMUTABLE_GENERATION_ID
+                    && occurrenceId === GITHUB_OCCURRENCE_ID
                     && candidate.pluginId === githubMaterialization.pluginId
                     && candidate.machineId === githubMaterialization.machineId
                     && candidate.materializationId === githubMaterialization.materializationId
@@ -3912,7 +3926,8 @@ describe("Automation Event admission", () => {
             kind: "plugin" as const,
             pluginId: github.pluginId,
             contributionLocalId: github.backgroundServiceId,
-            immutableGenerationId: GITHUB_IMMUTABLE_GENERATION_ID,
+            occurrenceId: GITHUB_OCCURRENCE_ID,
+            sourceCustody: GITHUB_SOURCE_CUSTODY,
             materialization: githubMaterialization,
         };
         const githubEventRef = { pluginId: github.pluginId, localId: github.eventId } as const;
@@ -4000,16 +4015,18 @@ describe("Automation Event admission", () => {
             const adoptedSet = sources.createAdoptedDefinitionSet({
                 credentials,
                 caller: githubMaterialization,
-                immutableGenerationId: GITHUB_IMMUTABLE_GENERATION_ID,
+                occurrenceId: GITHUB_OCCURRENCE_ID,
+                sourceCustody: GITHUB_SOURCE_CUSTODY,
                 transport: { kind: "checkpointedPull" },
                 generationSignal: new AbortController().signal,
                 isGenerationCurrent: () => true,
                 revalidateCallerMaterialization,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 readStoredDefinitions: async (params: DynamicRecord) => {
                     if (
                         !isRecord(params.caller)
-                        || typeof params.caller.immutableGenerationId !== "string"
+                        || typeof params.caller.occurrenceId !== "string"
+                        || !isRecord(params.caller.sourceCustody)
                         || !isRecord(params.caller.materialization)
                         || !isRecord(params.input)
                     ) {
@@ -4019,7 +4036,8 @@ describe("Automation Event admission", () => {
                         v: 1,
                         caller: {
                             pluginId: params.caller.pluginId,
-                            immutableGenerationId: params.caller.immutableGenerationId,
+                            occurrenceId: params.caller.occurrenceId,
+                            sourceCustody: params.caller.sourceCustody,
                             materialization: params.caller.materialization,
                         },
                         input: params.input,
@@ -4066,15 +4084,15 @@ describe("Automation Event admission", () => {
                 credentials,
                 transport,
                 revalidateCallerMaterialization,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
                 resolveAdoptedDefinitionSet: (
                     candidate: DynamicRecord,
-                    immutableGenerationId: string,
+                    occurrenceId: string,
                     transportKind: DynamicRecord,
                 ) => (
                     transportKind.kind === "checkpointedPull"
-                    && immutableGenerationId === GITHUB_IMMUTABLE_GENERATION_ID
+                    && occurrenceId === GITHUB_OCCURRENCE_ID
                     && candidate.pluginId === githubMaterialization.pluginId
                     && candidate.machineId === githubMaterialization.machineId
                     && candidate.materializationId === githubMaterialization.materializationId
@@ -4111,6 +4129,8 @@ describe("Automation Event admission", () => {
                                 id: github.backgroundServiceId,
                                 qualifiedId: `${github.pluginId}/backgroundServices/${github.backgroundServiceId}`,
                             },
+                            occurrenceId: GITHUB_OCCURRENCE_ID,
+                            sourceCustody: GITHUB_SOURCE_CUSTODY,
                             materialization: githubMaterialization,
                             originSurface: "background" as const,
                         },

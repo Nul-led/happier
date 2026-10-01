@@ -83,6 +83,7 @@ const LANE_01_SAFE_INPUT_HINT_PATHS = {
   'home.policy.set': [
     'expectedRevision',
     'teamCreationPolicy',
+    'teamsVisibleToMembers',
     'authenticationPolicy.enabledMethodIds',
     'authenticationPolicy.permittedAccountModes',
     'authenticationPolicy.recommendedProvisioningMode',

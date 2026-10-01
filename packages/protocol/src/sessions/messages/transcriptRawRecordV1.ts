@@ -16,6 +16,8 @@ import {
 import { createSessionMessageMetaSchema } from './sessionMessageMeta.js';
 import type { SessionMessageMeta } from './sessionMessageMeta.js';
 import { AgentIdV1Schema } from '../../agents/agentIdV1.js';
+import { WorkerUpdateV1Schema } from '../relations/workerUpdateV1.js';
+import { ExecutionRunCompletionV1Schema } from '../../execution/runs/completionInputV1.js';
 
 const UsageDataSchema = z
   .object({
@@ -814,6 +816,8 @@ const AgentEventSchema = z.discriminatedUnion('type', [
     })
     .passthrough(),
   z.object({ type: z.literal('ready') }).passthrough(),
+  z.object({ type: z.literal('worker-update'), update: WorkerUpdateV1Schema }).strict(),
+  z.object({ type: z.literal('worker-report'), summary: ExecutionRunCompletionV1Schema.shape.summary.unwrap() }).strict(),
 ])
   .superRefine((event, ctx) => {
     if (event.type === 'context-compaction') {
@@ -855,7 +859,7 @@ const RawAgentRecordSchema = z
                 callId: z.string(),
                 input: z.unknown(),
                 name: z.string(),
-                id: z.string(),
+                id: z.string().optional(),
                 sidechainId: z.string().optional(),
               })
               .passthrough(),
@@ -864,7 +868,7 @@ const RawAgentRecordSchema = z
                 type: z.literal('tool-call-result'),
                 callId: z.string(),
                 output: z.unknown(),
-                id: z.string(),
+                id: z.string().optional(),
                 sidechainId: z.string().optional(),
               })
               .passthrough(),
@@ -873,7 +877,7 @@ const RawAgentRecordSchema = z
                 type: z.literal('tool-result'),
                 callId: z.string(),
                 output: z.unknown(),
-                id: z.string(),
+                id: z.string().optional(),
                 sidechainId: z.string().optional(),
               })
               .passthrough(),

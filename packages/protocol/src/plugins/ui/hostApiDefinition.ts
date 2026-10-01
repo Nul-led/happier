@@ -59,6 +59,9 @@ export const PLUGIN_UI_HOST_METHODS_V1 = Object.freeze([
   'pickComposerMedia',
   'inspectComposerContent',
   'releaseComposerContent',
+  'readSession',
+  'watchSession',
+  'respondToSessionPermission',
 ] as const);
 export const PluginUiHostMethodV1Schema = z.enum(PLUGIN_UI_HOST_METHODS_V1);
 export type PluginUiHostMethodV1 = z.infer<typeof PluginUiHostMethodV1Schema>;
@@ -118,6 +121,7 @@ export const PLUGIN_UI_HOST_SUBSCRIPTION_METHODS_V1 = Object.freeze([
   'watchResource',
   'watchComposer',
   'acquireComposerInputLock',
+  'watchSession',
 ] as const satisfies readonly PluginUiHostMethodV1[]);
 export const PluginUiHostSubscriptionMethodV1Schema = z.enum(
   PLUGIN_UI_HOST_SUBSCRIPTION_METHODS_V1,

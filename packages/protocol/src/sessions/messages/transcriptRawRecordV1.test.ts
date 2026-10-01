@@ -9,6 +9,15 @@ import {
 } from './transcriptRawRecordV1.js';
 
 describe('TranscriptRawRecordV1Schema', () => {
+  it('accepts strict host WorkerUpdate and worker-report events without user input', () => {
+    expect(TranscriptRawAgentEventV1Schema.safeParse({ type: 'worker-update', update: {
+      v: 1, workerKind: 'session', workerId: 'worker', ownerState: 'settled', wake: 'finished',
+      headline: 'Worker finished', canInspect: true,
+    } }).success).toBe(true);
+    expect(TranscriptRawAgentEventV1Schema.safeParse({ type: 'worker-report', summary: 'Final result' }).success).toBe(true);
+    expect(TranscriptRawAgentEventV1Schema.safeParse({ type: 'worker-report', summary: 'x'.repeat(8001) }).success).toBe(false);
+    expect(TranscriptRawAgentEventV1Schema.safeParse({ type: 'worker-report', summary: 'Final result', leadSessionId: 'forged' }).success).toBe(false);
+  });
   it('parses user text records with extra fields', () => {
     const parsed = TranscriptRawRecordV1Schema.safeParse({
       role: 'user',

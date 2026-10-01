@@ -9,11 +9,10 @@ import {
 } from '@happier-dev/protocol/teams';
 
 import type { Tx } from '@/storage/inTx';
-import { admitTeamCredentialBrokerMachineForResourceInTx } from './brokerPlacementResolver';
+import { admitTeamCredentialBrokerMachineForResourceInTx, resolveTeamCredentialBrokerPlacementFingerprint } from './brokerPlacementResolver';
+import { readExternalBrokerOperation } from './externalBrokerOperation';
 import { resolveTeamCredentialResourceSourceInTx } from './resourceSourceResolver';
 import { admitTeamCredentialUsageInTx } from './teamCredentialUsageAdmission';
-import { resolveTeamActorContextInTx } from '../actorContext';
-import { qualifyTeamCredentialOperationInTx } from './resourceRead';
 import { recordTeamCredentialExternalTerminalUsageEventInTx } from '@/app/usage/usageWriteService';
 import { resolveCurrentTeamCredentialExternalApiKeyAuthorityInTx } from './externalApiKey';
 
@@ -53,6 +52,26 @@ async function authorizeCurrentExternalProviderKeyInTx(
         brokerPoolId: key.brokerPoolId,
         sourceBindingJson: key.sourceBindingJson,
     };
+    if (binding.brokerPlacementFingerprint !== resolveTeamCredentialBrokerPlacementFingerprint(resource)) {
+        return failure('operation_not_current');
+    }
+    const operation = key.currentBrokerOperationJson === null
+        ? null : readExternalBrokerOperation(key.currentBrokerOperationJson);
+    if (binding.operationId === null) {
+        if (key.currentBrokerOperationJson !== null) return failure('operation_not_current');
+    } else {
+        if (!operation || operation.operationId !== binding.operationId
+            || operation.brokerMachineId !== brokerMachineId
+            || operation.brokerPlacementFingerprint !== binding.brokerPlacementFingerprint) {
+            return failure('operation_not_current');
+        }
+        let source: unknown;
+        try { source = JSON.parse(resource.sourceBindingJson); } catch { return failure('resource_unavailable'); }
+        const parsedSource = TeamCredentialSourceBindingV1Schema.safeParse(source);
+        if (!parsedSource.success || JSON.stringify(parsedSource.data) !== operation.sourceBindingJson) {
+            return failure('operation_not_current');
+        }
+    }
     // The presented Machine is the one the external placement owner already
     // resolved for this key's per-key operation and dispatched to — the
     // Machine that established it, or a fresh Pool selection. Pool tier
@@ -65,16 +84,6 @@ async function authorizeCurrentExternalProviderKeyInTx(
         selection: 'established',
     });
     if (!broker.ok) return failure(broker.error === 'update_required' ? 'broker_unavailable' : broker.error);
-    const actor = await resolveTeamActorContextInTx(tx, {
-        teamId: resource.teamId,
-        actorAccountId: binding.assignedAccountId,
-    });
-    if (!actor) return failure('resource_forbidden');
-    const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, {
-        authenticationAuthority: 'account_automation',
-        authenticationEvidence: [],
-    });
-    if (!qualification.ok) return failure('resource_forbidden');
     return { ok: true as const, resource, externalApiKeyId: key.keyId };
 }
 
@@ -142,6 +151,7 @@ export async function admitTeamCredentialExternalProviderRequestInTx(
     if (!parsed.success) return failure('invalid_request');
     const { binding, brokerMachineId, expectedResourceRevision, application, requestFacts } = parsed.data;
     if (binding.kind !== 'external_api_key') return failure('invalid_request');
+    if (binding.operationId === null) return failure('operation_not_current');
     const authorized = await authorizeCurrentExternalProviderKeyInTx(tx, {
         authenticatedBrokerAccountId: input.authenticatedBrokerAccountId,
         binding,
@@ -192,6 +202,7 @@ export async function admitTeamCredentialExternalProviderRequestInTx(
         brokerMachineId, source: source.data,
         operation: {
             kind: 'external_api_key', externalApiKeyId: binding.externalApiKeyId,
+            operationId: binding.operationId,
             assignedAccountId: binding.assignedAccountId,
             assignedTeamMembershipId: binding.assignedTeamMembershipId,
         },

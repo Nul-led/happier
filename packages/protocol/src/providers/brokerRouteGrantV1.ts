@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { AuthTokenAuthenticationEvidenceSnapshotV1Schema } from '../auth/authToken.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
-import { IrohEndpointIdV1Schema } from '../connectivity/iroh/endpointDescriptorV1.js';
+import { IrohEndpointDescriptorV1Schema, IrohEndpointIdV1Schema } from '../connectivity/iroh/endpointDescriptorV1.js';
 import { DirectRouteGrantSignatureV2Schema } from '../machines/peer/mediation/directRouteGrantV2.js';
 import { PluginContributionIdentityV1Schema } from '../plugins/contributionIdentity.js';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
@@ -70,6 +70,11 @@ export const ProviderBrokerRouteGrantPayloadV1Schema = z.object({
   teamId: IdentitySchema,
   resourceId: IdentitySchema,
   sourceRevision: z.string().trim().min(1).max(512),
+  /** Home-computed original resource placement, without disclosing a Pool id.
+   * Unlike policy revisions or membership, relocation ends this authority. */
+  brokerPlacementFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  /** Epoch of the exact signed opening credential. Home rechecks revocation on every request. */
+  initiatorTokenEpoch: z.number().int().nonnegative(),
   initiator: z.object({ accountId: IdentitySchema, machineId: IdentitySchema, endpointId: IrohEndpointIdV1Schema }).strict(),
   target: z.object({ custodianAccountId: IdentitySchema, machineId: IdentitySchema, endpointId: IrohEndpointIdV1Schema }).strict(),
   consumer: ProviderBrokerConsumerV1Schema,
@@ -225,7 +230,12 @@ export const ProviderBrokerOpenResponseV1Schema = z.discriminatedUnion('ok', [
       brokerMachineId: IdentitySchema,
       endpointId: IrohEndpointIdV1Schema,
       endpointRevision: z.number().int().nonnegative(),
-    }).strict(),
+      endpoint: IrohEndpointDescriptorV1Schema,
+    }).strict().superRefine((target, context) => {
+      if (target.endpoint.endpointId !== target.endpointId) {
+        context.addIssue({ code: 'custom', path: ['endpoint', 'endpointId'], message: 'Descriptor identity must match the broker target endpoint' });
+      }
+    }),
   }).strict(),
   ProviderBrokerAdmissionFailureV1Schema,
 ]);

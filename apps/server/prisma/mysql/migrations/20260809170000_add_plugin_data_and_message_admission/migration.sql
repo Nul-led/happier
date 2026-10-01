@@ -23,7 +23,6 @@ CREATE TABLE `PluginCollectionContract` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     PRIMARY KEY (`id`),
-    UNIQUE INDEX `PluginCollectionContract_identity_schema_key`(`pluginId`, `collectionId`, `schemaVersion`),
     UNIQUE INDEX `PluginCollectionContract_identity_digest_key`(`pluginId`, `collectionId`, `contractDigest`),
     INDEX `PluginCollectionContract_identity_idx`(`pluginId`, `collectionId`),
     CONSTRAINT `PluginCollectionContract_contract_digest_check`
@@ -146,6 +145,7 @@ CREATE TABLE `AccountPluginIntent` (
     `enabled` BOOLEAN NOT NULL DEFAULT false,
     `offlineUiHosting` VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'disabled',
     `writableCollections` JSON NOT NULL,
+    `releaseLessDeclaration` JSON NULL,
     `revision` BIGINT NOT NULL DEFAULT 0,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,

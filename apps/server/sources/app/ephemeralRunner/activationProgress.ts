@@ -33,6 +33,7 @@ import {
 import { verifyRunnerReadinessForActivation } from "./runnerBrokerReadinessVerification";
 import { StoredRunnerCredentialSelectionV1Schema } from "./credentialSelectionRecord";
 import { readRunnerConsentDisplayFactsInTx } from "./runnerConsentDisplayFacts";
+import { readCurrentMaterializedRunnerPrincipalForActivationInTx } from "./materializedRunnerPrincipalCurrentness";
 
 export type StoreRunnerActivationProgressResult<T> =
     | Readonly<{ status: "stored"; value: T }>
@@ -245,9 +246,21 @@ export async function storeRunnerActivationReadiness(params: Readonly<{
     if (!preflight) return { status: "unavailable" };
     if (!verifyRunnerReadinessForActivation(preflight, params.readiness)) return { status: "invalid_proof" };
     const result = await withCurrentClaimedActivation(params.activationId, async (tx, row) => {
-        if (row.state !== "consented") return { status: "unavailable" } as const;
+        if (row.state !== "consented" && row.state !== "materialized") return { status: "unavailable" } as const;
         const readiness = verifyRunnerReadinessForActivation(row, params.readiness);
         if (!readiness) return { status: "invalid_proof" } as const;
+        // A committed readiness response can be lost while the creator uses
+        // that readiness to materialize. Acknowledge only the exact recorded
+        // proof and still-current tuple; this never admits another readiness
+        // operation or reopens the pre-materialization broker authority.
+        if (row.state === "materialized") {
+            if (!await readCurrentMaterializedRunnerPrincipalForActivationInTx(tx, row)) {
+                return { status: "unavailable" } as const;
+            }
+            return pluginJsonValuesEqual(row.readiness, readiness)
+                ? { status: "stored", value: readiness } as const
+                : { status: "conflict" } as const;
+        }
         if (row.readiness !== null) {
             return pluginJsonValuesEqual(row.readiness, readiness)
                 ? { status: "stored", value: readiness } as const

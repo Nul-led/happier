@@ -11,9 +11,13 @@ export {
   SessionAgentSpawnPolicyV1Schema,
   SessionAgentSpawnPolicyV1StrictSchema,
   type SessionAgentSpawnPolicyV1,
+  type SessionAgentStartOverridesV1,
 } from './sessionAgentSpawnPolicyV1.js';
 
 import { AccountSettingsPersistedObjectSchema } from './accountSettingsPersistedObject.js';
+import { LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS } from './legacyAuthoringMemorySettingsV1.js';
+import { DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1, SessionAgentStartAllowListsV1Schema } from './sessionAgentStartAllowListsV1.js';
+export { DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1, SessionAgentStartAllowListsV1Schema, type SessionAgentStartAllowListsV1 } from './sessionAgentStartAllowListsV1.js';
 import { SessionReminderPresetsV1Schema } from './sessionReminderPresetsV1.js';
 import { buildSettingArtifacts } from '../../settings/registry/buildSettingArtifacts.js';
 import {
@@ -30,6 +34,10 @@ import {
 } from '../../profiles/backendProfileSchema.js';
 import { ExternalSessionsSettingsV1Schema } from '../../sessions/external/followLifecycleV1.js';
 import {
+  DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1,
+  PluginUpdateReviewModeV1Schema,
+} from '../../marketplace/pluginUpdatePolicyV1.js';
+import {
   HappierReplayRecentMessagesCountSchema,
   HappierReplayWritableMaxSeedCharsSchema,
 } from '../../sessions/replaySeedBudget.js';
@@ -37,6 +45,7 @@ import {
   buildQualifiedPluginContributionKey,
   PluginContributionIdentityV1Schema,
 } from '../../plugins/contributionIdentity.js';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '../../plugins/pluginId.js';
 
 import {
   ActionsSettingsV1Schema,
@@ -50,6 +59,7 @@ import {
   DEFAULT_CODING_PROMPT_BEHAVIOR_V1,
 } from '../../prompts/codingPromptBehaviorV1.js';
 import { ContextSelectionsV1Schema } from '../../prompts/library/contextSelectionsV1.js';
+import { RolesV1Schema } from './rolesV1.js';
 import { PromptExternalLinksV1Schema } from '../../prompts/library/promptExternalLinksV1.js';
 import { PromptFoldersV1Schema } from '../../prompts/library/promptFoldersV1.js';
 import { PromptInvocationsV1Schema } from '../../prompts/library/promptInvocationsV1.js';
@@ -66,6 +76,7 @@ import {
 } from './connectedServicesSettings.js';
 import { QualifiedConnectedAccountPurposeBindingsV1Schema } from '../../connect/connectedAccountPurposeBindings.js';
 import { WorkspaceRefV1Schema } from '../../workspaces/workspaceRefV1.js';
+import { deriveWorkspaceSyncTopology } from '../../workspaces/workspaceSyncTopology.js';
 import {
   WorkspaceSyncRelationshipV1Schema,
   areWorkspaceSyncRelationshipDefinitionsEqual,
@@ -109,6 +120,7 @@ import {
 import {
   ACCOUNT_SETTINGS_MAX_PROVIDER_SUBTREE_BYTES,
   ACCOUNT_SETTINGS_MAX_SAVED_SECRETS_BYTES,
+  ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES,
   inspectAccountSettingValueBounds,
   withAccountSettingBounds,
   type AccountSettingStructuralBoundsOwner,
@@ -444,6 +456,7 @@ export const RETIRED_ACCOUNT_SETTINGS_ROOT_KEYS = Object.freeze([
   'experimentalFeatureToggles',
   'sessionMruOrderV1',
   'transcriptMessageTimestampsEnabled',
+  'showEnvironmentBadge',
 ] as const);
 
 const RETIRED_ACCOUNT_SETTINGS_ROOT_KEY_SET = new Set<string>(RETIRED_ACCOUNT_SETTINGS_ROOT_KEYS);
@@ -469,9 +482,36 @@ function readSafeAccountSettingsRoot(raw: Record<string, unknown>): Record<strin
   return safe;
 }
 
+export function clearRetainedMachineTerminalHostAliases(raw: Record<string, unknown>): void {
+  const legacyMap = raw.sessionTmuxByMachineId;
+  if (!legacyMap || typeof legacyMap !== 'object' || Array.isArray(legacyMap)) return;
+  // Resetting the additive preference must also remove its retained development
+  // source. Keep the released tmux record and every unrecognized neighbor intact.
+  raw.sessionTmuxByMachineId = Object.fromEntries(Object.entries(legacyMap).map(([machineId, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [machineId, value];
+    const { terminalHost: _retiredDevelopmentHost, ...override } = value as Record<string, unknown>;
+    return [machineId, override];
+  }));
+}
+
 function backfillLegacyTargetKeyedAccountSettings(raw: Record<string, unknown>): Record<string, unknown> {
   const source = readSafeAccountSettingsRoot(raw);
   const next = { ...source };
+
+  // Normalize retained development-only nested terminal hosts at the persisted
+  // boundary. Released UIs preserve the additive root when echoing their tmux map.
+  if (!Object.prototype.hasOwnProperty.call(source, 'sessionTerminalHostByMachineId')) {
+    const legacyMap = source.sessionTmuxByMachineId;
+    if (legacyMap && typeof legacyMap === 'object' && !Array.isArray(legacyMap)) {
+      next.sessionTerminalHostByMachineId = Object.fromEntries(
+        Object.entries(legacyMap).flatMap(([machineId, value]) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+          const host = (value as Record<string, unknown>).terminalHost;
+          return host === 'herdr' || host === 'zellij' ? [[machineId, host]] : [];
+        }),
+      );
+    }
+  }
 
   if (next.backendEnabledByTargetKey === undefined && source.backendEnabledById !== undefined) {
     next.backendEnabledByTargetKey = rekeyLegacyBuiltInAgentMap(
@@ -725,7 +765,8 @@ export const SessionTmuxMachineOverrideSchema = z
     isolated: z.boolean(),
     tmpDir: accountBoundedString(16 * 1024).nullable(),
   })
-  .passthrough();
+  .passthrough()
+  .transform(({ terminalHost: _retiredDevelopmentHost, ...override }) => override);
 
 const AccountInstallablePolicyOverrideSchema = z
   .object({
@@ -832,6 +873,14 @@ export const DEFAULT_SESSION_HANDOFF_DEFAULTS_V1: SessionHandoffDefaultsV1 = Obj
   directTargetMode: 'keep_direct',
 });
 
+const HOME_HUB_LAYOUT_MAX_SECTION_ID_LENGTH = 'widget:'.length + 2 * MAX_PLUGIN_IDENTIFIER_BYTES + '/'.length;
+/** Present layout value; Account recovery/defaulting wraps this same canonical shape below. */
+export const HomeHubLayoutV1Schema = z.object({
+  order: z.array(z.string().min(1).max(HOME_HUB_LAYOUT_MAX_SECTION_ID_LENGTH)).max(32),
+  hidden: z.array(z.string().min(1).max(HOME_HUB_LAYOUT_MAX_SECTION_ID_LENGTH)).max(32),
+  sections: z.record(z.string().min(1).max(HOME_HUB_LAYOUT_MAX_SECTION_ID_LENGTH), z.object({ frameStyle: z.enum(['card', 'plain']).optional() }).strict()).optional(),
+});
+
 const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
   analyticsOptOut: accountPreference(z.boolean(), false, 'privacy'),
   crashReportsOptOut: accountPreference(z.boolean(), false, 'privacy'),
@@ -851,6 +900,11 @@ const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
     'permission mediation',
   ),
   sessionUseTmux: accountPreference(z.boolean(), false, 'session terminal defaults'),
+  sessionTerminalHost: accountPreference(
+    z.enum(['legacy', 'none', 'tmux', 'zellij', 'herdr']),
+    'legacy',
+    'session terminal defaults',
+  ),
   sessionWindowsRemoteSessionLaunchMode: accountPreference(
     z.enum(['hidden', 'windows_terminal', 'console']),
     'hidden',
@@ -911,7 +965,6 @@ const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
   workspacePathDisplayModeV1: accountPreference(z.enum(['name', 'path']), 'name', 'session list presentation'),
   workspaceFaviconsEnabled: accountPreference(z.boolean(), true, 'session list presentation'),
   workspaceMachineSubtitlesEnabled: accountPreference(z.boolean(), true, 'session list presentation'),
-  showEnvironmentBadge: accountPreference(z.boolean(), true, 'application chrome'),
   showFlavorIcons: accountPreference(z.boolean(), true, 'application chrome'),
   avatarStyle: accountPreference(z.enum(['pixelated', 'gradient', 'brutalist']), 'brutalist', 'avatar presentation'),
   hideInactiveSessions: accountPreference(z.boolean(), false, 'session list presentation'),
@@ -919,6 +972,13 @@ const ACCOUNT_CORE_CATALOG_DEFINITIONS = {
   sessionListActiveGroupingV1: accountPreference(z.enum(['project', 'date']), 'project', 'session list presentation'),
   sessionListInactiveGroupingV1: accountPreference(z.enum(['project', 'date']), 'date', 'session list presentation'),
   sessionListSectionModeV1: accountPreference(z.enum(['activity', 'single']), 'single', 'session list presentation'),
+  // The app home's sections: ids in the person's order and the ones they hid. Ids are open strings
+  // so a section added by a newer app survives this one's writes; the UI layout owner resolves them.
+  homeHubLayoutV1: accountPreference(
+    HomeHubLayoutV1Schema,
+    { order: [], hidden: [] },
+    'home presentation',
+  ),
   sessionListActiveColorModeV1: accountPreference(
     z.enum(['activityAndAttention', 'attentionOnly', 'allActive']),
     'activityAndAttention',
@@ -974,6 +1034,7 @@ const ACCOUNT_DISPLAY_CATALOG_DEFINITIONS = {
   sessionTagsEnabled: accountPreference(z.boolean(), true, 'session list presentation'),
   sessionListWorkingStatusAnimatedTextEnabled: accountPreference(z.boolean(), true, 'session list presentation'),
   mobileWorkspaceExperienceV1: accountPreference(z.enum(['classic', 'cockpit']), 'cockpit', 'mobile workspace presentation'),
+  workspaceTabsSyncEnabled: accountPreference(z.boolean(), true, 'workspace open tabs'),
   sessionCockpitSwipeNavigationEnabled: accountPreference(z.boolean(), true, 'mobile workspace presentation'),
   tabBarGitBadgeMode: accountPreference(z.enum(['changedFiles', 'diffLines', 'off']), 'changedFiles', 'application chrome'),
   tabBarFriendsBadgeEnabled: accountPreference(z.boolean(), true, 'application chrome'),
@@ -1027,6 +1088,7 @@ const ACCOUNT_LEGACY_ROOT_CATALOG_DEFINITIONS = {
     'prompt stack entities',
     128 * 1024,
   ),
+  rolesV1: accountLegacy(RolesV1Schema, { overrides: {} }, 'role overrides', ACCOUNT_SETTINGS_MAX_DOCUMENT_BYTES),
   promptFoldersV1: accountLegacy(
     PromptFoldersV1Schema,
     PromptFoldersV1Schema.parse({ v: 1 }),
@@ -1086,7 +1148,6 @@ const ACCOUNT_LEGACY_ROOT_CATALOG_DEFINITIONS = {
   sessionListGroupOrderV1: accountLegacy(BoundedLegacyRecordSchema, {}, 'session organization ordering', 64 * 1024),
   sessionWorkspaceOrderV1: accountLegacy(BoundedLegacyRecordSchema, {}, 'session organization ordering', 64 * 1024),
   sessionFoldersV1: accountLegacy(BoundedLegacyJsonValueSchema, { v: 1, folders: [] }, 'session folder entities', 128 * 1024),
-  sessionSplitCanvasLayoutsV1: accountLegacy(BoundedLegacyRecordSchema, {}, 'session workspace layouts', 128 * 1024),
   notificationChannelsV1: accountLegacy(
     NotificationChannelsV1Schema.default([
       deriveExpoPushNotificationChannelFromLegacySettings(DEFAULT_NOTIFICATIONS_SETTINGS_V1),
@@ -1139,27 +1200,7 @@ const ACCOUNT_CONNECTED_SERVICES_CATALOG_DEFINITIONS = {
   ),
 } as const;
 
-const RecentMachinePathSchema = z.object({
-  machineId: z.string().min(1).max(1024),
-  path: z.string().min(1).max(16 * 1024),
-}).strip();
-
-const RecentMachinePathsSchema = z.preprocess((value) => {
-  if (!Array.isArray(value)) return [];
-
-  const paths: Array<z.output<typeof RecentMachinePathSchema>> = [];
-  for (const candidate of value) {
-    const parsed = RecentMachinePathSchema.safeParse(candidate);
-    if (!parsed.success) continue;
-
-    paths.push(parsed.data);
-    if (paths.length === 256) break;
-  }
-  return paths;
-}, z.array(RecentMachinePathSchema).max(256));
-
 const ACCOUNT_SIMPLE_COLLECTION_CATALOG_DEFINITIONS = {
-  recentMachinePaths: accountPreference(RecentMachinePathsSchema, [], 'machine history', 128 * 1024),
   favoriteDirectories: accountPreference(z.array(z.string().max(16 * 1024)).max(256), [], 'favorite directories', 128 * 1024),
   favoriteMachines: accountPreference(z.array(z.string().max(1024)).max(256), [], 'favorite machines', 32 * 1024),
   favoriteProfiles: accountPreference(z.array(z.string().max(1024)).max(256), [], 'favorite profiles', 32 * 1024),
@@ -1174,7 +1215,6 @@ const ACCOUNT_SIMPLE_COLLECTION_CATALOG_DEFINITIONS = {
     'dismissed warnings',
     64 * 1024,
   ),
-  lastUsedProfile: accountPreference(z.string().max(1024).nullable(), null, 'session authoring'),
 } as const;
 
 const KeyboardShortcutRuleSchema = z.object({
@@ -1308,7 +1348,6 @@ const ACCOUNT_SESSION_AUTHORING_CATALOG_DEFINITIONS = {
   ),
   rememberLastProjectSessionSelections: accountPreference(z.boolean(), true, 'session authoring'),
   rememberLastEngineSelectionsV1: accountPreference(z.boolean(), true, 'session authoring'),
-  lastEngineSelectionsByScopeV1: accountPreference(BoundedLegacyRecordSchema, {}, 'session authoring', 64 * 1024),
   newSessionPresentationModeV1: accountPreference(z.enum(NEW_SESSION_PRESENTATION_MODES), 'auto', 'session authoring'),
   newSessionWizardSectionPresentationV1: accountPreference(
     NewSessionWizardSectionPresentationByIdSchema,
@@ -1436,6 +1475,12 @@ const ACCOUNT_SCM_AND_FILES_CATALOG_DEFINITIONS = {
     'comfortable',
     'file presentation',
   ),
+  /** The session Git pane: one scroll (changes → commit → timeline) or two views (Changes | History). */
+  scmGitPaneLayout: accountPreference(z.enum(['unified', 'tabs']), 'unified', 'file presentation'),
+  /** Changed files in the Git pane as a flat list or a folder tree. */
+  scmChangedFilesLayout: accountPreference(z.enum(['list', 'tree']), 'list', 'file presentation'),
+  /** Where a new pull request form opens: in the Git sidebar, or as a Details pane. */
+  scmPullRequestPlacement: accountPreference(z.enum(['sidebar', 'details']), 'sidebar', 'file presentation'),
   filesDiffFoldingEnabled: accountPreference(z.boolean(), true, 'file presentation'),
   filesDiffFoldingContextThreshold: accountPreference(accountNonNegativeInteger(), 12, 'file presentation'),
   filesDiffFoldingContextRadius: accountPreference(accountNonNegativeInteger(), 3, 'file presentation'),
@@ -1583,6 +1628,11 @@ const ACCOUNT_RUNTIME_AND_WORKFLOW_CATALOG_DEFINITIONS = {
     'external session policy',
     64 * 1024,
   ),
+  pluginUpdateReviewModeV1: accountPreference(
+    PluginUpdateReviewModeV1Schema,
+    DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1,
+    'plugin update review',
+  ),
   preferredLanguage: accountPreference(accountBoundedString(256).nullable(), null, 'language preference'),
   sessionHandoffDefaultsV1: accountPreference(
     SessionHandoffDefaultsV1Schema,
@@ -1598,6 +1648,12 @@ const ACCOUNT_RUNTIME_AND_WORKFLOW_CATALOG_DEFINITIONS = {
   ),
   sessionTmuxByMachineId: accountPreference(
     z.record(accountBoundedString(1024), SessionTmuxMachineOverrideSchema).default({}),
+    {},
+    'session terminal defaults',
+    64 * 1024,
+  ),
+  sessionTerminalHostByMachineId: accountPreference(
+    z.record(accountBoundedString(1024), z.enum(['zellij', 'herdr'])).default({}),
     {},
     'session terminal defaults',
     64 * 1024,
@@ -1736,7 +1792,22 @@ export const ACCOUNT_SETTING_DEFINITIONS = defineAccountSettingDefinitions({
   sessionAgentSpawnPolicyV1: accountCatalogDefinition(
     SessionAgentSpawnPolicyV1Schema.default(DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1),
     DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
-    { semanticDomain: 'agent spawn policy', classification: 'policy', maximumSerializedValueBytes: 8 * 1024 },
+    { semanticDomain: 'agent spawn policy', classification: 'policy', maximumSerializedValueBytes: 8 * 1024, recoverMalformed: false },
+  ),
+  sessionAgentStartAllowListsV1: accountCatalogDefinition(
+    SessionAgentStartAllowListsV1Schema.default(DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1),
+    DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1,
+    { semanticDomain: 'agent start allow-lists', classification: 'policy', maximumSerializedValueBytes: 8 * 1024, recoverMalformed: false },
+  ),
+  approvalReviewerEnabled: accountCatalogDefinition(
+    z.boolean().default(false).catch(false),
+    false,
+    { semanticDomain: 'approval reviewer', classification: 'policy', maximumSerializedValueBytes: 64 },
+  ),
+  workDepthLimit: accountCatalogDefinition(
+    z.number().int().nonnegative().default(4).catch(4),
+    4,
+    { semanticDomain: 'agent delegation depth', classification: 'policy', maximumSerializedValueBytes: 64 },
   ),
   connectedServicesDefaultAuthByAgentIdV1: accountCatalogDefinition(
     BuiltInLegacyConnectedServicesDefaultAuthByAgentIdV1IngressSchema.default(DEFAULT_CONNECTED_SERVICES_DEFAULT_AUTH_BY_AGENT_ID_V1),
@@ -1798,7 +1869,11 @@ export type AccountSettingsDefaults = typeof ACCOUNT_SETTING_ARTIFACTS.defaults;
 export const AccountSettingsSchema = z.preprocess(
   (raw) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-    return backfillLegacyTargetKeyedAccountSettings(raw as Record<string, unknown>);
+    const effective = backfillLegacyTargetKeyedAccountSettings(raw as Record<string, unknown>);
+    // Effective readers no longer own these values. Raw persisted baselines must
+    // retain them until the destination-first reserved-row importer commits.
+    for (const key of LEGACY_AUTHORING_MEMORY_SETTINGS_KEYS) delete effective[key];
+    return effective;
   },
   z
     .object(ACCOUNT_SETTING_ARTIFACTS.shape)
@@ -1825,7 +1900,6 @@ export const AccountSettingsSchema = z.preprocess(
       }
 
       const relationshipIds = new Set<string>();
-      const endpointPairs = new Set<string>();
       for (const [index, relationship] of settings.workspaceSyncRelationshipsV1.entries()) {
         if (relationshipIds.has(relationship.relationshipId)) {
           context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'relationshipId'], message: 'workspace relationship id must be unique' });
@@ -1839,22 +1913,6 @@ export const AccountSettingsSchema = z.preprocess(
         }
         if (!beta) {
           context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'betaWorkspaceRefId'], message: 'workspace relationship reference must exist' });
-        }
-        const pair = [relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId].sort().join('\u0000');
-        if (endpointPairs.has(pair)) {
-          context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index], message: 'workspace endpoint pair must have one owner' });
-        } else {
-          endpointPairs.add(pair);
-        }
-        if (alpha && beta) {
-          const controllerIsEndpoint = relationship.controllerMachineId === alpha.machineId
-            || relationship.controllerMachineId === beta.machineId;
-          const controllerIsValid = relationship.mode === 'keep_both_in_sync'
-            ? controllerIsEndpoint
-            : relationship.controllerMachineId === alpha.machineId;
-          if (!controllerIsValid) {
-            context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceSyncRelationshipsV1', index, 'controllerMachineId'], message: 'workspace relationship controller is invalid for its endpoints and mode' });
-          }
         }
       }
     }),
@@ -1900,6 +1958,48 @@ export function assertAccountWorkspaceSettingsTransition(
     if (prior && !areWorkspaceSyncRelationshipDefinitionsEqual(prior, relationship)) {
       throw Object.assign(new Error('Workspace relationship immutable definition cannot change'), {
         code: 'relationship_definition_conflict',
+      });
+    }
+  }
+
+  const relationshipsRequiringAdmission = new Set(next.workspaceSyncRelationshipsV1.flatMap((relationship) => {
+    const prior = previousRelationships.get(relationship.relationshipId);
+    return !prior || (!prior.enabled && relationship.enabled)
+      ? [relationship.relationshipId]
+      : [];
+  }));
+  if (relationshipsRequiringAdmission.size > 0) {
+    const topology = deriveWorkspaceSyncTopology({
+      workspaceRefs: next.workspaceRefsV1,
+      relationships: next.workspaceSyncRelationshipsV1,
+    });
+    const nextByRef = new Map<string, Set<string>>();
+    for (const relationship of next.workspaceSyncRelationshipsV1) {
+      for (const refId of [relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId]) {
+        const ids = nextByRef.get(refId) ?? new Set<string>();
+        ids.add(relationship.relationshipId);
+        nextByRef.set(refId, ids);
+      }
+    }
+    const affected = new Set(relationshipsRequiringAdmission);
+    const pending = [...relationshipsRequiringAdmission];
+    while (pending.length > 0) {
+      const id = pending.shift()!;
+      const relationship = next.workspaceSyncRelationshipsV1.find((candidate) => candidate.relationshipId === id);
+      if (!relationship) continue;
+      for (const refId of [relationship.alphaWorkspaceRefId, relationship.betaWorkspaceRefId]) {
+        for (const adjacentId of nextByRef.get(refId) ?? []) {
+          if (affected.has(adjacentId)) continue;
+          affected.add(adjacentId);
+          pending.push(adjacentId);
+        }
+      }
+    }
+    const issues = topology.issues.filter((issue) => issue.relationshipIds.some((id) => affected.has(id)));
+    if (issues.length > 0) {
+      throw Object.assign(new Error('Workspace sync topology is unsupported'), {
+        code: 'workspace_sync_topology_invalid',
+        issues,
       });
     }
   }

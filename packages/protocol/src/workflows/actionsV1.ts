@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import {
+  WorkflowTriggerListRequestV1Schema, WorkflowTriggerAddRequestV1Schema,
+  WorkflowTriggerUpdateRequestV1Schema, WorkflowTriggerRemoveRequestV1Schema,
+  WorkflowTriggerListResultV1Schema, WorkflowTriggerWriteResultV1Schema,
+  SessionTriggerListRequestV1Schema, SessionTriggerAddRequestV1Schema,
+  SessionTriggerUpdateRequestV1Schema, SessionTriggerRemoveRequestV1Schema, SessionTriggerListResultV1Schema,
+} from './triggers/workflowTriggerActionsV1.js';
 
 import { OPAQUE_CURSOR_SCHEMA } from '../automations/automationActionSpecsV1.js';
 import {
@@ -10,17 +17,22 @@ import { preservedBoundedNfcString } from '../strings/preservedBoundedNfcString.
 import {
   WorkflowDefinitionArtifactHeaderV1Schema,
   WorkflowDefinitionMetadataV1Schema,
+  WorkflowDefinitionSavedByV1Schema,
   WorkflowArtifactRevisionV1Schema,
   WorkflowRunExecutionTargetV1Schema,
+  WorkflowRoleOverridesV1Schema,
 } from './workflowDefinitionV1.js';
 import { WorkflowAcceptedWorkspaceTargetV1Schema } from './workflowWorkspaceV1.js';
 import {
   WorkflowDefinitionV1Schema,
-  WorkflowIngressSchema,
-  WORKFLOW_VALIDATION_ISSUE_CODES,
+  WorkflowValidationIssueV1Schema,
 } from './workflowV1.js';
+export { WorkflowValidationIssueV1Schema } from './workflowV1.js';
 import {
   WorkflowCheckpointEnvelopeV1Schema,
+  WorkflowDecimalV1Schema,
+  WorkflowInvocationRefV1Schema,
+  WorkflowReviewFollowUpV1Schema,
   WorkflowInvocationDetailV1Schema,
   WorkflowInvocationLifecycleV1Schema,
   WorkflowInvocationRecordIdSchema,
@@ -39,10 +51,25 @@ import {
   WorkflowDirectRunAdmissionIdV1Schema,
 } from './workflowIdsV1.js';
 import { WorkflowInputNameSchema } from './workflowReferenceV1.js';
+import { WorkflowDefinitionEditRequestV1Schema, WorkflowDefinitionEditResultV1Schema } from './workflowDefinitionEditV1.js';
+import { WorkflowDefinitionRefV1StringSchema, parseWorkflowDefinitionRefV1 } from './workflowDefinitionRefV1.js';
+export { WorkflowDefinitionEditRequestV1Schema, WorkflowDefinitionEditResultV1Schema } from './workflowDefinitionEditV1.js';
 
 const CursorSchema = OPAQUE_CURSOR_SCHEMA;
 const PositivePagePreferenceSchema = z.number().int().positive().safe();
 const RevisionSchema = z.number().int().nonnegative().safe();
+/**
+ * Action transport carries authored ingress to the one workflow normalizer.
+ * Keeping the carrier non-recursive prevents the generic Zod boundary from
+ * overflowing before that owner can return path-addressed typed issues.
+ */
+const WorkflowIngressCarrierV1Schema = z.object({
+  version: z.literal(1).optional(),
+  inputs: z.array(z.unknown()).optional(),
+  defaults: z.unknown().optional(),
+  blocks: z.array(z.unknown()).min(1),
+  finalOutput: z.unknown().optional(),
+}).strict();
 const WorkflowInputsV1Schema = z.record(z.string(), StrictJsonValueSchema).superRefine(
   (inputs, context) => {
     for (const inputName of Object.keys(inputs)) {
@@ -57,14 +84,8 @@ const WorkflowInputsV1Schema = z.record(z.string(), StrictJsonValueSchema).super
   },
 );
 
-export const WorkflowValidationIssueV1Schema = z.object({
-  code: z.enum(WORKFLOW_VALIDATION_ISSUE_CODES),
-  path: z.string(), message: z.string(), blockId: z.string().optional(),
-  severity: z.enum(['error', 'warning']),
-}).strict();
-
 export const WorkflowValidateRequestV1Schema = z.object({
-  definition: WorkflowIngressSchema,
+  definition: WorkflowIngressCarrierV1Schema,
   inputs: WorkflowInputsV1Schema.optional(),
   target: z.object({ machineId: WorkflowMachineIdV1Schema }).strict().optional(),
 }).strict();
@@ -75,16 +96,21 @@ export const WorkflowValidateResultV1Schema = z.object({
 }).strict();
 
 export const WorkflowRunSourceV1Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('inline'), definition: WorkflowIngressSchema }).strict(),
-  z.object({ kind: z.literal('saved'), definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema }).strict(),
+  z.object({ kind: z.literal('inline'), definition: WorkflowIngressCarrierV1Schema }).strict(),
+  z.object({ kind: z.literal('saved'), definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema,
+    visibleTeamId: preservedBoundedNfcString(191, 'Team ids').optional() }).strict(),
+  z.object({ kind: z.literal('catalog'), workflow: WorkflowDefinitionRefV1StringSchema.refine(
+    (ref) => parseWorkflowDefinitionRefV1(ref)?.kind !== 'artifact', 'Catalog sources must name a built-in or plugin workflow',
+  ) }).strict(),
 ]);
 export const WorkflowRunStartRequestV1Schema = z.object({
   runId: WorkflowDirectRunAdmissionIdV1Schema,
   source: WorkflowRunSourceV1Schema,
-  /** Private display metadata for this exact admission; older callers may omit it. */
+  /** Optional authored display metadata; admission freezes its absence as null. */
   metadata: WorkflowDefinitionMetadataV1Schema.optional(),
   inputs: WorkflowInputsV1Schema.optional(),
   executionTarget: WorkflowRunExecutionTargetV1Schema.optional(),
+  roleOverrides: WorkflowRoleOverridesV1Schema.optional(),
   onComplete: z.object({ kind: z.literal('originating_session') }).strict().optional(),
 }).strict();
 export const WorkflowRunStartResultV1Schema = z.object({
@@ -116,6 +142,15 @@ export function parseWorkflowRunStartActionResultReferenceV1(
 export const WorkflowRunAttentionFilterV1Schema = z.literal('required');
 export const WorkflowRunListRequestV1Schema = z.object({
   cursor: CursorSchema.optional(), limit: PositivePagePreferenceSchema.optional(),
+  /**
+   * Exact-Run selection for background refresh and transcript initial
+   * materialization. The page stays the lean list projection — Run summaries
+   * plus the sparse accepted-metadata sidecar — with zero or one rows and no
+   * usage, checkpoint, definition or invocation reads. Explicit Run detail
+   * keeps `workflow.run.get`.
+   */
+  runId: WorkflowRunIdV1Schema.optional(),
+  sourceArtifactId: WorkflowDefinitionIdV1Schema.optional(),
   origin: z.enum(['automation', 'direct']).optional(),
   states: z.array(WorkflowRunStateV1Schema).min(1).optional(),
   attention: WorkflowRunAttentionFilterV1Schema.optional(),
@@ -131,10 +166,9 @@ export type WorkflowRunPrivateMetadataV1 = z.infer<typeof WorkflowRunPrivateMeta
 export const WorkflowRunListResultV1Schema = z.object({
   runs: z.array(WorkflowRunSummaryV1Schema),
   /** Account-private metadata opened from the accepted snapshots for this page. */
-  metadataByRunId: z.record(z.string(), WorkflowRunPrivateMetadataV1Schema).optional(),
+  metadataByRunId: z.record(z.string(), WorkflowRunPrivateMetadataV1Schema),
   nextCursor: CursorSchema.optional(),
 }).strict().superRefine((value, context) => {
-  if (value.metadataByRunId === undefined) return;
   const pageRunIds = new Set(value.runs.map((run) => run.id));
   for (const runId of Object.keys(value.metadataByRunId)) {
     if (!pageRunIds.has(runId)) {
@@ -147,6 +181,24 @@ export const WorkflowRunListResultV1Schema = z.object({
   }
 });
 export const WorkflowRunGetRequestV1Schema = z.object({ runId: WorkflowRunIdV1Schema }).strict();
+export const WorkflowRunSummariesRequestV1Schema = z.object({
+  sourceArtifactIds: z.array(WorkflowDefinitionIdV1Schema).superRefine((ids, context) => {
+    if (new Set(ids).size !== ids.length) context.addIssue({ code: z.ZodIssueCode.custom, message: 'Duplicate source artifacts' });
+  }),
+  recent: PositivePagePreferenceSchema,
+}).strict();
+const WorkflowRunRecentSummaryV1Schema = z.object({ runId: WorkflowRunIdV1Schema, state: WorkflowRunStateV1Schema }).strict();
+export const WorkflowRunSummariesResultV1Schema = z.object({
+  summaries: z.array(z.object({
+    sourceArtifactId: WorkflowDefinitionIdV1Schema,
+    lastRun: WorkflowRunRecentSummaryV1Schema.extend({ createdAt: z.string().datetime(), finishedAt: z.string().datetime().nullable() }).strict().nullable(),
+    recent: z.array(WorkflowRunRecentSummaryV1Schema),
+    needsYouCount: z.number().int().nonnegative().safe(),
+    needsYouRunId: WorkflowRunIdV1Schema.nullable(),
+  }).strict()),
+  remainingSourceArtifactIds: z.array(WorkflowDefinitionIdV1Schema),
+}).strict();
+export type WorkflowRunSummariesResultV1 = z.infer<typeof WorkflowRunSummariesResultV1Schema>;
 export const WorkflowRunAcceptedContextV1Schema = z.union([
   z.object({
     source: z.object({
@@ -194,7 +246,6 @@ export const WorkflowRunGetResultV1Schema = z.object({
   result: StrictJsonValueSchema.optional(), usage: WorkflowUsageV1Schema.optional(),
   /** Authenticated exact producer record of `result`; neither field exists without the other. */
   finalOutputInvocationId: WorkflowInvocationRecordIdSchema.optional(),
-  availability: WorkflowRunSummaryV1Schema.shape.availability,
 }).strict().superRefine((value, context) => {
   const hasResult = value.result !== undefined;
   const hasProducer = value.finalOutputInvocationId !== undefined;
@@ -233,16 +284,37 @@ export const WorkflowInvocationRetryResultV1Schema = z.object({
   run: WorkflowRunSummaryV1Schema, invocation: WorkflowRunInvocationIndexV1Schema,
   disposition: z.enum(['accepted', 'ineligible', 'conflict']),
 }).strict();
+const WorkflowReviewTargetV1Shape = {
+  runId: WorkflowRunIdV1Schema,
+  invocation: WorkflowInvocationRefV1Schema,
+  expectedContentRevision: WorkflowDecimalV1Schema,
+};
+export const WorkflowInvocationPublishDraftRequestV1Schema = z.object({
+  ...WorkflowReviewTargetV1Shape, value: StrictJsonValueSchema,
+}).strict();
+export const WorkflowInvocationPublishDraftResultV1Schema = WorkflowInvocationGetResultV1Schema;
+export const WorkflowInvocationCompleteReviewRequestV1Schema = z.discriminatedUnion('mode', [
+  z.object({ ...WorkflowReviewTargetV1Shape, mode: z.literal('use_result'),
+    value: StrictJsonValueSchema.optional(), followUp: WorkflowReviewFollowUpV1Schema.optional() }).strict(),
+  z.object({ ...WorkflowReviewTargetV1Shape, mode: z.literal('generate'),
+    acknowledgeUncertainPriorEffects: z.literal(true).optional() }).strict(),
+]);
+export const WorkflowInvocationCompleteReviewResultV1Schema = z.object({
+  run: WorkflowRunSummaryV1Schema, invocation: WorkflowRunInvocationIndexV1Schema,
+  disposition: z.enum(['completed', 'generation_requested']),
+}).strict();
 export const WorkflowRunDeleteRequestV1Schema = WorkflowRunPauseRequestV1Schema;
 export const WorkflowRunDeleteResultV1Schema = z.object({ deleted: z.literal(true), runId: WorkflowRunIdV1Schema }).strict();
 
 export const WorkflowDefinitionListRequestV1Schema = z.object({ cursor: CursorSchema.optional(), limit: PositivePagePreferenceSchema.optional() }).strict();
-export const WorkflowDefinitionListResultV1Schema = z.object({ definitions: z.array(WorkflowDefinitionArtifactHeaderV1Schema), nextCursor: CursorSchema.optional() }).strict();
+export const WorkflowDefinitionListResultV1Schema = z.object({ definitions: z.array(WorkflowDefinitionArtifactHeaderV1Schema.extend({
+  ownerAccountId: z.string().min(1).optional(), access: ArtifactCallerAccessV1Schema.optional(),
+}).strict()), nextCursor: CursorSchema.optional() }).strict();
 export const WorkflowDefinitionGetRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema }).strict();
-export const WorkflowDefinitionGetResultV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema, definition: WorkflowDefinitionV1Schema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
-export const WorkflowDefinitionCreateRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, definition: WorkflowIngressSchema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
+export const WorkflowDefinitionGetResultV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, revision: WorkflowArtifactRevisionV1Schema, definition: WorkflowDefinitionV1Schema, metadata: WorkflowDefinitionMetadataV1Schema, savedBy: WorkflowDefinitionSavedByV1Schema.optional() }).strict();
+export const WorkflowDefinitionCreateRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, definition: WorkflowIngressCarrierV1Schema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
 export const WorkflowDefinitionCreateResultV1Schema = WorkflowDefinitionGetResultV1Schema;
-export const WorkflowDefinitionUpdateRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, expectedRevision: WorkflowArtifactRevisionV1Schema, definition: WorkflowIngressSchema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
+export const WorkflowDefinitionUpdateRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema, expectedRevision: WorkflowArtifactRevisionV1Schema, definition: WorkflowIngressCarrierV1Schema, metadata: WorkflowDefinitionMetadataV1Schema }).strict();
 export const WorkflowDefinitionUpdateResultV1Schema = WorkflowDefinitionGetResultV1Schema;
 export const WorkflowDefinitionDeleteRequestV1Schema = z.object({ definitionId: WorkflowDefinitionIdV1Schema }).strict();
 export const WorkflowDefinitionDeleteResultV1Schema = z.object({ deleted: z.literal(true), definitionId: WorkflowDefinitionIdV1Schema }).strict();
@@ -253,6 +325,7 @@ export const WorkflowActionInputSchemasV1 = {
   'workflow.validate': WorkflowValidateRequestV1Schema,
   'workflow.run.start': WorkflowRunStartRequestV1Schema,
   'workflow.run.list': WorkflowRunListRequestV1Schema,
+  'workflow.run.summaries': WorkflowRunSummariesRequestV1Schema,
   'workflow.run.get': WorkflowRunGetRequestV1Schema,
   'workflow.run.wait': WorkflowRunWaitRequestV1Schema,
   'workflow.run.pause': WorkflowRunPauseRequestV1Schema,
@@ -261,18 +334,30 @@ export const WorkflowActionInputSchemasV1 = {
   'workflow.run.invocations.list': WorkflowInvocationListRequestV1Schema,
   'workflow.run.invocations.get': WorkflowInvocationGetRequestV1Schema,
   'workflow.run.invocations.retry': WorkflowInvocationRetryInputV1Schema,
+  'workflow.run.invocations.publish_draft': WorkflowInvocationPublishDraftRequestV1Schema,
+  'workflow.run.invocations.complete_review': WorkflowInvocationCompleteReviewRequestV1Schema,
   'workflow.run.delete': WorkflowRunDeleteRequestV1Schema,
   'workflow.definition.list': WorkflowDefinitionListRequestV1Schema,
   'workflow.definition.get': WorkflowDefinitionGetRequestV1Schema,
   'workflow.definition.create': WorkflowDefinitionCreateRequestV1Schema,
   'workflow.definition.update': WorkflowDefinitionUpdateRequestV1Schema,
+  'workflow.definition.edit': WorkflowDefinitionEditRequestV1Schema,
   'workflow.definition.delete': WorkflowDefinitionDeleteRequestV1Schema,
+  'workflow.trigger.list': WorkflowTriggerListRequestV1Schema,
+  'workflow.trigger.add': WorkflowTriggerAddRequestV1Schema,
+  'workflow.trigger.update': WorkflowTriggerUpdateRequestV1Schema,
+  'workflow.trigger.remove': WorkflowTriggerRemoveRequestV1Schema,
+  'session.trigger.list': SessionTriggerListRequestV1Schema,
+  'session.trigger.add': SessionTriggerAddRequestV1Schema,
+  'session.trigger.update': SessionTriggerUpdateRequestV1Schema,
+  'session.trigger.remove': SessionTriggerRemoveRequestV1Schema,
 } as const satisfies Record<WorkflowActionIdV1, z.ZodTypeAny>;
 
 export const WorkflowActionOutputSchemasV1 = {
   'workflow.validate': WorkflowValidateResultV1Schema,
   'workflow.run.start': WorkflowRunStartResultV1Schema,
   'workflow.run.list': WorkflowRunListResultV1Schema,
+  'workflow.run.summaries': WorkflowRunSummariesResultV1Schema,
   'workflow.run.get': WorkflowRunGetResultV1Schema,
   'workflow.run.wait': WorkflowRunWaitResultV1Schema,
   'workflow.run.pause': WorkflowRunControlResultV1Schema,
@@ -281,12 +366,23 @@ export const WorkflowActionOutputSchemasV1 = {
   'workflow.run.invocations.list': WorkflowInvocationListResultV1Schema,
   'workflow.run.invocations.get': WorkflowInvocationGetResultV1Schema,
   'workflow.run.invocations.retry': WorkflowInvocationRetryResultV1Schema,
+  'workflow.run.invocations.publish_draft': WorkflowInvocationPublishDraftResultV1Schema,
+  'workflow.run.invocations.complete_review': WorkflowInvocationCompleteReviewResultV1Schema,
   'workflow.run.delete': WorkflowRunDeleteResultV1Schema,
   'workflow.definition.list': WorkflowDefinitionListResultV1Schema,
   'workflow.definition.get': WorkflowDefinitionGetResultV1Schema,
   'workflow.definition.create': WorkflowDefinitionCreateResultV1Schema,
   'workflow.definition.update': WorkflowDefinitionUpdateResultV1Schema,
+  'workflow.definition.edit': WorkflowDefinitionEditResultV1Schema,
   'workflow.definition.delete': WorkflowDefinitionDeleteResultV1Schema,
+  'workflow.trigger.list': WorkflowTriggerListResultV1Schema,
+  'workflow.trigger.add': WorkflowTriggerWriteResultV1Schema,
+  'workflow.trigger.update': WorkflowTriggerWriteResultV1Schema,
+  'workflow.trigger.remove': WorkflowTriggerWriteResultV1Schema,
+  'session.trigger.list': SessionTriggerListResultV1Schema,
+  'session.trigger.add': WorkflowTriggerWriteResultV1Schema,
+  'session.trigger.update': WorkflowTriggerWriteResultV1Schema,
+  'session.trigger.remove': WorkflowTriggerWriteResultV1Schema,
 } as const satisfies Record<WorkflowActionIdV1, z.ZodTypeAny>;
 
 export type WorkflowValidateRequestV1 = z.infer<typeof WorkflowValidateRequestV1Schema>;
@@ -308,6 +404,10 @@ export type WorkflowInvocationListResultV1 = z.infer<typeof WorkflowInvocationLi
 export type WorkflowInvocationGetRequestV1 = z.infer<typeof WorkflowInvocationGetRequestV1Schema>;
 export type WorkflowInvocationGetResultV1 = z.infer<typeof WorkflowInvocationGetResultV1Schema>;
 export type WorkflowInvocationRetryResultV1 = z.infer<typeof WorkflowInvocationRetryResultV1Schema>;
+export type WorkflowInvocationPublishDraftRequestV1 = z.infer<typeof WorkflowInvocationPublishDraftRequestV1Schema>;
+export type WorkflowInvocationPublishDraftResultV1 = z.infer<typeof WorkflowInvocationPublishDraftResultV1Schema>;
+export type WorkflowInvocationCompleteReviewRequestV1 = z.infer<typeof WorkflowInvocationCompleteReviewRequestV1Schema>;
+export type WorkflowInvocationCompleteReviewResultV1 = z.infer<typeof WorkflowInvocationCompleteReviewResultV1Schema>;
 export type WorkflowRunDeleteRequestV1 = z.infer<typeof WorkflowRunDeleteRequestV1Schema>;
 export type WorkflowRunDeleteResultV1 = z.infer<typeof WorkflowRunDeleteResultV1Schema>;
 export type WorkflowDefinitionListRequestV1 = z.infer<typeof WorkflowDefinitionListRequestV1Schema>;
@@ -320,3 +420,4 @@ export type WorkflowDefinitionUpdateRequestV1 = z.infer<typeof WorkflowDefinitio
 export type WorkflowDefinitionUpdateResultV1 = z.infer<typeof WorkflowDefinitionUpdateResultV1Schema>;
 export type WorkflowDefinitionDeleteRequestV1 = z.infer<typeof WorkflowDefinitionDeleteRequestV1Schema>;
 export type WorkflowDefinitionDeleteResultV1 = z.infer<typeof WorkflowDefinitionDeleteResultV1Schema>;
+import { ArtifactCallerAccessV1Schema } from '../artifacts/artifactAccessV1.js';

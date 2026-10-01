@@ -21,6 +21,7 @@ import { inTx, type Tx } from "@/storage/inTx";
 
 import { encryptPluginWebhookCredentialSecretV1 } from "./credentialCipher";
 import { createGeneratedPluginWebhookCredentialMaterialV1 } from "./credentialMaterial";
+import { isContributionSetupCompatibleWithRoutingKindV1 } from "./routingKind";
 import { projectPluginWebhookEndpointReadinessV1 } from "./endpointReadiness";
 import { markPluginWebhookAccountChangedInTxV1 } from "./accountChange";
 
@@ -201,8 +202,10 @@ export async function ensurePluginWebhookEndpointV1(params: Readonly<{
         || params.input.targetMaterialization.materializationId !== params.target.materialization.materializationId
         || params.input.targetMaterialization.pluginId !== params.target.materialization.pluginId
         || params.target.materialization.pluginId !== params.contribution.pluginId
-        || (params.input.setup.kind === "accountEndpointV1" && params.contribution.routingKind !== "accountEndpoint")
-        || (params.input.setup.kind === "githubSharedInstallationV1" && params.contribution.routingKind !== "providerInstallation")
+        || !isContributionSetupCompatibleWithRoutingKindV1({
+            contributionRoutingKind: params.contribution.routingKind,
+            setupKind: params.input.setup.kind,
+        })
     ) {
         throw new PluginWebhookEndpointStoreError("endpoint_unavailable");
     }

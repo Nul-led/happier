@@ -31,6 +31,27 @@ describe("apiRateLimitCatalog", () => {
         );
     });
 
+    it("supports the one-second account-request polling cadence without self-throttling", () => {
+        const rateLimit = resolveApiHotEndpointRateLimit({
+            HAPPIER_API_RATE_LIMITS_ENABLED: "1",
+        }, "auth.accountRequest.poll");
+
+        expect(rateLimit).toEqual(expect.objectContaining({
+            max: 240,
+            timeWindow: "1 minute",
+            keyGenerator: expect.any(Function),
+        }));
+    });
+
+    it("keeps terminal request creation bounded separately from status polling", () => {
+        const env = { HAPPIER_API_RATE_LIMITS_ENABLED: "1" } as const;
+
+        expect(resolveApiHotEndpointRateLimit(env, "auth.terminalRequest.poll"))
+            .toEqual(expect.objectContaining({ max: 30, timeWindow: "1 minute" }));
+        expect(resolveApiHotEndpointRateLimit(env, "auth.terminalRequest.status"))
+            .toEqual(expect.objectContaining({ max: 240, timeWindow: "1 minute" }));
+    });
+
     it("provides an IP-keyed bucket for bearer-only external Actions", () => {
         const rateLimit = resolveApiHotEndpointRateLimit({
             HAPPIER_API_RATE_LIMITS_ENABLED: "1",

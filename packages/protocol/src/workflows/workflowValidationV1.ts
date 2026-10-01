@@ -1,15 +1,16 @@
 import { z } from 'zod';
+import { listActionSpecs } from '../actions/actionSpecs.js';
 
 import {
   WorkflowBlockSchema,
-  WorkflowDefinitionBaseSchema,
   WorkflowInputDefinitionSchema,
-  WorkflowStepExecutionSelectionSchema,
+  WorkflowStepSelectionV1Schema,
   type WorkflowBlock,
   type WorkflowDefinitionV1,
   type WorkflowIngressContextV1,
   type WorkflowStep,
-  type WorkflowStepExecutionSelection,
+  type WorkflowStepSelectionV1,
+  type WorkflowLeafV1,
   type WorkflowTargetValidationState,
   type WorkflowValidationIssue,
   type WorkflowValidationIssueCode,
@@ -17,12 +18,17 @@ import {
 } from './workflowV1.js';
 import {
   collectWorkflowConditionValueReferences,
+  selectWorkflowLexicalScope,
   WorkflowAuthoredResultReferenceSchema,
   type WorkflowCondition,
+  type WorkflowLexicalScope,
   type WorkflowReferenceScope,
   type WorkflowValueReference,
 } from './workflowReferenceV1.js';
 import { readWorkflowWorkspaceProducerRef } from './workflowWorkspaceV1.js';
+import { resolveWorkflowStepSelectionV1 } from './workflowStepSelectionV1.js';
+import { WorkflowRoleV1Schema } from '../prompts/roles/rolesV1.js';
+import { MENTION_KIND_V1, readMentionRefOpaqueForKindV1 } from '../runtime/input/mentionRefV1.js';
 
 /**
  * Normalization and semantic validation for the canonical workflow definition.
@@ -43,6 +49,7 @@ const WorkflowIngressEnvelopeSchema = z.object({
   version: z.literal(1).optional(),
   inputs: z.array(WorkflowInputDefinitionSchema).optional(),
   defaults: z.unknown().optional(),
+  roles: z.array(WorkflowRoleV1Schema).optional(),
   blocks: z.array(z.unknown()).min(1),
   finalOutput: WorkflowAuthoredResultReferenceSchema.optional(),
 }).strict();
@@ -101,13 +108,17 @@ export function assignWorkflowIngressBlockId(params: Readonly<{
 
 /** Every id an authored object block already claims, so an assigned id never collides. */
 function collectAuthoredIngressIds(value: unknown, into: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const entry of value) collectAuthoredIngressIds(entry, into);
-    return;
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+      continue;
+    }
+    if (!isRecord(current)) continue;
+    if (typeof current['id'] === 'string') into.add(current['id']);
+    for (const entry of Object.values(current)) pending.push(entry);
   }
-  if (!isRecord(value)) return;
-  if (typeof value['id'] === 'string') into.add(value['id']);
-  for (const entry of Object.values(value)) collectAuthoredIngressIds(entry, into);
 }
 
 /**
@@ -118,47 +129,76 @@ function collectAuthoredIngressIds(value: unknown, into: Set<string>): void {
 function expandIngressStringBlocks(rootBlocks: readonly unknown[]): readonly unknown[] {
   const takenIds = new Set<string>();
   collectAuthoredIngressIds(rootBlocks, takenIds);
+  const expandedRoot: unknown[] = new Array(rootBlocks.length);
+  const pending: Array<Readonly<{
+    source: readonly unknown[];
+    target: unknown[];
+    parentPath: string;
+  }>> = [{ source: rootBlocks, target: expandedRoot, parentPath: '' }];
 
-  const expandList = (list: readonly unknown[], parentPath: string): unknown[] => list.map((entry, index) => {
-    if (typeof entry === 'string') {
-      const id = assignWorkflowIngressBlockId({ parentPath, ordinal: index, takenIds });
-      takenIds.add(id);
-      return {
-        kind: 'step',
-        id,
-        document: { text: entry, references: [], attachments: [] },
-        input: [],
-        result: { kind: 'text' },
-      } satisfies WorkflowStep;
-    }
-    if (!isRecord(entry)) return entry;
-
-    const ownId = typeof entry['id'] === 'string' ? entry['id'] : '';
-    if (entry['kind'] === 'parallel' && Array.isArray(entry['branches'])) {
-      return {
-        ...entry,
-        branches: entry['branches'].map((branch) => {
-          if (!isRecord(branch) || !Array.isArray(branch['blocks'])) return branch;
-          const branchId = typeof branch['id'] === 'string' ? branch['id'] : '';
-          return { ...branch, blocks: expandList(branch['blocks'], `${ownId}.${branchId}`) };
-        }),
-      };
-    }
-    if (entry['kind'] === 'loop' && Array.isArray(entry['body'])) {
-      return { ...entry, body: expandList(entry['body'], `${ownId}.body`) };
-    }
-    if (entry['kind'] === 'if') {
-      const next: Record<string, unknown> = { ...entry };
-      if (Array.isArray(entry['then'])) next['then'] = expandList(entry['then'], `${ownId}.then`);
-      if (Array.isArray(entry['otherwise'])) {
-        next['otherwise'] = expandList(entry['otherwise'], `${ownId}.otherwise`);
+  while (pending.length > 0) {
+    const { source, target, parentPath } = pending.pop()!;
+    for (let index = 0; index < source.length; index += 1) {
+      const entry = source[index];
+      if (typeof entry === 'string') {
+        const id = assignWorkflowIngressBlockId({ parentPath, ordinal: index, takenIds });
+        takenIds.add(id);
+        target[index] = {
+          kind: 'step',
+          id,
+          document: { text: entry, references: [], attachments: [] },
+          input: [],
+          result: { kind: 'text' },
+        } satisfies WorkflowStep;
+        continue;
       }
-      return next;
-    }
-    return entry;
-  });
+      if (!isRecord(entry)) {
+        target[index] = entry;
+        continue;
+      }
 
-  return expandList(rootBlocks, '');
+      const ownId = typeof entry['id'] === 'string' ? entry['id'] : '';
+      if (entry['kind'] === 'parallel' && Array.isArray(entry['branches'])) {
+        const branches = entry['branches'].map((branch) => {
+          if (!isRecord(branch) || !Array.isArray(branch['blocks'])) return branch;
+          const blocks: unknown[] = new Array(branch['blocks'].length);
+          const branchId = typeof branch['id'] === 'string' ? branch['id'] : '';
+          pending.push({ source: branch['blocks'], target: blocks, parentPath: `${ownId}.${branchId}` });
+          return { ...branch, blocks };
+        });
+        target[index] = { ...entry, branches };
+        continue;
+      }
+      if (entry['kind'] === 'loop' && Array.isArray(entry['body'])) {
+        const body: unknown[] = new Array(entry['body'].length);
+        target[index] = { ...entry, body };
+        pending.push({ source: entry['body'], target: body, parentPath: `${ownId}.body` });
+        continue;
+      }
+      if (entry['kind'] === 'if') {
+        const next: Record<string, unknown> = { ...entry };
+        if (Array.isArray(entry['then'])) {
+          const thenBlocks: unknown[] = new Array(entry['then'].length);
+          next['then'] = thenBlocks;
+          pending.push({ source: entry['then'], target: thenBlocks, parentPath: `${ownId}.then` });
+        }
+        if (Array.isArray(entry['otherwise'])) {
+          const otherwiseBlocks: unknown[] = new Array(entry['otherwise'].length);
+          next['otherwise'] = otherwiseBlocks;
+          pending.push({
+            source: entry['otherwise'],
+            target: otherwiseBlocks,
+            parentPath: `${ownId}.otherwise`,
+          });
+        }
+        target[index] = next;
+        continue;
+      }
+      target[index] = entry;
+    }
+  }
+
+  return expandedRoot;
 }
 
 type IngressNormalizationOutcome =
@@ -202,12 +242,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function collectStagedAttachmentIssues(input: unknown): readonly WorkflowValidationIssue[] {
   const found: WorkflowValidationIssue[] = [];
-  const walk = (value: unknown, path: string): void => {
+  const pending: Array<Readonly<{ value: unknown; path: string }>> = [{ value: input, path: '' }];
+  while (pending.length > 0) {
+    const { value, path } = pending.pop()!;
     if (Array.isArray(value)) {
-      value.forEach((entry, index) => walk(entry, joinPath(path, index)));
-      return;
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        pending.push({ value: value[index], path: joinPath(path, index) });
+      }
+      continue;
     }
-    if (!isRecord(value)) return;
+    if (!isRecord(value)) continue;
     const attachments = value['attachments'];
     if (Array.isArray(attachments)) {
       attachments.forEach((attachment, index) => {
@@ -223,18 +267,16 @@ function collectStagedAttachmentIssues(input: unknown): readonly WorkflowValidat
     }
     for (const [key, entry] of Object.entries(value)) {
       if (key === 'attachments') continue;
-      walk(entry, joinPath(path, key));
+      pending.push({ value: entry, path: joinPath(path, key) });
     }
-  };
-  walk(input, '');
+  }
   return found;
 }
 
 /**
  * Accepts the ingress dialect (prompt-only string blocks, omitted version and
- * defaults) and produces exactly one canonical definition. It applies the
- * documented legacy sequential/fail-stop item defaults only here; current
- * writers emit those fields explicitly.
+ * defaults) and produces exactly one canonical definition. Structured blocks
+ * require the current explicit execution and failure-policy fields.
  */
 function normalizeIngressShape(
   input: unknown,
@@ -254,54 +296,51 @@ function normalizeIngressShape(
   // missing its id produces its exact path-addressed code instead of one
   // opaque union failure.
   const memberIssues: WorkflowValidationIssue[] = [];
-  const parsedDefaults = WorkflowStepExecutionSelectionSchema.safeParse(envelope.defaults ?? {});
+  const parsedDefaults = WorkflowStepSelectionV1Schema.safeParse(envelope.defaults ?? {});
   if (!parsedDefaults.success) {
-    memberIssues.push(...issuesFromZodError(parsedDefaults.error, '/defaults'));
+    for (const parsedIssue of issuesFromZodError(parsedDefaults.error, '/defaults')) {
+      memberIssues.push(parsedIssue);
+    }
   }
 
   // Strings are expanded everywhere a block may appear, before any strict parse,
   // so the canonical schema only ever sees structured blocks with real ids.
   const expandedBlocks = expandIngressStringBlocks(envelope.blocks);
 
-  const parsedBlocks: WorkflowBlock[] = [];
-  expandedBlocks.forEach((entry, index) => {
-    const parsedBlock = WorkflowBlockSchema.safeParse(entry);
-    if (!parsedBlock.success) {
-      memberIssues.push(...issuesFromZodError(parsedBlock.error, joinPath('/blocks', index)));
-      return;
-    }
-    parsedBlocks.push(parsedBlock.data);
-  });
+  // Canonical parsing and normalization share one stack-safe structural owner.
+  const parsedStructural = z.array(WorkflowBlockSchema).safeParse(expandedBlocks);
+  if (!parsedStructural.success) memberIssues.push(...issuesFromZodError(parsedStructural.error, '/blocks'));
 
   if (memberIssues.length > 0) return { kind: 'issues', issues: memberIssues };
 
-  const blocks: readonly WorkflowBlock[] = parsedBlocks;
+  if (!parsedStructural.success) return { kind: 'issues', issues: memberIssues };
+  const blocks: readonly WorkflowBlock[] = parsedStructural.data;
 
   const defaults = parsedDefaults.success ? parsedDefaults.data : {};
-  const effectiveDefaults = defaults.agentTarget === undefined && context?.agentTarget !== undefined
+  const effectiveDefaults = defaults.agentTarget === undefined && defaults.engine === undefined && context?.agentTarget !== undefined
     ? { ...defaults, agentTarget: context.agentTarget }
     : defaults;
 
-  const candidate = {
+  // Every member (envelope, inputs, defaults, blocks, finalOutput) already
+  // parsed through its canonical schema above, so the candidate is exactly
+  // the canonical definition shape without a recursive reparse.
+  const candidate: WorkflowDefinitionV1 = {
     version: 1 as const,
     inputs: envelope.inputs ?? [],
     defaults: effectiveDefaults,
+    ...(envelope.roles === undefined ? {} : { roles: envelope.roles }),
     blocks,
     ...(envelope.finalOutput === undefined ? {} : { finalOutput: envelope.finalOutput }),
   };
 
-  // Reparse the normalized result through the canonical definition schema so
-  // storage only ever holds a shape this schema accepts.
-  const reparsed = WorkflowDefinitionBaseSchema.safeParse(candidate);
-  if (!reparsed.success) {
-    return { kind: 'issues', issues: issuesFromZodError(reparsed.error) };
-  }
-  return { kind: 'parsed', definition: reparsed.data as WorkflowDefinitionV1 };
+  return { kind: 'parsed', definition: candidate };
 }
 
 /**
  * Public normalization entry point. Returns the canonical definition or the
- * path-addressed issues that prevented it.
+ * path-addressed issues that prevented it. Block members parse stack-safely
+ * above, so a deeply nested valid definition normalizes instead of
+ * overflowing the call stack; no nesting limit is enforced.
  */
 export function normalizeWorkflowIngress(
   input: unknown,
@@ -319,18 +358,16 @@ type ScopeLevel = Readonly<{
   blocks: readonly WorkflowBlock[];
   /** Branch ids each parallel member exposes as an addressable producer. */
   branchIdsByIndex: ReadonlyMap<number, readonly string[]>;
-  /** Set when this level is a loop body, so `previous_iteration` can name it. */
-  loopBlockId: string | null;
-  /** Whether the enclosing loop iterates a resolved item list. */
-  loopHasItems: boolean;
+  /** Authored loop mode used by the canonical lexical selector. */
+  loop?: WorkflowLexicalScope['loop'];
 }>;
 
 type WalkState = {
   readonly issues: WorkflowValidationIssue[];
   readonly seenIds: Map<string, string>;
   readonly inputNames: ReadonlySet<string>;
-  readonly hasWorkflowAgentDefault: boolean;
-  readonly workflowDefaults: WorkflowStepExecutionSelection;
+  readonly numberInputNames: ReadonlySet<string>;
+  readonly workflowDefaults: WorkflowStepSelectionV1;
   readonly levels: ScopeLevel[];
   /** Index currently being visited at each level; parallel to `levels`. */
   readonly positions: number[];
@@ -364,36 +401,19 @@ type ResolvedScope =
   | Readonly<{ kind: 'unresolvable'; message: string }>;
 
 function resolveReferenceScope(state: WalkState, scope: WorkflowReferenceScope): ResolvedScope {
-  const depth = state.levels.length;
-  if (scope.kind === 'current') {
+  const selected = selectWorkflowLexicalScope(state.levels, scope);
+  if (selected.kind !== 'invalid') {
+    const level = state.levels[selected.levelIndex]!;
     return {
-      kind: 'resolved',
-      level: state.levels[depth - 1]!,
-      exclusivePosition: state.positions[depth - 1]!,
+      kind: 'resolved', level,
+      exclusivePosition: selected.kind === 'previous_iteration'
+        ? level.blocks.length
+        : state.positions[selected.levelIndex]!,
     };
-  }
-  if (scope.kind === 'outer') {
-    const levelIndex = depth - 1 - scope.levels;
-    if (levelIndex < 0) {
-      return { kind: 'unresolvable', message: `There are not ${scope.levels} enclosing levels here.` };
-    }
-    return {
-      kind: 'resolved',
-      level: state.levels[levelIndex]!,
-      exclusivePosition: state.positions[levelIndex]!,
-    };
-  }
-  for (let levelIndex = depth - 1; levelIndex >= 0; levelIndex -= 1) {
-    const level = state.levels[levelIndex]!;
-    if (level.loopBlockId === scope.loopBlockId) {
-      // A previous iteration of an enclosing loop has completed its whole body,
-      // so every member of that body is addressable.
-      return { kind: 'resolved', level, exclusivePosition: level.blocks.length };
-    }
   }
   return {
     kind: 'unresolvable',
-    message: `"${scope.loopBlockId}" is not an enclosing loop of this block.`,
+    message: 'The selected lexical scope is unavailable or has no sequential previous iteration.',
   };
 }
 
@@ -402,8 +422,21 @@ function validateValueReference(
   reference: WorkflowValueReference,
   path: string,
   blockId: string,
+  options?: Readonly<{ allowOptionalResult?: boolean; allowSessionContext?: boolean; conditionOperand?: boolean }>,
 ): void {
+  if (reference.kind === 'result' && reference.optional === true && !options?.allowOptionalResult) {
+    state.issues.push(issue('invalid_reference_scope', path, 'Optional results are only allowed in step input lists.', blockId));
+    return;
+  }
   switch (reference.kind) {
+    case 'session_context':
+      if (!options?.allowSessionContext) state.issues.push(issue('invalid_reference_scope', path,
+        'Session context is only available in Agent or Action input bindings.', blockId));
+      return;
+    case 'session_context_field':
+      if (!options?.conditionOperand) state.issues.push(issue('invalid_reference_scope', path,
+        'Session context fields are only available in conditions.', blockId));
+      return;
     case 'literal':
       return;
     case 'input': {
@@ -418,7 +451,7 @@ function validateValueReference(
       return;
     }
     case 'item': {
-      const insideItemsLoop = state.levels.some((level) => level.loopHasItems);
+      const insideItemsLoop = state.levels.some((level) => level.loop?.kind === 'items');
       if (!insideItemsLoop) {
         state.issues.push(issue(
           'invalid_reference_scope',
@@ -430,7 +463,7 @@ function validateValueReference(
       return;
     }
     case 'iteration': {
-      const insideLoop = state.levels.some((level) => level.loopBlockId !== null);
+      const insideLoop = state.levels.some((level) => level.loop !== undefined);
       if (!insideLoop) {
         state.issues.push(issue(
           'invalid_reference_scope',
@@ -438,6 +471,17 @@ function validateValueReference(
           'Iteration facts are only available inside a loop.',
           blockId,
         ));
+      }
+      return;
+    }
+    case 'loop_trailing_count': {
+      let levelIndex = state.levels.length - 1;
+      while (levelIndex >= 0 && state.levels[levelIndex]!.loop === undefined) levelIndex -= 1;
+      const level = state.levels[levelIndex];
+      if (!level || reference.producer.scope.kind !== 'current'
+        || !producerCandidatesAt(level, state.positions[levelIndex]!).has(reference.producer.blockId)) {
+        state.issues.push(issue('invalid_reference_scope', path,
+          'Trailing counts require a preceding producer in the nearest loop body.', blockId));
       }
       return;
     }
@@ -480,9 +524,10 @@ function validateCondition(
   condition: WorkflowCondition,
   path: string,
   blockId: string,
+  allowSessionContextFields = false,
 ): void {
   for (const reference of collectWorkflowConditionValueReferences(condition)) {
-    validateValueReference(state, reference, path, blockId);
+    validateValueReference(state, reference, path, blockId, { conditionOperand: allowSessionContextFields });
   }
   const pending: WorkflowCondition[] = [condition];
   while (pending.length > 0) {
@@ -490,9 +535,13 @@ function validateCondition(
     if (current.kind === 'compare' && current.operator !== 'eq' && current.operator !== 'neq') {
       const left = current.left;
       const right = current.right;
-      if (left.kind === 'literal' && right.kind === 'literal') {
-        const comparable = (typeof left.value === 'number' && typeof right.value === 'number')
-          || (typeof left.value === 'string' && typeof right.value === 'string');
+      const operandType = (reference: WorkflowValueReference) => reference.kind === 'loop_trailing_count' || reference.kind === 'session_context_field'
+        ? 'number'
+        : reference.kind === 'literal' ? typeof reference.value : undefined;
+      const leftType = operandType(left);
+      const rightType = operandType(right);
+      if (leftType !== undefined && rightType !== undefined) {
+        const comparable = leftType === rightType && (leftType === 'number' || leftType === 'string');
         if (!comparable) {
           state.issues.push(issue(
             'invalid_condition',
@@ -503,19 +552,26 @@ function validateCondition(
         }
       }
     } else if (current.kind === 'all' || current.kind === 'any') {
-      pending.push(...current.conditions);
+      for (const nested of current.conditions) pending.push(nested);
     } else if (current.kind === 'not') {
       pending.push(current.condition);
     }
   }
 }
 
-function validateStepExecution(state: WalkState, step: WorkflowStep, path: string): void {
+function validateStepExecution(state: WalkState, step: WorkflowLeafV1, path: string): void {
   const execution = step.execution;
-  const hasEffectiveAgent = execution?.agentTarget !== undefined
-    ? execution.agentTarget !== null
-    : state.hasWorkflowAgentDefault;
-  if (!hasEffectiveAgent) {
+  // Roles are resolved at admission. Static validation recognizes the role arm
+  // without consulting mutable Account settings or choosing a target class.
+  const engine = execution?.engine ?? state.workflowDefaults.engine;
+  const withoutEngine = (selection: WorkflowStepSelectionV1) => {
+    const { engine: _engine, executionTarget: _target, ...fields } = selection;
+    return fields;
+  };
+  const effective = resolveWorkflowStepSelectionV1({ defaults: withoutEngine(state.workflowDefaults),
+    step: execution === undefined ? undefined : withoutEngine(execution) }).selection;
+  const boundConversation = effective.conversation?.kind === 'origin_session' || effective.conversation?.kind === 'existing_session';
+  if (step.kind === 'step' && effective.agentTarget == null && !engine && !boundConversation) {
     state.issues.push(issue(
       'target_unavailable',
       joinPath(path, 'execution', 'agentTarget'),
@@ -523,10 +579,14 @@ function validateStepExecution(state: WalkState, step: WorkflowStep, path: strin
       step.id,
     ));
   }
+  if (execution?.executionTarget?.kind === 'detached_run' && boundConversation) {
+    state.issues.push(issue('invalid_input', joinPath(path, 'execution', 'executionTarget'),
+      'A conversation bound to a Session requires a Session target.', step.id));
+  }
 
-  const effectiveConversation = execution?.conversation ?? state.workflowDefaults.conversation;
-  const effectiveWorkspace = execution?.workspace ?? state.workflowDefaults.workspace;
-  if (effectiveConversation?.kind === 'existing_session' && effectiveWorkspace?.kind === 'new_worktree') {
+  const effectiveConversation = effective.conversation;
+  if ((effectiveConversation?.kind === 'existing_session' || effectiveConversation?.kind === 'origin_session')
+    && execution?.workspace?.kind === 'new_worktree') {
     state.issues.push(issue(
       'conversation_workspace_mismatch',
       joinPath(path, 'execution', 'workspace'),
@@ -563,25 +623,34 @@ function validateStep(
   options?: Readonly<{ requireDecisionResult?: boolean }>,
 ): void {
   validateStepExecution(state, step, path);
+  const invalidBindings = new Map<number, WorkflowValidationIssue>();
   step.input.forEach((reference, index) => {
-    validateValueReference(state, reference, joinPath(path, 'input', index), step.id);
+    const issueCount = state.issues.length;
+    validateValueReference(state, reference, joinPath(path, 'input', index), step.id, { allowOptionalResult: true, allowSessionContext: true });
+    const bindingIssue = state.issues[issueCount];
+    if (bindingIssue) invalidBindings.set(index, bindingIssue);
+  });
+  step.document.references.forEach((mention, index) => {
+    if (mention.kind !== MENTION_KIND_V1.workflowInput) return;
+    const opaque = readMentionRefOpaqueForKindV1(MENTION_KIND_V1.workflowInput, mention.ref);
+    const bindingIndex = opaque !== null && /^\d+$/.test(opaque) ? Number(opaque) : NaN;
+    const tokenPath = joinPath(path, 'document', 'references', index, 'ref');
+    if (!Number.isSafeInteger(bindingIndex) || bindingIndex >= step.input.length) {
+      state.issues.push(issue('invalid_input', tokenPath, 'This token has no Workflow input binding.', step.id));
+      return;
+    }
+    const bindingIssue = invalidBindings.get(bindingIndex);
+    if (bindingIssue) state.issues.push({ ...bindingIssue, path: tokenPath });
   });
   if (step.onlyWhen !== undefined) {
-    validateCondition(state, step.onlyWhen, joinPath(path, 'onlyWhen'), step.id);
+    validateCondition(state, step.onlyWhen, joinPath(path, 'onlyWhen'), step.id, options?.requireDecisionResult === true);
   }
-  if (options?.requireDecisionResult === true && step.result.kind !== 'decision') {
+  if (options?.requireDecisionResult === true && (step.result.kind !== 'decision'
+    || !step.result.decisions.includes('continue') || step.result.decisions.length < 2)) {
     state.issues.push(issue(
       'invalid_result_contract',
       joinPath(path, 'result'),
-      'An evaluator step must return a continue/stop decision.',
-      step.id,
-    ));
-  }
-  if (options?.requireDecisionResult !== true && step.result.kind === 'decision') {
-    state.issues.push(issue(
-      'invalid_result_contract',
-      joinPath(path, 'result'),
-      'Only a loop evaluator can return a continue/stop decision.',
+      'An evaluator must declare continue and at least one terminal decision.',
       step.id,
     ));
   }
@@ -595,26 +664,32 @@ function validateStep(
   }
 }
 
-function withScope<T>(
+function validateNonAgentLeaf(
   state: WalkState,
-  level: ScopeLevel,
-  run: (enter: (position: number) => void) => T,
-): T {
-  state.levels.push(level);
-  state.positions.push(0);
-  try {
-    return run((position) => {
-      state.positions[state.positions.length - 1] = position;
+  leaf: Exclude<WorkflowLeafV1, WorkflowStep>,
+  path: string,
+  allowAggregateCondition = false,
+): void {
+  validateStepExecution(state, leaf, path);
+  if (leaf.onlyWhen !== undefined) {
+    validateCondition(state, leaf.onlyWhen, joinPath(path, 'onlyWhen'), leaf.id, allowAggregateCondition);
+  }
+  if (leaf.kind === 'wait') return;
+  for (const [field, binding] of Object.entries(leaf.input)) {
+    const references = binding.kind === 'list' ? binding.items : [binding];
+    references.forEach((reference, index) => {
+      if (reference.kind !== 'origin_session_id') {
+        validateValueReference(state, reference,
+          joinPath(path, 'input', field, ...(binding.kind === 'list' ? ['items', index] : [])), leaf.id,
+          { allowSessionContext: leaf.kind === 'action' });
+      }
     });
-  } finally {
-    state.levels.pop();
-    state.positions.pop();
   }
 }
 
 function buildScopeLevel(
   blocks: readonly WorkflowBlock[],
-  loop: Readonly<{ blockId: string; hasItems: boolean }> | null,
+  loop: NonNullable<WorkflowLexicalScope['loop']> | null,
 ): ScopeLevel {
   const branchIdsByIndex = new Map<number, readonly string[]>();
   blocks.forEach((block, index) => {
@@ -625,24 +700,48 @@ function buildScopeLevel(
   return {
     blocks,
     branchIdsByIndex,
-    loopBlockId: loop?.blockId ?? null,
-    loopHasItems: loop?.hasItems ?? false,
+    ...(loop ? { loop } : {}),
   };
 }
 
 function collectDeclaredIds(state: WalkState, blocks: readonly WorkflowBlock[], path: string): void {
-  blocks.forEach((block, index) => {
-    const blockPath = joinPath(path, index);
+  type IdWalkTask =
+    | Readonly<{ kind: 'block'; block: WorkflowBlock; path: string }>
+    | Readonly<{
+      kind: 'branch';
+      branch: Extract<WorkflowBlock, { kind: 'parallel' }>['branches'][number];
+      path: string;
+    }>;
+  const pending: IdWalkTask[] = [];
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    pending.push({ kind: 'block', block: blocks[index]!, path: joinPath(path, index) });
+  }
+  while (pending.length > 0) {
+    const task = pending.pop()!;
+    if (task.kind === 'branch') {
+      recordId(state, task.branch.id, joinPath(task.path, 'id'));
+      for (let index = task.branch.blocks.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          kind: 'block',
+          block: task.branch.blocks[index]!,
+          path: joinPath(task.path, 'blocks', index),
+        });
+      }
+      continue;
+    }
+    const { block, path: blockPath } = task;
     recordId(state, block.id, joinPath(blockPath, 'id'));
     switch (block.kind) {
       case 'step':
+      case 'action':
+      case 'workflow':
+      case 'wait':
         break;
       case 'parallel':
-        block.branches.forEach((branch, branchIndex) => {
-          const branchPath = joinPath(blockPath, 'branches', branchIndex);
-          recordId(state, branch.id, joinPath(branchPath, 'id'));
-          collectDeclaredIds(state, branch.blocks, joinPath(branchPath, 'blocks'));
-        });
+        for (let branchIndex = block.branches.length - 1; branchIndex >= 0; branchIndex -= 1) {
+          const branch = block.branches[branchIndex]!;
+          pending.push({ kind: 'branch', branch, path: joinPath(blockPath, 'branches', branchIndex) });
+        }
         break;
       case 'loop':
         if (block.repetition.kind === 'evaluate') {
@@ -652,119 +751,181 @@ function collectDeclaredIds(state: WalkState, blocks: readonly WorkflowBlock[], 
             joinPath(blockPath, 'repetition', 'evaluator', 'id'),
           );
         }
-        collectDeclaredIds(state, block.body, joinPath(blockPath, 'body'));
+        for (let index = block.body.length - 1; index >= 0; index -= 1) {
+          pending.push({ kind: 'block', block: block.body[index]!, path: joinPath(blockPath, 'body', index) });
+        }
         break;
       case 'if':
-        collectDeclaredIds(state, block.then, joinPath(blockPath, 'then'));
-        collectDeclaredIds(state, block.otherwise, joinPath(blockPath, 'otherwise'));
+        for (let index = block.otherwise.length - 1; index >= 0; index -= 1) {
+          pending.push({ kind: 'block', block: block.otherwise[index]!, path: joinPath(blockPath, 'otherwise', index) });
+        }
+        for (let index = block.then.length - 1; index >= 0; index -= 1) {
+          pending.push({ kind: 'block', block: block.then[index]!, path: joinPath(blockPath, 'then', index) });
+        }
         break;
     }
-  });
+  }
 }
 
-function validateBlockList(state: WalkState, level: ScopeLevel, path: string): void {
-  withScope(state, level, (enter) => {
-    level.blocks.forEach((block, index) => {
-      enter(index);
-      const blockPath = joinPath(path, index);
-      switch (block.kind) {
-        case 'step':
-          validateStep(state, block, blockPath);
-          break;
-        case 'parallel': {
-          if (block.onlyWhen !== undefined) {
-            validateCondition(state, block.onlyWhen, joinPath(blockPath, 'onlyWhen'), block.id);
+type ValidationWalkTask =
+  | Readonly<{ kind: 'enter'; level: ScopeLevel; path: string }>
+  | Readonly<{ kind: 'leave' }>
+  | Readonly<{ kind: 'block'; block: WorkflowBlock; path: string; position: number }>
+  | Readonly<{
+    kind: 'loop_continuation';
+    level: ScopeLevel;
+    block: Extract<WorkflowBlock, Readonly<{ kind: 'loop' }>>;
+    repetitionPath: string;
+  }>;
+
+function validateBlockList(state: WalkState, initialLevel: ScopeLevel, initialPath: string): void {
+  const pending: ValidationWalkTask[] = [{ kind: 'enter', level: initialLevel, path: initialPath }];
+  while (pending.length > 0) {
+    const task = pending.pop()!;
+    if (task.kind === 'leave') {
+      state.levels.pop();
+      state.positions.pop();
+      continue;
+    }
+    if (task.kind === 'enter') {
+      state.levels.push(task.level);
+      state.positions.push(0);
+      pending.push({ kind: 'leave' });
+      for (let index = task.level.blocks.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          kind: 'block',
+          block: task.level.blocks[index]!,
+          path: joinPath(task.path, index),
+          position: index,
+        });
+      }
+      continue;
+    }
+    if (task.kind === 'loop_continuation') {
+      state.levels.push(task.level);
+      state.positions.push(task.level.blocks.length);
+      try {
+        const repetition = task.block.repetition;
+        if (repetition.kind === 'until') {
+          validateCondition(
+            state,
+            repetition.stopWhen,
+            joinPath(task.repetitionPath, 'stopWhen'),
+            task.block.id,
+            true,
+          );
+        } else if (repetition.kind === 'evaluate') {
+          if (repetition.evaluator.kind === 'step') {
+            validateStep(state, repetition.evaluator, joinPath(task.repetitionPath, 'evaluator'),
+              { requireDecisionResult: true });
+          } else {
+            validateNonAgentLeaf(state, repetition.evaluator, joinPath(task.repetitionPath, 'evaluator'), true);
           }
-          block.branches.forEach((branch, branchIndex) => {
-            const branchPath = joinPath(blockPath, 'branches', branchIndex, 'blocks');
-            validateBlockList(state, buildScopeLevel(branch.blocks, null), branchPath);
+        }
+      } finally {
+        state.levels.pop();
+        state.positions.pop();
+      }
+      continue;
+    }
+
+    state.positions[state.positions.length - 1] = task.position;
+    const { block, path: blockPath } = task;
+    switch (block.kind) {
+      case 'step':
+        validateStep(state, block, blockPath);
+        break;
+      case 'action':
+      case 'workflow':
+      case 'wait': {
+        validateNonAgentLeaf(state, block, blockPath);
+        break;
+      }
+      case 'parallel': {
+        if (block.onlyWhen !== undefined) {
+          validateCondition(state, block.onlyWhen, joinPath(blockPath, 'onlyWhen'), block.id);
+        }
+        for (let branchIndex = block.branches.length - 1; branchIndex >= 0; branchIndex -= 1) {
+          const branch = block.branches[branchIndex]!;
+          pending.push({
+            kind: 'enter',
+            level: buildScopeLevel(branch.blocks, null),
+            path: joinPath(blockPath, 'branches', branchIndex, 'blocks'),
           });
-          break;
         }
-        case 'loop': {
-          if (block.onlyWhen !== undefined) {
-            validateCondition(state, block.onlyWhen, joinPath(blockPath, 'onlyWhen'), block.id);
+        break;
+      }
+      case 'loop': {
+        if (block.onlyWhen !== undefined) {
+          validateCondition(state, block.onlyWhen, joinPath(blockPath, 'onlyWhen'), block.id);
+        }
+        const repetition = block.repetition;
+        const repetitionPath = joinPath(blockPath, 'repetition');
+        if ((repetition.kind === 'until' || repetition.kind === 'evaluate')
+          && typeof repetition.maxIterations !== 'number'
+          && !state.numberInputNames.has(repetition.maxIterations.name)) {
+          state.issues.push(issue('invalid_input', joinPath(repetitionPath, 'maxIterations'),
+            'A round limit must reference a declared number input.', block.id));
+        }
+        if (repetition.kind === 'count') {
+          validateValueReference(state, repetition.count, joinPath(repetitionPath, 'count'), block.id);
+          if (repetition.count.kind === 'literal') {
+            const count = repetition.count.value;
+            if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+              state.issues.push(issue(
+                'invalid_repetition',
+                joinPath(repetitionPath, 'count'),
+                'A repeat count must be a nonnegative whole number.',
+                block.id,
+              ));
+            }
           }
-          validateLoop(state, block, blockPath);
-          break;
         }
-        case 'if': {
-          validateCondition(state, block.when, joinPath(blockPath, 'when'), block.id);
-          validateBlockList(state, buildScopeLevel(block.then, null), joinPath(blockPath, 'then'));
-          validateBlockList(state, buildScopeLevel(block.otherwise, null), joinPath(blockPath, 'otherwise'));
-          break;
+        if (repetition.kind === 'items') {
+          validateValueReference(state, repetition.items, joinPath(repetitionPath, 'items'), block.id);
+          if (repetition.items.kind === 'literal' && !Array.isArray(repetition.items.value)) {
+            state.issues.push(issue(
+              'invalid_repetition',
+              joinPath(repetitionPath, 'items'),
+              'A for-each list must be a list.',
+              block.id,
+            ));
+          }
+          if (repetition.execution === 'sequential' && repetition.maxConcurrent !== undefined) {
+            state.issues.push(issue(
+              'invalid_max_concurrent',
+              joinPath(repetitionPath, 'maxConcurrent'),
+              'Maximum concurrent items applies only to parallel items.',
+              block.id,
+            ));
+          }
         }
+        const bodyLevel = buildScopeLevel(block.body, {
+          blockId: block.id,
+          kind: repetition.kind,
+          ...(repetition.kind === 'items' ? { execution: repetition.execution } : {}),
+        });
+        if (repetition.kind === 'until' || repetition.kind === 'evaluate') {
+          pending.push({ kind: 'loop_continuation', level: bodyLevel, block, repetitionPath });
+        }
+        pending.push({ kind: 'enter', level: bodyLevel, path: joinPath(blockPath, 'body') });
+        break;
       }
-    });
-  });
-}
-
-function validateLoop(
-  state: WalkState,
-  block: Extract<WorkflowBlock, Readonly<{ kind: 'loop' }>>,
-  blockPath: string,
-): void {
-  const repetition = block.repetition;
-  const repetitionPath = joinPath(blockPath, 'repetition');
-
-  // Entry-time references resolve in the loop's own scope, which is already the
-  // active level when this runs.
-  if (repetition.kind === 'count') {
-    validateValueReference(state, repetition.count, joinPath(repetitionPath, 'count'), block.id);
-    if (repetition.count.kind === 'literal') {
-      const count = repetition.count.value;
-      if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
-        state.issues.push(issue(
-          'invalid_repetition',
-          joinPath(repetitionPath, 'count'),
-          'A repeat count must be a whole number of at least 1.',
-          block.id,
-        ));
+      case 'if': {
+        validateCondition(state, block.when, joinPath(blockPath, 'when'), block.id, true);
+        pending.push({
+          kind: 'enter',
+          level: buildScopeLevel(block.otherwise, null),
+          path: joinPath(blockPath, 'otherwise'),
+        });
+        pending.push({
+          kind: 'enter',
+          level: buildScopeLevel(block.then, null),
+          path: joinPath(blockPath, 'then'),
+        });
+        break;
       }
     }
-  }
-  if (repetition.kind === 'items') {
-    validateValueReference(state, repetition.items, joinPath(repetitionPath, 'items'), block.id);
-    if (repetition.items.kind === 'literal' && !Array.isArray(repetition.items.value)) {
-      state.issues.push(issue(
-        'invalid_repetition',
-        joinPath(repetitionPath, 'items'),
-        'A for-each list must be a list.',
-        block.id,
-      ));
-    }
-    if (repetition.execution === 'sequential' && repetition.maxConcurrent !== undefined) {
-      state.issues.push(issue(
-        'invalid_max_concurrent',
-        joinPath(repetitionPath, 'maxConcurrent'),
-        'Maximum concurrent items applies only to parallel items.',
-        block.id,
-      ));
-    }
-  }
-
-  const bodyLevel = buildScopeLevel(block.body, {
-    blockId: block.id,
-    hasItems: repetition.kind === 'items',
-  });
-  validateBlockList(state, bodyLevel, joinPath(blockPath, 'body'));
-
-  // The continuation section runs after the body, so it resolves inside the
-  // body scope with every body member already complete.
-  if (repetition.kind === 'until' || repetition.kind === 'evaluate') {
-    withScope(state, bodyLevel, (enter) => {
-      enter(bodyLevel.blocks.length);
-      if (repetition.kind === 'until') {
-        validateCondition(state, repetition.stopWhen, joinPath(repetitionPath, 'stopWhen'), block.id);
-      } else {
-        validateStep(
-          state,
-          repetition.evaluator,
-          joinPath(repetitionPath, 'evaluator'),
-          { requireDecisionResult: true },
-        );
-      }
-    });
   }
 }
 
@@ -776,6 +937,10 @@ function validateInputs(state: WalkState, definition: WorkflowDefinitionV1): voi
       state.issues.push(issue('invalid_input', joinPath(path, 'name'), `Input "${input.name}" is declared twice.`));
     }
     seen.add(input.name);
+    if (input.optionsSourceId !== undefined && !listActionSpecs().some((spec) =>
+      spec.inputHints?.fields.some((field) => field.optionsSourceId === input.optionsSourceId))) {
+      state.issues.push(issue('invalid_input', joinPath(path, 'optionsSourceId'), 'This Action options source is not registered.'));
+    }
     if (input.default !== undefined) {
       const matches = input.valueType === 'json'
         || (input.valueType === 'string' && typeof input.default === 'string')
@@ -796,6 +961,10 @@ function validateFinalOutput(state: WalkState, definition: WorkflowDefinitionV1)
   const finalOutput = definition.finalOutput;
   if (finalOutput === undefined) return;
   const path = '/finalOutput';
+  if (finalOutput.optional === true) {
+    state.issues.push(issue('invalid_reference_scope', path, 'The final output cannot be an optional result.'));
+    return;
+  }
   if (finalOutput.producer.scope.kind !== 'current') {
     state.issues.push(issue(
       'invalid_reference_scope',
@@ -830,6 +999,12 @@ export type ValidateWorkflowDefinitionOptions = Readonly<{
    * unavailable check never withholds the normalized definition.
    */
   targetValidation?: WorkflowTargetValidationState;
+  /**
+   * Host-resolved diagnostics about state the portable definition cannot carry:
+   * target reachability and Agent availability, and live composer custody such
+   * as staged attachment bytes an authoring surface is still holding. They join
+   * the definition's own issues so one owner decides validity.
+   */
   targetIssues?: readonly WorkflowValidationIssue[];
 }>;
 
@@ -843,7 +1018,7 @@ export function validateWorkflowDefinition(
   options: ValidateWorkflowDefinitionOptions = {},
 ): WorkflowValidationResult {
   const targetValidation = options.targetValidation ?? 'not_requested';
-  const normalized = normalizeIngressShape(input, options.context);
+  const normalized = normalizeWorkflowIngress(input, options.context);
   if (normalized.kind === 'issues') {
     return { valid: false, issues: normalized.issues, targetValidation };
   }
@@ -853,7 +1028,7 @@ export function validateWorkflowDefinition(
     issues: [],
     seenIds: new Map<string, string>(),
     inputNames: new Set(definition.inputs.map((declared) => declared.name)),
-    hasWorkflowAgentDefault: definition.defaults.agentTarget != null,
+    numberInputNames: new Set(definition.inputs.filter((declared) => declared.valueType === 'number').map((declared) => declared.name)),
     workflowDefaults: definition.defaults,
     levels: [],
     positions: [],

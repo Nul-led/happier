@@ -1,9 +1,11 @@
 import { encodeBase64 } from "@happier-dev/protocol";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
+import { RunnerClaimV1Schema } from "@happier-dev/protocol/ephemeralRunner/endpoint";
 
 import { db } from "@/storage/db";
 import type { Tx } from "@/storage/inTx";
 import { AccountStatus } from "@/storage/prisma";
+import type { ActivationRow } from "./activationService";
 
 export type MaterializedRunnerMachineRoutingBinding = Readonly<{
     accountId: string;
@@ -94,6 +96,27 @@ export async function verifyCurrentMaterializedRunnerPrincipalInTx(
     return encodeBase64(machine.installationPublicKey, "base64url") === principal.installationPublicKey
         ? principal
         : null;
+}
+
+/** Resolves the current runtime tuple after the caller has verified its activation proof. */
+export async function readCurrentMaterializedRunnerPrincipalForActivationInTx(
+    tx: Tx,
+    row: ActivationRow,
+): Promise<VerifiedEphemeralSessionRunnerPrincipal | null> {
+    if (row.state !== "materialized") return null;
+    const claim = RunnerClaimV1Schema.safeParse(row.claim);
+    if (!claim.success) return null;
+    return verifyCurrentMaterializedRunnerPrincipalInTx(tx, {
+        kind: "ephemeral_session_runner",
+        authority: "session_runtime",
+        accountId: row.creatorAccountId,
+        activationId: row.id,
+        sessionId: row.sessionId,
+        machineId: row.machineId,
+        installationId: claim.data.payload.installation.installationId,
+        installationPublicKey: claim.data.payload.installation.publicKey,
+        creatorTokenEpoch: row.creatorTokenEpoch,
+    });
 }
 
 export async function verifyCurrentMaterializedRunnerPrincipal(

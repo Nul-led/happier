@@ -34,23 +34,6 @@ const HostPrivatePluginInstallPositiveDecisionV1Schema = z.object({
   }
 });
 
-/**
- * Authorizes the daemon to evaluate executable plugin code from a local
- * development source root.
- *
- * This is a different authorization from `installAndTrust`: it grants no
- * optional host access and commits no plugin. It advances a pending
- * source-root review to the ordinary install-and-trust review the daemon
- * change service already owns, so the decision vocabulary here matches the
- * one at `apps/cli/src/plugins/daemon/changeContract.ts`
- * (`PluginChangeDecision`) rather than adding a second one.
- */
-const HostPrivatePluginInstallTrustSourceRootDecisionV1Schema = z.object({
-  v: z.literal(1),
-  pendingChangeId: z.string().trim().min(1).max(256),
-  decision: z.literal('trustSourceRoot'),
-}).strict();
-
 const HostPrivatePluginInstallCancelDecisionV1Schema = z.object({
   v: z.literal(1),
   pendingChangeId: z.string().trim().min(1).max(256),
@@ -59,7 +42,6 @@ const HostPrivatePluginInstallCancelDecisionV1Schema = z.object({
 
 export const HostPrivatePluginInstallDecisionV1Schema = z.union([
   HostPrivatePluginInstallPositiveDecisionV1Schema,
-  HostPrivatePluginInstallTrustSourceRootDecisionV1Schema,
   HostPrivatePluginInstallCancelDecisionV1Schema,
 ]);
 

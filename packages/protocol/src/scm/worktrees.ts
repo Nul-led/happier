@@ -4,11 +4,13 @@ import {
   ScmOperationErrorCodeSchema,
 } from './operationError.js';
 import { ScmRequestBaseSchema } from './requestBase.js';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
 
 export const SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN = 'remove-worktree' as const;
 
 export const ScmWorktreeCommandResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -23,15 +25,21 @@ export const ScmWorktreeCreateRequestSchema = ScmRequestBaseSchema.extend({
 });
 export type ScmWorktreeCreateRequest = z.infer<typeof ScmWorktreeCreateRequestSchema>;
 
-export const ScmWorktreeCreateResponseSchema = z.object({
-  success: z.boolean(),
+export const ScmWorktreeCreateResponseSchema = z.discriminatedUnion('success', [z.object({
+  success: z.literal(true),
+  outcome: ScmOperationOutcomeSchema.optional(),
   worktreePath: z.string(),
   branchName: z.string(),
   sourceRootPath: z.string().optional(),
   repositoryRootPath: z.string().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
-});
+}), z.object({
+  success: z.literal(false),
+  outcome: ScmOperationOutcomeSchema.optional(),
+  error: z.string().optional(),
+  errorCode: ScmOperationErrorCodeSchema.optional(),
+})]);
 export type ScmWorktreeCreateResponse = z.infer<typeof ScmWorktreeCreateResponseSchema>;
 
 export const ScmWorktreeRemoveRequestSchema = ScmRequestBaseSchema.extend({

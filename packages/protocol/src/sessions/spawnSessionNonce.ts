@@ -6,6 +6,7 @@ import {
 } from './creation/sessionSpawnNewResultV1.js';
 import {
   SpawnSessionErrorCodeSchema,
+  SPAWN_SESSION_ERROR_CODES,
   isSpawnSessionErrorDetail,
   type SpawnSessionErrorCode,
   type SpawnSessionErrorDetail,
@@ -18,14 +19,14 @@ export type SpawnSessionCreationOutcome = Readonly<{
 
 export type SpawnSessionNonceResolution =
   | { status: 'success'; sessionId: string; sessionCreationOutcome?: SpawnSessionCreationOutcome }
-  | { status: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; errorDetail?: SpawnSessionErrorDetail }
+  | { status: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; agentId?: string; errorDetail?: SpawnSessionErrorDetail }
   | { status: 'pending' }
   | { status: 'not_found' }
   | { status: 'unsupported' };
 
 export type SettleSpawnSessionNonceResult =
   | { status: 'success'; sessionId: string; sessionCreationOutcome?: SpawnSessionCreationOutcome }
-  | { status: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; errorDetail?: SpawnSessionErrorDetail }
+  | { status: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; agentId?: string; errorDetail?: SpawnSessionErrorDetail }
   | { status: 'timeout' }
   | { status: 'not_found' }
   | { status: 'unsupported' };
@@ -55,10 +56,17 @@ export function normalizeSpawnSessionNonceResolution(value: unknown): SpawnSessi
     const errorCode = SpawnSessionErrorCodeSchema.safeParse(record.errorCode);
     const errorMessage = typeof record.errorMessage === 'string' ? record.errorMessage.trim() : '';
     if (!errorCode.success || !errorMessage) return { status: 'not_found' };
+    const agentPrecondition = errorCode.data === SPAWN_SESSION_ERROR_CODES.AGENT_CLI_MISSING
+      || errorCode.data === SPAWN_SESSION_ERROR_CODES.AGENT_SIGNED_OUT;
+    const agentId = typeof record.agentId === 'string' && record.agentId.trim().length > 0
+      ? record.agentId
+      : undefined;
+    if (agentPrecondition && !agentId) return { status: 'not_found' };
     return {
       status: 'error',
       errorCode: errorCode.data,
       errorMessage,
+      ...(agentPrecondition ? { agentId } : {}),
       ...(isSpawnSessionErrorDetail(record.errorDetail) ? { errorDetail: record.errorDetail } : {}),
     };
   }

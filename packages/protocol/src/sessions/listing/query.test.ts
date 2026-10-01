@@ -63,6 +63,8 @@ describe('SessionListQueryV1', () => {
     for (const patch of [
       { tagIds: [' '] },
       { tagIds: ['a', ' a '] },
+      { folderIds: [' '] },
+      { folderIds: ['a', ' a '] },
       { audiences: [{ kind: 'team', teamId: '' }] },
       { audiences: [{ kind: 'group', teamId: 't', groupId: ' ' }] },
       { audiences: [{ kind: 'outside_teams' }, { kind: 'outside_teams' }] },
@@ -70,6 +72,12 @@ describe('SessionListQueryV1', () => {
     ]) {
       expect(SessionListQueryV1Schema.safeParse({ ...query, ...patch }).success).toBe(false);
     }
+  });
+
+  it('normalizes exact folder selectors while keeping omission and empty selection unfiltered', () => {
+    expect(SessionListQueryV1Schema.parse({ ...query, folderIds: [' z ', 'a'] })).toMatchObject({ folderIds: ['a', 'z'] });
+    expect(SessionListQueryV1Schema.parse({ ...query, folderIds: [] })).toMatchObject({ folderIds: [] });
+    expect(SessionListQueryV1Schema.parse(query)).not.toHaveProperty('folderIds');
   });
 
   it('accepts complete canonical cursor bytes for either family and rejects combined or malformed cursors', () => {

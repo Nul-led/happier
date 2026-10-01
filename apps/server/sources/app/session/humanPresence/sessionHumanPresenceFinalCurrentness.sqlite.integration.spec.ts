@@ -100,7 +100,6 @@ describe("human presence final socket-currentness gate", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => {
         harness = await createLightSqliteHarness({ tempDirPrefix: "happier-human-presence-currentness-", initAuth: true, initEncrypt: true,
-            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1" },
         });
     }, 120_000);
     afterAll(async () => { await harness?.close(); });

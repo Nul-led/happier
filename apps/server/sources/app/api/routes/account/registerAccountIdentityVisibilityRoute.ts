@@ -6,6 +6,7 @@ import { z } from "zod";
 import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
 import { isAccountIdentityEligibleForGenericPresentation } from "@/app/auth/methods/registry";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerAccountIdentityVisibilityRoute(app: Fastify): void {
     app.patch('/v1/account/identity/:provider', {
@@ -23,8 +24,9 @@ export function registerAccountIdentityVisibilityRoute(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        if (!isAccountIdentityEligibleForGenericPresentation(process.env, providerId)) {
+        if (!isAccountIdentityEligibleForGenericPresentation(requestHomeEnv, providerId)) {
             return reply.code(404).send({ error: "unsupported-provider" });
         }
         let result: { type: "ok" | "not-connected" };

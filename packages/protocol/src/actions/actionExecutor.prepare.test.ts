@@ -42,19 +42,18 @@ describe('ActionExecutor prepared invocation', () => {
     await expect(prepared.invocation.run()).resolves.toEqual({ ok: true, result: payload });
   });
 
-  it('requires a host-admitted current-Session corpus for autonomous listing', async () => {
-    const sessionList = vi.fn(async () => ({ sessions: [{ id: 'owner-private-session' }] }));
+  it('defaults an agent list to its host-stamped led subtree', async () => {
+    const payload = { sessions: [], nextCursor: null, hasNext: false, queryVersion: 1, attentionNextCursor: null, attentionHasNext: false };
+    const sessionList = vi.fn(async () => payload);
     const executor = createExecutor({ sessionList, isActionApprovalRequired: () => false });
 
     await expect(executor.execute('session.list', {}, {
       surface: 'agent',
       authority: 'account_automation',
       defaultSessionId: 'admitted-session',
-    })).resolves.toEqual({
-      ok: false,
-      errorCode: 'unsupported_action',
-      error: 'unsupported_action:session.list',
-    });
+    })).resolves.toEqual({ ok: true, result: payload });
+    expect(sessionList).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ underSessionId: 'admitted-session' }) }));
+    sessionList.mockClear();
     await expect(executor.execute('session.list', { requestedBy: 'owner-account' }, {
       surface: 'agent',
       authority: 'account_automation',
@@ -81,6 +80,11 @@ describe('ActionExecutor prepared invocation', () => {
         sessionListAccess: 'current_session',
       }),
     }));
+    sessionList.mockClear();
+    await expect(executor.execute('session.list', { underSessionId: 'admitted-session' }, {
+      surface: 'agent', authority: 'account_automation', defaultSessionId: 'admitted-session', sessionListAccess: 'current_session',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+    expect(sessionList).not.toHaveBeenCalled();
   });
 
   it('admits a mounted plugin surface driven by the present user, and still refuses an autonomous one', async () => {

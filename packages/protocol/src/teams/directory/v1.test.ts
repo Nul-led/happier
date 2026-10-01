@@ -134,6 +134,8 @@ describe('Team directory V1 contracts', () => {
         displayName: 'Engineering',
         state: 'active',
         memberCount: 3,
+        boundAccountCount: 1,
+        unboundPeopleCount: 1,
         mapping: { state: 'bound', bindingId: 'binding_1', mode: 'native_target', teamGroupId: 'team_group_1' },
         lastCompleteObservationAt: '2026-09-06T10:00:00.000Z',
         sourceLabel: 'Primary directory',

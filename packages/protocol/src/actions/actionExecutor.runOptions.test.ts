@@ -17,6 +17,7 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
     sessionFork: vi.fn(async () => ({})),
     sessionRollback: vi.fn(async () => ({})),
     sessionSpawnNew: vi.fn(async () => ({})),
+    resolveAgentStartContext: async () => START_CONTEXT,
     pathsListRecent: vi.fn(async () => ({ items: [] })),
     machinesList: vi.fn(async () => ({ items: [] })),
     serversList: vi.fn(async () => ({ items: [] })),
@@ -70,6 +71,203 @@ const RUN_START_BASE = {
   runClass: 'bounded',
   ioMode: 'request_response',
 } as const;
+
+const START_CONTEXT = {
+  caller: { kind: 'session', sessionId: 's1', starterDepth: 0, turnDepth: 0 },
+  baseline: { machineId: 'm1', directory: '/workspace' },
+  ledSubtreeSessionIds: [],
+  workDepthLimit: 4,
+  roles: {},
+  callerPermissionCeiling: 'read-only',
+} as const;
+const START_TARGET_KEY = buildBackendTargetKeyV2({ kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } });
+
+it.each(['subagents.plan.start', 'subagents.delegate.start'] as const)(
+  'preserves both report chip values through %s fan-out', async (actionId) => {
+    for (const notifyParentOnCompletion of [true, false]) {
+      const deps = createDeps();
+      const result = await createActionExecutor(deps).execute(actionId, {
+        sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'Do the work',
+        notifyParentOnCompletion,
+      }, UI_CALLER);
+      expect(result).toMatchObject({ ok: true });
+      expect(vi.mocked(deps.executionRunStart).mock.calls[0]?.[1]).toMatchObject({ notifyParentOnCompletion });
+    }
+  },
+);
+
+it.each(['subagents.plan.start', 'subagents.delegate.start'] as const)(
+  'rejects a malformed report value before %s dispatch', async (actionId) => {
+    const deps = createDeps();
+    expect(await createActionExecutor(deps).execute(actionId, {
+      sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'Do the work',
+      notifyParentOnCompletion: 'false',
+    }, UI_CALLER)).toMatchObject({ ok: false, errorCode: 'invalid_parameters' });
+    expect(deps.executionRunStart).not.toHaveBeenCalled();
+  },
+);
+
+it('compares actual selections and carries admitted depth only as host context', async () => {
+  const deps = createDeps();
+  const executor = createActionExecutor(deps);
+  const result = await executor.execute('execution.run.start', RUN_START_BASE, {
+    ...RUN_DISPATCHER_CALLER,
+    sessionAgentSpawnPolicyV1: { allowBackendTargetOverride: false },
+    agentStartContext: { ...START_CONTEXT, baseline: {
+      ...START_CONTEXT.baseline, configuration: { agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } } },
+    }, caller: { ...START_CONTEXT.caller, starterDepth: 2 } },
+  });
+  expect(result).toMatchObject({ ok: true });
+  expect(deps.executionRunStart).toHaveBeenCalledWith('s1', expect.not.objectContaining({ workDepth: expect.anything() }), expect.objectContaining({ workDepth: 3 }));
+});
+
+it('fails closed when the host cannot resolve an agent start baseline', async () => {
+  const deps = createDeps({ resolveAgentStartContext: async () => null });
+  const result = await createActionExecutor(deps).execute('execution.run.start', RUN_START_BASE, RUN_DISPATCHER_CALLER);
+  expect(result).toMatchObject({ ok: false, errorCode: 'target_unavailable' });
+  expect(deps.executionRunStart).not.toHaveBeenCalled();
+});
+
+it('admits the actual per-engine connected-service selections before fan-out dispatch', async () => {
+  const deps = createDeps();
+  const result = await createActionExecutor(deps).execute('subagents.plan.start', {
+    sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'Plan',
+    connectedServicesByBackendTargetKey: { [START_TARGET_KEY]: { v: 2, bindingsByServiceId: {
+      'happier.service.codex/subscription': { source: 'native' },
+    } } },
+  }, { ...RUN_DISPATCHER_CALLER, sessionAgentSpawnPolicyV1: { allowConnectedServicesOverride: false } });
+  expect(result).toMatchObject({ ok: false, errorCode: 'policy_denied_field', details: { field: 'connectedServices' } });
+  expect(deps.executionRunStart).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['execution.run.start', RUN_START_BASE],
+  ['review.start', { sessionId: 's1', engineIds: ['codex'], instructions: 'review' }],
+  ['subagents.plan.start', { sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'plan' }],
+  ['subagents.delegate.start', { sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'delegate' }],
+  ['voice_agent.start', { sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'assist' }],
+] as const)('refuses %s before dispatch at the Account work depth limit', async (actionId, input) => {
+  const deps = createDeps();
+  const executor = createActionExecutor(deps);
+  const result = await executor.execute(actionId, input, {
+    ...RUN_DISPATCHER_CALLER,
+    agentStartContext: { ...START_CONTEXT, caller: { ...START_CONTEXT.caller, turnDepth: 4 } },
+  });
+  expect(result).toMatchObject({ ok: false, errorCode: 'work_depth_exceeded' });
+  expect(deps.executionRunStart).not.toHaveBeenCalled();
+});
+
+it('stamps a role engine over the requested engine and refuses a role with incompatible runs-as', async () => {
+  const deps = createDeps({ executionRunCheckProtocolV2: async () => ({ ok: true }) });
+  const executor = createActionExecutor(deps);
+  const role = {
+    roleId: 'reviewer', name: 'Reviewer', instructions: 'Inspect', enabled: true,
+    engine: { agentTargetKey: 'agent:happier.agent.codex/codex', modelId: 'role-model' },
+    runsAs: { kind: 'background_run', intent: 'review' },
+    workspaceWrites: 'deny', secondOpinion: 'off',
+  } as const;
+  const result = await executor.execute('execution.run.start', {
+    ...RUN_START_BASE, roleId: 'reviewer', modelId: 'caller-model',
+  }, { ...RUN_DISPATCHER_CALLER, agentStartContext: { ...START_CONTEXT, roles: { reviewer: role },
+    baseline: { ...START_CONTEXT.baseline, configuration: {
+      agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+      modelSelection: { agentTargetKey: role.engine.agentTargetKey, providerConnectionId: 'conn-1', modelId: 'base-model' },
+    } },
+  } });
+  expect(result).toMatchObject({ ok: true });
+  expect(deps.executionRunStart).toHaveBeenCalledWith('s1', expect.objectContaining({
+    intent: 'review', modelId: 'role-model',
+    modelSelection: { agentTargetKey: role.engine.agentTargetKey, providerConnectionId: 'conn-1', modelId: 'role-model' },
+  }), expect.anything());
+  const mismatch = await executor.execute('execution.run.start', {
+    ...RUN_START_BASE, roleId: 'reviewer',
+  }, { ...RUN_DISPATCHER_CALLER, agentStartContext: {
+    ...START_CONTEXT, roles: { reviewer: { ...role, runsAs: { kind: 'session' } } },
+  } });
+  expect(mismatch).toMatchObject({ ok: false, errorCode: 'role_runs_as_mismatch' });
+});
+
+it.each(['execution.run.start', 'review.start', 'subagents.plan.start', 'subagents.delegate.start'] as const)(
+  'refuses role-bound %s on a target without run-scoped binding support', async (actionId) => {
+    const deps = createDeps({
+      executionRunCheckProtocolV2: async () => ({ ok: false, errorCode: 'execution_run_protocol_unsupported', error: 'execution_run_protocol_unsupported' }),
+      reviewEnginesList: async () => ({ items: [{ id: START_TARGET_KEY, enabled: true }] }),
+    });
+    const input = actionId === 'execution.run.start' ? RUN_START_BASE
+      : actionId === 'review.start' ? { sessionId: 's1', engineIds: [START_TARGET_KEY], instructions: 'Review' }
+      : { sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'Task' };
+    for (const binding of [{ roleId: 'scout' }, { launchProfileId: 'launch-profile' }]) {
+      expect(await createActionExecutor(deps).execute(actionId, { ...input, ...binding }, {
+        ...UI_CALLER, authority: 'present_user', defaultSessionId: 's1',
+      })).toMatchObject({ ok: false, errorCode: 'execution_run_protocol_unsupported' });
+    }
+    expect(deps.executionRunStart).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['execution.run.start', 'review.start', 'subagents.plan.start', 'subagents.delegate.start'] as const)(
+  'binds the resolved role through %s, including the Launch Profile without replacing the execution Profile', async (actionId) => {
+    const role = { roleId: 'bounded-worker', name: 'Bounded worker', instructions: 'Resolved role instructions', enabled: true,
+      engine: { agentTargetKey: START_TARGET_KEY, modelId: 'role-model', effort: 'high' },
+      runsAs: { kind: 'background_run', intent: 'task' }, profileId: 'launch-profile',
+      workspaceWrites: 'deny', secondOpinion: 'off' } as const;
+    const deps = createDeps({ executionRunCheckProtocolV2: async () => ({ ok: true }),
+      reviewEnginesList: vi.fn(async () => ({ items: [{ id: START_TARGET_KEY, enabled: true }] })) });
+    const input = actionId === 'execution.run.start' ? RUN_START_BASE
+      : actionId === 'review.start' ? { sessionId: 's1', engineIds: ['codex'], instructions: 'Review' }
+      : { sessionId: 's1', backendTargetKeys: [START_TARGET_KEY], instructions: 'Task' };
+    const profileSourceCustody = { kind: 'development', registeredRootId: 'execution-profile-root' } as const;
+    const result = await createActionExecutor(deps).execute(actionId, { ...input, roleId: role.roleId,
+      profileId: 'example.execution-profile', profileSourceCustody }, {
+      ...RUN_DISPATCHER_CALLER, agentStartContext: { ...START_CONTEXT, roles: { [role.roleId]: role } },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(vi.mocked(deps.executionRunStart).mock.calls[0]?.[1]).toMatchObject({
+      roleId: role.roleId, intent: 'task', modelId: 'role-model', launchProfileId: 'launch-profile',
+      profileId: 'example.execution-profile', profileSourceCustody,
+      backendTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+    });
+    expect(vi.mocked(deps.executionRunStart).mock.calls[0]?.[2]).toMatchObject({ workspaceWrites: 'deny' });
+  },
+);
+
+it.each(['missing', 'disabled'] as const)('refuses an unavailable %s role before dispatch', async (roleId) => {
+  const deps = createDeps();
+  const result = await createActionExecutor(deps).execute('execution.run.start', { ...RUN_START_BASE, roleId }, {
+    ...RUN_DISPATCHER_CALLER, agentStartContext: { ...START_CONTEXT, roles: { disabled: {
+      roleId: 'disabled', name: 'Disabled', instructions: '', enabled: false, engine: { agentTargetKey: START_TARGET_KEY },
+      runsAs: { kind: 'background_run', intent: 'task' }, workspaceWrites: 'deny', secondOpinion: 'off',
+    } } },
+  });
+  expect(result).toMatchObject({ ok: false, errorCode: 'role_target_unavailable' });
+  expect(deps.executionRunStart).not.toHaveBeenCalled();
+});
+
+it('binds a present-user role start without imposing the agent depth or override policy', async () => {
+  const role = { roleId: 'scout', name: 'Scout', instructions: 'Inspect', enabled: true,
+    engine: { agentTargetKey: START_TARGET_KEY, modelId: 'scout-model' },
+    runsAs: { kind: 'background_run', intent: 'task' }, workspaceWrites: 'deny', secondOpinion: 'off' } as const;
+  const deps = createDeps({ executionRunCheckProtocolV2: async () => ({ ok: true }) });
+  expect(await createActionExecutor(deps).execute('execution.run.start', { ...RUN_START_BASE, roleId: 'scout' }, {
+    ...UI_CALLER, authority: 'present_user', defaultSessionId: 's1', sessionAgentSpawnPolicyV1: { allowModelOverride: false },
+    agentStartContext: { ...START_CONTEXT, caller: { ...START_CONTEXT.caller, turnDepth: 9 }, roles: { scout: role } },
+  })).toMatchObject({ ok: true });
+  expect(vi.mocked(deps.executionRunStart).mock.calls[0]?.[1]).toMatchObject({ roleId: 'scout', intent: 'task', modelId: 'scout-model' });
+  expect(vi.mocked(deps.executionRunStart).mock.calls[0]?.[2]).toMatchObject({ workDepth: 0, workspaceWrites: 'deny' });
+});
+
+it('applies the Account agent-start policy to execution.run.start before dispatch', async () => {
+  const executionRunStart = vi.fn(async () => ({ runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' }));
+  const executor = createActionExecutor(createDeps({ executionRunStart }));
+  const result = await executor.execute('execution.run.start', {
+    ...RUN_START_BASE, modelId: 'model-1',
+  }, {
+    ...RUN_DISPATCHER_CALLER,
+    sessionAgentSpawnPolicyV1: { v: 1, allowModelOverride: false },
+  });
+  expect(result).toMatchObject({ ok: false, errorCode: 'policy_denied_field' });
+  expect(executionRunStart).not.toHaveBeenCalled();
+});
 
 it('threads the host-stamped Workflow start request identity only as execution-run call context', async () => {
   const executionRunStart = vi.fn(async () => ({ runId: 'run_1', callId: 'call_1', sidechainId: 'call_1' }));
@@ -1132,7 +1330,7 @@ describe('createActionExecutor run options parity (model + effort)', () => {
 
     const result = await executor.execute('subagents.delegate.start' as any, {
       sessionId: 's1',
-      backendTargetKeys: ['backend:codex'],
+      backendTargetKeys: ['agent:happier.agent.codex/codex'],
       instructions: 'do it',
       permissionMode: 'read_only',
       modelId: teamCredentialModel.modelId,
@@ -1169,7 +1367,7 @@ describe('createActionExecutor run options parity (model + effort)', () => {
   it.each([
     ['review.start', {
       sessionId: 's1',
-      engineIds: ['backend:codex'],
+      engineIds: ['agent:happier.agent.codex/codex'],
       instructions: 'review it',
       teamCredentialModel: {
         kind: 'team_credential_provider_model',
@@ -1177,13 +1375,13 @@ describe('createActionExecutor run options parity (model + effort)', () => {
         teamId: 'team-1',
         expectedResourceRevision: 4,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
     }],
     ['subagents.plan.start', {
       sessionId: 's1',
-      backendTargetKeys: ['backend:codex'],
+      backendTargetKeys: ['agent:happier.agent.codex/codex'],
       instructions: 'plan it',
       teamCredentialModel: {
         kind: 'team_credential_provider_model',
@@ -1191,13 +1389,13 @@ describe('createActionExecutor run options parity (model + effort)', () => {
         teamId: 'team-1',
         expectedResourceRevision: 4,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
     }],
     ['subagents.delegate.start', {
       sessionId: 's1',
-      backendTargetKeys: ['backend:codex'],
+      backendTargetKeys: ['agent:happier.agent.codex/codex'],
       instructions: 'do it',
       permissionMode: 'read_only',
       teamCredentialModel: {
@@ -1206,7 +1404,7 @@ describe('createActionExecutor run options parity (model + effort)', () => {
         teamId: 'team-1',
         expectedResourceRevision: 4,
         deliveryMode: 'brokered',
-        agentTargetKey: 'backend:codex',
+        agentTargetKey: 'agent:happier.agent.codex/codex',
         modelId: 'team-model',
       },
     }],
@@ -1220,7 +1418,7 @@ describe('createActionExecutor run options parity (model + effort)', () => {
     const executor = createActionExecutor(createDeps({
       executionRunStart,
       executionRunCheckProtocolV2,
-      reviewEnginesList: vi.fn(async () => ({ items: [{ value: 'backend:codex', label: 'Codex' }] })),
+      reviewEnginesList: vi.fn(async () => ({ items: [{ value: 'agent:happier.agent.codex/codex', label: 'Codex' }] })),
     }));
 
     await expect(executor.execute(
@@ -1254,8 +1452,8 @@ describe('createActionExecutor run options parity (model + effort)', () => {
     };
 
     for (const backendTargetKeys of [
-      ['backend:codex', 'backend:claude'],
-      ['backend:claude'],
+      ['agent:happier.agent.codex/codex', 'agent:happier.agent.claude/claude'],
+      ['agent:happier.agent.claude/claude'],
     ]) {
       const result = await executor.execute('subagents.delegate.start' as any, {
         sessionId: 's1',

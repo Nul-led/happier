@@ -15,6 +15,7 @@ import { createPresentUserSessionAccessAuthentication } from "@/app/session/acce
 import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { sessionRoutes } from "@/app/api/routes/session/sessionRoutes";
 import { enableErrorHandlers } from "@/app/api/utils/enableErrorHandlers";
+import { registerSessionDataKeyEnvelopeRoutes } from "@/app/api/routes/session/registerSessionDataKeyEnvelopeRoutes";
 import {
     applySessionDataKeyEnvelopes,
     readSessionDataKeyEnvelopePage,
@@ -35,7 +36,6 @@ describe("Session data-key envelope collection (SQLite)", () => {
             tempDirPrefix: "happier-session-envelopes-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
         });
@@ -194,6 +194,89 @@ describe("Session data-key envelope collection (SQLite)", () => {
             authentication,
             query: { state: "action_required", limit: 24 },
         })).toEqual({ ok: false, error: "forbidden" });
+    });
+
+    it("preserves Team authentication recovery for envelope management without replaying writes", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1" });
+        const { owner, session } = await managedSession();
+        const manager = await e2eeAccount();
+        const recipient = await e2eeAccount();
+        await shareWith(session.id, owner.id, manager.id, "view");
+        await shareWith(session.id, owner.id, recipient.id);
+        await db.sessionDataKeyEnvelope.create({ data: {
+            sessionId: session.id, recipientAccountId: manager.id,
+            encryptedDataKey: Buffer.from(envelopeFor(manager.binding.contentPublicKey)),
+        } });
+        const team = await db.team.create({ data: {
+            name: crypto.randomUUID(),
+            authenticationPolicy: {
+                v: 1, mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+        } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "member" } });
+        const grant = await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id, teamId: team.id, accessLevel: "admin", effectiveAt: new Date(),
+        } });
+        const url = `/v2/sessions/${session.id}/data-key/envelopes`;
+        const payload = { entries: [{
+            recipientAccountId: recipient.id,
+            encryptedDataKey: encodeBase64(envelopeFor(recipient.binding.contentPublicKey)),
+        }] };
+        const headers = { "x-test-user-id": manager.id };
+        const qualifiedHeaders = {
+            ...headers,
+            "x-test-authentication-evidence": JSON.stringify([{ kind: "home_method", methodId: "key_challenge" }]),
+        };
+        const recipientEnvelopeCount = () => db.sessionDataKeyEnvelope.count({
+            where: { sessionId: session.id, recipientAccountId: recipient.id },
+        });
+        try {
+            await withAuthenticatedTestApp(registerSessionDataKeyEnvelopeRoutes, async app => {
+                // Independent View preserves visibility but cannot hide a recoverable Admin arm.
+                for (const method of ["GET", "PATCH"] as const) {
+                    const response = await app.inject({ method, url, headers, ...(method === "PATCH" ? { payload } : {}) });
+                    expect(response.statusCode, response.body).toBe(403);
+                    expect(response.json()).toEqual({ error: "session_access_authentication_required" });
+                }
+                expect(await recipientEnvelopeCount()).toBe(0);
+                const qualifiedRead = await app.inject({ method: "GET", url, headers: qualifiedHeaders });
+                expect(qualifiedRead.statusCode, qualifiedRead.body).toBe(200);
+                // Qualification and a refresh never replay the failed PATCH.
+                expect(await recipientEnvelopeCount()).toBe(0);
+                const qualifiedWrite = await app.inject({ method: "PATCH", url, headers: qualifiedHeaders, payload });
+                expect(qualifiedWrite.statusCode, qualifiedWrite.body).toBe(200);
+                expect(qualifiedWrite.json()).toEqual({ appliedCount: 1 });
+
+                // A policy change after discovery blocks the next page/write with its real cause.
+                await db.team.update({ where: { id: team.id }, data: {
+                    authenticationPolicy: { v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "missing-method" }] },
+                } });
+                const stored = await db.sessionDataKeyEnvelope.findUniqueOrThrow({ where: {
+                    sessionId_recipientAccountId: { sessionId: session.id, recipientAccountId: recipient.id },
+                } });
+                for (const method of ["GET", "PATCH"] as const) {
+                    const response = await app.inject({ method, url, headers: qualifiedHeaders, ...(method === "PATCH" ? { payload } : {}) });
+                    expect(response.statusCode, response.body).toBe(503);
+                    expect(response.json()).toEqual({ error: "session_access_authentication_unavailable" });
+                }
+                expect(await db.sessionDataKeyEnvelope.findUniqueOrThrow({ where: {
+                    sessionId_recipientAccountId: { sessionId: session.id, recipientAccountId: recipient.id },
+                } })).toEqual(stored);
+
+                await db.sessionTeamGrant.delete({
+                    where: { sessionId_teamId: { sessionId: session.id, teamId: grant.teamId } },
+                });
+                await db.sessionShare.deleteMany({ where: { sessionId: session.id, sharedWithUserId: manager.id } });
+                for (const method of ["GET", "PATCH"] as const) {
+                    const response = await app.inject({ method, url, headers: qualifiedHeaders, ...(method === "PATCH" ? { payload } : {}) });
+                    expect(response.statusCode, response.body).toBe(404);
+                    expect(response.json()).toEqual({ error: "session_not_found" });
+                }
+            });
+        } finally {
+            harness.resetEnv();
+        }
     });
 
     it("resolves one target for a recipient reached by direct, Team and Group grants at once", async () => {

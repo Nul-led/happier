@@ -1,16 +1,22 @@
 import { eventRouter, buildNewArtifactUpdate, buildUpdateArtifactUpdate, buildDeleteArtifactUpdate } from "@/app/events/eventRouter";
-import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import {
+    commitArtifactRecipientKeyEnvelopesInTx,
+    listArtifactAccessGrantsInTx,
+    listArtifactHeadersForCallerInTx,
+    readArtifactForCallerInTx,
+    readArtifactRecipientCensusInTx,
+    removeArtifactAccessGrantInTx,
+    setArtifactAccessGrantInTx,
+} from "@/app/artifacts/artifactAccessService";
 import { Fastify } from "../../types";
 import { z } from "zod";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { log } from "@/utils/logging/log";
 import * as privacyKit from "privacy-kit";
 import { createArtifact, deleteArtifact, updateArtifact } from "@/app/artifacts/artifactWriteService";
-import { artifactOrdinaryWhere } from "@/app/artifacts/artifactClassification";
 import {
     isPlainArtifactDataKeyBytes,
-    openArtifactStoredContentBytes,
-    openArtifactStoredContentPair,
 } from "@/app/artifacts/artifactStoredContent";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
@@ -21,8 +27,16 @@ import {
 import {
     AccountStoredContentUpgradeRequiredV1Schema,
     CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
+    ArtifactCallerAccessV1Schema,
+    ArtifactAccessGrantSetStorageInputV1Schema,
+    ArtifactAccessGrantRemoveInputV1Schema,
+    ArtifactAccessGrantsListResponseV1Schema,
+    ArtifactAccessGrantMutationResponseV1Schema,
+    ArtifactAccessRecipientCensusResponseV1Schema,
+    ArtifactRecipientKeyEnvelopeCommitInputV1Schema,
+    ArtifactRecipientKeyEnvelopeCommitResponseV1Schema,
+    ArtifactAccessErrorCodeV1Schema,
 } from "@happier-dev/protocol";
-import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 
 const DEFAULT_ARTIFACT_LIST_LIMIT = 500;
 
@@ -61,7 +75,10 @@ export function artifactsRoutes(app: Fastify) {
                     dataEncryptionKey: z.string(),
                     seq: z.number(),
                     createdAt: z.number(),
-                    updatedAt: z.number()
+                    updatedAt: z.number(),
+                    ownerAccountId: z.string(),
+                    access: ArtifactCallerAccessV1Schema,
+                    encryptionMode: ArtifactAccessRecipientCensusResponseV1Schema.shape.encryptionMode,
                 })),
                 426: AccountStoredContentUpgradeRequiredV1Schema,
                 400: z.object({ error: z.literal('Failed to get artifacts') }),
@@ -78,39 +95,7 @@ export function artifactsRoutes(app: Fastify) {
         if (query.cursor && !cursor) return reply.code(400).send({ error: 'Failed to get artifacts' });
 
         try {
-            const [artifacts, account] = await Promise.all([
-                db.artifact.findMany({
-                where: {
-                    accountId: userId,
-                    ...artifactOrdinaryWhere,
-                    ...(cursor ? { OR: [
-                        { updatedAt: { lt: cursor.updatedAt } },
-                        { updatedAt: cursor.updatedAt, id: { lt: cursor.id } },
-                    ] } : {}),
-                },
-                orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-                take: listLimit,
-                select: {
-                    id: true,
-                    header: true,
-                    headerVersion: true,
-                    dataEncryptionKey: true,
-                    seq: true,
-                    createdAt: true,
-                    updatedAt: true
-                }
-                }),
-                db.account.findUnique({
-                    where: { id: userId },
-                    select: { encryptionMode: true },
-                }),
-            ]);
-            const accountMode = account
-                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
-                : null;
-            if (accountMode?.status !== "ready") {
-                throw new Error("Artifact Account mode is unavailable");
-            }
+            const artifacts = await inTx(tx => listArtifactHeadersForCallerInTx(tx, { actorAccountId: userId, limit: listLimit, cursor }));
             if (
                 artifacts.some((artifact) =>
                     isPlainArtifactDataKeyBytes(
@@ -125,20 +110,12 @@ export function artifactsRoutes(app: Fastify) {
             }
 
             const projected = artifacts.map((artifact) => {
-                const header = openArtifactStoredContentBytes({
-                    accountId: userId,
-                    artifactId: artifact.id,
-                    mode: accountMode.mode,
-                    field: "header",
-                    dataEncryptionKey: artifact.dataEncryptionKey,
-                    content: artifact.header,
-                });
-                if (!header) {
-                    throw new Error("Artifact header could not be opened");
-                }
                 return {
                     id: artifact.id,
-                    header: privacyKit.encodeBase64(header),
+                    ownerAccountId: artifact.ownerAccountId,
+                    access: artifact.access,
+                    encryptionMode: artifact.encryptionMode,
+                    header: privacyKit.encodeBase64(artifact.header),
                     headerVersion: artifact.headerVersion,
                     dataEncryptionKey: privacyKit.encodeBase64(artifact.dataEncryptionKey),
                     seq: artifact.seq,
@@ -173,11 +150,16 @@ export function artifactsRoutes(app: Fastify) {
                     dataEncryptionKey: z.string(),
                     seq: z.number(),
                     createdAt: z.number(),
-                    updatedAt: z.number()
+                    updatedAt: z.number(),
+                    ownerAccountId: z.string(),
+                    access: ArtifactCallerAccessV1Schema,
+                    encryptionMode: ArtifactAccessRecipientCensusResponseV1Schema.shape.encryptionMode,
                 }),
                 404: z.object({
                     error: z.literal('Artifact not found')
                 }),
+                409: z.object({ error: z.literal("artifact_content_unavailable") }),
+                426: AccountStoredContentUpgradeRequiredV1Schema,
                 500: z.object({
                     error: z.literal('Failed to get artifact')
                 })
@@ -188,29 +170,14 @@ export function artifactsRoutes(app: Fastify) {
         const { id } = request.params;
 
         try {
-            const [artifact, account] = await Promise.all([
-                db.artifact.findFirst({
-                    where: {
-                        id,
-                        accountId: userId,
-                        ...artifactOrdinaryWhere,
-                    },
-                }),
-                db.account.findUnique({
-                    where: { id: userId },
-                    select: { encryptionMode: true },
-                }),
-            ]);
-
-            if (!artifact) {
-                return reply.code(404).send({ error: 'Artifact not found' });
+            const read = await inTx(tx => readArtifactForCallerInTx(tx, { actorAccountId: userId, artifactId: id }));
+            if (!read.ok) {
+                return read.error === "artifact_not_found"
+                    ? reply.code(404).send({ error: 'Artifact not found' })
+                    : read.ownerAccountId === userId ? reply.code(500).send({ error: 'Failed to get artifact' })
+                    : reply.code(409).send({ error: "artifact_content_unavailable" });
             }
-            const accountMode = account
-                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
-                : null;
-            if (accountMode?.status !== "ready") {
-                throw new Error("Artifact Account mode is unavailable");
-            }
+            const artifact = read.artifact;
             if (
                 isPlainArtifactDataKeyBytes(
                     artifact.dataEncryptionKey,
@@ -222,23 +189,14 @@ export function artifactsRoutes(app: Fastify) {
             ) {
                 return;
             }
-            const opened = openArtifactStoredContentPair({
-                accountId: userId,
-                artifactId: artifact.id,
-                mode: accountMode.mode,
-                dataEncryptionKey: artifact.dataEncryptionKey,
-                header: artifact.header,
-                body: artifact.body,
-            });
-            if (!opened) {
-                throw new Error("Artifact content could not be opened");
-            }
-
             return reply.send({
                 id: artifact.id,
-                header: privacyKit.encodeBase64(opened.header),
+                ownerAccountId: artifact.ownerAccountId,
+                access: artifact.access,
+                encryptionMode: artifact.encryptionMode,
+                header: privacyKit.encodeBase64(artifact.header),
                 headerVersion: artifact.headerVersion,
-                body: privacyKit.encodeBase64(opened.body),
+                body: privacyKit.encodeBase64(artifact.body),
                 bodyVersion: artifact.bodyVersion,
                 dataEncryptionKey: privacyKit.encodeBase64(artifact.dataEncryptionKey),
                 seq: artifact.seq,
@@ -249,6 +207,54 @@ export function artifactsRoutes(app: Fastify) {
             log({ module: 'api', level: 'error' }, `Failed to get artifact: ${error}`);
             return reply.code(500).send({ error: 'Failed to get artifact' });
         }
+    });
+
+    const accessParams = z.object({ id: z.string().min(1) }).strict();
+    const accessError = z.object({ error: ArtifactAccessErrorCodeV1Schema }).strict();
+    const accessErrors = { 400: accessError, 403: accessError, 404: accessError, 409: accessError };
+    const accessErrorStatus = (error: string) => error === "artifact_not_found" ? 404
+        : error === "artifact_access_forbidden" ? 403
+            : error === "artifact_content_unavailable" || error === "artifact_data_key_changed" ? 409 : 400;
+    app.get('/v1/artifacts/:id/access/grants', {
+        preHandler: app.authenticate,
+        schema: { params: accessParams, response: { 200: ArtifactAccessGrantsListResponseV1Schema, ...accessErrors } },
+    }, async (request, reply) => {
+        const result = await inTx(tx => listArtifactAccessGrantsInTx(tx, { actorAccountId: request.userId, artifactId: request.params.id }));
+        return result.ok ? reply.send(result.value) : reply.code(accessErrorStatus(result.error)).send({ error: result.error });
+    });
+    app.put('/v1/artifacts/:id/access/grants', {
+        preHandler: app.authenticate,
+        schema: { params: accessParams, body: ArtifactAccessGrantSetStorageInputV1Schema,
+            response: { 200: ArtifactAccessGrantMutationResponseV1Schema, ...accessErrors } },
+    }, async (request, reply) => {
+        if (request.body.artifactId !== request.params.id) return reply.code(400).send({ error: "artifact_not_found" });
+        const result = await inTx(tx => setArtifactAccessGrantInTx(tx, { ...request.body, actorAccountId: request.userId }));
+        return result.ok ? reply.send(result.value) : reply.code(accessErrorStatus(result.error)).send({ error: result.error });
+    });
+    app.delete('/v1/artifacts/:id/access/grants', {
+        preHandler: app.authenticate,
+        schema: { params: accessParams, body: ArtifactAccessGrantRemoveInputV1Schema,
+            response: { 200: ArtifactAccessGrantMutationResponseV1Schema, ...accessErrors } },
+    }, async (request, reply) => {
+        if (request.body.artifactId !== request.params.id) return reply.code(400).send({ error: "artifact_not_found" });
+        const result = await inTx(tx => removeArtifactAccessGrantInTx(tx, { ...request.body, actorAccountId: request.userId }));
+        return result.ok ? reply.send(result.value) : reply.code(accessErrorStatus(result.error)).send({ error: result.error });
+    });
+    app.get('/v1/artifacts/:id/access/recipients', {
+        preHandler: app.authenticate,
+        schema: { params: accessParams, response: { 200: ArtifactAccessRecipientCensusResponseV1Schema, ...accessErrors } },
+    }, async (request, reply) => {
+        const result = await inTx(tx => readArtifactRecipientCensusInTx(tx, { actorAccountId: request.userId, artifactId: request.params.id }));
+        return result.ok ? reply.send(result.value) : reply.code(accessErrorStatus(result.error)).send({ error: result.error });
+    });
+    app.post('/v1/artifacts/:id/access/key-envelopes', {
+        preHandler: app.authenticate,
+        schema: { params: accessParams, body: ArtifactRecipientKeyEnvelopeCommitInputV1Schema,
+            response: { 200: ArtifactRecipientKeyEnvelopeCommitResponseV1Schema, ...accessErrors } },
+    }, async (request, reply) => {
+        if (request.body.artifactId !== request.params.id) return reply.code(400).send({ error: "artifact_not_found" });
+        const result = await inTx(tx => commitArtifactRecipientKeyEnvelopesInTx(tx, { ...request.body, actorAccountId: request.userId }));
+        return result.ok ? reply.send(result.value) : reply.code(accessErrorStatus(result.error)).send({ error: result.error });
     });
 
     // POST /v1/artifacts - Create new artifact
@@ -494,9 +500,10 @@ export function artifactsRoutes(app: Fastify) {
                 ? { value: body!, version: result.body.version }
                 : undefined;
 
-            const updatePayload = buildUpdateArtifactUpdate(id, result.cursor, randomKeyNaked(12), headerUpdate, bodyUpdate);
+            const legacyRecipient = result.ownerUpdate ?? { accountId: userId, cursor: result.cursor };
+            const updatePayload = buildUpdateArtifactUpdate(id, legacyRecipient.cursor, randomKeyNaked(12), headerUpdate, bodyUpdate);
             eventRouter.emitUpdate({
-                userId,
+                userId: legacyRecipient.accountId,
                 payload: updatePayload,
                 recipientFilter: { type: 'user-scoped-only' }
             });
@@ -513,12 +520,15 @@ export function artifactsRoutes(app: Fastify) {
     });
 
     // DELETE /v1/artifacts/:id - Delete artifact
-    app.delete('/v1/artifacts/:id', {
+    const registerDeleteArtifactRoute = (url: string, requiresRevision: boolean) => app.delete(url, {
         preHandler: app.authenticate,
         schema: {
             params: z.object({
-                id: z.string()
-            }),
+                id: z.string(),
+                expectedHeaderVersion: z.coerce.number().int().nonnegative().optional(),
+                expectedBodyVersion: z.coerce.number().int().nonnegative().optional(),
+            }).strict().refine((params) => !requiresRevision
+                || (params.expectedHeaderVersion !== undefined && params.expectedBodyVersion !== undefined)),
             response: {
                 200: z.object({
                     success: z.literal(true)
@@ -526,6 +536,7 @@ export function artifactsRoutes(app: Fastify) {
                 404: z.object({
                     error: z.literal('Artifact not found')
                 }),
+                409: z.object({ error: z.literal('version-mismatch') }),
                 426: AccountStoredContentUpgradeRequiredV1Schema,
                 500: z.object({
                     error: z.literal('Failed to delete artifact')
@@ -546,8 +557,11 @@ export function artifactsRoutes(app: Fastify) {
                 artifactId: id,
                 supportsCurrentStoredContentProtocol:
                     compatibility.supportsCurrentProtocol,
+                ...(request.params.expectedHeaderVersion !== undefined && request.params.expectedBodyVersion !== undefined
+                    ? { expectedRevision: { headerVersion: request.params.expectedHeaderVersion, bodyVersion: request.params.expectedBodyVersion } } : {}),
             });
             if (!result.ok) {
+                if (result.error === 'version-mismatch') return reply.code(409).send({ error: 'version-mismatch' });
                 if (result.error === 'not-found') {
                     return reply.code(404).send({ error: 'Artifact not found' });
                 }
@@ -587,4 +601,6 @@ export function artifactsRoutes(app: Fastify) {
             return reply.code(500).send({ error: 'Failed to delete artifact' });
         }
     });
+    registerDeleteArtifactRoute('/v1/artifacts/:id', false);
+    registerDeleteArtifactRoute('/v1/artifacts/:id/revision/:expectedHeaderVersion/:expectedBodyVersion', true);
 }

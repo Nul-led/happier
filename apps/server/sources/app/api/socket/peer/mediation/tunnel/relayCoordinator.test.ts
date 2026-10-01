@@ -9,6 +9,48 @@ import { getSocketRooms } from "@/app/api/socketRooms";
 import { createPeerTcpTunnelRelayCoordinator } from "./relayCoordinator";
 
 describe("createPeerTcpTunnelRelayCoordinator", () => {
+    it("retains an admitted machine attachment until the consumer releases it", async () => {
+        vi.useFakeTimers();
+        const machineSocket = {
+            connected: true,
+            id: "socket_lifetime",
+            data: { userId: "account_lifetime", clientType: "machine-scoped", machineId: "machine_lifetime" },
+            rooms: new Set(getSocketRooms({ userId: "account_lifetime", clientType: "machine-scoped", machineId: "machine_lifetime" })),
+            once: vi.fn(), off: vi.fn(),
+        } as unknown as Socket;
+        const io = {
+            sockets: { sockets: new Map([[machineSocket.id, machineSocket]]) },
+            on: vi.fn(), off: vi.fn(),
+            in: () => ({ local: { fetchSockets: async () => [machineSocket] } }),
+            to: () => ({ emit: vi.fn() }),
+            serverSideEmit: vi.fn(),
+        } as unknown as Server;
+        const coordinator = createPeerTcpTunnelRelayCoordinator({ io, config: { mode: "memory" } });
+        const envelope = {
+            v: 1, scopeUserId: "account_lifetime", sender: { kind: "user", socketId: "viewer" },
+            recipient: { kind: "machine", machineId: "machine_lifetime" },
+            frame: { v: 1, kind: "close", tunnelId: "tunnel_lifetime", halfClose: false, reasonCode: "test" },
+        } as const satisfies PeerTcpTunnelRelayEnvelope;
+        try {
+            const nowMs = Date.now();
+            expect(await coordinator.admit({
+                accountId: "account_lifetime", tunnelKey: "tunnel_lifetime", grantId: "grant_lifetime",
+                grantExpiresAt: nowMs + 60_000, machineId: "machine_lifetime", nowMs,
+                onMachineEnvelope: vi.fn(), onMachineDisconnect: vi.fn(),
+            })).toEqual({ status: "attached" });
+            await vi.advanceTimersByTimeAsync(300_001);
+            expect(coordinator.routeMachineEnvelope({
+                tunnelKey: "tunnel_lifetime", machineSocketId: machineSocket.id, envelope,
+            })).toBe("local_exact");
+            expect(coordinator.routeOwnerEnvelope({ tunnelKey: "tunnel_lifetime", envelope })).toBe(true);
+            coordinator.release("tunnel_lifetime");
+            expect(coordinator.routeOwnerEnvelope({ tunnelKey: "tunnel_lifetime", envelope })).toBe(false);
+        } finally {
+            await coordinator.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("does not consume a grant when close wins a pending Redis readiness wait", async () => {
         let redisStatus = "reconnecting";
         const set = vi.fn(async () => "OK" as const);
@@ -67,7 +109,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             grantId: "grant-closing",
             grantExpiresAt: nowMs + 60_000,
             machineId,
-            maxDurationMs: 30_000,
             nowMs,
             onMachineEnvelope: vi.fn(),
             onMachineDisconnect: vi.fn(),
@@ -206,7 +247,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
                     grantId: `${grantPrefix}-${index}`,
                     grantExpiresAt: nowMs + 60_000,
                     machineId,
-                    maxDurationMs: 30_000,
                     nowMs,
                     onMachineEnvelope: vi.fn(),
                     onMachineDisconnect: attachment.onMachineDisconnect,
@@ -314,7 +354,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
                 grantId: "grant-local-survivor",
                 grantExpiresAt: 60_000,
                 machineId,
-                maxDurationMs: 30_000,
                 nowMs: 1_000,
                 onMachineEnvelope: vi.fn(),
                 onMachineDisconnect: vi.fn(),
@@ -378,7 +417,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             grantId: "grant-retry",
             grantExpiresAt: 60_000,
             machineId,
-            maxDurationMs: 30_000,
             nowMs: 1_000,
         } as const;
 
@@ -483,7 +521,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             grantId: "grant-remote-provisional",
             grantExpiresAt: nowMs + 60_000,
             machineId,
-            maxDurationMs: 30_000,
             nowMs,
         } as const;
 
@@ -583,7 +620,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
                 grantId: `grant-same-tunnel-${suffix}`,
                 grantExpiresAt: 60_000,
                 machineId,
-                maxDurationMs: 30_000,
                 nowMs: 1_000,
                 onMachineEnvelope: vi.fn(),
                 onMachineDisconnect: vi.fn(),
@@ -651,7 +687,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
                 grantId: "grant-once",
                 grantExpiresAt: 60_000,
                 machineId,
-                maxDurationMs: 30_000,
                 nowMs: 1_000,
                 onMachineEnvelope: vi.fn(),
                 onMachineDisconnect: vi.fn(),

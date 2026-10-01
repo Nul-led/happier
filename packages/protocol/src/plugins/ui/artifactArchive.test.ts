@@ -17,29 +17,27 @@ const assetBytes = new TextEncoder().encode('asset');
 
 function artifactGraph() {
   return {
-    contributionId: 'hosted',
+    artifactId: 'hosted',
     tier: 'hostedWeb' as const,
-    platform: 'web' as const,
-    entry: 'entry.js',
+    entry: 'hosted-web/hosted/index.html',
     files: [
       {
-        relativePath: 'entry.js',
+        relativePath: 'hosted-web/hosted/index.html',
         digest: computePluginUiArtifactSha256DigestV1(entryBytes),
         byteSize: entryBytes.byteLength,
       },
       {
-        relativePath: 'assets/icon.svg',
+        relativePath: 'hosted-web/hosted/assets/icon.svg',
         digest: computePluginUiArtifactSha256DigestV1(assetBytes),
         byteSize: assetBytes.byteLength,
       },
     ],
     digest: computePluginUiArtifactFileSetSha256DigestV1([
-      { relativePath: 'entry.js', bytes: entryBytes },
-      { relativePath: 'assets/icon.svg', bytes: assetBytes },
+      { relativePath: 'hosted-web/hosted/index.html', bytes: entryBytes },
+      { relativePath: 'hosted-web/hosted/assets/icon.svg', bytes: assetBytes },
     ]),
-    builtWith: { bundler: 'vite' as const, version: '5.0.0' },
-    hostUiApiVersion: '1.0.0',
-    compat: {},
+    builtWith: { staging: 'staticDirectory' as const },
+    hostUiApiRange: '^1.0.0',
   };
 }
 
@@ -50,8 +48,8 @@ describe('Plugin UI Artifact archive codec', () => {
       pluginId,
       artifactGraph: graph,
       files: [
-        { relativePath: 'entry.js', bytes: entryBytes },
-        { relativePath: 'assets/icon.svg', bytes: assetBytes },
+        { relativePath: 'hosted-web/hosted/index.html', bytes: entryBytes },
+        { relativePath: 'hosted-web/hosted/assets/icon.svg', bytes: assetBytes },
       ],
     });
     expect(archive).not.toBeNull();
@@ -69,8 +67,8 @@ describe('Plugin UI Artifact archive codec', () => {
       body: decoded,
     });
     expect(opened?.artifactGraph).toEqual(graph);
-    expect(opened?.files.get('entry.js')).toEqual(entryBytes);
-    expect(opened?.files.get('assets/icon.svg')).toEqual(assetBytes);
+    expect(opened?.files.get('hosted-web/hosted/index.html')).toEqual(entryBytes);
+    expect(opened?.files.get('hosted-web/hosted/assets/icon.svg')).toEqual(assetBytes);
   });
 
   it('fails closed on a tampered file or a different outer link digest', () => {
@@ -79,8 +77,8 @@ describe('Plugin UI Artifact archive codec', () => {
       pluginId,
       artifactGraph: graph,
       files: [
-        { relativePath: 'entry.js', bytes: entryBytes },
-        { relativePath: 'assets/icon.svg', bytes: assetBytes },
+        { relativePath: 'hosted-web/hosted/index.html', bytes: entryBytes },
+        { relativePath: 'hosted-web/hosted/assets/icon.svg', bytes: assetBytes },
       ],
     });
     if (!archive) throw new Error('Expected archive');
@@ -98,7 +96,7 @@ describe('Plugin UI Artifact archive codec', () => {
       header: archive.header,
       body: {
         ...archive.body,
-        files: archive.body.files.map((file) => file.relativePath === 'entry.js'
+        files: archive.body.files.map((file) => file.relativePath === 'hosted-web/hosted/index.html'
           ? { ...file, bytesBase64: 'dGFtcGVyZWQ=' }
           : file),
       },

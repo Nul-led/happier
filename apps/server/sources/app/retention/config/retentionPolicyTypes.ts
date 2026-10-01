@@ -31,6 +31,7 @@ export type RetentionDomainPolicies = Readonly<{
     globalLocks: RetentionAgePolicy;
     automationRuns: RetentionAgePolicy;
     automationRunEvents: RetentionAgePolicy;
+    homeAdministrationEvents: RetentionAgePolicy;
 }>;
 
 export type RetentionPolicy = Readonly<{

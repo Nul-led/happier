@@ -29,7 +29,7 @@ describe("Team invitation routes (SQLite integration)", () => {
     let homeTarget: string | null = "portable-home-target";
 
     const delivery: AuthEmailDelivery = {
-        isReady: true,
+        isReady: async () => true,
         deliver: async (message) => {
             delivered.push(message);
             return deliveryResult;
@@ -1025,6 +1025,12 @@ describe("Team invitation routes (SQLite integration)", () => {
                 expect(invalid.statusCode).toBe(400);
                 expect(invalid.json()).toEqual({ error: "invalid_team_input" });
             }
+
+            const invalidCursor = await post(app, "/v1/teams/invitations/list", {
+                v: 1, teamId: f.team.id, state: null, cursor: "not-a-team-cursor", limit: 10,
+            }, f.actor.id);
+            expect(invalidCursor.statusCode).toBe(400);
+            expect(invalidCursor.json()).toEqual({ error: "invalid_team_cursor" });
 
             const preview = await post(app, "/v1/team-invitations/preview", { v: 1, token: "short" });
             expect(preview.statusCode).toBe(200);

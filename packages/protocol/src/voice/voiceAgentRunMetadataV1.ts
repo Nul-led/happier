@@ -138,6 +138,7 @@ export type BuildVoiceAgentRunMetadataV1Params = Readonly<{
   resumeHandle: ExecutionRunResumeHandle | null;
   updatedAtMs: number;
   welcomedEpoch?: number;
+  previous?: VoiceAgentRunMetadataV1 | null;
 }>;
 
 /**
@@ -159,7 +160,7 @@ export function buildVoiceAgentRunMetadataV1(
     typeof params.welcomedEpoch === 'number' && Number.isFinite(params.welcomedEpoch) && params.welcomedEpoch >= 0
       ? Math.floor(params.welcomedEpoch)
       : undefined;
-  return {
+  const next: VoiceAgentRunMetadataV1 = {
     v: 1,
     runId,
     backendId: resolveVoiceAgentRunBackendId(backendTarget),
@@ -169,6 +170,14 @@ export function buildVoiceAgentRunMetadataV1(
     transcriptContractVersion: VOICE_AGENT_RUN_TRANSCRIPT_CONTRACT_VERSION,
     ...(typeof welcomedEpoch === 'number' ? { welcomedEpoch } : {}),
   };
+  const previous = params.previous;
+  if (previous && voiceAgentRunMetadataV1Equal(previous, {
+    ...next,
+    updatedAtMs: previous.updatedAtMs,
+  })) {
+    return previous;
+  }
+  return next;
 }
 
 /** Stable JSON comparison for structural metadata fields. */

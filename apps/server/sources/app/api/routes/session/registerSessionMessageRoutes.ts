@@ -12,6 +12,7 @@ import {
     MessageActionReferenceV1Schema,
     ExternalShareableActorV1Schema,
     SessionMessageAccountActorV1Schema,
+    SessionInputAdmissionReceiptV1Schema,
     SESSION_TRANSCRIPT_MAX_PAGE_ROWS_V1,
     EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_PAGE_ROWS_V1,
     EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_REFERENCED_USER_ROWS_V1,
@@ -67,6 +68,7 @@ import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshA
 import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
 import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
+import { projectSessionInputAdmissionReceipt } from "@/app/session/messages/sessionInputAdmission";
 
 type SessionStoredMessageContent = z.infer<typeof SessionStoredMessageContentSchema>;
 
@@ -137,6 +139,7 @@ const SessionTranscriptMessagePageResponseSchema = z.object({
          * an Account identity or profile.
          */
         accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
+        inputAdmissionReceipt: SessionInputAdmissionReceiptV1Schema.optional(),
         messageActionReference: MessageActionReferenceV1Schema.optional(),
     }).strict()),
     hasMore: z.boolean(),
@@ -283,7 +286,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
         },
     }, async (request, reply) => {
@@ -352,20 +355,23 @@ export function registerSessionMessageRoutes(app: Fastify) {
                         sourceUpdatedAt: z.number().int().min(0).optional(),
                         transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
                         accountActor: SessionMessageAccountActorV1Schema.nullable(),
+                        inputAdmissionReceipt: SessionInputAdmissionReceiptV1Schema.optional(),
                     }).passthrough(),
                 }).passthrough(),
                 404: z.object({ error: z.string() }).passthrough(),
                 403: z.union([
                     z.object({ error: z.literal("team_authentication_required") }).strict(),
                     z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                    z.object({ error: z.literal("credential_scope_denied") }).strict(),
                 ]),
                 503: z.object({ error: z.literal("team_authentication_unavailable") }).strict(),
             },
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages.byLocalId"),
+            apiTokenSessionAction: "session.transcript.get",
         },
     }, async (request, reply) => {
         const userId = request.userId;
@@ -428,6 +434,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 ...(messageRole ? { messageRole } : {}),
                 content: row.content,
                 accountActor: await resolveSessionMessageAccountActor(db, row),
+                ...projectSessionInputAdmissionReceipt(row.inputAdmissionReceipt),
                 ...(() => {
                     const deliveryResolution = parseSessionMessageDeliveryResolutionV1(row.deliveryResolution);
                     return deliveryResolution ? { deliveryResolution } : {};
@@ -506,6 +513,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 403: z.union([
                     z.object({ error: z.literal("team_authentication_required") }).strict(),
                     z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                    z.object({ error: z.literal("credential_scope_denied") }).strict(),
                 ]),
                 404: z.object({ error: z.string() }).strict(),
                 503: z.union([
@@ -516,8 +524,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
+            apiTokenSessionAction: "session.transcript.get",
         },
     }, async (request, reply) => {
         const userId = request.userId;
@@ -933,7 +942,8 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 // attribution. Omission is reserved for older producers.
                 ...(externalShareableProjection || sessionListPreviewProjection
                     ? {}
-                    : { accountActor: pageAccountActors[index] ?? null }),
+                    : { accountActor: pageAccountActors[index] ?? null,
+                        ...projectSessionInputAdmissionReceipt(v.inputAdmissionReceipt) }),
             })),
             hasMore: sessionListPreviewProjection
                 ? false
@@ -1005,6 +1015,10 @@ export function registerSessionMessageRoutes(app: Fastify) {
 
     app.post('/v2/sessions/:sessionId/messages', {
         preHandler: app.authenticate,
+        config: {
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
+            apiTokenSessionAction: "session.message.send",
+        },
         schema: {
             params: z.object({
                 sessionId: z.string(),
@@ -1045,7 +1059,11 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     })
                     .passthrough(),
                 400: z.object({ error: z.literal('Invalid parameters'), code: z.string().optional() }).passthrough(),
-                403: z.object({ error: z.literal('Forbidden') }),
+                403: z.union([
+                    z.object({ error: z.literal('Forbidden') }),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                    z.object({ error: z.literal("credential_scope_denied") }).strict(),
+                ]),
                 404: z.object({ error: z.literal('Session not found') }),
                 500: z.object({ error: z.literal('Failed to create message') }),
             },

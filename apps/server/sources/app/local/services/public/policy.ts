@@ -3,7 +3,7 @@ import {
     type LocalServicePublicExposureModeV1,
     type LocalServicePublicExposureV1,
     type LocalServicePublicPolicyV1,
-} from "@happier-dev/protocol";
+} from "@happier-dev/protocol/local/services/public/v1";
 
 export type LocalServicePublicExposureRejectionReason =
     | "public_preview_disabled"

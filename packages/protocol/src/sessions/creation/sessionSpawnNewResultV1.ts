@@ -62,6 +62,10 @@ export type SessionSpawnNewInitialInputDispositionV1 = z.infer<
   typeof SessionSpawnNewInitialInputDispositionV1Schema
 >;
 
+/** A cross-machine fork starts empty rather than implying its source files travelled. */
+export const SessionForkFilesNotCopiedV1Schema = z.object({ reason: z.literal('cross_machine') }).strict();
+export type SessionForkFilesNotCopiedV1 = z.infer<typeof SessionForkFilesNotCopiedV1Schema>;
+
 const SessionSpawnNewErrorCodeV1Schema = z.union([
   z.enum([
     'invalid_input',
@@ -77,6 +81,8 @@ const SessionSpawnNewErrorCodeV1Schema = z.union([
     'session_data_key_unavailable',
     'cancelled',
     'spawn_failed',
+    'agent_cli_missing',
+    'agent_signed_out',
   ]),
   SessionAccessErrorCodeV1Schema,
 ]);
@@ -95,6 +101,7 @@ export const SessionSpawnNewResultV1Schema = z.union([
     executionTarget: SessionExecutionTargetV1Schema,
     organizationPlacement: SessionOrganizationPlacementV1Schema,
     initialInput: SessionSpawnNewInitialInputDispositionV1Schema,
+    filesNotCopied: SessionForkFilesNotCopiedV1Schema.optional(),
   }).strict(),
   z.object({
     type: z.literal('pending'),
@@ -105,8 +112,16 @@ export const SessionSpawnNewResultV1Schema = z.union([
     type: z.literal('error'),
     code: SessionSpawnNewErrorCodeV1Schema,
     retryable: z.boolean(),
+    agentId: z.string().refine((value) => value.trim().length > 0).optional(),
     providerError: ProviderErrorV1Schema.optional(),
   }).strict().superRefine((value, context) => {
+    const agentPrecondition = value.code === 'agent_cli_missing' || value.code === 'agent_signed_out';
+    if (agentPrecondition !== (value.agentId !== undefined)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['agentId'], message: 'Agent identity is required only for an Agent precondition failure.' });
+    }
+    if (agentPrecondition && value.retryable) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['retryable'], message: 'Agent preconditions require setup before retrying.' });
+    }
     const localInitialAccessRetryability = {
       session_access_request_failed: true,
       session_data_key_unavailable: false,

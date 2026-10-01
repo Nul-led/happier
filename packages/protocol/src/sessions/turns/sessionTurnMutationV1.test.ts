@@ -15,6 +15,32 @@ const exactEnd = {
   observedAt: 100,
 };
 
+describe('host-stamped begin turn facts', () => {
+  const begin = { ...exactEnd, action: 'begin', mutationId: 'begin-1' };
+  const facts = {
+    initiator: 'workflow',
+    workDepth: 17,
+    workflowInvocation: { runId: 'run-1', invocationRecordId: 'invocation-1' },
+  };
+
+  it('accepts the exact host facts only on begin', () => {
+    expect(SessionTurnMutationV1Schema.parse({ ...begin, ...facts })).toMatchObject(facts);
+    expect(SessionTurnMutationV1Schema.safeParse({ ...begin, ...facts, action: 'complete' }).success).toBe(false);
+  });
+
+  it('rejects malformed facts and unknown nested authority', () => {
+    for (const invalid of [
+      { ...facts, initiator: 'automation' },
+      { ...facts, workDepth: -1 },
+      { ...facts, workDepth: 1.5 },
+      { ...facts, workflowInvocation: { runId: 'run-1' } },
+      { ...facts, workflowInvocation: { ...facts.workflowInvocation, runDepth: 9 } },
+    ]) {
+      expect(SessionTurnMutationV1Schema.safeParse({ ...begin, ...invalid }).success).toBe(false);
+    }
+  });
+});
+
 describe('exact session turn end mutation v1', () => {
   it('requires an exact turn and forbids agent-owned metadata', () => {
     expect(ExactSessionTurnEndMutationV1Schema.safeParse(exactEnd).success).toBe(true);

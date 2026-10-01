@@ -5,6 +5,11 @@ import {
     validateSessionOwnerMetadataEnvelopeForAccountModeV1,
     type SessionOwnerMetadataEnvelopeV1,
     type SessionInitialAccessMaterializedV1,
+    SessionCreateOriginFieldsV1Schema,
+    type SessionCreateOriginFieldsV1,
+    SessionReportsToV1Schema,
+    type SessionReportsToV1,
+    type SessionReportsToSetResultV1,
 } from "@happier-dev/protocol";
 import type { SessionAccessGrantErrorCode } from "@/app/session/access/sessionAccessGrantService";
 import type { SessionTeamCredentialBindingIntentListV1 } from "@happier-dev/protocol/teams";
@@ -42,6 +47,8 @@ export type SessionOrganizationPlacementInput = Readonly<{
 
 export type Layout1SessionCreateRejection =
     | Readonly<{ reason: "invalid-params" }>
+    | Readonly<{ reason: "session-origin-forbidden" }>
+    | Readonly<{ reason: "session-reports-to-invalid"; result: Extract<SessionReportsToSetResultV1, { ok: false }> }>
     | Readonly<{ reason: "account-disabled" }>
     | Readonly<{ reason: "encryption-mode-not-allowed"; code: EncryptionPolicyRejectionCode }>
     | Readonly<{ reason: "privacy-upgrade-required" }>
@@ -61,7 +68,8 @@ export type FreshBoundLayout1SessionCreateRejection =
     | Readonly<{ reason: "session-id-taken" }>
     | Readonly<{ reason: "session-tag-taken" }>;
 
-export type Layout1SessionCreateRequest = Readonly<{
+export type Layout1SessionCreateRequest = Readonly<SessionCreateOriginFieldsV1 & {
+    reportsTo?: SessionReportsToV1;
     accountId: string;
     tag: string;
     /** Shared metadata as stored: canonical JSON for plain, ciphertext for E2EE. */
@@ -81,7 +89,8 @@ export type Layout1SessionCreateRequest = Readonly<{
     defaultAccountMode: AccountEncryptionMode;
 }>;
 
-export type PreparedLayout1SessionCreate = Readonly<{
+export type PreparedLayout1SessionCreate = Readonly<SessionCreateOriginFieldsV1 & {
+    reportsTo?: SessionReportsToV1;
     accountId: string;
     tag: string;
     metadata: string;
@@ -193,6 +202,15 @@ export function admitRequestedSessionEncryptionMode(params: Readonly<{
 export function prepareLayout1SessionCreate(
     request: Layout1SessionCreateRequest,
 ): PrepareLayout1SessionCreateResult {
+    const origin = SessionCreateOriginFieldsV1Schema.safeParse({
+        originKind: request.originKind,
+        originSessionId: request.originSessionId,
+        originRunId: request.originRunId,
+        workDepth: request.workDepth,
+    });
+    if (!origin.success) return { ok: false, rejection: { reason: "invalid-params" } };
+    const reportsTo = SessionReportsToV1Schema.optional().safeParse(request.reportsTo);
+    if (!reportsTo.success) return { ok: false, rejection: { reason: "invalid-params" } };
     const modeRejection = admitRequestedSessionEncryptionMode({
         storagePolicy: request.storagePolicy,
         requestedEncryptionMode: request.requestedEncryptionMode,
@@ -225,6 +243,8 @@ export function prepareLayout1SessionCreate(
     return {
         ok: true,
         prepared: {
+            ...origin.data,
+            ...(reportsTo.data ? { reportsTo: reportsTo.data } : {}),
             accountId: request.accountId,
             tag: request.tag,
             metadata: request.metadata,

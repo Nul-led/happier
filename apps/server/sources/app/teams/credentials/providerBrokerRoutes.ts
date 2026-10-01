@@ -46,6 +46,7 @@ import {
     recordTeamCredentialExternalProviderTerminalUsageInTx,
 } from './externalProviderBrokerAdmission';
 import { admitTeamCredentialResourceTestRequestInTx } from './resourceTestBrokerAdmission';
+import { readRequestHomeEnv } from '@/app/home/settings/requestHomeEnv';
 
 export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
     const resolveExecutionRunCurrentness = createExecutionRunBrokerCurrentnessResolver({
@@ -66,6 +67,7 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const parsed = modelCatalogAuthorizationSchema.safeParse(request.body);
         if (!parsed.success) return reply.code(400).send({ ok: false, reasonCode: 'invalid_request' });
         const external = TeamCredentialExternalProviderModelCatalogAuthorizationV1Schema.safeParse(parsed.data);
@@ -78,7 +80,7 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
             return reply.send(ProviderBrokerModelCatalogAuthorizationResponseV1Schema.parse(result));
         }
         const broker = ProviderBrokerModelCatalogAuthorizationV1Schema.parse(parsed.data);
-        const signing = resolvePeerMediationGrantSigningConfig(process.env);
+        const signing = resolvePeerMediationGrantSigningConfig(requestHomeEnv);
         if (!signing.ok) return reply.send({ ok: false, reasonCode: 'update_required' });
         const result = await authorizeTeamCredentialProviderModelCatalog({
             authenticatedBrokerAccountId: request.userId,
@@ -105,9 +107,10 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
             response: { 200: TeamCredentialResourceTestAdmissionResponseV1Schema, 400: TeamCredentialResourceTestAdmissionResponseV1Schema },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const parsed = TeamCredentialResourceTestAdmissionV1Schema.safeParse(request.body);
         if (!parsed.success) return reply.code(400).send({ ok: false, reasonCode: 'invalid_request' });
-        const relaySigning = resolvePeerMediationGrantSigningConfig(process.env);
+        const relaySigning = resolvePeerMediationGrantSigningConfig(requestHomeEnv);
         if (!relaySigning.ok) return reply.send({ ok: false, reasonCode: 'invalid_request' });
         const result = await inTx(tx => admitTeamCredentialResourceTestRequestInTx(tx, {
             authenticatedBrokerAccountId: request.userId,
@@ -160,7 +163,7 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
     app.post(PROVIDER_BROKER_OPEN_HTTP_PATH_V1, {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: 'session',
                 session: 'body.consumer.sessionId',
                 machine: 'body.initiatorMachineId',
@@ -172,11 +175,12 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
             response: { 200: ProviderBrokerOpenResponseV1Schema, 400: ProviderBrokerOpenResponseV1Schema },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const parsed = ProviderBrokerOpenRequestV1Schema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({ ok: false, reasonCode: 'invalid_request' });
         }
-        const signing = resolvePeerMediationGrantSigningConfig(process.env);
+        const signing = resolvePeerMediationGrantSigningConfig(requestHomeEnv);
         if (!signing.ok) {
             return reply.send({ ok: false, reasonCode: 'update_required' });
         }
@@ -267,11 +271,12 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
             response: { 200: ProviderBrokerRequestAdmissionResponseV1Schema, 400: ProviderBrokerRequestAdmissionResponseV1Schema },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const parsed = ProviderBrokerRequestAdmissionV1Schema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({ ok: false, reasonCode: 'invalid_request' });
         }
-        const signing = resolvePeerMediationGrantSigningConfig(process.env);
+        const signing = resolvePeerMediationGrantSigningConfig(requestHomeEnv);
         if (!signing.ok) {
             return reply.send({ ok: false, reasonCode: 'update_required' });
         }

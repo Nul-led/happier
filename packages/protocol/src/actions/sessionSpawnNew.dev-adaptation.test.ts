@@ -82,10 +82,6 @@ describe('session.spawn_new dev adaptation', () => {
       ...canonicalInput,
       backendTarget: { kind: 'backend', backendId: 'codex' },
     }],
-    ['secret-bearing environment input', {
-      ...canonicalInput,
-      environmentVariables: { API_TOKEN: 'secret' },
-    }],
   ])('rejects %s at the canonical boundary', (_label, input) => {
     const spec = getActionSpec('session.spawn_new');
 

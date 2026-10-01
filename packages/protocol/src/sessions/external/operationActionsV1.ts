@@ -12,7 +12,7 @@ import { SessionTranscriptSourceTimestampMsSchema } from '../messages/transcript
 import {
   SessionMetadataOwnerPatchV1Schema,
   SessionMetadataPublisherPreconditionV1Schema,
-} from '../metadata/sessionMetadataEnvelopesV1.js';
+} from '../metadata/sessionMetadataSchemasV1.js';
 import {
   ExternalSessionMaterializationPublicationV1Schema,
   ExternalSessionPriorStableStorageV1Schema,
@@ -146,11 +146,6 @@ const ExternalSessionTakeoverAdmissionCommandV1Schema =
       expectedSessionMetadataVersion: OperationRevisionSchema,
       metadataPatch: SessionMetadataOwnerPatchV1Schema,
       expectedSessionSeq: OperationSequenceSchema,
-      expectedPending: z.object({
-        version: OperationRevisionSchema,
-        count: OperationCountSchema,
-        blockedCount: OperationCountSchema,
-      }).strict(),
       expectedPublication: z.object({
         materializationPublicationId: OperationReferenceIdSchema,
         materializedThroughSourceAt: OperationTimestampSchema,
@@ -164,11 +159,6 @@ const ExternalSessionTakeoverAdmissionCommandV1Schema =
       publisherPrecondition: SessionMetadataPublisherPreconditionV1Schema,
       expectedSessionMetadataVersion: OperationRevisionSchema,
       expectedSessionSeq: OperationSequenceSchema,
-      expectedPending: z.object({
-        version: OperationRevisionSchema,
-        count: OperationCountSchema,
-        blockedCount: OperationCountSchema,
-      }).strict(),
       expectedPriorStableStorage: ExternalSessionPriorStableStorageV1Schema,
     }).strict(),
   ]);

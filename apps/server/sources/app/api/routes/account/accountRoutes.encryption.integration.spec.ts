@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import tweetnacl from "tweetnacl";
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
+    sealAccountScopedBlobCiphertext,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -924,6 +925,19 @@ describe("accountRoutes (encryption mode integration)", () => {
     });
 
     it.each([
+        {
+            domain: "Authoring memory",
+            populate: async (accountId: string) => {
+                await db.userKVStore.create({ data: {
+                    accountId, key: "@happier/account/authoring-memory/v1/lastUsedProfile",
+                    value: new TextEncoder().encode(JSON.stringify({ t: "encrypted", c: sealAccountScopedBlobCiphertext({
+                        kind: "authoring_memory", material: { type: "legacy", secret: new Uint8Array(32).fill(31) },
+                        payload: { key: "lastUsedProfile", value: "profile-a" },
+                        randomBytes: (length) => new Uint8Array(length),
+                    }) })),
+                } });
+            },
+        },
         {
             domain: "Plugin Account KV",
             populate: async (accountId: string) => {

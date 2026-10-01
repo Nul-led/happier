@@ -1,4 +1,5 @@
 import type { RuntimeActionIdV1 } from '../actionIds.js';
+import { executeComputerRuntimeAction, isComputerRuntimeActionId } from './computer.js';
 import {
   executeBrowserRuntimeAction,
   isBrowserRuntimeActionId,
@@ -38,6 +39,9 @@ export async function dispatchRuntimeAction(args: Readonly<{
     };
   }
 
+  if (isComputerRuntimeActionId(actionId)) {
+    return executeComputerRuntimeAction({ actionId, input: args.input, context: args.context, runtimeActionExecute: args.runtimeActionExecute });
+  }
   if (isBrowserRuntimeActionId(actionId)) {
     return executeBrowserRuntimeAction({
       actionId,
@@ -77,6 +81,7 @@ export async function dispatchRuntimeAction(args: Readonly<{
 export function resolveRuntimeActionExecutionFamily(
   actionId: RuntimeActionIdV1,
 ): RuntimeActionExecutionFamily {
+  if (isComputerRuntimeActionId(actionId)) return 'computer';
   if (isBrowserRuntimeActionId(actionId)) return 'browser';
   if (isLocalServicesRuntimeActionId(actionId)) return 'localServices';
   if (isPeerMediationRuntimeActionId(actionId)) return 'peerMediation';

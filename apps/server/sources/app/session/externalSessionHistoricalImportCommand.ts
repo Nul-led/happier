@@ -137,7 +137,6 @@ type PersistedTakeoverAdmission = Readonly<
         | "expectedSessionMetadataVersion"
         | "metadataPatch"
         | "expectedSessionSeq"
-        | "expectedPending"
         | "expectedPublication"
     >
 >;
@@ -157,7 +156,6 @@ type ExternalLinkedTakeoverAdmissionRecord = Readonly<{
     operationRevision: number;
     expectedSessionMetadataVersion: number;
     expectedSessionSeq: number;
-    expectedPending: ExternalLinkedTakeoverAdmissionCommand["expectedPending"];
     expectedPriorStableStorage: ExternalLinkedTakeoverAdmissionCommand["expectedPriorStableStorage"];
 }>;
 
@@ -315,7 +313,6 @@ function readJob(value: unknown): HistoricalImportJob | null {
             expectedSessionMetadataVersion: parsedAdmission.data.expectedSessionMetadataVersion,
             metadataPatch: parsedAdmission.data.metadataPatch,
             expectedSessionSeq: parsedAdmission.data.expectedSessionSeq,
-            expectedPending: parsedAdmission.data.expectedPending,
             expectedPublication: parsedAdmission.data.expectedPublication,
         };
     }
@@ -472,9 +469,6 @@ function admissionsEqual(
         && left.expectedSessionMetadataVersion === right.expectedSessionMetadataVersion
         && isDeepStrictEqual(left.metadataPatch, right.metadataPatch)
         && left.expectedSessionSeq === right.expectedSessionSeq
-        && left.expectedPending.version === right.expectedPending.version
-        && left.expectedPending.count === right.expectedPending.count
-        && left.expectedPending.blockedCount === right.expectedPending.blockedCount
         && left.expectedPublication.materializationPublicationId
             === right.expectedPublication.materializationPublicationId
         && left.expectedPublication.materializedThroughSourceAt
@@ -538,7 +532,6 @@ function readExternalLinkedTakeoverAdmissionRecord(
             "operationRevision",
             "expectedSessionMetadataVersion",
             "expectedSessionSeq",
-            "expectedPending",
             "expectedPriorStableStorage",
         ].includes(key))
     ) {
@@ -557,7 +550,6 @@ function readExternalLinkedTakeoverAdmissionRecord(
         },
         expectedSessionMetadataVersion: record.expectedSessionMetadataVersion,
         expectedSessionSeq: record.expectedSessionSeq,
-        expectedPending: record.expectedPending,
         expectedPriorStableStorage: record.expectedPriorStableStorage,
     });
     if (
@@ -575,7 +567,6 @@ function readExternalLinkedTakeoverAdmissionRecord(
         operationRevision: parsed.data.expectedRevision,
         expectedSessionMetadataVersion: parsed.data.expectedSessionMetadataVersion,
         expectedSessionSeq: parsed.data.expectedSessionSeq,
-        expectedPending: parsed.data.expectedPending,
         expectedPriorStableStorage: parsed.data.expectedPriorStableStorage,
     };
 }
@@ -592,7 +583,6 @@ function externalLinkedTakeoverAdmissionRecordFromCommand(
         operationRevision: command.expectedRevision,
         expectedSessionMetadataVersion: command.expectedSessionMetadataVersion,
         expectedSessionSeq: command.expectedSessionSeq,
-        expectedPending: command.expectedPending,
         expectedPriorStableStorage: command.expectedPriorStableStorage,
     };
 }
@@ -656,9 +646,6 @@ function externalLinkedAdmissionFencesMatch(
 ): boolean {
     return session.metadataVersion === command.expectedSessionMetadataVersion
         && session.seq === command.expectedSessionSeq
-        && session.pendingVersion === command.expectedPending.version
-        && session.pendingCount === command.expectedPending.count
-        && session.pendingBlockedCount === command.expectedPending.blockedCount
         && session.active
         && !session.thinking
         && (() => {
@@ -674,7 +661,7 @@ function externalLinkedAdmissionFencesMatch(
 /**
  * Whether the incoming command is an exact replay of the one admitted
  * attempt: the same attempt, the same canonical operation claim, the same
- * daemon operation revision, and identical expected Session/Pending/stable
+ * daemon operation revision, and identical expected Session/stable
  * storage fences. A lost-ack replay re-acknowledges only this exact command;
  * a lower revision or a different claim at the same revision is superseded
  * state, not a replay.
@@ -689,7 +676,6 @@ function externalLinkedAdmissionAttemptMatches(
         && stored.expectedSessionMetadataVersion
             === current.expectedSessionMetadataVersion
         && stored.expectedSessionSeq === current.expectedSessionSeq
-        && isDeepStrictEqual(stored.expectedPending, current.expectedPending)
         && priorStableStorageEqual(
             stored.expectedPriorStableStorage,
             current.expectedPriorStableStorage,
@@ -704,32 +690,10 @@ async function admitExternalLinkedTakeoverInTx(input: Readonly<{
     command: ExternalLinkedTakeoverAdmissionCommand;
 }>): Promise<ExternalSessionOperationSocketResponseV1> {
     const { command } = input;
-    if (command.publisherPrecondition.machineId !== input.transportMachineId) {
-        return errorResponse(
-            "wrong_machine_socket",
-            "External-linked takeover publisher belongs to another machine.",
-        );
-    }
     if (!externalLinkedAdmissionFencesMatch(input.session, command)) {
         return errorResponse(
             "invalid_state",
             "External-linked takeover admission fences do not match canonical authority.",
-        );
-    }
-    if (!await fenceExactCurrentPublisherAuthorityInTx(
-        input.tx,
-        {
-            accountId: input.actorUserId,
-            machineId: command.publisherPrecondition.machineId,
-            sessionId: command.claim.sessionId,
-            committedFence: new Date(command.publisherPrecondition.committedFenceMs),
-        },
-        input.actorUserId,
-        command.claim.sessionId,
-    )) {
-        return errorResponse(
-            "invalid_state",
-            "External-linked takeover publisher authority was superseded.",
         );
     }
     const existingRead = await readExternalLinkedTakeoverAdmissionInTx(
@@ -1088,6 +1052,21 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
 
     try {
         return await inTx(async (tx) => {
+        if (command.kind === "admit_persisted_takeover") {
+            if (command.publisherPrecondition.machineId !== params.transportMachineId) {
+                return errorResponse("wrong_machine_socket", "Takeover publisher belongs to another machine.");
+            }
+            // Lock the exact publisher before reading the live admission tuple.
+            // Viewer projections intentionally hide this state for external Sessions.
+            if (!await fenceExactCurrentPublisherAuthorityInTx(tx, {
+                accountId: params.actorUserId,
+                machineId: params.transportMachineId,
+                sessionId: command.claim.sessionId,
+                committedFence: new Date(command.publisherPrecondition.committedFenceMs),
+            }, params.actorUserId, command.claim.sessionId)) {
+                return errorResponse("invalid_state", "Takeover publisher authority was superseded.");
+            }
+        }
         let session = await tx.session.findFirst({
             where: { id: command.claim.sessionId, accountId: params.actorUserId },
             select: {
@@ -1356,9 +1335,6 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                 || command.metadataPatch.sharedMetadata.expectedVersion
                     !== command.expectedSessionMetadataVersion
                 || session.seq !== command.expectedSessionSeq
-                || session.pendingVersion !== command.expectedPending.version
-                || session.pendingCount !== command.expectedPending.count
-                || session.pendingBlockedCount !== command.expectedPending.blockedCount
                 || !session.active
                 || session.thinking
                 || session.materializationPublicationId
@@ -1398,9 +1374,11 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                     acceptedThroughServerSeq: null,
                     metadataVersion: metadataUpdated.sharedMetadata.version,
                     seq: command.expectedSessionSeq,
-                    pendingVersion: command.expectedPending.version,
-                    pendingCount: command.expectedPending.count,
-                    pendingBlockedCount: command.expectedPending.blockedCount,
+                    // Capture live queue state inside this transaction, never
+                    // from a publication-filtered viewer projection.
+                    pendingVersion: session.pendingVersion,
+                    pendingCount: session.pendingCount,
+                    pendingBlockedCount: session.pendingBlockedCount,
                     active: true,
                     lastActiveAt: new Date(
                         command.publisherPrecondition.committedFenceMs,
@@ -1438,7 +1416,6 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                     expectedSessionMetadataVersion: command.expectedSessionMetadataVersion,
                     metadataPatch: command.metadataPatch,
                     expectedSessionSeq: command.expectedSessionSeq,
-                    expectedPending: command.expectedPending,
                     expectedPublication: command.expectedPublication,
                 },
             };

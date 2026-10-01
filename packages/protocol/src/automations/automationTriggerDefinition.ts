@@ -16,7 +16,7 @@ import {
   AutomationEventSourceDisplayLabelV1Schema,
   AutomationEventSourceInstanceIdV1Schema,
 } from './automationEventJsonBoundsV1.js';
-import { AutomationEventFilterV1Schema } from './automationActionSpecsV1.js';
+import { AutomationEventFilterV1Schema } from './automationEventFilterV1.js';
 import {
   ENCRYPTED_STORED_CONTENT_SCHEMA,
   addAutomationStoredEnvelopeUtf8LimitIssue,
@@ -71,6 +71,7 @@ export const AutomationSessionLifecycleRegistrationErrorCodeSchema = z.enum([
   'sourceTurnNotInProgress',
   'executionTargetInequalityUnproven',
   'sourceMatchesExecutionTarget',
+  'session_already_started',
 ]);
 export type AutomationSessionLifecycleRegistrationErrorCode = z.infer<
   typeof AutomationSessionLifecycleRegistrationErrorCodeSchema

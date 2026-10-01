@@ -6,6 +6,8 @@ CREATE TABLE `TeamCredentialExternalApiKey` (
     `label` LONGTEXT NOT NULL,
     `displayPrefix` VARCHAR(191) NOT NULL,
     `secretDigest` VARCHAR(191) NOT NULL,
+    `authenticationEvidence` JSON NULL,
+    `currentBrokerOperationJson` LONGTEXT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `lastUsedAt` DATETIME(3) NULL,
     `expiresAt` DATETIME(3) NULL,

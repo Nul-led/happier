@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { BrowserActiveTargetV1Schema } from './activeTarget.js';
 
 describe('browser events protocol v1', () => {
+  it('admits a short accessible target label, redacts URL secrets and stays strict', () => {
+    const target = { x: 0.5, y: 0.4, width: 0.2, height: 0.1 };
+    expect(BrowserActiveTargetV1Schema.safeParse({ ...target, label: 'Sign in' })).toMatchObject({
+      success: true, data: { ...target, label: 'Sign in' },
+    });
+    const redacted = BrowserActiveTargetV1Schema.safeParse({ ...target, label: 'Open https://example.test/?token=private-value' });
+    expect(redacted.success).toBe(true);
+    expect(JSON.stringify(redacted)).not.toContain('private-value');
+    expect(BrowserActiveTargetV1Schema.safeParse({ ...target, label: 'x'.repeat(513) }).success).toBe(false);
+    expect(BrowserActiveTargetV1Schema.safeParse({ ...target, value: 'password-value' }).success).toBe(false);
+    expect(BrowserActiveTargetV1Schema.safeParse(target).success).toBe(true);
+  });
   it('accepts adapter-neutral navigation and view lifecycle events', async () => {
     const mod = await import('../index.js').catch(() => null);
 

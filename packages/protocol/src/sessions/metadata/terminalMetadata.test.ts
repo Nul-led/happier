@@ -1,7 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import * as protocol from '../../index.js';
+import * as protocol from './terminalMetadata.js';
+import { SessionTerminalMetadataSchema as ReleasedUiTerminalSchema } from './fixtures/uiWeb0212TerminalMetadata.js';
 
 describe('sessionMetadata terminal metadata', () => {
+  it.each(['herdr', 'plain'] as const)('round-trips a flat %s host with a Herdr preference through the ui-web-v0.2.12 reader', (mode) => {
+    const metadata = {
+      path: '/repo', name: 'original', providerExtension: { retained: true },
+      terminal: {
+        mode, requested: 'herdr' as const,
+        ...(mode === 'herdr' ? { herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' } } : { fallbackReason: 'headless_runtime' }),
+      },
+    };
+    const wire = protocol.projectSessionMetadataForWire(metadata);
+    if (!wire || typeof wire !== 'object' || !('terminal' in wire)) throw new Error('Missing terminal projection');
+    const releasedMutation = { ...metadata, name: 'renamed', terminal: ReleasedUiTerminalSchema.parse(wire.terminal) };
+    const domain = protocol.normalizeSessionMetadataForRead(releasedMutation);
+    expect(domain).toEqual({ ...metadata, name: 'renamed' });
+    expect(protocol.projectSessionMetadataForWire(domain)).toEqual({ ...wire, name: 'renamed' });
+    expect(metadata.name).toBe('original');
+  });
+
+  it('removes recognized wire selectors before a canonical host change is written', () => {
+    const domain = protocol.normalizeSessionMetadataForRead({ terminal: { mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr' } });
+    const wire = protocol.projectSessionMetadataForWire({ terminal: { ...domain.terminal, mode: 'tmux', requested: 'tmux', tmux: { target: 'work:1' } } });
+    expect(wire).toEqual({ terminal: { mode: 'tmux', requested: 'tmux', tmux: { target: 'work:1' } } });
+  });
+
+  it('normalizes the predecessor additive Herdr selectors without retaining competing host selectors', () => {
+    expect(protocol.SessionTerminalMetadataSchema.parse({
+      mode: 'plain', hostKind: 'herdr', requested: 'plain', requestedHostKind: 'herdr',
+      herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' },
+      providerExtension: { retained: true },
+    })).toEqual({
+      mode: 'herdr', requested: 'herdr',
+      herdr: { sessionName: 'work', socketPath: '/tmp/herdr.sock', terminalId: 'term_1' },
+      providerExtension: { retained: true },
+    });
+  });
+
   it('parses tmux terminal metadata and preserves unknown fields', () => {
     const parsed = (protocol as any).SessionTerminalMetadataSchema.parse({
       mode: 'tmux',
@@ -31,6 +67,29 @@ describe('sessionMetadata terminal metadata', () => {
     });
     expect(parsed.mode).toBe('zellij');
     expect((parsed as any).extra).toBe('x');
+  });
+
+  it('validates the Zellij attachment identity', () => {
+    expect(protocol.SessionTerminalMetadataSchema.safeParse({
+      mode: 'zellij', zellij: { sessionName: 42, paneId: '9' },
+    }).success).toBe(false);
+    expect(protocol.SessionTerminalMetadataSchema.parse({
+      mode: 'zellij', zellij: { sessionName: 'happier', paneId: '9' },
+    }).zellij?.paneId).toBe('9');
+  });
+
+  it('parses Herdr terminal identity for attach and pane-move recovery', () => {
+    const parsed = protocol.SessionTerminalMetadataSchema.parse({
+      mode: 'herdr',
+      requested: 'herdr',
+      herdr: {
+        sessionName: 'default',
+        socketPath: '/tmp/herdr.sock',
+        terminalId: 'term_1',
+        paneId: 'w1:p7',
+      },
+    });
+    expect(parsed.herdr?.terminalId).toBe('term_1');
   });
 
   it('parses windows terminal metadata', () => {

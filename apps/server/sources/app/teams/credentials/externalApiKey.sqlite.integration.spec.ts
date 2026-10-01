@@ -5,6 +5,7 @@ import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import {
+    authorizeTeamCredentialExternalApiKeyInTx,
     createTeamCredentialExternalApiKeyInTx,
     listTeamCredentialExternalApiKeysInTx,
     revokeAllTeamCredentialExternalApiKeysInTx,
@@ -17,6 +18,8 @@ import {
     recordTeamCredentialExternalProviderTerminalUsageInTx,
 } from "./externalProviderBrokerAdmission";
 import { removeTeamMemberForActorInTx } from "../memberships/memberAdministration";
+import { qualifyTeamAuthenticationInTx } from "@/app/auth/entry/qualifyTeamAuthentication";
+import { resolveTeamCredentialBrokerPlacementFingerprint } from "./brokerPlacementResolver";
 
 const TEST_AUTHENTICATION = {
     env: process.env,
@@ -97,6 +100,8 @@ describe("Team credential external API key owner", () => {
                 externalApiKeyId: created.key.keyId,
                 assignedAccountId: recipient.id,
                 assignedTeamMembershipId: membership.id,
+                operationId: null,
+                brokerPlacementFingerprint: resolveTeamCredentialBrokerPlacementFingerprint({ ...resource, brokerMachineId: broker.id }),
             },
             brokerMachineId: broker.id,
             expectedResourceRevision: resource.revision,
@@ -130,9 +135,28 @@ describe("Team credential external API key owner", () => {
             { resourceId: resource.id, subjectKind: "each_member", subjectId: "", period: "day", metric: "inference_requests", maximum: "3", createdAt: new Date(admittedAt.getTime() - 1) },
             { resourceId: resource.id, subjectKind: "team_group", subjectId: group.id, period: "day", metric: "inference_requests", maximum: "2", createdAt: new Date(admittedAt.getTime() - 1) },
         ] });
+        const operationId = crypto.randomUUID();
+        await db.teamCredentialExternalApiKey.update({ where: { id: created.key.keyId }, data: {
+            currentBrokerOperationJson: JSON.stringify({
+                v: 1, operationId, brokerMachineId: broker.id,
+                brokerPlacementFingerprint: modelAuthorization.binding.brokerPlacementFingerprint,
+                sourceBindingJson: resource.sourceBindingJson,
+            }),
+        } });
+        // A catalog authorization minted before the inference acquired custody
+        // must not survive that race with its null operation identity.
+        await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+            authenticatedBrokerAccountId: manager.id, request: modelAuthorization, observedAt: admittedAt,
+        }))).resolves.toEqual({ ok: false, reasonCode: "operation_not_current" });
+        const verification = await inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token }));
+        expect(verification).not.toHaveProperty("currentBrokerOperationJson");
+        const listed = await inTx(tx => listTeamCredentialExternalApiKeysInTx(tx, {
+            actorAccountId: manager.id, resourceId: resource.id, authentication: TEST_AUTHENTICATION,
+        }));
+        expect(JSON.stringify(listed)).not.toContain(operationId);
         const admissionRequest = (requestId: string) => ({
             v: 1 as const,
-            binding: { ...modelAuthorization.binding, requestId },
+            binding: { ...modelAuthorization.binding, requestId, operationId },
             brokerMachineId: broker.id,
             expectedResourceRevision: resource.revision,
             application: modelAuthorization.application,
@@ -276,7 +300,156 @@ describe("Team credential external API key owner", () => {
         expect(await db.teamCredentialActivityEvent.count({ where: { resourceId: resource.id, kind: "external_key_created" } })).toBe(1);
     });
 
-    it("refuses to mint an external key whose automation credential cannot satisfy a restricted Team", async () => {
+    it("mints an external key for a restricted Team when its issuer and assignee share current verified authentication", async () => {
+        harness.resetEnv({
+            AUTH_REQUIRED_LOGIN_PROVIDERS: "",
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "true",
+        });
+        try {
+            const account = await db.account.create({ data: {
+                publicKey: crypto.randomUUID(), encryptionMode: "e2ee",
+            } });
+            const team = await db.team.create({ data: {
+                name: "Qualified external key issuer",
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            } });
+            const membership = await db.teamMembership.create({ data: {
+                teamId: team.id, accountId: account.id, role: "owner",
+            } });
+            const resource = await db.teamCredentialResource.create({ data: {
+                teamId: team.id,
+                custodianAccountId: account.id,
+                displayName: "Qualified provider",
+                disclosureCeiling: "brokered_only",
+                sessionUsePolicy: "personal_allowed",
+                sourceBindingJson: JSON.stringify({
+                    v: 1, kind: "provider_connection", connectionId: "qualified-connection",
+                    connectionSecurityFingerprint: "connection-security:v1:qualified", credentialSlotId: "apiKey",
+                }),
+                memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+            } });
+
+            // A self-assigned bearer retains only this Account's current proof.
+            const authentication = {
+                env: process.env,
+                authenticationAuthority: "present_user" as const,
+                authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }],
+            };
+            await expect(inTx(tx => qualifyTeamAuthenticationInTx(tx, {
+                env: process.env,
+                team,
+                accountId: account.id,
+                verifiedCredentialEvidence: authentication.authenticationEvidence,
+                operationContext: { kind: "present_user" },
+            }))).resolves.toMatchObject({ status: "satisfied" });
+            const created = await inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: account.id,
+                authentication,
+                resourceId: resource.id,
+                teamMembershipId: membership.id,
+                label: "Qualified unattended client",
+                expiresAt: null,
+            }));
+            expect(created).toMatchObject({
+                ok: true,
+                key: { resourceId: resource.id, teamMembershipId: membership.id, authenticationStatus: "satisfied", canAuthorize: true },
+            });
+            if (!created.ok) throw new Error("expected qualified external key");
+            await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+                .resolves.toMatchObject({ ok: true, assignedAccountId: account.id });
+            const broker = await db.machine.create({ data: {
+                id: `qualified-broker-${account.id}`, accountId: account.id, metadata: "{}",
+                kind: "persistent", active: true,
+                operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+                operationProtocolCapabilitiesRevision: 1,
+            } });
+            await db.teamCredentialResource.update({ where: { id: resource.id }, data: { brokerMachineId: broker.id } });
+            const catalogRequest = {
+                v: 1,
+                binding: { v: 1, kind: "external_api_key", teamId: team.id, resourceId: resource.id,
+                    requestId: "qualified-models", externalApiKeyId: created.key.keyId,
+                    assignedAccountId: account.id, assignedTeamMembershipId: membership.id,
+                    operationId: null,
+                    brokerPlacementFingerprint: resolveTeamCredentialBrokerPlacementFingerprint({ ...resource, brokerMachineId: broker.id }) },
+                brokerMachineId: broker.id, expectedResourceRevision: resource.revision,
+                application: { agentTargetKey: "agent:happier.agent.codex/codex",
+                    implementationIdentity: { pluginId: "happier.provider.cliproxyapi", localId: "cliproxyapi" },
+                    endpointTemplateId: "cliproxyapi-openai-responses", protocol: "openai-responses" },
+            };
+            await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+                authenticatedBrokerAccountId: account.id, request: catalogRequest, observedAt: new Date(),
+            }))).resolves.toEqual({ ok: true });
+            await db.account.update({ where: { id: account.id }, data: { publicKey: null } });
+            await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+                .resolves.toEqual({ ok: false, reason: "invalid_token" });
+            await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+                authenticatedBrokerAccountId: account.id, request: catalogRequest, observedAt: new Date(),
+            }))).resolves.toMatchObject({ ok: false });
+        } finally {
+            harness.restoreEnv();
+        }
+    });
+
+    it("requires the exact assigned member to authorize a manager-created key without redisclosing its bearer", async () => {
+        harness.resetEnv({ AUTH_REQUIRED_LOGIN_PROVIDERS: "", HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "true" });
+        try {
+            const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "e2ee" } });
+            const member = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "e2ee" } });
+            const team = await db.team.create({ data: { name: "Assigned qualification", authenticationPolicy: {
+                v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            } } });
+            await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+            const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: member.id, role: "member" } });
+            const resource = await db.teamCredentialResource.create({ data: {
+                teamId: team.id, custodianAccountId: manager.id, displayName: "Assigned provider",
+                disclosureCeiling: "brokered_only", sessionUsePolicy: "personal_allowed",
+                sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "assigned-connection",
+                    connectionSecurityFingerprint: "connection-security:v1:assigned", credentialSlotId: "apiKey" }),
+                memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+            } });
+            const authentication = { ...TEST_AUTHENTICATION,
+                authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }] };
+            const created = await inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: manager.id, authentication, resourceId: resource.id,
+                teamMembershipId: membership.id, label: "Member tool", expiresAt: null,
+            }));
+            expect(created).toMatchObject({ ok: true, key: { authenticationStatus: "authentication_required", canAuthorize: false } });
+            if (!created.ok) throw new Error("expected pending assigned key");
+            const storedBefore = await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } });
+            expect(storedBefore.authenticationEvidence).toBeNull();
+            await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+                .resolves.toEqual({ ok: false, reason: "invalid_token" });
+            const input = { resourceId: resource.id, keyId: created.key.keyId };
+            await expect(inTx(tx => authorizeTeamCredentialExternalApiKeyInTx(tx, {
+                ...input, actorAccountId: manager.id, authentication,
+            }))).resolves.toMatchObject({ ok: false, error: "resource_forbidden" });
+            await expect(inTx(tx => authorizeTeamCredentialExternalApiKeyInTx(tx, {
+                ...input, actorAccountId: member.id, authentication: TEST_AUTHENTICATION,
+            }))).resolves.toMatchObject({ ok: false, error: "team_authentication_required" });
+            await expect(inTx(tx => listTeamCredentialExternalApiKeysInTx(tx, {
+                resourceId: resource.id, actorAccountId: member.id, authentication,
+            }))).resolves.toMatchObject({ ok: true, keys: [{ keyId: created.key.keyId, canAuthorize: true }] });
+            const authorized = await inTx(tx => authorizeTeamCredentialExternalApiKeyInTx(tx, {
+                ...input, actorAccountId: member.id, authentication,
+            }));
+            expect(authorized).toMatchObject({ ok: true, key: { authenticationStatus: "satisfied" } });
+            expect(authorized).not.toHaveProperty("token");
+            expect(JSON.stringify(authorized)).not.toContain(created.token);
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).secretDigest)
+                .toBe(storedBefore.secretDigest);
+            await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+                .resolves.toMatchObject({ ok: true, assignedAccountId: member.id });
+            await db.teamMembership.update({ where: { id: membership.id }, data: { status: "suspended" } });
+            await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+                .resolves.toEqual({ ok: false, reason: "invalid_token" });
+        } finally { harness.restoreEnv(); }
+    });
+
+    it("refuses to mint an external key when its manager credential does not qualify", async () => {
         const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
         const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
         const team = await db.team.create({ data: {
@@ -314,10 +487,7 @@ describe("Team credential external API key owner", () => {
             teamMembershipId: membership.id,
             label: "Unusable automation key",
             expiresAt: null,
-        // A restricted Team can never mint an external bearer: the bearer carries
-        // no Team authentication at all, so this is one permanent typed refusal
-        // rather than a transient "policy unavailable" answer.
-        }))).resolves.toEqual({ ok: false, error: "external_api_restricted_team" });
+        }))).resolves.toEqual({ ok: false, error: "team_authentication_required" });
         expect(await db.teamCredentialExternalApiKey.count({ where: { resourceId: resource.id } })).toBe(0);
         expect(await db.teamCredentialActivityEvent.count({
             where: { resourceId: resource.id, kind: "external_key_created" },

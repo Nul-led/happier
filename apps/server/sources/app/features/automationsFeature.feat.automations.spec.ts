@@ -10,6 +10,7 @@ describe('resolveAutomationsFeature', () => {
         expect(feature.features?.automations).toEqual({
             enabled: true,
         });
+        expect(feature.capabilities).toBeUndefined();
     });
 });
 

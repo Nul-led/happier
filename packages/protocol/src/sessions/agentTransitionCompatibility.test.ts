@@ -5,7 +5,7 @@ import {
   MachineOperationProtocolCapabilitiesV1Schema,
 } from '../machines/operationProtocolCapabilitiesV1.js';
 import { SESSION_AGENT_TRANSITION_VECTORS as V } from './agentTransitionVectors.js';
-import { SessionSpawnNewInputV2Schema } from './creation/sessionSpawnNewInputV2.js';
+import { SessionSpawnNewInputV2Schema, SessionSpawnNewInputV2BaseSchema } from './creation/sessionSpawnNewInputV2.js';
 import { SessionForkRpcParamsSchema } from './fork.js';
 
 /**
@@ -83,7 +83,7 @@ describe('compat — new client + old daemon, sourceContext spawn', () => {
     // The released strict spawn input has no `sourceContext`, so an older dev
     // daemon rejects the whole operation. That is operation-scoped safe
     // degradation, not wire compatibility by silent ignore.
-    const released = SessionSpawnNewInputV2Schema.omit({ sourceContext: true });
+    const released = SessionSpawnNewInputV2BaseSchema.omit({ sourceContext: true });
     expect(unrecognizedKeys(released.safeParse(payloadWithSourceContext).error))
       .toContain('sourceContext');
   });

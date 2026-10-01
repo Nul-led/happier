@@ -65,11 +65,11 @@ function createSocketHarness() {
             },
         },
         emitted,
-        call(event: string, payload?: unknown) {
+        async call(event: string, payload?: unknown) {
             const handler = handlers.get(event);
             expect(handler).toBeTypeOf("function");
             let response: unknown;
-            handler?.(payload, (value) => {
+            await handler?.(payload, (value) => {
                 response = value;
             });
             return response;
@@ -396,7 +396,7 @@ describe("server peer mediation observability", () => {
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
 
-        const ack = harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope });
+        const ack = await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope });
         expect(ack).toEqual({ ok: true, sequence: 1 });
         expect(harness.emitted.filter((entry) => entry.event === PEER_MEDIATION_OBSERVABILITY_SNAPSHOT_SOCKET_EVENT)).toHaveLength(1);
         expect(harness.emitted[0]?.payload).toMatchObject({
@@ -446,8 +446,8 @@ describe("server peer mediation observability", () => {
             featurePayload: enabledObservabilityPayload(),
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true, sequence: 0 });
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_UNSUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true });
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true, sequence: 0 });
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_UNSUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true });
 
         store.publish(events.createPeerMediationFlowEvent({
             accountId: "account_1",
@@ -482,9 +482,9 @@ describe("server peer mediation observability", () => {
             featurePayload: enabledObservabilityPayload(),
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true, sequence: 0 });
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({ ok: true, sequence: 0 });
 
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_UNSUBSCRIBE_SOCKET_EVENT, {
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_UNSUBSCRIBE_SOCKET_EVENT, {
             scope: { kind: "machine", accountId: "account_2", machineId: "machine_1" },
         })).toEqual({ ok: false, reasonCode: "observability_scope_forbidden" });
 
@@ -642,7 +642,7 @@ describe("server peer mediation observability", () => {
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
 
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, { scope })).toEqual({
             ok: true,
             sequence: 0,
         });
@@ -663,7 +663,7 @@ describe("server peer mediation observability", () => {
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
 
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, {
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, {
             scope: { kind: "machine", accountId: "account_2", machineId: "machine_1" },
         })).toEqual({ ok: false, reasonCode: "observability_scope_forbidden" });
         expect(harness.emitted).toEqual([]);
@@ -683,7 +683,7 @@ describe("server peer mediation observability", () => {
             principal: { kind: "machineOwner", accountId: "account_1", machineId: "machine_1" },
         });
 
-        expect(harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, {
+        expect(await harness.call(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, {
             scope: { kind: "machine", accountId: "account_1", machineId: "machine_1" },
         })).toEqual({ ok: false, reasonCode: "observability_unavailable" });
         expect(harness.emitted).toEqual([]);

@@ -30,7 +30,7 @@ export function createPluginInstallationReviewFixture(
     optionalHostAccess: [],
     rawCredentialAccess: [],
     compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-    updatePolicy: 'reviewEveryUpdate',
+    updatePolicy: 'allowed',
     ...overrides,
   };
 }

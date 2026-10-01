@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 import * as protocol from '../../index.js';
 
 describe('projectTranscriptBodySearchableText', () => {
+  it('retains correlation evidence for native tool sends and accepted results without treating them as assistant text', () => {
+    expect(protocol.projectTranscriptBodySemanticContent({ role: 'agent', content: {
+      type: 'codex', data: { type: 'tool-call', callId: 'send-1', name: 'session_message_send', input: { sessionId: 'lead', message: 'final' } },
+    } })).toMatchObject({ semanticRole: 'tool', toolCalls: [{ callId: 'send-1', name: 'session_message_send', input: { sessionId: 'lead', message: 'final' } }] });
+    expect(protocol.projectTranscriptBodySemanticContent({ role: 'agent', content: {
+      type: 'output', data: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'send-1', content: [{ type: 'text', text: '{"ok":true,"result":{"status":"accepted","localId":"input-1"}}' }] }] } },
+    } })).toMatchObject({ semanticRole: 'tool', toolResults: [{ callId: 'send-1', isError: false }] });
+  });
   it('projects protocol-valid ACP tool-result content that transcript readers expose', () => {
     expect(protocol.projectTranscriptBodySearchableText({
       role: 'agent',

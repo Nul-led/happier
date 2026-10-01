@@ -102,8 +102,26 @@ export const PluginAgentCliManagedInstallSchema = z.discriminatedUnion('kind', [
 ]);
 export type PluginAgentCliManagedInstall = z.infer<typeof PluginAgentCliManagedInstallSchema>;
 
+/**
+ * The vendor's own updater, verified from vendor documentation or source. The host runs it against
+ * the executable it resolved only when that executable (or its real path) equals or sits under one
+ * of `installPaths` (home-relative, `/`-separated), so a vendor updater is never asked to replace
+ * an install a package manager owns. It never names a command: the host owns executable resolution.
+ */
+export const PluginAgentCliNativeUpdateSchema = z.object({
+  args: z.array(NonEmptyStringSchema).min(1),
+  installPaths: UniqueNonEmptyStringsSchema,
+}).strict();
+export type PluginAgentCliNativeUpdate = z.infer<typeof PluginAgentCliNativeUpdateSchema>;
+
 export const PluginAgentCliInstallMetadataSchema = z.object({
   managed: PluginAgentCliManagedInstallSchema.nullable().optional(),
+  /**
+   * The vendor's npm package when the CLI is also published there and it is not already the
+   * managed package. It attributes an npm/pnpm/bun install and names the latest-version source.
+   */
+  npmPackageName: NonEmptyStringSchema.nullable().optional(),
+  nativeUpdate: PluginAgentCliNativeUpdateSchema.nullable().optional(),
   manual: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }).strict(),
     z.object({
@@ -119,9 +137,18 @@ export type PluginAgentCliInstallMetadata = z.infer<typeof PluginAgentCliInstall
 
 export const PluginAgentCliLoginLaunchSchema = z.object({
   kind: z.enum(['primary', 'device_code']),
+  target: z.enum(['provider_cli', 'agent_acp']).optional(),
   args: z.array(z.string()),
   initialInput: z.string().nullable().optional(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (value.target === 'agent_acp' && value.args.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['args'],
+      message: 'ACP login arguments are host-owned.',
+    });
+  }
+});
 export type PluginAgentCliLoginLaunch = z.infer<typeof PluginAgentCliLoginLaunchSchema>;
 
 export const PluginAgentCliAuthMetadataSchema = z.object({

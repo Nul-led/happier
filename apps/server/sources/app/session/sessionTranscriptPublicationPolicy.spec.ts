@@ -376,11 +376,17 @@ describe("session transcript publication policy", () => {
         const publishedReadyProjection = {
             latestReadyEventSeq: 3,
             latestReadyEventAt: 30_000,
+            latestReadyEventLocalId: "ready-local-id",
         };
         expect(projectSessionTranscriptPublicationRealtimeProjection(
             publishedReadyProjection,
             finiteSession,
             "collaborator",
         )).toEqual({ kind: "publish", value: publishedReadyProjection });
+        expect(projectSessionTranscriptPublicationRealtimeProjection(
+            { ...publishedReadyProjection, latestReadyEventSeq: 5 },
+            finiteSession,
+            "collaborator",
+        )).toEqual({ kind: "suppress" });
     });
 });

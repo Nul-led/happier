@@ -1,7 +1,9 @@
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { acceptPasswordTextV1, parseAccountPasswordCredentialV1 } from "@happier-dev/protocol";
+import { acceptPasswordTextV1, parseAccountPasswordCredentialV1, createPasswordCredentialMutationDigestV1, createPasswordCredentialTargetDigestV1 } from "@happier-dev/protocol";
+import { createHash } from "node:crypto";
+import { createMtlsClaimCode } from "@/app/auth/providers/mtls/mtlsClaimCode";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { emailPasswordAuthMethodModule } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
 import { hashPasswordMaterial, verifyPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
@@ -26,6 +28,53 @@ describe("native Plain password reset", () => {
             env: { HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "true", AUTH_REQUIRED_LOGIN_PROVIDERS: "" } });
     }, 120_000);
     afterAll(async () => { await harness.close(); });
+
+    it("does not revive an old reset after password removal and same-email re-enrollment", async () => {
+        const email = "reenrollment-reset@example.test";
+        const prepared = await fixture(email);
+        const changedPassword = "ordinary changed password";
+        const reenrolledPassword = "new enrollment password";
+        vi.stubEnv("HAPPIER_FEATURE_AUTH_MTLS__ENABLED", "true");
+        vi.stubEnv("HAPPIER_FEATURE_AUTH_MTLS__MODE", "forwarded");
+        vi.stubEnv("HAPPIER_FEATURE_AUTH_MTLS__TRUST_FORWARDED_HEADERS", "true");
+        vi.stubEnv("HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED", "true");
+        vi.stubEnv("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
+        try {
+            await db.accountIdentity.create({ data: { accountId: prepared.account.id, provider: "mtls", providerUserId: "reset-review-mtls", profile: {} } });
+            await db.accountEmail.create({ data: { accountId: prepared.account.id, normalizedEmail: email, address: email } });
+            const oldIdentity = await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: prepared.account.id, provider: "email" } } });
+            const issued = await prepared.issue();
+            const token = await auth.createToken(prepared.account.id, undefined, { kind: "account", authority: "present_user", authenticationEvidence: [{ kind: "home_method", methodId: "mtls" }] });
+            const post = (url: string, payload: Record<string, unknown>) => prepared.app.inject({ method: "POST", url, headers: { authorization: `Bearer ${token}` }, payload });
+            const changed = await post("/v1/account/password/change", { v: 1, kind: "plain", expectedCredentialRevision: 1, currentPassword: original, newPassword: changedPassword });
+            expect(changed.statusCode, changed.body).toBe(200);
+            expect((await prepared.submit(issued.rawBearer)).statusCode).toBe(400);
+            const removed = await post("/v1/account/password/remove", { v: 1, kind: "plain", expectedCredentialRevision: 2, currentPassword: changedPassword });
+            expect(removed.statusCode, removed.body).toBe(200);
+            const target = await post("/v1/auth/password/mutation/challenge", { v: 1, action: "connect", expectedCredentialRevision: null, normalizedNativeEmail: email, newPlainPassword: reenrolledPassword });
+            expect(target.statusCode, target.body).toBe(200);
+            const targetCredential = target.json().targetCredential;
+            const requestDigest = createPasswordCredentialMutationDigestV1({ v: 1, action: "connect", accountId: prepared.account.id, expectedCredentialRevision: null, normalizedNativeEmail: email, newCredentialDigest: createPasswordCredentialTargetDigestV1(targetCredential) });
+            const proof = "fixture-password-enrollment-proof";
+            const pending = await createMtlsClaimCode({ userId: prepared.account.id, ttlMs: 60_000, stepUp: { purpose: "account_password_enrollment", providerUserId: "reset-review-mtls", proofHash: createHash("sha256").update(proof).digest("hex"), requestDigest } });
+            const enrolled = await post("/v1/account/password/enroll", { v: 1, kind: "plain", email, targetCredential, reauthentication: { provider: "mtls", pending, proof } });
+            expect(enrolled.statusCode, enrolled.body).toBe(200);
+            const newIdentity = await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: prepared.account.id, provider: "email" } } });
+            expect(newIdentity.id).not.toBe(oldIdentity.id);
+            expect(await db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: prepared.account.id } })).toMatchObject({ revision: 1 });
+            const stale = await prepared.submit(issued.rawBearer);
+            expect(stale.statusCode, stale.body).toBe(400);
+            expect(stale.json()).toEqual({ error: "invalid_reset" });
+            const current = await db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: prepared.account.id } });
+            const parsed = parseAccountPasswordCredentialV1("plain", current.credential);
+            if (!parsed.ok || parsed.mode !== "plain") throw new Error("invalid fixture credential");
+            expect(await verifyPasswordMaterial(parsed.credential.hash, bytes(reenrolledPassword))).toBe(true);
+            expect(await verifyPasswordMaterial(parsed.credential.hash, bytes(replacement))).toBe(false);
+        } finally {
+            vi.unstubAllEnvs();
+            await prepared.app.close();
+        }
+    });
 
     it("returns the same accepted projection when delivery is unavailable without issuing an operation", async () => {
         const prepared = await fixture("request-reset@example.test");
@@ -71,11 +120,11 @@ describe("native Plain password reset", () => {
 
     async function fixture(email: string, routeContext?: AuthMethodRouteContext) {
         const account = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
-        await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: email, profile: {} } });
+        const identity = await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: email, profile: {} } });
         await db.accountPasswordCredential.create({ data: { accountId: account.id,
             credential: { v: 1, kind: "plain_password_hash", hash: await hashPasswordMaterial(bytes(original)) } } });
         const issue = () => inTx((tx) => issueNativeAuthOneTimeOperationInTx(tx, {
-            v: 1, purpose: "reset_plain_password", accountId: account.id, credentialRevision: 1, expectedNativeIdentity: email,
+            v: 1, purpose: "reset_plain_password", accountId: account.id, credentialRevision: 1, nativeIdentityId: identity.id, expectedNativeIdentity: email,
         }));
         const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
         const disconnectAccountSockets = vi.fn();
@@ -94,7 +143,7 @@ describe("native Plain password reset", () => {
         const deliver = vi.fn(async () => ({ status: "sent" as const }));
         const prepared = await fixture("policy-disabled-request@example.test", {
             isEmailDeliveryReady: () => true,
-            authEmailDelivery: { isReady: true, deliver },
+            authEmailDelivery: { isReady: async () => true, deliver },
             resolveApplicationLinkTarget: async () => ({
                 applicationOrigin: "https://app.example.test",
                 homeTarget: "portable-home-target",
@@ -223,6 +272,7 @@ describe("native Plain password reset", () => {
                 v: 1,
                 purpose: "reset_plain_password",
                 accountId: "erased-account",
+                nativeIdentityId: "erased-identity",
                 credentialRevision: 1,
                 expectedNativeIdentity: "neutral-reset@example.test",
             }));

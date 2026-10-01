@@ -163,12 +163,13 @@ async function consumePurposeBoundStepUpPendingInTx(
         return { ok: false, reason: "binding_mismatch" };
     }
     if (proof.data.provider === "email_password") {
-        if (purpose !== "account_encryption_first_key" || !("credentialRevision" in proof.data)) {
+        if (purpose !== "account_encryption_first_key" || !("credentialRevision" in proof.data) || !("nativeIdentityId" in proof.data)) {
             return { ok: false, reason: "binding_mismatch" };
         }
         const current = await findNativePasswordAccount(proof.data.providerUserId, tx);
         if (!current || current.account.id !== params.accountId || current.account.status !== "active"
-            || current.parsed.mode !== "plain" || current.revision !== proof.data.credentialRevision) {
+            || current.parsed.mode !== "plain" || current.nativeIdentityId !== proof.data.nativeIdentityId
+            || current.revision !== proof.data.credentialRevision) {
             return { ok: false, reason: "identity_mismatch" };
         }
         if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, { env: process.env, methodId: "email_password", actionId: "login" })) {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import { bindSessionAccessActionHttpRequestV1 } from './sessionAccessActionFamily.js';
+import { SetSessionAccessGrantRequestV1Schema } from '../sessions/access/sessionAccessOperationsV1.js';
 
 const grant = {
   subject: { kind: 'account', accountId: 'recipient' },
@@ -83,5 +84,23 @@ describe('createActionExecutor (Session access)', () => {
   it('refuses to bind an input the declared row rejects', () => {
     expect(() => bindSessionAccessActionHttpRequestV1('session.access.grants.list', { sessionId: '' }))
       .toThrow();
+  });
+
+  it('preserves a strict credential condition only on the consented Team edit grant', () => {
+    const input = {
+      sessionId: 'session-1', subject: { kind: 'team', teamId: 'team-1' },
+      accessLevel: 'edit', canApprovePermissions: false,
+      requiredTeamCredential: { resourceId: 'resource-1', expectedResourceRevision: 7, deliveryMode: 'brokered' },
+    };
+    const request = bindSessionAccessActionHttpRequestV1('session.access.grant.set', input);
+    expect(SetSessionAccessGrantRequestV1Schema.parse(request.body)).toEqual(input);
+    for (const patch of [
+      { subject: grant.subject }, { accessLevel: 'view' }, { canApprovePermissions: true },
+      { requiredTeamCredential: { ...input.requiredTeamCredential, expectedResourceRevision: -1 } },
+      { requiredTeamCredential: { ...input.requiredTeamCredential, unchecked: true } },
+    ]) {
+      expect(() => bindSessionAccessActionHttpRequestV1('session.access.grant.set', { ...input, ...patch })).toThrow();
+      expect(SetSessionAccessGrantRequestV1Schema.safeParse({ ...input, ...patch }).success).toBe(false);
+    }
   });
 });

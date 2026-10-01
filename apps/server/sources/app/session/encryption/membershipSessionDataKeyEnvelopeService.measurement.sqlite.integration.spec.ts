@@ -70,7 +70,6 @@ describe("Membership history envelope 10k measurement (SQLite)", () => {
             tempDirPrefix: "happier-membership-envelope-scale-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },

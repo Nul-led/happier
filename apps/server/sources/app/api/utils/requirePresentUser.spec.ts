@@ -9,6 +9,19 @@ function createReply() {
 }
 
 describe("requirePresentUser", () => {
+    it("admits a terminal credential only when the verifier grants present-user authority", async () => {
+        const accepted = createReply();
+        await expect(requirePresentUser({
+            authAuthority: "present_user",
+            authTokenKind: "terminal",
+        }, accepted.reply)).resolves.toBeUndefined();
+        const rejected = createReply();
+        await expect(requirePresentUser({
+            authAuthority: "account_automation",
+            authTokenKind: "terminal",
+        }, rejected.reply)).resolves.toEqual({ error: PRESENT_USER_REQUIRED_ERROR });
+        expect(rejected.code).toHaveBeenCalledWith(403);
+    });
     it("admits only an explicitly verified ordinary account present-user credential", async () => {
         const accepted = createReply();
         await expect(requirePresentUser({

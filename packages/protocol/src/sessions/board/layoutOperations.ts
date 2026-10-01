@@ -4,8 +4,10 @@ import { SessionBoardErrorCodeSchema, type SessionBoardErrorCode } from './error
 import { SessionBoardTabIdSchema, SessionSurfaceItemIdSchema } from './ids.js';
 import {
   SessionBoardItemWidthSchema,
+  SessionBoardItemFrameStyleSchema,
   SessionBoardLayoutV1Schema,
   type SessionBoardItemWidth,
+  type SessionBoardItemFrameStyle,
   type SessionBoardLayoutV1,
 } from './layout.js';
 
@@ -77,10 +79,22 @@ export const SessionBoardLayoutOperationV1Schema = z.discriminatedUnion('op', [
     tabId: SessionBoardTabIdSchema,
   }).strict(),
   z.object({
+    // Explicit whole-Board reference cleanup, including an already-missing item.
+    // Unlike item removal, this does not delete or require a shared item record.
+    op: z.literal('item.unpinAll'),
+    itemId: SessionSurfaceItemIdSchema,
+  }).strict(),
+  z.object({
     op: z.literal('item.resize'),
     itemId: SessionSurfaceItemIdSchema,
     tabId: SessionBoardTabIdSchema,
     width: SessionBoardItemWidthSchema,
+  }).strict(),
+  z.object({
+    op: z.literal('item.frameStyle'),
+    itemId: SessionSurfaceItemIdSchema,
+    tabId: SessionBoardTabIdSchema,
+    frameStyle: SessionBoardItemFrameStyleSchema.nullable(),
   }).strict(),
 ]);
 export type SessionBoardLayoutOperationV1 = z.infer<typeof SessionBoardLayoutOperationV1Schema>;
@@ -101,7 +115,7 @@ export type SessionBoardLayoutEditResultV1 =
 type MutableTab = {
   id: string;
   title: string;
-  items: { itemId: string; width: SessionBoardItemWidth }[];
+  items: { itemId: string; width: SessionBoardItemWidth; frameStyle?: SessionBoardItemFrameStyle }[];
 };
 
 const INVALID = Object.freeze({
@@ -117,7 +131,7 @@ function draft(layout: SessionBoardLayoutV1): MutableTab[] {
   return layout.tabs.map((tab) => ({
     id: tab.id,
     title: tab.title,
-    items: tab.items.map((item) => ({ itemId: item.itemId, width: item.width })),
+    items: tab.items.map((item) => ({ ...item })),
   }));
 }
 
@@ -150,6 +164,7 @@ export function applySessionBoardLayoutOperationV1(
   layout: SessionBoardLayoutV1,
   operation: SessionBoardLayoutOperationV1,
 ): SessionBoardLayoutEditResultV1 {
+  if (operation.op === 'item.unpinAll') return removeSessionBoardItemPlacementsV1(layout, operation.itemId);
   const tabs = draft(layout);
   const tabIndex = (tabId: string): number => tabs.findIndex((tab) => tab.id === tabId);
 
@@ -237,6 +252,15 @@ export function applySessionBoardLayoutOperationV1(
       const placement = tab.items.find((item) => item.itemId === operation.itemId);
       if (!placement) return ITEM_NOT_FOUND;
       placement.width = operation.width;
+      break;
+    }
+    case 'item.frameStyle': {
+      const index = tabIndex(operation.tabId);
+      if (index < 0) return INVALID;
+      const placement = tabs[index]?.items.find((item) => item.itemId === operation.itemId);
+      if (!placement) return ITEM_NOT_FOUND;
+      if (operation.frameStyle === null) delete placement.frameStyle;
+      else placement.frameStyle = operation.frameStyle;
       break;
     }
   }
@@ -330,7 +354,7 @@ export function sessionBoardPlacedWidthRetainsPlacementV1(
   return placedWidth === placement.width;
 }
 
-/** Item removal deletes the shared record, so every Board view loses its placement. */
+/** Whole-Board reference cleanup, shared by item deletion and already-missing item recovery. */
 export function removeSessionBoardItemPlacementsV1(
   layout: SessionBoardLayoutV1,
   itemId: string,

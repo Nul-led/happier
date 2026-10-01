@@ -1,10 +1,9 @@
 import type { Context } from "@/context";
 import { db } from "@/storage/db";
-import { inTx, type Tx } from "@/storage/inTx";
 import { unlinkIdentity } from "./accountIdentityLifecycle";
 import { resolveAuthMethodIdForAccountIdentityProvider } from "@/app/auth/methods/registry";
 import type { PreparedIdentityConnection } from "./identityProviders/types";
-import { resolveIdentityRuntimeById, resolveRuntime, resolveRuntimeInTx } from "./identityProviderCatalog";
+import { resolveIdentityRuntimeById, resolveRuntime } from "./identityProviderCatalog";
 import type { ProviderReference } from "./providerReference";
 
 type ExternalIdentityConnectionParams = {
@@ -34,7 +33,7 @@ type ExternalIdentityConnectionParams = {
  * `auth_provider_configuration_changed`) when the binding no longer holds, so no identity row is
  * written against a runtime the member never authorized.
  */
-async function resolveBoundIdentityProvider(params: ExternalIdentityConnectionParams, tx?: Tx) {
+async function resolveBoundIdentityProvider(params: ExternalIdentityConnectionParams) {
     const providerId = params.providerId.toString().trim().toLowerCase();
     const reference = params.reference;
     if (!reference) {
@@ -49,7 +48,7 @@ async function resolveBoundIdentityProvider(params: ExternalIdentityConnectionPa
         reference,
         purpose: "oauth_finalize",
     } as const;
-    const resolved = tx ? await resolveRuntimeInTx(tx, input) : await resolveRuntime(input);
+    const resolved = await resolveRuntime(input);
     if (!resolved.ok) throw new Error(resolved.code);
     if (!resolved.module.identity) throw new Error("unsupported-provider");
     return resolved.module.identity;
@@ -66,14 +65,6 @@ export async function prepareExternalIdentityConnection(
         refreshToken: params.refreshToken,
         preferredUsername: params.preferredUsername,
         transferFromAccountId: params.transferFromAccountId,
-    });
-}
-
-export async function connectExternalIdentity(params: ExternalIdentityConnectionParams): Promise<void> {
-    const prepared = await prepareExternalIdentityConnection(params);
-    await inTx(async (tx) => {
-        if (params.reference) await resolveBoundIdentityProvider(params, tx);
-        await prepared.connectInTx(tx);
     });
 }
 

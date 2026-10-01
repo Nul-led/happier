@@ -1,23 +1,37 @@
 import { z } from 'zod';
+import { MACHINE_ADD_SSH_ACTION_IDS } from './specs/machineConnection.js';
+import { SCOPE_ACTION_IDS } from './scopeActionFamily.js';
+import { ROLE_ACTION_IDS_V1 } from '../prompts/roles/roleActionIdsV1.js';
+import { WORK_BOARD_ACTION_IDS_V1 } from '../boards/actionIdsV1.js';
 
 import { HOME_GOVERNANCE_ACTION_IDS_V1 } from '../home/governance/actionsV1.js';
 import { PLUGIN_SETTINGS_ADMINISTRATION_ACTION_IDS_V1 } from '../plugins/settingsAdministration.js';
 import { SESSION_BOARD_ACTION_IDS_V1 } from '../sessions/board/actionIds.js';
 import { SESSION_DISCUSSION_ACTION_IDS_V1 } from '../sessions/discussions/actionIds.js';
 import { SESSION_READ_STATE_ACTION_IDS_V1 } from '../sessions/readState/actionIds.js';
+import { SESSION_ATTENTION_SET_ACTION_ID } from '../sessions/organization/attentionAction.js';
 import { MACHINE_POOL_ACTION_IDS_V1 } from '../machines/pools/actionsV1.js';
 import { TEAM_ACTION_IDS_V1 } from '../teams/actionsV1.js';
 import { MANAGED_GITHUB_APP_ACTION_IDS_V1 } from '../identity/githubApps.js';
 import { MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1 } from '../identity/providers.js';
 import { EPHEMERAL_RUNNER_ACTION_IDS_V1 } from '../ephemeralRunner/actionIdsV1.js';
 import { SHARED_SAVED_SECRET_ACTION_IDS_V1 } from '../account/settings/savedSecretResourceActionsV1.js';
+import { ARTIFACT_ACCESS_ACTION_IDS_V1 } from '../artifacts/artifactAccessV1.js';
+import { WORKSPACE_ACTION_IDS } from './workspaceActionFamily.js';
+import { CONNECTED_SERVICE_CONFIGURATION_ACTION_IDS_V1 } from '../connect/configurationActionsV1.js';
+import { SETTINGS_DECLARATION_ACTION_IDS_V1 } from './settingsDeclarationActionFamily.js';
+import { APP_SHELL_ACTION_IDS } from './appShellActionFamily.js';
+import { SESSION_TERMINAL_ACTION_IDS } from './sessionTerminalActionFamily.js';
 
 export const WORKFLOW_ACTION_IDS_V1 = [
-  'workflow.validate', 'workflow.run.start', 'workflow.run.list', 'workflow.run.get', 'workflow.run.wait',
+  'workflow.validate', 'workflow.run.start', 'workflow.run.list', 'workflow.run.summaries', 'workflow.run.get', 'workflow.run.wait',
   'workflow.run.pause', 'workflow.run.resume', 'workflow.run.cancel', 'workflow.run.invocations.list',
   'workflow.run.invocations.get', 'workflow.run.invocations.retry', 'workflow.run.delete',
+  'workflow.run.invocations.publish_draft', 'workflow.run.invocations.complete_review',
   'workflow.definition.list', 'workflow.definition.get', 'workflow.definition.create',
-  'workflow.definition.update', 'workflow.definition.delete',
+  'workflow.definition.update', 'workflow.definition.edit', 'workflow.definition.delete',
+  'workflow.trigger.list', 'workflow.trigger.add', 'workflow.trigger.update', 'workflow.trigger.remove',
+  'session.trigger.list', 'session.trigger.add', 'session.trigger.update', 'session.trigger.remove',
 ] as const;
 export type WorkflowActionIdV1 = typeof WORKFLOW_ACTION_IDS_V1[number];
 export const WorkflowActionIdV1Schema = z.enum(WORKFLOW_ACTION_IDS_V1);
@@ -52,6 +66,13 @@ export function isPluginDevLoopActionIdV1(value: string): value is PluginDevLoop
 // Action ids remain protocol-owned and closed in this wave.
 // Plugin/runtime unification must not imply plugin-defined action-id authoring parity yet.
 export const ACTION_ID_FAMILIES_V1 = Object.freeze({
+  session_terminals: SESSION_TERMINAL_ACTION_IDS,
+  workspace_layout: WORKSPACE_ACTION_IDS,
+  scope: SCOPE_ACTION_IDS,
+  connected_services_configuration: CONNECTED_SERVICE_CONFIGURATION_ACTION_IDS_V1,
+  boards: WORK_BOARD_ACTION_IDS_V1,
+  roles: ROLE_ACTION_IDS_V1,
+  launch_profiles: ['launch_profiles.publish'],
   discovery: [
     'action.spec.search',
     'action.spec.get',
@@ -59,6 +80,18 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'action.invoke',
   ],
   workflows: WORKFLOW_ACTION_IDS_V1,
+  artifact_access: ARTIFACT_ACCESS_ACTION_IDS_V1,
+  settings_declarations: SETTINGS_DECLARATION_ACTION_IDS_V1,
+  app_shell: APP_SHELL_ACTION_IDS,
+  notifications: ['notifications.notify_me'],
+  home_hub_layout: ['home.hub.layout.get', 'home.hub.layout.update'],
+  machine_agent_install: [
+    'machines.agents.install',
+    'machines.agents.install.status',
+    'machines.agents.install.cancel',
+  ],
+  machine_agent_sign_in: ['machines.agents.signIn.start', 'machines.agents.signIn.status'],
+  machine_connection: ['homes.connect', 'machines.add.command', 'machines.pairing.create', 'machines.terminal.open', 'machines.terminal.list', ...MACHINE_ADD_SSH_ACTION_IDS],
   session_access: [
     'session.access.grants.list',
     'session.access.grant.set',
@@ -86,9 +119,14 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'session.handoff.abort',
     'session.handoff.status.get',
     'workspace.sync.conflict.resolve',
+    'workspace.sync.relationship.create',
+    'workspace.sync.relationships.list',
+    'workspace.sync.conflicts.list',
+    'workspace.sync.conflict.inspect',
     'session.spawn_new',
   ],
   inventory: [
+    'machines.agents.list',
     'paths.list_recent',
     'projects.list',
     'prompts.invocations.list',
@@ -106,10 +144,15 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   ],
   messaging: [
     'session.message.send',
+    'session.worker.publish',
   ],
   session_control: [
     'session.stop',
+    'session.delete',
+    'session.folder.set',
+    'session.tags.set',
     'session.title.set',
+    'session.reports_to.set',
     'session.model.set',
     'session.permission_mode.set',
     'session.archive',
@@ -130,6 +173,10 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'session.history.get',
     'session.wait.idle',
     'session.presentation.apply',
+  ],
+  session_organization_resources: [
+    'session.folders.list', 'session.folders.create', 'session.folders.rename', 'session.folders.delete',
+    'session.tags.list', 'session.tags.create', 'session.tags.rename', 'session.tags.delete',
   ],
   intent_start: [
     'review.start',
@@ -169,6 +216,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'execution.run.stream.read',
     'execution.run.stream.cancel',
     'execution.run.stop',
+    'execution.run.cancel_turn',
     'execution.run.action',
     'execution.run.wait',
   ],
@@ -213,6 +261,11 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
    * context can never acknowledge what the human saw.
    */
   session_read_state: SESSION_READ_STATE_ACTION_IDS_V1,
+  /**
+   * The present-user Inbox attention intent over the existing standing route (ORC R-10):
+   * Settle writes `standing: false`, snooze writes `remindAt`.
+   */
+  session_attention: [SESSION_ATTENTION_SET_ACTION_ID],
   /** The shared human and Agent Board intents; the Board schemas own their ids. */
   session_board: SESSION_BOARD_ACTION_IDS_V1,
   /**
@@ -221,6 +274,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
    */
   session_discussion: SESSION_DISCUSSION_ACTION_IDS_V1,
   session_permissions: [
+    'session.approval_reviewer.set',
     'session.permission.respond',
     'session.permission.remote.pending.list',
     'session.permission.remote.respond',
@@ -257,6 +311,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'ui.current_context.read',
     'ui.current_context.command.invoke',
   ],
+  command_palette: ['ui.command_palette.list', 'ui.command_palette.invoke'],
   companion_controls: [
     'ui.pet.choose',
   ],
@@ -270,6 +325,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'agents.acp.backends.delete',
   ],
   prompt_library: [
+    'prompt_doc.get',
     'prompt_doc.update',
     'prompt_bundle.update',
     'prompt_asset.export',
@@ -291,6 +347,8 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'bugreport.uploadArtifact',
   ],
   browser_control: [
+    'browser.control.takeControl',
+    'browser.control.handBack',
     'browser.view.open',
     'browser.view.close',
     'browser.view.focus',
@@ -352,6 +410,19 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'browser.automation.setValue',
     'browser.automation.upload',
     'browser.automation.drag',
+  ],
+  computer: [
+    'computer.targets.list',
+    'computer.target.get',
+    'computer.target.select',
+    'computer.permissions.openSettings',
+    'computer.capture',
+    'computer.query',
+    'computer.input',
+    'computer.control.status',
+    'computer.control.interrupt',
+    'computer.control.handBack',
+    'computer.target.close',
   ],
   browser_recording: [
     'browser.recording.start',
@@ -460,6 +531,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   ],
   account_security: [
     'account.security.get',
+    'account.security.terminalPresentUser.set',
     'account.password.enroll',
     'account.password.change',
     'account.password.remove',
@@ -468,6 +540,7 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
   account_api_tokens: [
     'account.apiTokens.create',
     'account.apiTokens.list',
+    'account.apiTokens.update',
     'account.apiTokens.revoke',
     'account.apiTokens.revokeAll',
   ],
@@ -484,6 +557,45 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
     'automation.conversation.targets.list',
     'automation.conversation.target.verify',
     'automation.conversation.admit',
+  ],
+  scm_git: [
+    'scm.backend.describe',
+    'scm.status.snapshot',
+    'scm.worktrees.enrichment',
+    'scm.diff.file',
+    'scm.diff.commit',
+    'scm.change.include',
+    'scm.change.exclude',
+    'scm.change.discard',
+    'scm.commit.create',
+    'scm.commit.backout',
+    'scm.log.list',
+    'scm.branch.list',
+    'scm.branch.create',
+    'scm.branch.checkout',
+    'scm.branch.merge',
+    'scm.branch.rebase',
+    'scm.branch.operation.continue',
+    'scm.branch.operation.skip',
+    'scm.branch.operation.abort',
+    'scm.conflict.acceptSide',
+    'scm.conflict.markResolved',
+    'scm.worktree.create',
+    'scm.worktree.remove',
+    'scm.worktree.prune',
+    'scm.remote.add',
+    'scm.remote.setUrl',
+    'scm.remote.remove',
+    'scm.remote.fetch',
+    'scm.remote.pull',
+    'scm.remote.push',
+    'scm.remote.publish',
+    'scm.stash.list',
+    'scm.stash.show',
+    'scm.stash.create',
+    'scm.stash.apply',
+    'scm.stash.pop',
+    'scm.stash.drop',
   ],
   scm_pull_request: [
     'scm.pullRequest.list',
@@ -516,6 +628,21 @@ export const ACTION_ID_FAMILIES_V1 = Object.freeze({
 } as const);
 
 export const ACTION_IDS = [
+  ...ACTION_ID_FAMILIES_V1.session_terminals,
+  ...ACTION_ID_FAMILIES_V1.connected_services_configuration,
+  ...ACTION_ID_FAMILIES_V1.workspace_layout,
+  ...ACTION_ID_FAMILIES_V1.home_hub_layout,
+  ...ACTION_ID_FAMILIES_V1.scope,
+  ...ACTION_ID_FAMILIES_V1.boards,
+  ...ACTION_ID_FAMILIES_V1.computer,
+  ...ACTION_ID_FAMILIES_V1.machine_connection,
+  ...ACTION_ID_FAMILIES_V1.machine_agent_install,
+  ...ACTION_ID_FAMILIES_V1.machine_agent_sign_in,
+  ...ACTION_ID_FAMILIES_V1.roles,
+  ...ACTION_ID_FAMILIES_V1.launch_profiles,
+  ...ACTION_ID_FAMILIES_V1.artifact_access,
+  ...ACTION_ID_FAMILIES_V1.settings_declarations,
+  ...ACTION_ID_FAMILIES_V1.app_shell,
   ...ACTION_ID_FAMILIES_V1.discovery,
   ...ACTION_ID_FAMILIES_V1.session_access,
   ...ACTION_ID_FAMILIES_V1.session_lifecycle,
@@ -523,12 +650,14 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.messaging,
   ...ACTION_ID_FAMILIES_V1.session_control,
   ...ACTION_ID_FAMILIES_V1.intent_start,
+  ...ACTION_ID_FAMILIES_V1.session_organization_resources,
   ...ACTION_ID_FAMILIES_V1.review_comments,
   ...ACTION_ID_FAMILIES_V1.subagent_registry,
   ...ACTION_ID_FAMILIES_V1.execution_run_control,
   ...ACTION_ID_FAMILIES_V1.session_targeting,
   ...ACTION_ID_FAMILIES_V1.session_follow,
   ...ACTION_ID_FAMILIES_V1.session_read_state,
+  ...ACTION_ID_FAMILIES_V1.session_attention,
   ...ACTION_ID_FAMILIES_V1.session_transcripts,
   ...ACTION_ID_FAMILIES_V1.session_board,
   ...ACTION_ID_FAMILIES_V1.session_discussion,
@@ -536,6 +665,7 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.external_sessions,
   ...ACTION_ID_FAMILIES_V1.voice_controls,
   ...ACTION_ID_FAMILIES_V1.current_ui_context,
+  ...ACTION_ID_FAMILIES_V1.command_palette,
   ...ACTION_ID_FAMILIES_V1.companion_controls,
   ...ACTION_ID_FAMILIES_V1.memory,
   ...ACTION_ID_FAMILIES_V1.prompt_library,
@@ -569,15 +699,18 @@ export const ACTION_IDS = [
   ...ACTION_ID_FAMILIES_V1.automation_events,
   ...ACTION_ID_FAMILIES_V1.automation_conversation,
   ...ACTION_ID_FAMILIES_V1.scm_pull_request,
+  ...ACTION_ID_FAMILIES_V1.scm_git,
   ...ACTION_ID_FAMILIES_V1.scm_repository,
   ...ACTION_ID_FAMILIES_V1.scm_diff_summary,
   ...ACTION_ID_FAMILIES_V1.home_governance,
   ...ACTION_ID_FAMILIES_V1.teams,
   ...ACTION_ID_FAMILIES_V1.saved_secret_sharing,
   ...ACTION_ID_FAMILIES_V1.workflows,
+  ...ACTION_ID_FAMILIES_V1.notifications,
 ] as const;
 
 export const RUNTIME_ACTION_IDS_V1 = [
+  ...ACTION_ID_FAMILIES_V1.computer,
   ...ACTION_ID_FAMILIES_V1.browser_control,
   ...ACTION_ID_FAMILIES_V1.browser_diagnostics,
   ...ACTION_ID_FAMILIES_V1.browser_context,
@@ -595,6 +728,9 @@ export const RUNTIME_ACTION_IDS_V1 = [
 export const ActionIdSchema = z.enum(ACTION_IDS);
 export type ActionId = z.infer<typeof ActionIdSchema>;
 export type ActionIdFamilyV1 = keyof typeof ACTION_ID_FAMILIES_V1;
+export const ActionIdFamilyV1Schema = z.enum(
+  Object.keys(ACTION_ID_FAMILIES_V1) as [ActionIdFamilyV1, ...ActionIdFamilyV1[]],
+);
 
 export const RuntimeActionIdV1Schema = z.enum(RUNTIME_ACTION_IDS_V1);
 export type RuntimeActionIdV1 = z.infer<typeof RuntimeActionIdV1Schema>;

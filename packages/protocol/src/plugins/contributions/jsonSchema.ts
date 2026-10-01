@@ -24,11 +24,65 @@ export type PluginJsonValueV2 =
   | PluginJsonValueV2[]
   | { [key: string]: PluginJsonValueV2 };
 
-export const PluginJsonValueV2Schema: z.ZodType<PluginJsonValueV2> = z.lazy(() => z.union([
+const PluginJsonValueShallowSchema = z.union([
+  z.null(), z.boolean(), z.number().finite(), z.string(),
+  z.array(z.unknown()), z.record(z.string(), z.unknown()),
+]);
+
+// Stored Workflow envelopes reach this structural JSON owner before their
+// purpose-specific schema. Parse its existing dialect without recursive calls;
+// strict normalization and transport byte limits remain separate owners.
+export const PluginJsonValueV2Schema: z.ZodType<PluginJsonValueV2> = z.unknown().transform((value, context): PluginJsonValueV2 => {
+  let output: unknown;
+  let failed = false;
+  const ancestors = new WeakSet<object>();
+  type Task = { value: unknown; path: (string | number)[]; assign: (value: unknown) => void }
+    | { finish: object };
+  const pending: Task[] = [{ value, path: [], assign: (parsed) => { output = parsed; } }];
+  while (pending.length > 0) {
+    const task = pending.pop()!;
+    if ('finish' in task) { ancestors.delete(task.finish); continue; }
+    if (task.value !== null && typeof task.value === 'object') {
+      if (ancestors.has(task.value)) {
+        context.addIssue({ code: 'custom', path: task.path, message: 'JSON values cannot contain cycles' });
+        failed = true;
+        continue;
+      }
+      ancestors.add(task.value);
+      pending.push({ finish: task.value });
+    }
+    const parsed = PluginJsonValueShallowSchema.safeParse(task.value);
+    if (!parsed.success) {
+      failed = true;
+      for (const issue of parsed.error.issues) context.addIssue({ ...issue, path: [...task.path, ...issue.path] });
+      continue;
+    }
+    const result = parsed.data;
+    task.assign(result);
+    if (Array.isArray(result)) {
+      for (let index = result.length - 1; index >= 0; index -= 1) {
+        pending.push({ value: result[index], path: [...task.path, index], assign: (child) => { result[index] = child; } });
+      }
+    } else if (result !== null && typeof result === 'object') {
+      const keys = Object.keys(result);
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index]!;
+        pending.push({ value: result[key], path: [...task.path, key], assign: (child) => { result[key] = child; } });
+      }
+    }
+  }
+  return failed ? z.NEVER : output as PluginJsonValueV2;
+});
+
+const PluginJsonValueProjectionSchema = z.lazy(() => z.union([
   z.null(), z.boolean(), z.number().finite(), z.string(),
   z.array(PluginJsonValueV2Schema),
   z.record(z.string(), PluginJsonValueV2Schema),
 ]));
+PluginJsonValueV2Schema._zod.processJSONSchema = (context, _json, params) => {
+  z.core.process(PluginJsonValueProjectionSchema, context, params);
+  context.seen.get(PluginJsonValueV2Schema)!.ref = PluginJsonValueProjectionSchema;
+};
 
 export type PluginJsonSchemaV2 = {
   $schema?: 'http://json-schema.org/draft-07/schema#';
@@ -40,6 +94,7 @@ export type PluginJsonSchemaV2 = {
   enum?: PluginJsonValueV2[];
   const?: PluginJsonValueV2;
   properties?: Record<string, PluginJsonSchemaV2>;
+  propertyNames?: PluginJsonSchemaV2;
   required?: string[];
   additionalProperties?: boolean | PluginJsonSchemaV2;
   items?: PluginJsonSchemaV2;
@@ -48,6 +103,8 @@ export type PluginJsonSchemaV2 = {
   uniqueItems?: boolean;
   minimum?: number;
   maximum?: number;
+  exclusiveMinimum?: number;
+  exclusiveMaximum?: number;
   minLength?: number;
   maxLength?: number;
   'x-happier-max-utf8-bytes'?: number;
@@ -65,10 +122,12 @@ export const PluginJsonSchemaV2Schema: z.ZodType<PluginJsonSchemaV2> = z.lazy(()
   title: z.string().optional(), description: z.string().optional(),
   default: PluginJsonValueV2Schema.optional(), enum: z.array(PluginJsonValueV2Schema).optional(), const: PluginJsonValueV2Schema.optional(),
   properties: z.record(z.string(), PluginJsonSchemaV2Schema).optional(), required: z.array(z.string()).optional(),
+  propertyNames: PluginJsonSchemaV2Schema.optional(),
   additionalProperties: z.union([z.boolean(), PluginJsonSchemaV2Schema]).optional(), items: PluginJsonSchemaV2Schema.optional(),
   minItems: z.number().int().nonnegative().optional(), maxItems: z.number().int().nonnegative().optional(),
   uniqueItems: z.boolean().optional(),
   minimum: z.number().finite().optional(), maximum: z.number().finite().optional(),
+  exclusiveMinimum: z.number().finite().optional(), exclusiveMaximum: z.number().finite().optional(),
   minLength: z.number().int().nonnegative().optional(), maxLength: z.number().int().nonnegative().optional(), pattern: z.string().optional(),
   'x-happier-max-utf8-bytes': z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   'x-happier-max-serialized-utf8-bytes': z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),

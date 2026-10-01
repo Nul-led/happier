@@ -24,6 +24,8 @@ export {
 } from './secretReferenceOverlayV1.js';
 
 export * from './read.js';
+export * from '../launchProfiles/launchProfileArtifactV1.js';
+export * from '../launchProfiles/publishLaunchProfile.js';
 export * from './v2/schema.js';
 export * from './visibilityV1.js';
 

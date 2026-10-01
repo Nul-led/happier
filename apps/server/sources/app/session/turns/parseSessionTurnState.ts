@@ -1,5 +1,7 @@
 import {
     PrimaryTurnStatusV1Schema,
+    SessionTurnFactsV1Schema,
+    type SessionTurnFactsV1,
     SessionTurnMutationActionV1Schema,
     SessionTurnMutationDecisionV1Schema,
     SessionTurnRollbackStateV1Schema,
@@ -69,6 +71,21 @@ export function parseStoredSessionRuntimeIssue(value: string | null | undefined)
 export function parseStoredSessionTurnTranscriptAnchors(value: string | null | undefined): SessionTurnTranscriptAnchorsV1 | undefined {
     const parsed = SessionTurnTranscriptAnchorsV1Schema.safeParse(parseJsonObject(value));
     return parsed.success ? parsed.data : undefined;
+}
+
+/** Immutable host facts are not inferred from mutable Session activity. */
+export function parseStoredSessionTurnFacts(row: Readonly<{
+    initiator: string;
+    workDepth: number;
+    workflowInvocationJson: string | null;
+}>): SessionTurnFactsV1 {
+    return SessionTurnFactsV1Schema.parse({
+        initiator: row.initiator,
+        workDepth: row.workDepth,
+        ...(row.workflowInvocationJson !== null
+            ? { workflowInvocation: JSON.parse(row.workflowInvocationJson) }
+            : {}),
+    });
 }
 
 export function parseStoredSessionTurn(row: SessionTurnStoredRow): SessionTurnV1 | null {

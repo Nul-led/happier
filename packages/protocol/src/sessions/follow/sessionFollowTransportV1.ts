@@ -47,9 +47,13 @@ function serializeWakeFrontier(frontier: SessionFollowFrontierV1) {
 
 export const SessionFollowWakeObservationV1Schema = z.object({
   sourceSessionId: SessionIdZodSchema,
+  edgeKind: z.literal('reports_to').optional(),
+  attachedAt: z.number().int().nonnegative().optional(),
   expected: SessionFollowFrontierV1Schema,
   consumed: SessionFollowFrontierV1Schema,
-}).strict();
+}).strict().refine((value) => (value.edgeKind === 'reports_to') === (value.attachedAt !== undefined), {
+  path: ['attachedAt'], message: 'Reports-to observations require their exact attachment identity',
+});
 export type SessionFollowWakeObservationV1 = z.infer<typeof SessionFollowWakeObservationV1Schema>;
 
 const SessionFollowWakeObservationBatchV1Schema = z.array(SessionFollowWakeObservationV1Schema)
@@ -57,14 +61,15 @@ const SessionFollowWakeObservationBatchV1Schema = z.array(SessionFollowWakeObser
   .superRefine((observations, context) => {
     const seenSourceSessionIds = new Set<string>();
     for (const [index, observation] of observations.entries()) {
-      if (seenSourceSessionIds.has(observation.sourceSessionId)) {
+      const identity = `${observation.edgeKind ?? 'follow'}:${observation.sourceSessionId}`;
+      if (seenSourceSessionIds.has(identity)) {
         context.addIssue({
           code: 'custom',
           path: [index, 'sourceSessionId'],
           message: 'Session Follow wake observations require unique source Sessions',
         });
       }
-      seenSourceSessionIds.add(observation.sourceSessionId);
+      seenSourceSessionIds.add(identity);
     }
   });
 
@@ -77,7 +82,8 @@ export function normalizeSessionFollowWakeObservationsV1(
       ? -1
       : left.sourceSessionId > right.sourceSessionId
         ? 1
-        : 0
+        : (left.edgeKind ?? 'follow') < (right.edgeKind ?? 'follow') ? -1
+          : (left.edgeKind ?? 'follow') > (right.edgeKind ?? 'follow') ? 1 : 0
   ));
 }
 
@@ -103,6 +109,7 @@ export function deriveSessionFollowWakeEventLocalIdV1(input: Readonly<{
       observation.sourceSessionId,
       serializeWakeFrontier(observation.expected),
       serializeWakeFrontier(observation.consumed),
+      ...(observation.edgeKind ? [observation.edgeKind, observation.attachedAt] : []),
     ]),
   ]);
   return buildSessionFollowWakeEventLocalId(
@@ -113,15 +120,21 @@ export function deriveSessionFollowWakeEventLocalIdV1(input: Readonly<{
 export const SessionFollowPendingObservationV1Schema = z.object({
   sourceSessionId: SessionIdZodSchema,
   destinationSessionId: SessionIdZodSchema,
+  edgeKind: z.literal('reports_to').optional(),
+  attachedAt: z.number().int().nonnegative().optional(),
+  machineOffline: z.boolean().optional(),
   delivered: SessionFollowFrontierV1Schema,
   observed: SessionFollowFrontierV1Schema,
   mode: z.enum(['next_turn', 'wake_on_human_change']).default('next_turn'),
-}).strict();
+}).strict().refine((value) => (value.edgeKind === 'reports_to') === (value.attachedAt !== undefined), {
+  path: ['attachedAt'], message: 'Reports-to observations require their exact attachment identity',
+});
 export type SessionFollowPendingObservationV1 = z.infer<typeof SessionFollowPendingObservationV1Schema>;
 
 export const SessionFollowObservePendingRequestV1Schema = z.object({
   v: z.literal(1),
   sessionId: SessionIdZodSchema,
+  includeReportsTo: z.boolean().optional(),
 }).strict();
 export type SessionFollowObservePendingRequestV1 = z.infer<typeof SessionFollowObservePendingRequestV1Schema>;
 
@@ -146,6 +159,8 @@ export const SessionFollowAcknowledgeRequestV1Schema = z.object({
   v: z.literal(1),
   destinationSessionId: SessionIdZodSchema,
   sourceSessionId: SessionIdZodSchema,
+  edgeKind: z.literal('reports_to').optional(),
+  attachedAt: z.number().int().nonnegative().optional(),
   expectedPublisherGeneration: PublisherGenerationV1Schema,
   expected: SessionFollowFrontierV1Schema,
   observed: SessionFollowFrontierV1Schema,
@@ -165,6 +180,9 @@ export const SessionFollowAcknowledgeRequestV1Schema = z.object({
     }).strict(),
   ]),
 }).strict().superRefine((value, context) => {
+  if ((value.edgeKind === 'reports_to') !== (value.attachedAt !== undefined)) {
+    context.addIssue({ code: 'custom', path: ['attachedAt'], message: 'Reports-to ACK requires the exact attachment timestamp' });
+  }
   if (value.sourceSessionId === value.destinationSessionId) {
     context.addIssue({ code: 'custom', path: ['sourceSessionId'], message: 'Follow requires distinct Sessions' });
   }

@@ -292,7 +292,8 @@ describe('FeatureGatesSchema', () => {
     expect(parsed.features.plugins?.ui).not.toHaveProperty('structuredMessages');
     expect(readServerEnabledBit(parsed, 'plugins.ui.structuredMessages' as never)).toBeNull();
     expect(readServerEnabledBit(parsed, 'plugins.ui.reactNativeBundles' as never)).toBe(true);
-    expect(readServerEnabledBit(parsed, 'plugins.ui.reactNativeBundles.devHotReload' as never)).toBe(true);
+    expect(parsed.features.plugins?.ui?.reactNativeBundles).not.toHaveProperty('devHotReload');
+    expect(readServerEnabledBit(parsed, 'plugins.ui.reactNativeBundles.devHotReload' as never)).toBeNull();
 
     const defaulted = FeaturesResponseSchema.parse({
       features: {
@@ -308,7 +309,7 @@ describe('FeatureGatesSchema', () => {
     expect(readServerEnabledBit(defaulted, 'plugins.webhooks' as never)).toBe(false);
     expect(readServerEnabledBit(defaulted, 'plugins.ui.structuredMessages' as never)).toBeNull();
     expect(readServerEnabledBit(defaulted, 'plugins.ui.reactNativeBundles' as never)).toBe(false);
-    expect(readServerEnabledBit(defaulted, 'plugins.ui.reactNativeBundles.devHotReload' as never)).toBe(false);
+    expect(defaulted.features.plugins?.ui?.reactNativeBundles).not.toHaveProperty('devHotReload');
   });
 
   it('preserves setup machine and ssh gate namespaces', () => {

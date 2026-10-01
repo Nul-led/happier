@@ -51,6 +51,13 @@ export async function validateSessionLifecycleTriggerRegistrationTx(params: Read
     automationExistingSessionId?: string | null;
     input: AutomationSessionLifecycleTriggerInput;
 }>): Promise<ValidatedSessionLifecycleTriggerRegistration> {
+    // No creation transaction consumer is installed yet. Ordinary CRUD must
+    // not register an already-missed creation occurrence or backfill one.
+    if (params.input.events.includes("sessionStarted")) {
+        throw new AutomationSessionLifecycleRegistrationValidationError(
+            "session_already_started", "Session-start triggers require the Session creation transaction",
+        );
+    }
     const sourceSessionId = params.input.sourceSessionId;
     const sourceSession = await params.tx.session.findFirst({
         where: { id: sourceSessionId, accountId: params.accountId },

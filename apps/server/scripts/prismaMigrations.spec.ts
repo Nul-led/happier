@@ -236,6 +236,111 @@ describe("Prisma migration identifier hygiene", () => {
 });
 
 describe("applySqliteMigrations", () => {
+    it("preserves review history and publication correlations while admitting workspace-only semantic findings", async () => {
+        const name = "20260930140000_add_review_finding_scope";
+        const root = join(import.meta.dirname, "..", "prisma/sqlite/migrations");
+        const migrationsDir = await createMigrationDir("happier-review-scope-upgrade-", [{
+            name,
+            sql: await readFile(join(root, name, "migration.sql"), "utf8"),
+        }]);
+        const dataDir = await mkdtemp(join(tmpdir(), "happier-review-scope-db-"));
+        const databasePath = join(dataDir, "test.sqlite");
+        const { DatabaseSync } = await import("node:sqlite");
+        const tables = ["review_comments", "review_comment_events", "review_comment_publication_correlations"];
+        const readIndexes = (db: InstanceType<typeof DatabaseSync>) => tables.flatMap((table) =>
+            db.prepare(`PRAGMA index_list("${table}")`).all().map((index) => ({
+                table, name: index.name, unique: index.unique,
+                columns: db.prepare(`PRAGMA index_info("${index.name}")`).all().map((column) => column.name),
+            })),
+        );
+        const readForeignKeys = (db: InstanceType<typeof DatabaseSync>) => tables.map((table) =>
+            db.prepare(`PRAGMA foreign_key_list("${table}")`).all(),
+        );
+        try {
+            const predecessor = new DatabaseSync(databasePath);
+            let retainedRows: Array<ReturnType<ReturnType<typeof predecessor.prepare>["get"]>>;
+            let retainedIndexes: ReturnType<typeof readIndexes>;
+            let retainedForeignKeys: ReturnType<typeof readForeignKeys>;
+            try {
+                predecessor.exec('PRAGMA foreign_keys=ON; CREATE TABLE "Account" ("id" TEXT PRIMARY KEY); INSERT INTO "Account" VALUES (\'account\'), (\'other-account\');');
+                for (const migration of ["20260606090000_add_review_comments", "20260825110000_add_review_comment_publication_correlations"]) {
+                    predecessor.exec(await readFile(join(root, migration, "migration.sql"), "utf8"));
+                }
+                // Populate every predecessor column so omitted nullable fields cannot hide as null.
+                const columns = predecessor.prepare('PRAGMA table_info("review_comments")').all();
+                const overrides: Record<string, string | number> = { id: "legacy", account_id: "account", thread_id: "legacy", state: "open" };
+                const values = columns.map((column) => overrides[String(column.name)] ?? (String(column.type).includes("INT") ? 1 : `retained:${column.name}`));
+                predecessor.prepare(`INSERT INTO review_comments (${columns.map((column) => `"${column.name}"`).join(",")}) VALUES (${values.map(() => "?").join(",")})`).run(...values);
+                predecessor.exec(`INSERT INTO review_comment_events VALUES ('event','legacy','account','project','created','retained-envelope','bulk','mutation','retained-actor','device',1,1,1);
+                    INSERT INTO review_comment_publication_correlations VALUES ('publication','account','legacy','target','retained-target',1);`);
+                retainedRows = tables.map((table) => predecessor.prepare(`SELECT * FROM "${table}"`).get());
+                retainedIndexes = readIndexes(predecessor);
+                retainedForeignKeys = readForeignKeys(predecessor);
+            } finally { predecessor.close(); }
+
+            expect(await applySqliteMigrations({ databasePath, migrationsDir })).toEqual({ applied: [name] });
+            expect(await applySqliteMigrations({ databasePath, migrationsDir })).toEqual({ applied: [] });
+            const upgraded = new DatabaseSync(databasePath);
+            try {
+                upgraded.exec("PRAGMA foreign_keys=ON");
+                for (const [index, table] of tables.entries()) {
+                    expect(upgraded.prepare(`SELECT * FROM "${table}"`).get()).toMatchObject(retainedRows[index]!);
+                }
+                expect(readIndexes(upgraded)).toEqual(expect.arrayContaining(retainedIndexes));
+                expect(readForeignKeys(upgraded)).toEqual(retainedForeignKeys);
+                expect(upgraded.prepare("SELECT workspace_json, finding_identity, finding_severity, reviewed_fingerprint, review_triage_status, finding_scope_key FROM review_comments WHERE id='legacy'").get()).toEqual({
+                    workspace_json: null, finding_identity: null, finding_severity: null,
+                    reviewed_fingerprint: null, review_triage_status: null, finding_scope_key: null,
+                });
+                const insert = upgraded.prepare(`INSERT INTO review_comments(id,account_id,project_id,workspace_json,finding_scope_key,thread_id,state,flags_json,anchor_json,snapshot_envelope_json,body_envelope_json,body_version,author_json,edits_json,dispositions_json,transitions_json,server_revision,created_at,updated_at)
+                    SELECT ?,?,NULL,?,?,?,state,flags_json,anchor_json,snapshot_envelope_json,body_envelope_json,body_version,author_json,edits_json,dispositions_json,transitions_json,server_revision,created_at,updated_at FROM review_comments WHERE id='legacy'`);
+                const workspaceJson = JSON.stringify({ machineId: "machine", directory: "/workspace" });
+                insert.run("finding", "account", workspaceJson, "semantic-scope", "finding");
+                insert.run("manual-one", "account", workspaceJson, null, "manual-one");
+                insert.run("manual-two", "account", workspaceJson, null, "manual-two");
+                insert.run("other-finding", "other-account", workspaceJson, "semantic-scope", "other-finding");
+                expect(() => insert.run("duplicate", "account", workspaceJson, "semantic-scope", "duplicate")).toThrow(/UNIQUE constraint failed/u);
+                upgraded.exec(`INSERT INTO review_comment_events(event_id,comment_id,account_id,project_id,workspace_json,event_kind,event_envelope_json,actor_json,server_revision,created_at)
+                    VALUES ('workspace-event','finding','account',NULL,'{}','created','{}','{}',1,1)`);
+                expect(upgraded.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+                expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+                upgraded.exec("DELETE FROM review_comments WHERE id='legacy'");
+                expect(upgraded.prepare("SELECT COUNT(*) AS count FROM review_comment_events WHERE comment_id='legacy'").get()).toEqual({ count: 0 });
+                expect(upgraded.prepare("SELECT COUNT(*) AS count FROM review_comment_publication_correlations").get()).toEqual({ count: 0 });
+            } finally { upgraded.close(); }
+        } finally {
+            await rm(migrationsDir, { recursive: true, force: true });
+            await rm(dataDir, { recursive: true, force: true });
+        }
+    });
+    it("adds immutable host-fact defaults without losing predecessor Sessions or turns", async () => {
+        const name = "20260930140000_add_session_origin_and_turn_facts";
+        const sql = await readFile(join(import.meta.dirname, "..", "prisma/sqlite/migrations", name, "migration.sql"), "utf8");
+        const migrationsDir = await createMigrationDir("happier-origin-upgrade-", [{ name, sql }]);
+        const dataDir = await mkdtemp(join(tmpdir(), "happier-origin-upgrade-db-"));
+        const databasePath = join(dataDir, "test.sqlite");
+        try {
+            const { DatabaseSync } = await import("node:sqlite");
+            const predecessor = new DatabaseSync(databasePath);
+            predecessor.exec(`CREATE TABLE "Session" ("id" TEXT PRIMARY KEY, "metadata" TEXT);
+                CREATE TABLE "SessionTurn" ("id" TEXT PRIMARY KEY, "sessionId" TEXT REFERENCES "Session"("id"), "status" TEXT);
+                INSERT INTO "Session" VALUES ('retained-session', 'retained-metadata');
+                INSERT INTO "SessionTurn" VALUES ('retained-turn', 'retained-session', 'completed');`);
+            predecessor.close();
+            expect(await applySqliteMigrations({ databasePath, migrationsDir })).toEqual({ applied: [name] });
+            expect(await applySqliteMigrations({ databasePath, migrationsDir })).toEqual({ applied: [] });
+            const upgraded = new DatabaseSync(databasePath);
+            try {
+                expect(upgraded.prepare('SELECT * FROM "Session"').get()).toEqual({ id: "retained-session", metadata: "retained-metadata", originKind: "none", originSessionId: null, originRunId: null, workDepth: 0 });
+                expect(upgraded.prepare('SELECT * FROM "SessionTurn"').get()).toEqual({ id: "retained-turn", sessionId: "retained-session", status: "completed", initiator: "user", workDepth: 0, workflowInvocationJson: null });
+                expect(upgraded.prepare("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
+                expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+            } finally { upgraded.close(); }
+        } finally {
+            await rm(migrationsDir, { recursive: true, force: true });
+            await rm(dataDir, { recursive: true, force: true });
+        }
+    });
     it("upgrades a predecessor SQLite SessionMessage table through the actual row-revision migration", async () => {
         const serverRoot = join(import.meta.dirname, "..");
         const migrationName = "20260810190000_add_session_message_row_revision";
@@ -928,6 +1033,63 @@ describe("applySqliteMigrations", () => {
 });
 
 describe("applyPostgresMigrations", () => {
+    it("preserves review history in Postgres while admitting workspace-only semantic findings", async () => {
+        const name = "20260930140000_add_review_finding_scope";
+        const root = join(import.meta.dirname, "..", "prisma/migrations");
+        const migrationsDir = await createMigrationDir("happier-review-scope-postgres-", [{
+            name,
+            sql: await readFile(join(root, name, "migration.sql"), "utf8"),
+        }]);
+        const database = new PGlite();
+        try {
+            await database.exec('CREATE TABLE "Account" ("id" TEXT PRIMARY KEY); INSERT INTO "Account" VALUES (\'account\');');
+            for (const migration of ["20260606090000_add_review_comments", "20260825110000_add_review_comment_publication_correlations"]) {
+                await database.exec(await readFile(join(root, migration, "migration.sql"), "utf8"));
+            }
+            await database.exec(`INSERT INTO review_comments(id,account_id,project_id,thread_id,state,flags_json,anchor_json,snapshot_envelope_json,body_envelope_json,body_version,author_json,edits_json,dispositions_json,transitions_json,server_revision,created_at,updated_at)
+                VALUES ('legacy','account','project','legacy','open','{}','{}','retained-snapshot','retained-body',1,'{}','[]','[]','[]',1,1,1);
+                INSERT INTO review_comment_events(event_id,comment_id,account_id,project_id,event_kind,event_envelope_json,actor_json,server_revision,created_at)
+                VALUES ('event','legacy','account','project','created','retained-envelope','{}',1,1);
+                INSERT INTO review_comment_publication_correlations VALUES ('publication','account','legacy','target','retained-target',1);`);
+            const tables = ["review_comments", "review_comment_events", "review_comment_publication_correlations"];
+            const retained = await Promise.all(tables.map((table) => database.query(`SELECT * FROM "${table}"`)));
+            expect(await applyPostgresMigrations({ db: database, migrationsDir })).toEqual({ applied: [name] });
+            expect(await applyPostgresMigrations({ db: database, migrationsDir })).toEqual({ applied: [] });
+            for (const [index, table] of tables.entries()) {
+                expect((await database.query(`SELECT * FROM "${table}"`)).rows).toEqual([expect.objectContaining(retained[index]!.rows[0])]);
+            }
+            await database.exec(`INSERT INTO review_comments(id,account_id,project_id,workspace_json,finding_scope_key,thread_id,state,flags_json,anchor_json,snapshot_envelope_json,body_envelope_json,body_version,author_json,edits_json,dispositions_json,transitions_json,server_revision,created_at,updated_at)
+                SELECT 'finding',account_id,NULL,'{}','semantic-scope','finding',state,flags_json,anchor_json,snapshot_envelope_json,body_envelope_json,body_version,author_json,edits_json,dispositions_json,transitions_json,server_revision,created_at,updated_at FROM review_comments WHERE id='legacy';
+                INSERT INTO review_comment_events(event_id,comment_id,account_id,project_id,workspace_json,event_kind,event_envelope_json,actor_json,server_revision,created_at)
+                VALUES ('workspace-event','finding','account',NULL,'{}','created','{}','{}',1,1)`);
+            await expect(database.exec("UPDATE review_comments SET finding_scope_key='semantic-scope' WHERE id='legacy'")).rejects.toThrow(/unique constraint/u);
+            await database.exec("DELETE FROM review_comments WHERE id='legacy'");
+            expect((await database.query("SELECT publication_correlation_id FROM review_comment_publication_correlations")).rows).toEqual([]);
+            expect((await database.query("SELECT event_id FROM review_comment_events WHERE comment_id='legacy'")).rows).toEqual([]);
+        } finally {
+            await database.close();
+            await rm(migrationsDir, { recursive: true, force: true });
+        }
+    });
+    it("preserves predecessor rows through the Session origin and turn-facts migration", async () => {
+        const name = "20260930140000_add_session_origin_and_turn_facts";
+        const sql = await readFile(join(import.meta.dirname, "..", "prisma/migrations", name, "migration.sql"), "utf8");
+        const migrationsDir = await createMigrationDir("happier-origin-postgres-upgrade-", [{ name, sql }]);
+        const database = new PGlite();
+        try {
+            await database.exec(`CREATE TABLE "Session" ("id" TEXT PRIMARY KEY, "metadata" TEXT);
+                CREATE TABLE "SessionTurn" ("id" TEXT PRIMARY KEY, "sessionId" TEXT REFERENCES "Session"("id"), "status" TEXT);
+                INSERT INTO "Session" VALUES ('retained-session', 'retained-metadata');
+                INSERT INTO "SessionTurn" VALUES ('retained-turn', 'retained-session', 'completed');`);
+            expect(await applyPostgresMigrations({ db: database, migrationsDir })).toEqual({ applied: [name] });
+            expect(await applyPostgresMigrations({ db: database, migrationsDir })).toEqual({ applied: [] });
+            expect((await database.query('SELECT * FROM "Session"')).rows).toEqual([{ id: "retained-session", metadata: "retained-metadata", originKind: "none", originSessionId: null, originRunId: null, workDepth: 0 }]);
+            expect((await database.query('SELECT * FROM "SessionTurn"')).rows).toEqual([{ id: "retained-turn", sessionId: "retained-session", status: "completed", initiator: "user", workDepth: 0, workflowInvocationJson: null }]);
+        } finally {
+            await database.close();
+            await rm(migrationsDir, { recursive: true, force: true });
+        }
+    });
     it("applies pending postgres migrations to a pglite database and records them", async () => {
         const migrationsDir = await createMigrationDir("happier-prisma-postgres-", [
             { name: "20260101000000_first", sql: 'CREATE TABLE "Account" ("id" TEXT PRIMARY KEY);' },

@@ -317,8 +317,11 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         await app.close();
     });
 
-    it("atomically provisions a fresh Account and consumes an exact Team invitation admission", async () => {
-        applyGithubExternalAuthFinalizeEnv(harness);
+    it("atomically provisions an exact Team invitation when ordinary public keyed signup is denied", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness, {
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "github",
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: "keyed",
+        });
         const { body, publicKeyHex } = createAuthBody(41);
         const pending = "oauth_pending_teamInviteFresh1";
         const invitationToken = "team-invitation-fresh-account";
@@ -380,12 +383,15 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         const response = await app.inject({
             method: "POST",
             url: "/v1/auth/external/github/finalize",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10" },
             payload: { pending, ...body },
         });
 
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode, response.body).toBe(200);
         const account = await db.account.findUniqueOrThrow({ where: { publicKey: publicKeyHex } });
+        await expect(auth.verifyToken(response.json().token)).resolves.toMatchObject({
+            userId: account.id, authTokenKind: "account", authority: "present_user",
+        });
         await expect(db.teamMembership.findUnique({
             where: { teamId_accountId: { teamId: team.id, accountId: account.id } },
         })).resolves.toMatchObject({ status: "active", role: "member" });
@@ -467,7 +473,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
                 hosting: null,
             }),
             email: {
-                delivery: { isReady: true, deliver: async () => ({ status: "sent" as const }) },
+                delivery: { isReady: async () => true, deliver: async () => ({ status: "sent" as const }) },
                 isDeliveryReady: () => true,
             },
         });
@@ -535,8 +541,11 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         await app.close();
     });
 
-    it("rolls back the fresh Account, identity, pending consumption, and Team membership when invitation admission fails", async () => {
-        applyGithubExternalAuthFinalizeEnv(harness);
+    it("rolls back a revoked invitation admission even when ordinary public keyed signup is denied", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness, {
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "github",
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: "keyed",
+        });
         const { body, publicKeyHex } = createAuthBody(42);
         const pending = "oauth_pending_teamInviteRollback1";
         const tokenHash = createHash("sha256").update("rollback-invitation", "utf8").digest();
@@ -602,7 +611,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         const response = await app.inject({
             method: "POST",
             url: "/v1/auth/external/github/finalize",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", "x-forwarded-for": "203.0.113.10" },
             payload: { pending, ...body },
         });
 
@@ -1979,25 +1988,15 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             },
         });
 
-        vi.resetModules();
-        vi.doMock("@/app/auth/providers/identity", async () => {
-            const actual = await vi.importActual<typeof import("@/app/auth/providers/identity")>(
-                "@/app/auth/providers/identity",
-            );
-            return {
-                ...actual,
-                connectExternalIdentity: vi.fn(async () => {
-                    throw new Error("connect failed");
-                }),
-            };
-        });
+        // Fail at the database boundary while exercising the real finalizer and identity lifecycle.
+        await db.$executeRawUnsafe(`CREATE TRIGGER fail_identity_connect
+            BEFORE INSERT ON AccountIdentity
+            BEGIN SELECT RAISE(ABORT, 'connect failed'); END`);
 
         let app: ReturnType<typeof createTestApp> | null = null;
         try {
-            const { connectRoutes: connectRoutesMocked } = await import("./connectRoutes");
-
             app = createTestApp();
-            connectRoutesMocked(app as any);
+            connectAuthExternalRoutes(app);
             await app.ready();
 
             const res = await app.inject({
@@ -2017,8 +2016,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             if (app) {
                 await app.close();
             }
-            vi.doUnmock("@/app/auth/providers/identity");
-            vi.resetModules();
+            await db.$executeRawUnsafe("DROP TRIGGER fail_identity_connect");
         }
     });
 });

@@ -43,6 +43,25 @@ function createDeps(
 }
 
 describe('createActionExecutor (public External Session actions)', () => {
+  it.each(['ui', 'agent', 'mcp'] as const)('routes %s import through the existing host operation without plugin identity', async (surface) => {
+    const externalSessionAction = vi.fn();
+    const result = { ok: false as const, error: { code: 'upgrade_required', message: 'Newer daemon required' } };
+    const executor = createActionExecutor({ ...createDeps(externalSessionAction), hostExternalSessionAction: async () => ({ ok: true, result }) });
+    await expect(executor.execute('sessions.external.materialize.start', {
+      request: { v: 1, idempotencyKey: 'materialize-1', sessionId: 'session-1', plan: 'materialize', targetStorageMode: 'external-linked', targetRuntimeMode: null },
+    }, { surface, authority: 'account_automation' })).resolves.toEqual({ ok: true, result });
+    expect(externalSessionAction).not.toHaveBeenCalled();
+  });
+  it.each(['ui', 'agent', 'mcp'] as const)('routes %s Browse discovery through the host owner without inventing plugin provenance', async (surface) => {
+    const externalSessionAction = vi.fn();
+    const hostExternalSessionAction = vi.fn(async () => ({ ok: true as const, result: { ok: true, candidates: [] } }));
+    const executor = createActionExecutor({ ...createDeps(externalSessionAction), hostExternalSessionAction });
+    const result = await executor.execute('sessions.external.candidates.list', {
+      machineId: 'machine-1', agentId: 'codex', source: { kind: 'codexHome', home: 'user' },
+    }, { surface, authority: 'account_automation' });
+    expect(result).toEqual({ ok: true, result: { ok: true, candidates: [] } });
+    expect(externalSessionAction).not.toHaveBeenCalled();
+  });
   // Registration contract: the plugin-provenance External Session union must
   // never re-expose the low-level ephemeral lease ids excluded by the
   // canonical plugin-surface projection owner

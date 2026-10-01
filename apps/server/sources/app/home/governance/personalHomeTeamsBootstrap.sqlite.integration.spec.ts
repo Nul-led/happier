@@ -385,6 +385,7 @@ describe("Personal Home Teams bootstrap", () => {
         const existing = await inTx((tx) => createTeamInTx(tx, {
             actorAccountId: account.id,
             name: "Existing Team",
+            initialOwnerAccountId: account.id,
             requestKey: crypto.randomUUID(),
             env: PERSONAL_HOME_ENV,
         }));

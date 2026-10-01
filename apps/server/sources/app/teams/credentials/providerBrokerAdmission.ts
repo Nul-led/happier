@@ -3,11 +3,14 @@ import {
     PROVIDER_BROKER_ROUTE_AUDIENCE_V1,
     DIRECT_ROUTE_GRANT_TTL_MS,
     ProviderBrokerOpenRequestV1Schema,
+    IrohEndpointDescriptorV1Schema,
     ProviderBrokerRequestAdmissionV1Schema,
     SignedProviderBrokerRouteGrantV1Schema,
     readMachineIrohEndpointAuthorityV1,
     type ProviderBrokerAdmissionFailureCodeV1,
     type ProviderBrokerOpenRequestV1,
+    type ProviderBrokerOpenResponseV1,
+    type MachineIrohEndpointAuthorityV1,
     type ProviderBrokerRequestAdmissionV1,
     type SignedProviderBrokerRouteGrantV1,
     type AuthTokenAuthenticationEvidenceV1,
@@ -22,12 +25,13 @@ import {
 import type { VerifiedEphemeralSessionRunnerPrincipal } from '@happier-dev/protocol/ephemeralRunner/principal';
 
 import { hasCurrentSessionScopedMachineAccessInTx } from '@/app/api/socket/sessionScopedBinding';
+import { auth } from '@/app/auth/auth';
 import { classifyMachineAvailabilityState } from '@/app/machines/machineStateGuards';
 import type { MachineDaemonPresenceInventory } from '@/app/machines/machineDaemonPresence';
 import type { SessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication';
 import { inTx, type Tx } from '@/storage/inTx';
 import { resolveTeamCredentialBrokerMachineForOpenInTx } from './brokerMachineEligibility';
-import { resolveTeamCredentialBrokerPlacementInTx } from './brokerPlacementResolver';
+import { resolveTeamCredentialBrokerPlacementInTx, resolveTeamCredentialBrokerPlacementFingerprint } from './brokerPlacementResolver';
 import { resolveTeamCredentialEntitlementInTx } from './resourceAccess';
 import { resolveTeamCredentialDirectSourceCurrentnessInTx } from './resourceSourceResolver';
 import { admitTeamCredentialOperationBindingInTx, type TeamCredentialOperationConsumer } from './sessionBinding';
@@ -90,12 +94,7 @@ export type TeamCredentialProviderBrokerOpenResult =
     | Readonly<{
         ok: true;
         authority: SignedProviderBrokerRouteGrantV1;
-        target: Readonly<{
-            custodianAccountId: string;
-            brokerMachineId: string;
-            endpointId: string;
-            endpointRevision: number;
-        }>;
+        target: Extract<ProviderBrokerOpenResponseV1, { ok: true }>['target'];
     }>
     | Failure;
 
@@ -345,8 +344,14 @@ async function authorizeCurrentBrokerOperationInTx(
         },
     });
     if (!admitted.ok) return failure(brokerFailureForBindingRejection(admitted.reason));
+    if (!await auth.isSignedCredentialCurrent(tx, grant.initiator.accountId, grant.initiatorTokenEpoch)) {
+        return failure('operation_not_current');
+    }
     if (admitted.binding.resourceId !== grant.resourceId
         || admitted.binding.deliveryMode !== 'brokered') return failure('resource_forbidden');
+    if (admitted.brokerPlacementFingerprint !== grant.brokerPlacementFingerprint) {
+        return failure('resource_changed');
+    }
     if (admitted.binding.teamId !== grant.teamId
         || admitted.custodianAccountId !== grant.target.custodianAccountId) {
         return failure('resource_unavailable');
@@ -497,7 +502,7 @@ type BrokerOpenPreparation = Readonly<{
     poolCandidateMachineIds: readonly string[];
     broker: Readonly<{
         machineId: string;
-        endpointAuthority: Readonly<{ endpointId: string; revision: number }>;
+        endpointAuthority: MachineIrohEndpointAuthorityV1;
     }> | null;
 }>;
 
@@ -611,6 +616,9 @@ async function authorizeTeamCredentialProviderBrokerOpenDurableInTx(
     request: ProviderBrokerOpenRequestV1,
     executionRun: CurrentExecutionRun | null,
 ): Promise<BrokerOpenDurableAuthorization | Failure> {
+    if (!await auth.isSignedCredentialCurrent(tx, input.actorAccountId, input.authentication.tokenEpoch)) {
+        return failure('operation_not_current');
+    }
     const refreshAuthority = request.refreshAuthority ?? null;
     const refreshConsumerMatches = refreshAuthority === null
         || (refreshAuthority.payload.consumer.kind === request.consumer.kind
@@ -712,6 +720,10 @@ async function authorizeTeamCredentialProviderBrokerOpenDurableInTx(
     }
     if (admitted.binding.resourceId !== request.resourceId
         || admitted.binding.deliveryMode !== 'brokered') return failure('resource_forbidden');
+    if (refreshAuthority !== null
+        && admitted.brokerPlacementFingerprint !== refreshAuthority.payload.brokerPlacementFingerprint) {
+        return failure('resource_changed');
+    }
     if (pinsRequestedRevision && admitted.binding.resourceRevision !== request.expectedResourceRevision) {
         return failure('resource_changed');
     }
@@ -856,6 +868,11 @@ function finalizePreparedBrokerOpen(
         && pluginJsonValuesEqual(candidate.application, prepared.request.application)
     ));
     if (!selection) return failure('resource_unavailable');
+    const brokerPlacementFingerprint = resolveTeamCredentialBrokerPlacementFingerprint({
+        ...prepared.resource,
+        id: prepared.request.resourceId,
+    });
+    if (brokerPlacementFingerprint === null) return failure('resource_unavailable');
     const authority = signProviderBrokerRouteGrantV1({
         payload: {
             v: 1,
@@ -869,6 +886,8 @@ function finalizePreparedBrokerOpen(
             teamId: prepared.resource.teamId,
             resourceId: prepared.request.resourceId,
             sourceRevision: selection.sourceRevision,
+            brokerPlacementFingerprint,
+            initiatorTokenEpoch: input.authentication.tokenEpoch!,
             initiator: {
                 accountId: input.actorAccountId,
                 machineId: prepared.request.initiatorMachineId,
@@ -906,6 +925,11 @@ function finalizePreparedBrokerOpen(
             brokerMachineId: prepared.broker.machineId,
             endpointId: prepared.broker.endpointAuthority.endpointId,
             endpointRevision: prepared.broker.endpointAuthority.revision,
+            endpoint: IrohEndpointDescriptorV1Schema.parse({
+                endpointId: prepared.broker.endpointAuthority.endpointId,
+                relayUrls: prepared.broker.endpointAuthority.relayUrls,
+                directAddresses: prepared.broker.endpointAuthority.directAddresses,
+            }),
         },
     };
 }

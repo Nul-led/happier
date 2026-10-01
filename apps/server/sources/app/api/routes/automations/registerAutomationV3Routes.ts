@@ -169,6 +169,9 @@ export function registerAutomationV3Routes(
                 accountId: request.userId,
                 limit: query.limit,
                 ...(query.cursor ? { cursor: query.cursor } : {}),
+                ...(query.workflowDefinitionId !== undefined ? { workflowDefinitionId: query.workflowDefinitionId } : {}),
+                ...(query.scopeSessionId !== undefined ? { scopeSessionId: query.scopeSessionId } : {}),
+                ...(query.scope !== undefined ? { scope: query.scope } : {}),
             });
             const rows = page.automations;
             const [eventProjections, lifecycleProjections] = await Promise.all([
@@ -249,6 +252,8 @@ export function registerAutomationV3Routes(
                     ...(body.description !== undefined ? { description: body.description } : {}),
                     enabled: body.enabled,
                     executionRecipe: body.executionRecipe,
+                    ...(body.workflowDefinitionId !== undefined ? { workflowDefinitionId: body.workflowDefinitionId } : {}),
+                    ...(body.scopeSessionId !== undefined ? { scopeSessionId: body.scopeSessionId } : {}),
                     triggers: body.triggers,
                     ...(body.assignments !== undefined ? { assignments: body.assignments } : {}),
                 },
@@ -284,6 +289,8 @@ export function registerAutomationV3Routes(
                 ...(body.name !== undefined ? { name: body.name } : {}),
                 ...(body.description !== undefined ? { description: body.description } : {}),
                 ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+                ...(body.workflowDefinitionId !== undefined ? { workflowDefinitionId: body.workflowDefinitionId } : {}),
+                ...(body.scopeSessionId !== undefined ? { scopeSessionId: body.scopeSessionId } : {}),
                 ...(body.executionRecipe !== undefined
                     ? { executionRecipe: body.executionRecipe }
                     : {}),
@@ -634,6 +641,7 @@ export function registerAutomationV3Routes(
             accountId: request.userId,
             machineId: body.machineId,
             leaseDurationMs: body.leaseDurationMs ?? 30_000,
+            ...(body.scope !== undefined ? { scope: body.scope } : {}),
             claimRequest: {
                 machineInstallationId: publisher.machineInstallationId,
                 nonce: publisher.requestNonce,
@@ -786,6 +794,7 @@ export function registerAutomationV3Routes(
             producedSessionId: body.producedSessionId ?? null,
             errorCode: body.errorCode ?? null,
             errorDetailEnvelope: body.errorDetailEnvelope ?? null,
+            ...(body.terminalState !== undefined ? { terminalState: body.terminalState } : {}),
         });
         if (!run) return reply.code(404).send({ error: "automation_run_not_found_or_not_claimed" });
         return reply.send(AutomationV3RunMutationResponseSchema.parse({

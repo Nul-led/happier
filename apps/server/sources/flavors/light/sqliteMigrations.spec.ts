@@ -57,7 +57,8 @@ class FakeDatabase {
 
   exec(sql: unknown): void {
     const text = String(sql ?? '').trim();
-    if (!text) return;
+    const executableText = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*--.*$/gm, '').trim();
+    if (!executableText) throw new Error('Query contained no valid SQL statement; likely empty query.');
     this.state.execStatements.push(text);
     const upper = text.toUpperCase();
     if (upper === 'BEGIN' || upper === 'COMMIT' || upper === 'ROLLBACK') return;
@@ -192,6 +193,32 @@ describe('light sqlite migrations (unit)', () => {
       'PRAGMA busy_timeout=7000;',
       'PRAGMA auto_vacuum=INCREMENTAL;',
     ]);
+  });
+
+  it('records comments-only compatibility markers without executing an empty SQL statement', async () => {
+    vi.stubGlobal('Bun', {});
+    const dir = await mkdtemp(join(tmpdir(), 'happier-sqlite-migrations-marker-'));
+    const marker = join(dir, '20260908130000_contract_session_viewer_read_state');
+    await mkdir(marker, { recursive: true });
+    await writeFile(
+      join(marker, 'migration.sql'),
+      '-- Compatibility prepare marker only.\n-- The actual contract is owned by a later migration.\n',
+      'utf8',
+    );
+
+    const dataDir = await mkdtemp(join(tmpdir(), 'happier-sqlite-data-marker-'));
+    const dbPath = join(dataDir, 'happier.sqlite');
+    const env = {
+      HAPPIER_SQLITE_AUTO_MIGRATE: '1',
+      HAPPIER_SQLITE_MIGRATIONS_DIR: dir,
+      DATABASE_URL: `file:${dbPath}`,
+    };
+
+    const res = await applySqliteMigrationsIfNeeded({ env, dataDir });
+
+    expect(res.applied).toEqual(['20260908130000_contract_session_viewer_read_state']);
+    expect(getSqliteState(dbPath).applied.has('20260908130000_contract_session_viewer_read_state')).toBe(true);
+    expect(getSqliteState(dbPath).execStatements).not.toContain('');
   });
 
   it('applySqliteMigrationsIfNeeded closes the Bun sqlite connection before Prisma starts', async () => {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { TeamCredentialSourceBindingV1Schema, type TeamCredentialSourceBindingV1 } from "@happier-dev/protocol/teams";
 
 import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
@@ -5,9 +6,11 @@ import { inTx, type Tx } from "@/storage/inTx";
 import { resolveCurrentTeamCredentialExternalApiKeyAuthorityInTx } from "./externalApiKey";
 import {
     resolveTeamCredentialBrokerPlacementInTx,
+    resolveTeamCredentialBrokerPlacementFingerprint,
     type TeamCredentialBrokerPlacementResource,
 } from "./brokerPlacementResolver";
 import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
+import { readExternalBrokerOperation, type ExternalBrokerOperation } from "./externalBrokerOperation";
 
 /** The external-key question put to the canonical Pool source-eligibility reader. */
 export type ExternalBrokerPoolSourceEligibilityReader = (input: Readonly<{
@@ -31,7 +34,7 @@ type CurrentKeyAuthorityAndSource = Readonly<{
 }>;
 
 export type ExternalBrokerPlacementResult =
-    | Readonly<{ ok: true; custodianAccountId: string; brokerMachineId: string }>
+    | Readonly<{ ok: true; custodianAccountId: string; brokerMachineId: string; operationId: string | null; brokerPlacementFingerprint: string }>
     | Readonly<{ ok: false; error: "broker_unavailable" | "resource_unavailable" }>;
 
 function unchangedAuthority(left: CurrentKeyAuthority, right: CurrentKeyAuthority): boolean {
@@ -43,32 +46,6 @@ function unchangedAuthority(left: CurrentKeyAuthority, right: CurrentKeyAuthorit
         && left.brokerPoolId === right.brokerPoolId
         && left.resourceRevision === right.resourceRevision
         && left.sourceBindingJson === right.sourceBindingJson;
-}
-
-/**
- * The broker Machine this key's per-key operation was established on.
- *
- * L10/05:123 establishes one SVC09 operation per external key "on first
- * admitted inference", and the Home admission owner commits exactly that fact:
- * the immutable admission UsageEvent names the broker Machine that admitted
- * it. Reading the latest one is how the stateless public edge finds the exact
- * target of the key's open without a placement table or registry. Only a Pool
- * placement needs it; an exact placement names its one Machine.
- */
-async function readEstablishedBrokerMachineIdInTx(tx: Tx, authority: CurrentKeyAuthority): Promise<string | null> {
-    if (authority.brokerPoolId === null) return null;
-    const admission = await tx.usageEvent.findFirst({
-        where: {
-            teamCredentialExternalApiKeyId: authority.keyId,
-            teamCredentialResourceId: authority.resourceId,
-            source: "team_credential_admission",
-            requestCount: 1,
-            brokerMachineId: { not: null },
-        },
-        orderBy: [{ observedAt: "desc" }, { createdAt: "desc" }],
-        select: { brokerMachineId: true },
-    });
-    return admission?.brokerMachineId ?? null;
 }
 
 async function readCurrentAuthorityAndSourceInTx(
@@ -116,32 +93,41 @@ function placementResource(authority: CurrentKeyAuthority): TeamCredentialBroker
  *   broker and can still run the source. Tier reordering, disabling and
  *   removing members affect future opens only (L11/03:147 step 7), so the
  *   current member list is never reranked for it.
- * - Otherwise a new open: the Pool is ranked once under the key's stable
+ * - With no current operation: the Pool is ranked under the key's stable
  *   request key and the chosen member rechecked before dispatch; a member that
  *   changes between ranking and the recheck fails this open rather than
  *   rotating (L10/05:194, B11-05).
  *
- * The selected Machine is request-local: it is not persisted or exposed
- * outside the server-to-broker carrier; the admission of the dispatched
- * request is what commits it as the operation's target.
+ * The existing key atomically retains the exact target before dispatch.
+ * Catalog reads never establish custody; a racing inference invalidates their
+ * null-operation authorization at the ordinary admission boundary.
  */
 export async function resolveTeamCredentialExternalBrokerPlacement(input: Readonly<{
     externalApiKeyId: string;
     observedAt: Date;
+    catalogOnly?: boolean;
     signal: AbortSignal;
     readCurrentPresence: (custodianAccountId: string) => Promise<MachineDaemonPresenceInventory>;
     readPoolSourceEligibility: ExternalBrokerPoolSourceEligibilityReader;
 }>): Promise<ExternalBrokerPlacementResult> {
     const initial = await inTx(async (tx) => {
         const current = await readCurrentAuthorityAndSourceInTx(tx, input.externalApiKeyId, input.observedAt);
-        return current
-            ? { ...current, establishedMachineId: await readEstablishedBrokerMachineIdInTx(tx, current.authority) }
-            : null;
+        return current;
     });
     if (!initial) return { ok: false, error: "resource_unavailable" };
     if (input.signal.aborted) return { ok: false, error: "broker_unavailable" };
     const { authority } = initial;
     const resource = placementResource(authority);
+    const fingerprint = resolveTeamCredentialBrokerPlacementFingerprint(resource);
+    if (fingerprint === null) return { ok: false, error: "resource_unavailable" };
+    const sourceBindingJson = JSON.stringify(initial.source);
+    const operationMatches = (operation: ExternalBrokerOperation) =>
+        operation.brokerPlacementFingerprint === fingerprint && operation.sourceBindingJson === sourceBindingJson;
+    const established = authority.currentBrokerOperationJson === null
+        ? null : readExternalBrokerOperation(authority.currentBrokerOperationJson);
+    if (authority.currentBrokerOperationJson !== null && (!established || !operationMatches(established))) {
+        return { ok: false, error: "resource_unavailable" };
+    }
 
     let initialPresence: MachineDaemonPresenceInventory;
     try {
@@ -174,6 +160,9 @@ export async function resolveTeamCredentialExternalBrokerPlacement(input: Readon
     const confirm = async (
         target: Readonly<{ pinnedMachineId: string } | { poolEligibleMachineIds: ReadonlySet<string>; expectedPoolMachineId: string }>,
     ): Promise<ExternalBrokerPlacementResult> => {
+        const candidateMachineId = "pinnedMachineId" in target ? target.pinnedMachineId : target.expectedPoolMachineId;
+        const candidateEligibility = await readEligibility([candidateMachineId]);
+        if (!candidateEligibility?.has(candidateMachineId)) return { ok: false, error: "broker_unavailable" };
         let currentPresence: MachineDaemonPresenceInventory;
         try {
             currentPresence = await input.readCurrentPresence(authority.custodianAccountId);
@@ -183,36 +172,70 @@ export async function resolveTeamCredentialExternalBrokerPlacement(input: Readon
         const current = await inTx(async (tx) => {
             const reread = await readCurrentAuthorityAndSourceInTx(tx, input.externalApiKeyId, new Date());
             if (!reread || !unchangedAuthority(authority, reread.authority)) return null;
+            const retained = reread.authority.currentBrokerOperationJson === null
+                ? null : readExternalBrokerOperation(reread.authority.currentBrokerOperationJson);
+            if (reread.authority.currentBrokerOperationJson !== null && (!retained || !operationMatches(retained))) return null;
+            // A retired initial operation cannot be resurrected by this in-flight request.
+            if (established && retained?.operationId !== established.operationId) return null;
             const placement = await resolveTeamCredentialBrokerPlacementInTx(tx, {
                 resource: placementResource(reread.authority),
                 presence: currentPresence,
                 requestKey,
-                ...target,
+                ...(retained ? { pinnedMachineId: retained.brokerMachineId } : target),
             });
-            return placement.ok ? placement.broker : null;
+            if (!placement.ok || !placement.broker) return null;
+            if (retained) return retained;
+            if (input.catalogOnly) return { brokerMachineId: placement.broker.machineId, operationId: null };
+            const operation: ExternalBrokerOperation = {
+                v: 1, operationId: randomUUID(), brokerMachineId: placement.broker.machineId,
+                brokerPlacementFingerprint: fingerprint, sourceBindingJson,
+            };
+            const claimed = await tx.teamCredentialExternalApiKey.updateMany({
+                where: { id: authority.keyId, currentBrokerOperationJson: null },
+                data: { currentBrokerOperationJson: JSON.stringify(operation) },
+            });
+            if (claimed.count === 1) return operation;
+            const winner = await tx.teamCredentialExternalApiKey.findUnique({
+                where: { id: authority.keyId }, select: { currentBrokerOperationJson: true },
+            });
+            const winningOperation = winner?.currentBrokerOperationJson
+                ? readExternalBrokerOperation(winner.currentBrokerOperationJson) : null;
+            return winningOperation && operationMatches(winningOperation) ? winningOperation : null;
         });
-        return current
-            ? { ok: true, custodianAccountId: authority.custodianAccountId, brokerMachineId: current.machineId }
-            : { ok: false, error: "broker_unavailable" };
+        if (!current) return { ok: false, error: "broker_unavailable" };
+        // A concurrent winner may differ from the candidate this request probed.
+        // Validate that exact winner; never dispatch the losing candidate.
+        if (current.brokerMachineId !== candidateMachineId) {
+            const eligible = await readEligibility([current.brokerMachineId]);
+            if (!eligible?.has(current.brokerMachineId)) return { ok: false, error: "broker_unavailable" };
+        }
+        return {
+            ok: true, custodianAccountId: authority.custodianAccountId,
+            brokerMachineId: current.brokerMachineId, operationId: current.operationId,
+            brokerPlacementFingerprint: fingerprint,
+        };
     };
 
-    if (initial.establishedMachineId !== null) {
-        const established = await inTx((tx) => resolveTeamCredentialBrokerPlacementInTx(tx, {
+    if (established !== null) {
+        const placement = await inTx((tx) => resolveTeamCredentialBrokerPlacementInTx(tx, {
             resource,
             presence: initialPresence,
             requestKey,
-            pinnedMachineId: initial.establishedMachineId,
+            pinnedMachineId: established.brokerMachineId,
         }));
-        if (established.ok && established.broker !== null) {
-            const eligible = await readEligibility([established.broker.machineId]);
+        if (placement.ok && placement.broker !== null) {
+            const eligible = await readEligibility([placement.broker.machineId]);
             if (input.signal.aborted) return { ok: false, error: "broker_unavailable" };
-            if (eligible?.has(established.broker.machineId)) {
-                return await confirm({ pinnedMachineId: established.broker.machineId });
+            if (eligible?.has(placement.broker.machineId)) {
+                return await confirm({ pinnedMachineId: placement.broker.machineId });
             }
         }
-        // An established Machine that is gone, no longer an eligible broker or
-        // can no longer run the source ended that operation; this request is a
-        // new open over the current members. Nothing is replayed.
+        // Presence and readiness cannot prove that the daemon retired its
+        // retained operation. Refuse this request instead of silently opening
+        // the same key on another Machine. Legitimate reopen requires the
+        // external operation owner's retirement handoff; usage is not that
+        // lifetime authority.
+        return { ok: false, error: "broker_unavailable" };
     }
 
     const candidates = await inTx((tx) => resolveTeamCredentialBrokerPlacementInTx(tx, {
@@ -224,11 +247,7 @@ export async function resolveTeamCredentialExternalBrokerPlacement(input: Readon
         return { ok: false, error: candidates.error === "resource_unavailable" ? "resource_unavailable" : "broker_unavailable" };
     }
     if (candidates.broker !== null) {
-        return {
-            ok: true,
-            custodianAccountId: authority.custodianAccountId,
-            brokerMachineId: candidates.broker.machineId,
-        };
+        return await confirm({ pinnedMachineId: candidates.broker.machineId });
     }
     if (candidates.poolSnapshot === null || candidates.candidateMachineIds.length === 0) {
         return { ok: false, error: "broker_unavailable" };

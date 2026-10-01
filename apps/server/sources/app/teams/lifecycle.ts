@@ -7,7 +7,7 @@ import {
     validateTeamNameV1,
 } from "@happier-dev/protocol/teams";
 
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { readHomeGovernancePolicyInTx } from "@/app/home/governance/governancePolicy";
 import {
     readHomeGovernanceAccountInTx,
@@ -29,6 +29,7 @@ import {
     resolveTeamActorContextForTeamInTx,
     resolveTeamActorContextInTx,
     type TeamOperationAuthenticationContext,
+    type TeamActorContext,
 } from "./actorContext";
 import { toTeamViewer } from "./viewer";
 import { resolveTeamCapabilitiesV1 } from "./capabilities";
@@ -133,7 +134,7 @@ export async function createTeamInTx(
     tx: Tx,
     input: CreateTeamInput,
 ): Promise<TeamLifecycleResult<CreateTeamError>> {
-    const teamsEnabled = isServerFeatureEnabledForRequest("teams", input.env ?? process.env);
+    const teamsEnabled = await isServerFeatureEnabledForHome("teams", { tx, env: input.env });
     if (!teamsEnabled) return denied("teams_unavailable");
 
     const name = validateTeamNameV1(input.name);
@@ -232,7 +233,7 @@ export async function createTeamInTx(
     await saveRepeatKey(tx, dedupeKey, `${digest}:${created.id}`, defaultRepeatKeyExpiresAt(now));
     await publishTeamChangedInTx(tx, { teamId: created.id, additionalAccountIds: [actor.accountId] });
 
-    return { ok: true, team: await projectForActorInTx(tx, created, actor.accountId) };
+    return { ok: true, team: await projectForActorInTx(tx, created, actor.accountId, input.authentication) };
 }
 
 export type UpdateTeamInput = Readonly<{
@@ -246,7 +247,7 @@ export type UpdateTeamInput = Readonly<{
 
 /** Team metadata. Branding and policy have their own owners and capabilities. */
 export async function updateTeamInTx(tx: Tx, input: UpdateTeamInput): Promise<TeamLifecycleResult> {
-    if (!isServerFeatureEnabledForRequest("teams", input.env ?? process.env)) return denied("teams_unavailable");
+    if (!await isServerFeatureEnabledForHome("teams", { tx, env: input.env })) return denied("teams_unavailable");
     const context = await resolveTeamActorContextInTx(tx, {
         teamId: input.teamId,
         actorAccountId: input.actorAccountId,
@@ -287,7 +288,7 @@ export async function updateTeamInTx(tx: Tx, input: UpdateTeamInput): Promise<Te
         select: TEAM_PROJECTION_SELECT,
     });
     await publishTeamChangedInTx(tx, { teamId: input.teamId });
-    return { ok: true, team: await projectForActorInTx(tx, updated, input.actorAccountId) };
+    return { ok: true, team: await projectForActorInTx(tx, updated, input.actorAccountId, input.authentication) };
 }
 
 export type ArchiveTeamInput = Readonly<{
@@ -311,7 +312,7 @@ export type ArchiveTeamInput = Readonly<{
  * caller.
  */
 export async function archiveTeamInTx(tx: Tx, input: ArchiveTeamInput): Promise<TeamLifecycleResult> {
-    if (!isServerFeatureEnabledForRequest("teams", input.env ?? process.env)) return denied("teams_unavailable");
+    if (!await isServerFeatureEnabledForHome("teams", { tx, env: input.env })) return denied("teams_unavailable");
     const context = await resolveTeamActorContextInTx(tx, {
         teamId: input.teamId,
         actorAccountId: input.actorAccountId,
@@ -332,7 +333,7 @@ export async function archiveTeamInTx(tx: Tx, input: ArchiveTeamInput): Promise<
             });
             if (!qualification.ok) return denied(qualification.error);
         }
-        return { ok: true, team: await projectForActorInTx(tx, viewer.team, input.actorAccountId) };
+        return { ok: true, team: await projectForActorInTx(tx, viewer.team, input.actorAccountId, input.authentication) };
     }
     if (!viewer.capabilities.archiveTeam) return denied("team_forbidden");
     if (!context!.homeAuthority.manageAllTeams) {
@@ -353,7 +354,7 @@ export async function archiveTeamInTx(tx: Tx, input: ArchiveTeamInput): Promise<
         await revokeActiveTeamInvitationsForTeamInTx(tx, { teamId: input.teamId, now });
         await publishTeamChangedInTx(tx, { teamId: input.teamId });
 
-        return { ok: true, team: await projectForActorInTx(tx, archived, input.actorAccountId) };
+        return { ok: true, team: await projectForActorInTx(tx, archived, input.actorAccountId, input.authentication) };
     });
 }
 
@@ -370,7 +371,7 @@ export type RestoreTeamInput = Readonly<{
  * and does not recreate removed members or rotate keys.
  */
 export async function restoreTeamInTx(tx: Tx, input: RestoreTeamInput): Promise<TeamLifecycleResult> {
-    if (!isServerFeatureEnabledForRequest("teams", input.env ?? process.env)) return denied("teams_unavailable");
+    if (!await isServerFeatureEnabledForHome("teams", { tx, env: input.env })) return denied("teams_unavailable");
     const context = await resolveTeamActorContextInTx(tx, {
         teamId: input.teamId,
         actorAccountId: input.actorAccountId,
@@ -390,7 +391,7 @@ export async function restoreTeamInTx(tx: Tx, input: RestoreTeamInput): Promise<
             });
             if (!qualification.ok) return denied(qualification.error);
         }
-        return { ok: true, team: await projectForActorInTx(tx, viewer.team, input.actorAccountId) };
+        return { ok: true, team: await projectForActorInTx(tx, viewer.team, input.actorAccountId, input.authentication) };
     }
     if (!viewer.capabilities.restoreTeam) return denied("team_forbidden");
     if (!context!.homeAuthority.manageAllTeams) {
@@ -411,7 +412,7 @@ export async function restoreTeamInTx(tx: Tx, input: RestoreTeamInput): Promise<
         });
         await publishTeamChangedInTx(tx, { teamId: input.teamId });
 
-        return { ok: true, team: await projectForActorInTx(tx, restored, input.actorAccountId) };
+        return { ok: true, team: await projectForActorInTx(tx, restored, input.actorAccountId, input.authentication) };
     });
 }
 
@@ -424,15 +425,35 @@ export async function projectForActorInTx(
     tx: Tx,
     team: TeamRecord,
     actorAccountId: string,
+    authentication?: TeamOperationAuthenticationContext,
 ): Promise<TeamSummaryV1> {
     const context = await resolveTeamActorContextForTeamInTx(tx, { team, actorAccountId });
-    return projectTeamSummaryV1({
-        team,
-        viewerRole: context.membership?.role ?? null,
-        capabilities: context.capabilities,
-        ownerRequired: context.ownerRequired,
-        homeAuthority: context.homeAuthority,
-    });
+    return (await projectQualifiedTeamContextInTx(tx, context, authentication)).team;
+}
+
+async function projectQualifiedTeamContextInTx(
+    tx: Tx,
+    context: TeamActorContext,
+    authentication?: TeamOperationAuthenticationContext,
+) {
+    const qualification = context.teamCapabilities.viewTeam || !context.homeAuthority.manageAllTeams
+        ? await qualifyTeamProjectionReadAuthenticationInTx(tx, { context, ...authentication })
+        : { ok: true as const };
+    return {
+        qualification,
+        team: projectTeamSummaryV1({
+            team: context.team,
+            viewerRole: context.membership?.role ?? null,
+            capabilities: qualification.ok ? context.capabilities : resolveTeamCapabilitiesV1({
+                accountStatus: context.accountStatus,
+                homeAuthority: context.homeAuthority,
+                membership: null,
+                teamArchivedAt: context.team.archivedAt,
+            }),
+            ownerRequired: context.ownerRequired,
+            homeAuthority: context.homeAuthority,
+        }),
+    };
 }
 
 /** `teams.get`: the canonical readable projection, or `null` when unreadable. */
@@ -449,37 +470,9 @@ export async function readTeamSummaryForActorInTx(
     const context = await resolveTeamActorContextInTx(tx, input);
     const viewer = toTeamViewer(context);
     if (viewer === null) return denied("team_not_found");
-    let capabilities = viewer.capabilities;
-    if (!context!.homeAuthority.manageAllTeams) {
-        const qualified = await qualifyTeamProjectionReadAuthenticationInTx(tx, {
-            context: context!,
-            ...input.authentication,
-        });
-        if (!qualified.ok) return denied(qualified.error);
-    } else if (context!.teamCapabilities.viewTeam) {
-        // Home authority is not Team-derived, so a Home administrator always
-        // reads the Team. A membership it also holds is Team-derived: when the
-        // credential does not qualify for it, its capabilities are withheld and
-        // recomposed by the capability owner without it — exactly as the
-        // directory row is — so no surface offers what the Home will refuse.
-        const qualified = await qualifyTeamProjectionReadAuthenticationInTx(tx, {
-            context: context!,
-            ...input.authentication,
-        });
-        if (!qualified.ok) {
-            capabilities = resolveTeamCapabilitiesV1({
-                accountStatus: context!.accountStatus,
-                homeAuthority: context!.homeAuthority,
-                membership: null,
-                teamArchivedAt: context!.team.archivedAt,
-            });
-        }
+    const projected = await projectQualifiedTeamContextInTx(tx, context!, input.authentication);
+    if (!context!.homeAuthority.manageAllTeams && !projected.qualification.ok) {
+        return denied(projected.qualification.error);
     }
-    return { ok: true, team: projectTeamSummaryV1({
-        team: viewer.team,
-        viewerRole: viewer.viewerRole,
-        capabilities,
-        ownerRequired: viewer.ownerRequired,
-        homeAuthority: context!.homeAuthority,
-    }) };
+    return { ok: true, team: projected.team };
 }

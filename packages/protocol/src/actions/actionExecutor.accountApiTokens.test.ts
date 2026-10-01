@@ -179,6 +179,45 @@ describe('createActionExecutor (account.apiTokens)', () => {
     });
   });
 
+  it('keeps a confirmed present-user token creation on the live invocation and never persists the show-once bearer', async () => {
+    const bearer = `hap_v1_${token.tokenId}_${'A'.repeat(43)}`;
+    const accountApiTokensCreateAction = vi.fn(async () => ({ token: bearer, apiToken: token }));
+    const persisted: unknown[] = [];
+    let stored: unknown = null;
+    const deps = Object.assign(createDeps({
+      isActionApprovalRequired: (actionId) => actionId === CREATE_ACTION_ID,
+      isApprovalExecutionOriginCurrent: async () => true,
+      // The Artifact transport is the boundary: record exactly what the executor persists.
+      approvalsCreate: async ({ request }) => { stored = request; persisted.push(request); return { artifactId: 'approval-api-token' }; },
+      approvalsGet: async () => stored as never,
+      approvalsUpdate: async ({ request }) => { stored = request; persisted.push(request); return { ok: true as const }; },
+      // The present user confirms on the waiting invocation.
+      approvalsWaitForDecision: async ({ request }) => ({
+        decision: 'approve' as const,
+        request: { ...request, status: 'approved' as const, decision: { kind: 'approve' as const, decidedAtMs: 2 } },
+      }),
+    }), { accountApiTokensCreateAction });
+    const executor = createActionExecutor(deps);
+
+    await expect(executor.execute(
+      CREATE_ACTION_ID,
+      { tokenId: token.tokenId, label: token.label, expiresAt: token.expiresAt },
+      {
+        surface: 'ui',
+        authority: 'present_user',
+        serverId: 'home-1',
+        runtimeAccountId: 'account-1',
+        actionRequestId: 'request-api-token',
+        actionCaller: { kind: 'host' },
+      },
+    )).resolves.toEqual({ ok: true, result: { token: bearer, apiToken: token } });
+
+    expect(accountApiTokensCreateAction).toHaveBeenCalledOnce();
+    expect(persisted.length).toBeGreaterThan(0);
+    expect(persisted.at(-1)).toMatchObject({ status: 'executed', execution: { ok: true, result: { apiToken: token } } });
+    expect(JSON.stringify(persisted)).not.toContain(bearer);
+  });
+
   it('lets account automation read token summaries but refuses every token-management mutation before its owner runs', async () => {
     const accountApiTokensCreateAction = vi.fn(async () => ({
       token: `hap_v1_${token.tokenId}_${'A'.repeat(43)}`,

@@ -13,7 +13,7 @@ describe('session durable subagent custody routes', () => {
             'GET /v2/sessions/:sessionId/subagents/custody/capability',
             'GET /v2/sessions/:sessionId/subagents/custody',
             'POST /v2/sessions/:sessionId/subagents/custody/mutations',
-            'POST /v2/session-subagents/custody/generation-retirements',
+            'POST /v2/session-subagents/custody/source-retirements',
         ]);
     });
 });

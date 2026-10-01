@@ -617,7 +617,6 @@ describe('sessionDraftService (SQLite integration)', () => {
 
     it.each(['team', 'group'] as const)('uses current %s access for private V2 drafts and rejects revoked membership', async (grantKind) => {
         harness.resetEnv({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
         });
         const owner = await db.account.create({ data: { publicKey: `pk-${randomUUID()}`, encryptionMode: 'plain' } });
@@ -655,7 +654,6 @@ describe('sessionDraftService (SQLite integration)', () => {
 
     it('qualifies restricted Team draft read, list, and mutation with the exact credential', async () => {
         harness.resetEnv({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
         });
@@ -703,7 +701,6 @@ describe('sessionDraftService (SQLite integration)', () => {
 
     it('qualifies each granting Team separately so one satisfied credential cannot list another restricted Team draft', async () => {
         harness.resetEnv({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: '1',
         });

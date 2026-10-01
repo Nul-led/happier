@@ -5,6 +5,7 @@ import {
     deriveSessionCreationTagV1,
     deriveAutomationOccurrenceKeyV1,
     serializeAutomationRunExecutionRecipeV1,
+    serializeAutomationStoredDefinitionExecutionRecipeV1,
     type SessionServerStartDispatchResultV1,
 } from "@happier-dev/protocol";
 import type { Socket } from "socket.io";
@@ -16,15 +17,15 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 
 import { inTx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { readSessionPendingReviewRunCountsInTx } from '@/app/session/awareness/sessionReportsProjection';
+import { invalidateSessionReviewProjectionsForAutomationInTx } from './sessionReviewProjectionInvalidation';
 import { createSessionMessageFromPending } from "@/app/session/pending/pendingMessageTranscriptCommit";
 
 import {
     cancelAutomationRun,
     failAutomationRun,
     startAutomationRun,
-    startAutomationRunFromV2,
     succeedAutomationRun,
-    succeedAutomationRunFromV2,
 } from "./automationRunService";
 import * as automationRunServiceModule from "./automationRunService";
 import {
@@ -36,7 +37,8 @@ import {
     deriveAutomationAccountCurrentnessWitness,
 } from "./automationAccountCurrentness";
 import { runAutomationScheduleWorkerPass } from "./automationScheduleWorker";
-import { toAutomationRunV2ApiDto } from "./automationApiProjection";
+import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
+import { encodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 
 const TEST_TEMPLATE_ENVELOPE = JSON.stringify({
     kind: "happier_automation_template_encrypted_v1",
@@ -62,7 +64,7 @@ const TEST_STRICT_PLAIN_RECIPE = (() => {
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine" },
-                directory: "/tmp/automation-run-service",
+                directory: { kind: "path", path: "/tmp/automation-run-service" },
                 agentTarget: {
                     kind: "agent",
                     identity: {
@@ -316,59 +318,61 @@ describe("automationRunService (integration)", () => {
         ]);
     });
 
-    it("starts a frozen released-V2 manual Run without requiring a schedule trigger cause", async () => {
-        const seeded = await createAccountMachineAutomation({
-            publicKey: "pk-v2-manual-run",
-            machineId: "machine-v2-manual-run",
-            automationName: "V2 manual run",
+    it('projects the turn-end run barrier from actual cause source and releases it through Session/lead hints', async () => {
+        const seeded = await createAccountMachineAutomation({ publicKey: 'pk-review-projection', machineId: 'review-machine', automationName: 'Turn review' });
+        const source = await db.session.create({ data: { accountId: seeded.accountId, tag: 'review-source', encryptionMode: 'plain', metadata: '{}' } });
+        const lead = await db.session.create({ data: { accountId: seeded.accountId, tag: 'review-lead', encryptionMode: 'plain', metadata: '{}' } });
+        await db.sessionReportsTo.create({ data: { sessionId: source.id, leadSessionId: lead.id } });
+        const sourceTurnId = 'review-turn';
+        await db.sessionTurn.create({ data: { sessionId: source.id, turnId: sourceTurnId,
+            initiator: 'user', workDepth: 0, status: 'completed', startedAt: 1n, updatedAt: 2n } });
+        const occurredAt = new Date();
+        const definition = serializeAutomationStoredDefinitionExecutionRecipeV1({
+            v: 1, templateVersion: 1,
+            template: { t: 'plain', v: { v: 1, prompt: 'Review the completed turn.' } },
+            triggerEvidence: null,
+            target: { kind: 'newSession', spawn: {
+                executionTarget: { serverId: 'server', machineId: seeded.machineId },
+                directory: { kind: 'path', path: '/tmp/automation-run-service' },
+                agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+            } },
         });
-        const invokedAt = Date.now() - 30_000;
-        const legacyTemplate = JSON.stringify({
-            kind: "happier_automation_template_plain_v1",
-            payload: { prompt: "Run manually" },
-        });
-        const run = await db.automationRun.create({
-            data: {
-                automationId: seeded.automationId,
-                accountId: seeded.accountId,
-                triggerId: null,
-                causeKind: "manual",
-                causeTriggerKind: null,
-                causeTriggerRevision: null,
-                causeOccurredAt: new Date(invokedAt),
-                causeScheduledFor: null,
-                occurrenceKey: null,
-                state: "claimed",
-                scheduledAt: new Date(invokedAt),
-                dueAt: new Date(invokedAt),
-                claimedAt: new Date(invokedAt),
-                claimedByMachineId: seeded.machineId,
-                leaseExpiresAt: new Date(Date.now() + 60_000),
-                attempt: 1,
-                executionInputEnvelope: JSON.stringify({
-                    kind: "happier_automation_run_execution_input_v1",
-                    targetType: "new_session",
-                    templateVersion: 1,
-                    templateCiphertext: legacyTemplate,
-                    origin: { kind: "manual", invokedAt },
-                }),
+        if (definition.kind !== 'available') throw new Error('Lifecycle review definition unavailable');
+        await db.automation.update({ where: { id: seeded.automationId }, data: { templateCiphertext: definition.serialized } });
+        const trigger = await db.automationTrigger.create({ data: {
+            automationId: seeded.automationId, kind: 'sessionLifecycle', revision: 1,
+            ...encodeAutomationSessionLifecycleConfiguration({
+                kind: 'sessionLifecycle', sourceSessionId: source.id, events: ['parentTurnCompleted'],
+                policy: { kind: 'currentTurn', sourceTurnId },
+            }),
+        } });
+        const admissions = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx, accountId: seeded.accountId,
+            occurrence: {
+                v: 1, kind: 'sessionLifecycle', event: 'parentTurnCompleted',
+                sourceSessionId: source.id, sourceTurnId, occurredAt: occurredAt.getTime(),
             },
-            select: { id: true },
-        });
-
-        const started = await startAutomationRunFromV2({
-            accountId: seeded.accountId,
-            runId: run.id,
-            machineId: seeded.machineId,
-            attempt: 1,
-        });
-
-        expect(started).toEqual(expect.objectContaining({
-            id: run.id,
-            causeKind: "manual",
-            state: "running",
         }));
+        expect(admissions).toHaveLength(1);
+        expect(admissions[0]?.triggerId).toBe(trigger.id);
+        const admission = admissions[0]!.result;
+        expect(admission.kind).toBe('admitted');
+        if (admission.kind !== 'admitted') throw new Error('Lifecycle review Run was not admitted');
+        const run = await db.automationRun.findUniqueOrThrow({ where: { id: admission.run.id } });
+        // The real Automation admission writes causeSourceSessionId, not originSessionId.
+        expect(run.originSessionId).toBeNull();
+        expect(await inTx(async (tx) => readSessionPendingReviewRunCountsInTx(tx, [source.id]))).toEqual(new Map([[source.id, 1]]));
+        // Admission also publishes hints; observe only the later barrier-release hints below.
+        await db.accountChange.deleteMany({ where: { accountId: seeded.accountId, kind: 'session' } });
+        await inTx(async (tx) => {
+            await tx.automationRun.update({ where: { id: run.id }, data: { state: 'cancelled' } });
+            await invalidateSessionReviewProjectionsForAutomationInTx(tx, seeded.automationId);
+        });
+        expect(await inTx(async (tx) => readSessionPendingReviewRunCountsInTx(tx, [source.id]))).toEqual(new Map());
+        const sessionChanges = await db.accountChange.findMany({ where: { accountId: seeded.accountId, kind: 'session' }, select: { entityId: true } });
+        expect(sessionChanges.map(({ entityId }) => entityId)).toEqual(expect.arrayContaining([source.id, lead.id]));
     });
+
 
     it("refuses a current success report for a Run that never started", async () => {
         const seeded = await createAccountMachineAutomation({
@@ -411,50 +415,11 @@ describe("automationRunService (integration)", () => {
         })).resolves.toEqual({ state: "claimed", revision: 0, finishedAt: null });
     });
 
-    it("keeps the released-V2 adapter able to settle its claimed Run", async () => {
-        const seeded = await createAccountMachineAutomation({
-            publicKey: "pk-v2-claimed-success",
-            machineId: "machine-v2-claimed-success",
-            automationName: "V2 claimed success",
-        });
-        const invokedAt = Date.now() - 30_000;
-        const run = await db.automationRun.create({
-            data: {
-                automationId: seeded.automationId,
-                accountId: seeded.accountId,
-                triggerId: null,
-                causeKind: "manual",
-                causeOccurredAt: new Date(invokedAt),
-                state: "claimed",
-                scheduledAt: new Date(invokedAt),
-                dueAt: new Date(invokedAt),
-                claimedAt: new Date(invokedAt),
-                claimedByMachineId: seeded.machineId,
-                leaseExpiresAt: new Date(Date.now() + 60_000),
-                attempt: 1,
-                executionInputEnvelope: JSON.stringify({
-                    kind: "happier_automation_run_execution_input_v1",
-                    targetType: "new_session",
-                    templateVersion: 1,
-                    templateCiphertext: TEST_PLAIN_TEMPLATE_ENVELOPE,
-                    origin: { kind: "manual", invokedAt },
-                }),
-            },
-            select: { id: true },
-        });
-
-        await expect(succeedAutomationRunFromV2({
-            accountId: seeded.accountId,
-            runId: run.id,
-            machineId: seeded.machineId,
-            attempt: 1,
-        })).resolves.toEqual(expect.objectContaining({ id: run.id, state: "succeeded" }));
-    });
 
     it.each([
         ["revoked", { revokedAt: new Date("2026-08-27T00:00:00.000Z") }],
         ["replaced", { replacedByMachineId: "machine-v2-current-replacement" }],
-    ] as const)("refuses released-V2 Run effects from a %s claimed machine", async (_state, machineUpdate) => {
+    ] as const)("refuses retained-data Run effects from a %s claimed machine", async (_state, machineUpdate) => {
         const seeded = await createAccountMachineAutomation({
             publicKey: `pk-v2-${_state}-machine`,
             machineId: `machine-v2-${_state}`,
@@ -493,11 +458,12 @@ describe("automationRunService (integration)", () => {
             data: machineUpdate,
         });
 
-        await expect(startAutomationRunFromV2({
+        await expect(startAutomationRun({
             accountId: seeded.accountId,
             runId: run.id,
             machineId: seeded.machineId,
             attempt: 1,
+            accountCurrentness: await readAutomationAccountCurrentness(seeded.accountId),
         })).resolves.toBeNull();
         await expect(db.automationRun.findUniqueOrThrow({
             where: { id: run.id },
@@ -2064,64 +2030,9 @@ describe("automationRunService (integration)", () => {
         });
     });
 
-    it("refuses a released-V2 cancellation of a running Run before it mutates anything", async () => {
-        const seeded = await seedOrdinaryCancelRun({
-            id: "run-v2-running-cancel-refusal",
-            targetKind: "newSession",
-            state: "running",
-            retainedV2: true,
-        });
-        const before = await db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.run.id },
-        });
-        const pending = await seedAutomationPendingInput({
-            seeded,
-            targetKind: "newSession",
-        });
-        const updates: UpdatePayload[] = [];
-        const observer = createMachineConnection({
-            accountId: seeded.account.id,
-            machineId: seeded.machine.id,
-            updates,
-        });
-        eventRouter.addConnection(seeded.account.id, observer);
-        try {
-            // A running Run can only settle uncertain, and released V2 has no
-            // uncertain state. Mutating first would strand the Run in a shape
-            // the V2 projection cannot render at all, so the Run stays
-            // invisible to this caller instead.
-            await expect(cancelAutomationRun({
-                accountId: seeded.account.id,
-                runId: seeded.run.id,
-                requireV2RunRepresentability: true,
-            })).resolves.toBeNull();
-        } finally {
-            eventRouter.removeConnection(seeded.account.id, observer);
-        }
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: seeded.run.id },
-        })).resolves.toEqual(before);
-        await expect(db.automationRunEvent.count({
-            where: { runId: seeded.run.id },
-        })).resolves.toBe(0);
-        await expect(db.sessionPendingMessage.findUniqueOrThrow({
-            where: {
-                sessionId_localId: {
-                    sessionId: pending.sessionId,
-                    localId: pending.localId,
-                },
-            },
-            select: { status: true, deliveryState: true, discardedReason: true },
-        })).resolves.toEqual({
-            status: "queued",
-            deliveryState: "delivering",
-            discardedReason: null,
-        });
-        expect(updates).toEqual([]);
-    });
 
     it.each(["queued", "claimed"] as const)(
-        "still cancels a released-V2 %s Run into the representable cancelled state",
+        "cancels a retained 0.2 %s Run through the current owner",
         async (state) => {
             const seeded = await seedOrdinaryCancelRun({
                 id: `run-v2-${state}-cancel`,
@@ -2132,14 +2043,11 @@ describe("automationRunService (integration)", () => {
             await expect(cancelAutomationRun({
                 accountId: seeded.account.id,
                 runId: seeded.run.id,
-                requireV2RunRepresentability: true,
             })).resolves.toEqual(expect.objectContaining({
                 id: seeded.run.id,
                 state: "cancelled",
             }));
-            expect(toAutomationRunV2ApiDto(await db.automationRun.findUniqueOrThrow({
-                where: { id: seeded.run.id },
-            }) as never)).toEqual(expect.objectContaining({ state: "cancelled" }));
+            expect((await db.automationRun.findUniqueOrThrow({ where: { id: seeded.run.id } })).state).toBe("cancelled");
         },
     );
 
@@ -3297,70 +3205,6 @@ describe("automationRunService (integration)", () => {
         })).resolves.toEqual({ state: "claimed" });
     });
 
-    it("keeps the exact claim witness for a pre-start claimed-Run success after an unrelated Account write", async () => {
-        const seeded = await createAccountMachineAutomation({
-            publicKey: "pk-automation-run-claimed-succeed-exact",
-            machineId: "machine-claimed-succeed-exact",
-            automationName: "Claimed success exact witness",
-        });
-        const run = await db.automationRun.create({
-            data: {
-                id: "run-claimed-succeed-exact",
-                automationId: seeded.automationId,
-                ...scheduleRunCause(seeded.triggerId),
-                accountId: seeded.accountId,
-                state: "claimed",
-                scheduledAt: new Date(Date.now() - 60_000),
-                dueAt: new Date(Date.now() - 30_000),
-                claimedAt: new Date(Date.now() - 20_000),
-                claimedByMachineId: seeded.machineId,
-                leaseExpiresAt: new Date(Date.now() + 30_000),
-                attempt: 1,
-                executionInputEnvelope: TEST_STRICT_PLAIN_RECIPE,
-            },
-            select: { id: true },
-        });
-        // A canonical Session and its id are supplied so the strict new-Session
-        // correspondence guard cannot mask the currentness decision under
-        // test: this case isolates the witness rule alone.
-        const canonicalSession = await db.session.create({
-            data: {
-                id: "session-claimed-succeed-exact",
-                accountId: seeded.accountId,
-                tag: deriveSessionCreationTagV1({
-                    callerCreationNamespace: `automation:${seeded.automationId}`,
-                    creationKey: `automation-run:${run.id}`,
-                }),
-                metadata: "{}",
-            },
-            select: { id: true },
-        });
-        const claimWitness = await readAutomationAccountCurrentness(seeded.accountId);
-        await inTx(async (tx) => {
-            await markAccountChanged(tx, {
-                accountId: seeded.accountId,
-                kind: "kv",
-                entityId: "unrelated-key",
-            });
-        });
-
-        // A success claim over a claimed Run is a pre-start assertion with no
-        // authorized effect: it keeps the exact claim witness, so an unrelated
-        // Account write that moved only the sequence still refuses it and the
-        // untouched Run stays claimed under current authority.
-        await expect(succeedAutomationRun({
-            accountId: seeded.accountId,
-            runId: run.id,
-            machineId: seeded.machineId,
-            attempt: 1,
-            accountCurrentness: claimWitness,
-            producedSessionId: canonicalSession.id,
-        })).resolves.toBeNull();
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: run.id },
-            select: { state: true, producedSessionId: true },
-        })).resolves.toEqual({ state: "claimed", producedSessionId: null });
-    });
 
     it("still refuses terminal settlement from stale claim authority after the Account sequence moved", async () => {
         const seeded = await createAccountMachineAutomation({

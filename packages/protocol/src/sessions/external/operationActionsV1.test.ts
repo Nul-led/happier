@@ -47,7 +47,7 @@ const source = {
   },
   linkGeneration: 'link-generation-1',
   sourceGeneration: 'source-generation-1',
-  contributionGeneration: 'contribution-generation-1',
+  sourceCustody: { kind: 'development', registeredRootId: 'development-root-1' },
 } as const;
 
 describe('external-session operation action contracts', () => {
@@ -109,6 +109,13 @@ describe('external-session operation action contracts', () => {
       request: takeoverRequest,
     });
     expect(takeover.request.plan).toBe('takeover');
+    const terminal = { mode: 'tmux', tmux: { sessionName: 'takeover', isolated: true, tmpDir: null } };
+    expect(ExternalSessionTakeoverStartInputV1Schema.parse({
+      request: { ...takeoverRequest, terminal },
+    }).request).toMatchObject({ terminal });
+    expect(ExternalSessionTakeoverStartInputV1Schema.safeParse({
+      request: { ...takeoverRequest, terminal: { mode: 'tmux', tmux: { isolated: 'yes' } } },
+    }).success).toBe(false);
     expect(ExternalSessionTakeoverStartInputV1Schema.parse({
       request: {
         ...takeoverRequest,
@@ -169,7 +176,7 @@ describe('external-session operation action contracts', () => {
         source: {
           ...takeover.request.source,
           sourceGeneration: source.sourceGeneration,
-          contributionGeneration: source.contributionGeneration,
+          sourceCustody: source.sourceCustody,
         },
       },
     })).toThrow();
@@ -1022,11 +1029,6 @@ describe('external-session operation machine-socket contract', () => {
         },
       },
       expectedSessionSeq: 19,
-      expectedPending: {
-        version: 4,
-        count: 2,
-        blockedCount: 1,
-      },
       expectedPublication: {
         materializationPublicationId: 'publication-1',
         materializedThroughSourceAt: 1234,
@@ -1064,11 +1066,6 @@ describe('external-session operation machine-socket contract', () => {
       },
       expectedSessionMetadataVersion: 11,
       expectedSessionSeq: 19,
-      expectedPending: {
-        version: 4,
-        count: 2,
-        blockedCount: 1,
-      },
       expectedPriorStableStorage: {
         state: 'snapshot_complete',
         publication: {

@@ -7,6 +7,7 @@ import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCata
 import { buildAccountConnectedServicesProjection } from "./connectedServicesProjection";
 import { inTx } from "@/storage/inTx";
 import { buildLinkedIdentityManagementProjectionInTx } from "@/app/auth/providers/accountLinkedIdentityManagement";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerAccountProfileRoute(app: Fastify): void {
     app.get('/v1/account/profile', {
@@ -15,6 +16,7 @@ export function registerAccountProfileRoute(app: Fastify): void {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "account.profile"),
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const user = await db.account.findUniqueOrThrow({
             where: { id: userId },
@@ -26,7 +28,7 @@ export function registerAccountProfileRoute(app: Fastify): void {
             }
         });
 
-        const connectedServiceAccountGroupsEnabled = isServerFeatureEnabledForRequest("connectedServices.accountGroups", process.env);
+        const connectedServiceAccountGroupsEnabled = isServerFeatureEnabledForRequest("connectedServices.accountGroups", requestHomeEnv);
 
         const connectedServiceProjection = await buildAccountConnectedServicesProjection({
             tx: db,
@@ -36,7 +38,7 @@ export function registerAccountProfileRoute(app: Fastify): void {
         const { linkedProviders, linkedIdentityManagementV1 } = await inTx(async (tx) => {
             const [currentLinkedProviders, currentManagement] = await Promise.all([
                 fetchLinkedProvidersForAccount({ tx, accountId: userId }),
-                buildLinkedIdentityManagementProjectionInTx(tx, { accountId: userId, env: process.env }),
+                buildLinkedIdentityManagementProjectionInTx(tx, { accountId: userId, env: requestHomeEnv }),
             ]);
             return {
                 linkedProviders: currentLinkedProviders,

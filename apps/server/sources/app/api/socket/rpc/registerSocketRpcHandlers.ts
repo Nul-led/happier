@@ -22,13 +22,24 @@ import {
     SESSION_SERVER_START_DAEMON_RPC_METHOD_V1,
     SessionFollowSourceKeyPrepareAuthorizationV1Schema,
     resolveEphemeralRunnerMachineRpcAuthority,
+    isUiBrowserAutomationDispatchMethod,
+    UI_BROWSER_AUTOMATION_DISPATCH_KEY_MAX_LENGTH,
     type EphemeralRunnerMachineRpcAuthority,
 } from "@happier-dev/protocol";
 import { VerifiedEphemeralSessionRunnerPrincipalSchema } from "@happier-dev/protocol/ephemeralRunner/principal";
+import { canCredentialDecideV1 } from "@happier-dev/protocol/actions/decisionAuthority";
+import { computeExternalActionSocketRpcRequestDigestV1 } from "@happier-dev/protocol/actions";
+import { auth } from "@/app/auth/auth";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { admitApiTokenSessionOperation } from "@/app/api/utils/apiTokenRouteAdmission";
+import { hasCurrentSocketCredential } from "../socketCredentialCurrentness";
+import { transferRelayLifecycle } from "../transferRelayLifecycle";
 import {
     SOCKET_RPC_EVENTS,
     SocketRpcCancellationPayloadSchema,
     SocketRpcRequestIdSchema,
+    SessionTransferRoutingV1Schema,
+    SessionTransferRpcMethodV1Schema,
 } from "@happier-dev/protocol/socketRpc";
 
 import { observeRpcCall, recordRpcCallFailure, recordRpcRegistration, recordRpcUnregistration } from "@/app/monitoring/metrics/index";
@@ -56,10 +67,10 @@ import {
 import { canCallSessionScopedRpcMethod, canRegisterSessionScopedRpcMethod } from "../sessionScopedBinding";
 import {
     canEphemeralRunnerMachineRegisterRpcMethod,
-    type EphemeralRunnerSocketAdmission,
-} from "../ephemeralRunnerSocketAdmission";
+    type RestrictedSocketAdmission,
+} from "../restrictedSocketAdmission";
 import { readVerifiedMachineSocketInstallationIdFromSocketData } from "../machineSocketInstallationProof";
-import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from "../externalActionDispatcher";
+import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1, resolveCurrentSessionMachineFromServer } from "../externalActionDispatcher";
 import { forwardRpcCall } from "./forwardRpcCall";
 import type { RpcForwardTargetGuard } from "./_types";
 import { buildRpcMethodRoom } from "./rpcMethodRoom";
@@ -124,7 +135,14 @@ function normalizeRpcMethodName(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     if (!trimmed) return null;
-    if (trimmed.length > MAX_RPC_METHOD_NAME_LENGTH) return null;
+    const separatorIndex = trimmed.indexOf(':');
+    const automationMethod = separatorIndex > 0
+        && isUiBrowserAutomationDispatchMethod(trimmed.slice(separatorIndex + 1));
+    // The pre-existing method budget covers the Machine prefix and method family. The
+    // exact browser view suffix is bounded by its Protocol identity schemas and encoding.
+    const maxLength = MAX_RPC_METHOD_NAME_LENGTH
+        + (automationMethod ? UI_BROWSER_AUTOMATION_DISPATCH_KEY_MAX_LENGTH + 1 : 0);
+    if (trimmed.length > maxLength) return null;
     return trimmed;
 }
 
@@ -133,7 +151,8 @@ function parseMachineScopedRpcMethod(method: string): MachineScopedRpcMethod | n
     if (separatorIndex <= 0 || separatorIndex === method.length - 1) return null;
     const machineId = method.slice(0, separatorIndex).trim();
     const rpcMethod = method.slice(separatorIndex + 1).trim();
-    if (!machineId || !MACHINE_VISIBLE_CLIENT_RPC_METHODS.has(rpcMethod)) return null;
+    if (!machineId || (!MACHINE_VISIBLE_CLIENT_RPC_METHODS.has(rpcMethod)
+        && !isUiBrowserAutomationDispatchMethod(rpcMethod))) return null;
     return { machineId, rpcMethod };
 }
 
@@ -159,12 +178,13 @@ function readSessionModelTransitionSessionId(method: string): string | null {
     return sessionId.length > 0 ? sessionId : null;
 }
 
-function createSessionModelTransitionTargetGuard(params: Readonly<{
+function createCurrentSessionPublisherTargetGuard(params: Readonly<{
     method: string;
+    sessionId?: string;
     targetUserId: string;
     presence?: SessionPublisherPresenceForRpc;
 }>): RpcForwardTargetGuard | null {
-    const sessionId = readSessionModelTransitionSessionId(params.method);
+    const sessionId = params.sessionId ?? readSessionModelTransitionSessionId(params.method);
     if (!sessionId) return null;
 
     return {
@@ -209,6 +229,7 @@ function createSessionAccessTargetGuard(params: Readonly<{
     sessionId: string;
     authentication: ReturnType<typeof readSessionAccessAuthenticationFromSocket>;
     authority: NonNullable<ReturnType<typeof resolveSocketRpcSessionAuthorization>>["authority"];
+    apiTokenAction?: Parameters<typeof resolveSessionAccessForOperation>[1]["apiTokenAction"];
 }>): RpcForwardTargetGuard {
     return {
         filterTargets: async (targets) => targets,
@@ -217,6 +238,7 @@ function createSessionAccessTargetGuard(params: Readonly<{
                 accountId: params.accountId,
                 sessionId: params.sessionId,
                 authentication: params.authentication,
+                ...(params.apiTokenAction ? { apiTokenAction: params.apiTokenAction } : {}),
                 ...(params.authority === "sessionOwner"
                     ? {}
                     : { capability: params.authority }),
@@ -224,7 +246,7 @@ function createSessionAccessTargetGuard(params: Readonly<{
             const admitted = decision.status === "allowed"
                 && (params.authority === "sessionOwner"
                     ? decision.access.level === "owner"
-                    : decision.access.capabilities[params.authority]);
+                    : true);
             if (admitted) return { status: "current", value: await operation() };
             // Qualification lost between admission and dispatch is still the
             // same recoverable answer; reporting it as "no target" would send
@@ -402,7 +424,7 @@ function canRegisterMachineScopedRpcMethod(params: Readonly<{
     return methodMachineId === null || methodMachineId === params.socketMachineId;
 }
 
-function createExplicitMachineStopTargetGuard(
+function createExactMachineRpcTargetGuard(
     request: Readonly<{ machineId: string }>,
 ): RpcForwardTargetGuard {
     const matchesRequestMachine = (target: SocketDataCarrier): boolean => (
@@ -689,7 +711,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
     socket: Socket;
     io: Server;
     sessionPublisherPresence?: SessionPublisherPresenceForRpc;
-    ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission | null;
+    ephemeralRunnerAdmission?: RestrictedSocketAdmission | null;
 }>): void {
     const ownedMethods = new Set<string>();
     // Caller request ids are meaningful only within this authenticated socket.
@@ -728,6 +750,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
     };
 
     params.socket.on(SOCKET_RPC_EVENTS.CANCEL, (data: unknown) => {
+        if (params.ephemeralRunnerAdmission?.kind === "api-token-session-viewer") return;
         const parsed = SocketRpcCancellationPayloadSchema.safeParse(data);
         if (!parsed.success) return;
         const active = activeCancellations.get(parsed.data.requestId);
@@ -737,11 +760,16 @@ export function registerSocketRpcHandlers(params: Readonly<{
 
     params.socket.on(SOCKET_RPC_EVENTS.REGISTER, async (data: unknown) => {
         try {
+            if (params.ephemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Forbidden" });
+                return;
+            }
             const method = normalizeRpcMethodName((data as { method?: unknown } | undefined)?.method);
             if (!method) {
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Invalid method name" });
                 return;
             }
+
             if (
                 params.ephemeralRunnerAdmission?.kind === "machine-runtime"
                 && (
@@ -757,7 +785,9 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Forbidden" });
                 return;
             }
-            const sessionAuthorization = resolveSocketRpcSessionAuthorization(method);
+            const isMachineTransferRegistration = readSocketClientType(params.socket) === "machine-scoped"
+                && SessionTransferRpcMethodV1Schema.safeParse(method.slice(method.indexOf(':') + 1)).success;
+            const sessionAuthorization = isMachineTransferRegistration ? null : resolveSocketRpcSessionAuthorization(method);
             const isSessionAuthorizationNamespace = isSocketRpcSessionAuthorizationNamespace(method);
             const isMachineOwnedSessionSpawnRegistration = (
                 readSocketClientType(params.socket) === "machine-scoped"
@@ -830,12 +860,15 @@ export function registerSocketRpcHandlers(params: Readonly<{
 
     params.socket.on(SOCKET_RPC_EVENTS.UNREGISTER, async (data: unknown) => {
         try {
+            if (params.ephemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "unregister", error: "Forbidden" });
+                return;
+            }
             const method = normalizeRpcMethodName((data as { method?: unknown } | undefined)?.method);
             if (!method) {
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "unregister", error: "Invalid method name" });
                 return;
             }
-
             if (ownedMethods.has(method)) {
                 ownedMethods.delete(method);
                 writeSocketRegisteredRpcMethods(params.socket, ownedMethods);
@@ -864,9 +897,22 @@ export function registerSocketRpcHandlers(params: Readonly<{
             // Runner socket compositions are restricted RPC receivers. A future
             // Runner-originated call needs its own explicit source authority;
             // target-side Machine classification cannot grant caller authority.
-            if (params.ephemeralRunnerAdmission) {
+            if (params.ephemeralRunnerAdmission && params.ephemeralRunnerAdmission.kind !== "api-token-session-viewer") {
                 callback?.(buildForbiddenRpcResponse());
                 return;
+            }
+            let viewer: Extract<RestrictedSocketAdmission, { kind: "api-token-session-viewer" }> | null = null;
+            if (params.ephemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                if (!await hasCurrentSocketCredential(params.userId, params.socket)) {
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                const current = params.socket.data.ephemeralRunnerAdmission as RestrictedSocketAdmission | undefined;
+                if (current?.kind !== "api-token-session-viewer" || current.sessionId !== params.ephemeralRunnerAdmission.sessionId) {
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                viewer = current;
             }
             const parsedRequestId = readOptionalSocketRpcRequestId(data);
             if (parsedRequestId === null) {
@@ -907,8 +953,32 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 return;
             }
 
+            const rawTransferRouting = (data as { transferRouting?: unknown } | undefined)?.transferRouting;
+            const reverseAutomationSeparator = method.indexOf(':');
+            if (reverseAutomationSeparator > 0
+                && isUiBrowserAutomationDispatchMethod(method.slice(reverseAutomationSeparator + 1))
+                && (readMachineScopedSocketMachineId(params.socket) !== method.slice(0, reverseAutomationSeparator)
+                    || !await isMachineScopedRpcMethodAvailable({ userId: params.userId, method }))) {
+                // Continue only an Action admitted by the exact daemon. An Account
+                // caller cannot use this lower transport to skip Action approval.
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            const parsedTransferRouting = rawTransferRouting === undefined ? null : SessionTransferRoutingV1Schema.safeParse(rawTransferRouting);
+            if (parsedTransferRouting && (!parsedTransferRouting.success
+                || method !== `${parsedTransferRouting.data.sessionId}:${parsedTransferRouting.data.method}`
+                || (viewer && parsedTransferRouting.data.sessionId !== viewer.sessionId))) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            const transferRouting = parsedTransferRouting?.success ? parsedTransferRouting.data : undefined;
+
             const rawExternalActionExecution = (data as { externalActionExecution?: unknown } | undefined)
                 ?.externalActionExecution;
+            if (viewer && rawExternalActionExecution !== undefined) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
             const externalActionExecution = rawExternalActionExecution === undefined
                 ? null
                 : ExternalActionMachineRpcExecutionV1Schema.safeParse(rawExternalActionExecution);
@@ -935,14 +1005,44 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     env: process.env,
                     authority: verifiedExternalAction.principal.authority,
                     authenticationEvidence: verifiedExternalAction.principal.authenticationEvidence,
+                    callerInputConstraints: {
+                        models: verifiedExternalAction.binding.grant.models,
+                        permissionModes: verifiedExternalAction.binding.grant.permissionModes,
+                    },
                 }
                 : readSessionAccessAuthenticationFromSocket(params.socket);
 
-            const methodSessionAuthorization = resolveSocketRpcSessionAuthorization(method);
+            const isTransferMethod = SessionTransferRpcMethodV1Schema.safeParse(method.slice(method.indexOf(':') + 1)).success;
+            // The same transfer methods also serve the incumbent Machine carrier.
+            // Only the routing header selects the Session-owned encrypted carrier.
+            const methodSessionAuthorization = isTransferMethod && !transferRouting ? null : resolveSocketRpcSessionAuthorization(method);
             const isPermissionDecisionMethod = methodSessionAuthorization?.serverMintedContext === "session.permission.respond";
+            if (viewer && isTransferMethod && !transferRouting) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            if (viewer && (!methodSessionAuthorization?.actionId
+                || !methodSessionAuthorization.routeToSessionOwnerDaemon
+                || method.slice(0, method.lastIndexOf(':')) !== viewer.sessionId)) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            if ((isPermissionDecisionMethod || method.endsWith(`:${RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND}`))
+                && !canCredentialDecideV1({
+                    authority: requestAuthentication.authority,
+                    grant: verifiedExternalAction?.principal.grant ?? viewer?.principal.grant ?? null,
+                })) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            // The machine-owned session spawn method lives in the closed `session.`
+            // namespace but is a Machine operation, not a Session write: the exact
+            // daemon may register it (see REGISTER above), so Account callers must
+            // reach it through ordinary machine-scoped forwarding.
             if (
                 isSocketRpcSessionAuthorizationNamespace(method)
                 && !methodSessionAuthorization
+                && !isMachineOwnedSessionSpawnRpcMethod(method)
             ) {
                 callback?.({
                     ok: false,
@@ -963,7 +1063,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 return;
             }
 
-            if (!await canCallSessionScopedRpcMethod({ socket: params.socket, accountId: params.userId, method })) {
+            if (!viewer && !await canCallSessionScopedRpcMethod({ socket: params.socket, accountId: params.userId, method })) {
                 recordRpcCallFailure(method, "forbidden");
                 observeRpcCall({
                     method,
@@ -1048,7 +1148,26 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     callback?.(buildForbiddenRpcResponse());
                     return;
                 }
-                const decision = await resolveSessionAccessForOperation(db, {
+                const apiTokenAction = viewer && sessionAuthorization.actionId ? {
+                    actionId: sessionAuthorization.actionId,
+                    targetMachineId: await resolveCurrentSessionMachineFromServer({
+                        io: params.io, presence: params.sessionPublisherPresence, accountId: params.userId, sessionId,
+                    }),
+                } : undefined;
+                const tokenAdmission = viewer && apiTokenAction
+                    ? await admitApiTokenSessionOperation({
+                        principal: viewer.principal, sessionId,
+                        ...apiTokenAction,
+                        ...(sessionAuthorization.authority === 'sessionOwner' ? {} : { capability: sessionAuthorization.authority }),
+                        authentication: requestAuthentication,
+                    }) : null;
+                if (viewer && !tokenAdmission?.ok) {
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                const decision: SessionAccessOperationDecision = tokenAdmission?.ok
+                    ? { status: 'allowed', access: tokenAdmission.access }
+                    : await resolveSessionAccessForOperation(db, {
                     accountId: params.userId,
                     sessionId,
                     authentication: requestAuthentication,
@@ -1057,9 +1176,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
                         : { capability: sessionAuthorization.authority }),
                 });
                 const admitted = decision.status === "allowed"
-                    && (sessionAuthorization.authority === "sessionOwner"
-                        ? decision.access.level === "owner"
-                        : decision.access.capabilities[sessionAuthorization.authority]);
+                    && (sessionAuthorization.authority !== "sessionOwner" || decision.access.level === "owner");
                 if (!admitted) {
                     recordRpcCallFailure(method, "forbidden");
                     observeRpcCall({
@@ -1108,9 +1225,10 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     sessionId,
                     authentication: requestAuthentication,
                     authority: sessionAuthorization.authority,
+                    ...(apiTokenAction ? { apiTokenAction } : {}),
                 });
             }
-            const ephemeralRunnerMachineRequest = readEphemeralRunnerMachineRpcRequest(method);
+            const ephemeralRunnerMachineRequest = transferRouting ? null : readEphemeralRunnerMachineRpcRequest(method);
             if (ephemeralRunnerMachineRequest && sessionWriteTargetUserId === null) {
                 const runnerBinding = await readMaterializedRunnerMachineRoutingBinding(
                     ephemeralRunnerMachineRequest.machineId,
@@ -1124,6 +1242,9 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 }
             }
             const targetUserId = sessionWriteTargetUserId ?? params.userId;
+            const admittedMethod = method;
+            const callerInputViewer = viewer && method.endsWith(`:${SESSION_RPC_METHODS.SESSION_USER_MESSAGE_SEND}`)
+                ? viewer : null;
 
             const explicitMachineStopRequest = readExplicitMachineStopRequest(method, authorization);
             if (method.endsWith(`:${RPC_METHODS.STOP_SESSION}`) && !explicitMachineStopRequest) {
@@ -1167,7 +1288,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
             }
 
             const targetSpecificGuard = explicitMachineStopRequest
-                ? createExplicitMachineStopTargetGuard(explicitMachineStopRequest)
+                ? createExactMachineRpcTargetGuard(explicitMachineStopRequest)
                 : sourceKeyPreparationTargetGuard
                     ? sourceKeyPreparationTargetGuard
                     : ephemeralRunnerMachineRequest
@@ -1178,15 +1299,17 @@ export function registerSocketRpcHandlers(params: Readonly<{
                             authority: ephemeralRunnerMachineRequest.authority,
                             authentication: requestAuthentication,
                         })
-                        : createSessionModelTransitionTargetGuard({
+                        : createCurrentSessionPublisherTargetGuard({
                             method,
                             targetUserId,
                             presence: params.sessionPublisherPresence,
+                            ...(callerInputViewer ? { sessionId: callerInputViewer.sessionId } : {}),
                         });
             const targetGuard = composeRpcForwardTargetGuards([
                 targetSpecificGuard,
                 sessionAccessTargetGuard,
             ]);
+            const verifiedCallerGrant = verifiedExternalAction?.binding.grant ?? viewer?.principal.grant;
             const forwarded = await forwardRpcCall({
                 io: params.io,
                 targetUserId,
@@ -1194,11 +1317,36 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 callParams,
                 timeoutMs,
                 authorization,
+                ...(transferRouting ? { transferRouting } : {}),
                 ...(explicitMachineStopRequest
                     ? { transportResponseEnvelopeVersion: 1 as const }
                     : {}),
                 callerSocketId: params.socket.id,
                 callerSocket: params.socket,
+                ...(callerInputViewer ? { createCallerInputAuthorization: async ({ target, requestId }) => {
+                    const projection = readSessionPublisherAuthorityProjection(target.data);
+                    if (!projection || projection.accountId !== targetUserId || projection.sessionId !== callerInputViewer.sessionId) {
+                        throw new Error('Current Session publisher identity is unavailable');
+                    }
+                    const sessionTarget = { kind: 'session' as const, sessionId: callerInputViewer.sessionId };
+                    const principal = callerInputViewer.principal;
+                    return await auth.mintExternalActionExecutionAuthorization({
+                        serverIdentityId: await getOrCreateServerIdentityId(),
+                        accountId: principal.accountId, principalId: principal.principalId,
+                        credentialId: principal.credentialId, grant: principal.grant,
+                        machineId: projection.machineId, actionId: 'session.message.send', requestId,
+                        requestEnvelopeDigest: computeExternalActionSocketRpcRequestDigestV1({
+                            method: admittedMethod, params: callParams, requestId, target: sessionTarget,
+                        }),
+                        target: sessionTarget,
+                    });
+                } } : {}),
+                ...(verifiedCallerGrant
+                    ? { callerInputConstraints: {
+                        models: verifiedCallerGrant.models,
+                        permissionModes: verifiedCallerGrant.permissionModes,
+                    } }
+                    : {}),
                 ...(targetGuard ? { targetGuard } : {}),
                 ...(cancellation
                     ? {
@@ -1310,6 +1458,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
 
     params.socket.on("disconnect", async () => {
         disconnected = true;
+        transferRelayLifecycle.disconnectSocket(params.socket.id);
         for (const active of activeCancellations.values()) {
             cancelActiveSocketRpcCall({ io: params.io, active });
         }

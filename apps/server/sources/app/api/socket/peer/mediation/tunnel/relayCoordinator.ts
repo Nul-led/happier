@@ -32,7 +32,6 @@ type AttachRequest = Readonly<{
     tunnelKey: string;
     machineId: string;
     machineSocketId: string;
-    maxDurationMs: number;
 }>;
 
 type AttachResponse =
@@ -72,7 +71,6 @@ type OwnerAttachment = Readonly<{
 type MachineAttachment = Readonly<{
     request: AttachRequest;
     socket: Socket;
-    durationTimer: ReturnType<typeof setTimeout>;
 }>;
 
 type MachineSocketAttachmentMembership = Readonly<{
@@ -109,7 +107,6 @@ export type PeerTcpTunnelRelayCoordinator = Readonly<{
         grantId: string;
         grantExpiresAt: number;
         machineId: string;
-        maxDurationMs: number;
         nowMs: number;
         onMachineEnvelope(envelope: PeerTcpTunnelRelayEnvelope, machineSocketId: string): void | Promise<void>;
         onMachineDisconnect(): void | Promise<void>;
@@ -197,7 +194,6 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
         const tunnelKey = readBoundedString(record.tunnelKey);
         const machineId = readBoundedString(record.machineId);
         const machineSocketId = readBoundedString(record.machineSocketId);
-        const maxDurationMs = record.maxDurationMs;
         if (
             !attachmentId
             || !requestOwnerRouteId
@@ -205,9 +201,6 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
             || !tunnelKey
             || !machineId
             || !machineSocketId
-            || typeof maxDurationMs !== "number"
-            || !Number.isSafeInteger(maxDurationMs)
-            || maxDurationMs <= 0
         ) {
             return null;
         }
@@ -218,7 +211,6 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
             tunnelKey,
             machineId,
             machineSocketId,
-            maxDurationMs,
         };
     }
 
@@ -420,7 +412,6 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
             current.request.tunnelKey,
             current.request.machineSocketId,
         ));
-        clearTimeout(current.durationTimer);
         const membership = machineSocketAttachmentMemberships.get(current.socket);
         if (!membership) return;
         membership.attachmentIds.delete(attachmentId);
@@ -479,14 +470,9 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
                 : { status: "rejected" };
         }
 
-        const durationTimer = setTimeout(() => {
-            removeMachineAttachment(request.attachmentId);
-        }, Math.max(1, request.maxDurationMs));
-        durationTimer.unref?.();
         machineAttachmentsById.set(request.attachmentId, {
             request,
             socket,
-            durationTimer,
         });
         machineAttachmentIdByTunnelAndSocket.set(lookupKey, request.attachmentId);
         let membership = machineSocketAttachmentMemberships.get(socket);
@@ -706,7 +692,6 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
                 tunnelKey: params.tunnelKey,
                 machineId: params.machineId,
                 machineSocketId: exactMachineSocketId,
-                maxDurationMs: params.maxDurationMs,
             });
             if (attached.status !== "attached") {
                 detachOwnerAttachment(params.tunnelKey, attachmentId);

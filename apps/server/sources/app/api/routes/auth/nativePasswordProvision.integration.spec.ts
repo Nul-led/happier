@@ -2,16 +2,15 @@ import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
-import { emailPasswordAuthMethodModule } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
 import { issueNativeAuthOneTimeOperationInTx, readNativeAuthOneTimeOperation } from "@/app/auth/email/nativeAuthOneTimeOperations";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { auth } from "@/app/auth/auth";
 import { createTeamInvitationForActorInTx } from "@/app/teams/invitations/invitationService";
 import { mintTeamInvitationToken } from "@/app/teams/invitations/token";
-import { registerAuthEntryRoute } from "./registerAuthEntryRoute";
-import { createKeyChallengeV2SigningInput, encodePasswordCredentialFieldV1, signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
-import { issueKeyChallengeV2 } from "@/app/auth/keyChallengeV2";
+import { resolveAuthEntry } from "@/app/auth/entry/resolveAuthEntry";
+import { authRoutes } from "./authRoutes";
+import { createKeyChallengeV2SigningInput, encodePasswordCredentialFieldV1, KeyChallengeV2IssueResponseSchema, signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
@@ -58,7 +57,7 @@ describe("native fresh Account admission through the registered method", () => {
         server.setSerializerCompiler(serializerCompiler);
         enableAuthentication(server);
         const delivery: AuthEmailDelivery = {
-            isReady: true,
+            isReady: async () => true,
             deliver: async (message) => {
                 if (message.kind === "native_email_verification") {
                     deliveredVerificationUrls.push(message.verifyUrl);
@@ -66,7 +65,7 @@ describe("native fresh Account admission through the registered method", () => {
                 return { status: "sent" };
             },
         };
-        emailPasswordAuthMethodModule.registerRoutes(server, {
+        authRoutes(server, {
             authEmailDelivery: delivery,
             isEmailDeliveryReady: () => true,
             resolveApplicationLinkTarget: async () => ({
@@ -75,7 +74,6 @@ describe("native fresh Account admission through the registered method", () => {
                 serverId: "home",
             }),
         });
-        registerAuthEntryRoute(server, { isEmailDeliveryReady: () => true });
         return server;
     }
 
@@ -91,13 +89,14 @@ describe("native fresh Account admission through the registered method", () => {
         return { team, token: result.value.token, invitation: result.value.invitation };
     }
 
-    it("consumes proven email with a keyless Account, locator and password, then issues an ordinary token", async () => {
+    it("consumes proven email with a keyless Account, locator and password, then issues a narrowed terminal token", async () => {
         const issued = await proof();
         const server = app();
         try {
             const payload = {
                 v: 1, email: " SIGNUP@EXAMPLE.TEST ",
                 admission: { kind: "native_email_verification", token: issued.rawBearer },
+                credentialKind: "terminal",
                 account: { mode: "plain", password },
             };
             const result = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload });
@@ -105,7 +104,7 @@ describe("native fresh Account admission through the registered method", () => {
             const account = await db.account.findFirstOrThrow();
             expect(account).toMatchObject({ encryptionMode: "plain", publicKey: null, contentPublicKey: null, contentPublicKeySig: null });
             expect(result.json()).toEqual({ token: expect.any(String), accountId: account.id, teamId: null });
-            expect(await auth.verifyToken(result.json().token)).toMatchObject({ userId: account.id, authority: "present_user" });
+            expect(await auth.verifyToken(result.json().token)).toMatchObject({ userId: account.id, authTokenKind: "terminal" });
             expect(await db.accountIdentity.findFirst()).toMatchObject({ accountId: account.id, provider: "email", providerUserId: "signup@example.test" });
             expect(await db.accountEmail.findFirst()).toMatchObject({ accountId: account.id, normalizedEmail: "signup@example.test" });
             expect(await db.accountPasswordCredential.findFirst()).toMatchObject({ accountId: account.id, revision: 1, credential: { kind: "plain_password_hash" } });
@@ -122,6 +121,148 @@ describe("native fresh Account admission through the registered method", () => {
             expect(await db.account.count()).toBe(1);
             expect(await inTx((tx) => readNativeAuthOneTimeOperation(tx, { purpose: "verify_native_email", token: sibling.rawBearer }))).not.toBeNull();
         } finally { await server.close(); }
+    });
+
+    it("creates an Account for Account Service sign-in: the mail link names the purpose and creation mints a Directory credential", async () => {
+        const deliveredVerificationUrls: string[] = [];
+        const server = app(deliveredVerificationUrls);
+        try {
+            const requested = await server.inject({ method: "POST", url: "/v1/auth/email/verify/request",
+                payload: { v: 1, email: "directory-signup@example.test", purpose: "account_service" } });
+            expect(requested.statusCode, requested.body).toBe(200);
+            expect(deliveredVerificationUrls).toHaveLength(1);
+            const link = new URL(deliveredVerificationUrls[0]!);
+            expect(link.searchParams.get("purpose")).toBe("account_service");
+            expect(link.searchParams.get("target")).toBe("opaque-home-target");
+            const token = link.pathname.split("/").at(-1)!;
+            const created = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                v: 1, email: "directory-signup@example.test",
+                admission: { kind: "native_email_verification", token },
+                account: { mode: "plain", password },
+                credentialTarget: "account_directory",
+                credentialKind: "terminal",
+            } });
+            expect(created.statusCode, created.body).toBe(200);
+            expect(await auth.verifyToken(created.json().token)).toMatchObject({
+                userId: created.json().accountId, authTokenKind: "account_directory", authority: "present_user",
+            });
+            // An ordinary Home request keeps its ordinary link.
+            await server.inject({ method: "POST", url: "/v1/auth/email/verify/request",
+                payload: { v: 1, email: "home-signup@example.test" } });
+            expect(new URL(deliveredVerificationUrls[1]!).searchParams.has("purpose")).toBe(false);
+        } finally { await server.close(); }
+    });
+
+    it("adds the same-service Home when an existing password Account signs in to the Account Service", async () => {
+        harness.resetEnv({
+            HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self",
+            HAPPIER_CANONICAL_SERVER_URL: "https://cloud.example.test",
+            HAPPIER_PUBLIC_SERVER_URL: "https://cloud.example.test",
+        });
+        const issued = await proof("returning@example.test");
+        const server = app();
+        try {
+            const created = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                v: 1, email: "returning@example.test",
+                admission: { kind: "native_email_verification", token: issued.rawBearer },
+                account: { mode: "plain", password },
+            } });
+            expect(created.statusCode, created.body).toBe(200);
+            const accountId = created.json().accountId as string;
+            expect(await db.accountHomeDirectoryEntry.count({ where: { accountId } })).toBe(0);
+
+            const login = await server.inject({ method: "POST", url: "/v1/auth/email/login", payload: {
+                v: 1, email: "returning@example.test", password, credentialTarget: "account_directory",
+            } });
+            expect(login.statusCode, login.body).toBe(200);
+            expect(await auth.verifyToken(login.json().token)).toMatchObject({
+                userId: accountId, authTokenKind: "account_directory",
+            });
+            expect(await db.accountHomeDirectoryEntry.findMany({ where: { accountId } })).toEqual([
+                expect.objectContaining({ homeServerIdentityId: "srv_native_provision" }),
+            ]);
+            expect(await db.accountDirectoryLink.findMany({ where: { accountId } })).toEqual([
+                expect.objectContaining({ issuerServerIdentityId: "srv_native_provision", issuerSubjectId: accountId }),
+            ]);
+            expect(await db.account.findUniqueOrThrow({ where: { id: accountId } })).toMatchObject({
+                preferredHomeServerIdentityId: "srv_native_provision",
+            });
+        } finally { await server.close(); }
+    });
+
+    it("adds the same-service Home in the Account Service provisioning transaction", async () => {
+        harness.resetEnv({
+            HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self",
+            HAPPIER_CANONICAL_SERVER_URL: "https://cloud.example.test",
+            HAPPIER_PUBLIC_SERVER_URL: "https://cloud.example.test",
+        });
+        const issued = await proof("new-service@example.test");
+        const server = app();
+        try {
+            const created = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                v: 1, email: "new-service@example.test",
+                admission: { kind: "native_email_verification", token: issued.rawBearer },
+                account: { mode: "plain", password },
+                credentialTarget: "account_directory",
+            } });
+            expect(created.statusCode, created.body).toBe(200);
+            const accountId = created.json().accountId as string;
+            expect(await auth.verifyToken(created.json().token)).toMatchObject({
+                userId: accountId, authTokenKind: "account_directory",
+            });
+            expect(await db.accountHomeDirectoryEntry.findMany({ where: { accountId } })).toEqual([
+                expect.objectContaining({ homeServerIdentityId: "srv_native_provision" }),
+            ]);
+            expect(await db.accountDirectoryLink.findMany({ where: { accountId } })).toEqual([
+                expect.objectContaining({ issuerServerIdentityId: "srv_native_provision", issuerSubjectId: accountId }),
+            ]);
+        } finally { await server.close(); }
+    });
+
+    it("offers no mail-dependent action when SMTP works but no Home link can be built", async () => {
+        const deliveredVerificationUrls: string[] = [];
+        const server = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+        server.setValidatorCompiler(validatorCompiler);
+        server.setSerializerCompiler(serializerCompiler);
+        enableAuthentication(server);
+        // SMTP is configured, but this Home publishes no connection descriptor, so no link exists.
+        authRoutes(server, {
+            authEmailDelivery: {
+                isReady: async () => true,
+                deliver: async (message) => {
+                    if (message.kind === "native_email_verification") deliveredVerificationUrls.push(message.verifyUrl);
+                    return { status: "sent" };
+                },
+            },
+            resolveApplicationLinkTarget: async () => ({ applicationOrigin: "https://app.example.test", homeTarget: null, serverId: null }),
+        });
+        await server.ready();
+        try {
+            const entry = await server.inject({ method: "POST", url: "/v1/auth/entry",
+                payload: { v: 1, scope: { kind: "home" }, purpose: "account_service" } });
+            expect(entry.statusCode, entry.body).toBe(200);
+            const actions = (entry.json().actions ?? []) as Array<{ methodId: string; action: string; passwordReset?: string }>;
+            expect(actions.some((action) => action.methodId === "email_password" && action.action === "login")).toBe(true);
+            expect(actions.some((action) => action.methodId === "email_password" && action.action === "provision")).toBe(false);
+            expect(actions.find((action) => action.methodId === "email_password" && action.action === "login")?.passwordReset)
+                .toBeUndefined();
+            const requested = await server.inject({ method: "POST", url: "/v1/auth/email/verify/request",
+                payload: { v: 1, email: "nobody-mailed@example.test" } });
+            expect(requested.json()).toEqual({ accepted: true });
+            expect(deliveredVerificationUrls).toEqual([]);
+        } finally { await server.close(); }
+    });
+
+    it("says on the password sign-in action whether a reset link can be mailed", async () => {
+        const request = { v: 1 as const, scope: { kind: "home" as const }, purpose: "account_service" as const };
+        const loginAction = (projection: Awaited<ReturnType<typeof resolveAuthEntry>>) => projection.state === "ready"
+            ? projection.actions.find((action) => action.methodId === "email_password" && action.action === "login")
+            : undefined;
+        const withMail = await resolveAuthEntry(request, { env: process.env, emailDeliveryReady: true });
+        expect(loginAction(withMail)).toMatchObject({ passwordReset: "email" });
+        const withoutMail = await resolveAuthEntry(request, { env: process.env, emailDeliveryReady: false });
+        expect(loginAction(withoutMail)).toBeDefined();
+        expect(loginAction(withoutMail)).not.toHaveProperty("passwordReset");
     });
 
     it("rolls mailbox consumption, Account and identity back when password persistence fails", async () => {
@@ -220,7 +361,7 @@ describe("native fresh Account admission through the registered method", () => {
             expect(entry.statusCode, entry.body).toBe(200);
             expect(entry.json().actions).toEqual(expect.arrayContaining([expect.objectContaining({ methodId: "email_password", action: "provision" })]));
             const result = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
-                v: 1, email: "invited@example.test", admission: { kind: "team_invitation", token: invited.token },
+                v: 1, email: " INVITED@EXAMPLE.TEST ", admission: { kind: "team_invitation", token: invited.token },
                 account: { mode: "plain", password },
             } });
             expect(result.statusCode, result.statusCode >= 400 ? result.body : undefined).toBe(200);
@@ -289,18 +430,28 @@ describe("native fresh Account admission through the registered method", () => {
         } finally { await server.close(); }
     });
 
-    it("rolls every fresh-Account fact back when the submitted mailbox does not match the invitation", async () => {
+    it("returns email_mismatch without consuming any fresh-Account fact, then accepts the normalized invited mailbox", async () => {
         const invited = await invitation("invited@example.test");
         await db.homeGovernancePolicy.create({ data: { id: "home", authenticationPolicy: { v: 1, admission: "invitation_only" } } });
         const server = app();
         try {
-            const result = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+            const repeatKeysBefore = await db.repeatKey.findMany({ orderBy: { key: "asc" } });
+            const unknown = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
                 v: 1,
                 email: "different@example.test",
+                admission: { kind: "team_invitation", token: "z".repeat(43) },
+                account: { mode: "plain", password },
+            } });
+            expect(unknown.statusCode).toBe(401);
+            expect(unknown.json()).toEqual({ error: "authentication_failed" });
+            const result = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                v: 1,
+                email: " DIFFERENT@EXAMPLE.TEST ",
                 admission: { kind: "team_invitation", token: invited.token },
                 account: { mode: "plain", password },
             } });
-            expect(result.statusCode).toBe(401);
+            expect(result.statusCode).toBe(403);
+            expect(result.json()).toEqual({ error: "email_mismatch" });
             expect(await db.account.count()).toBe(1);
             expect(await db.accountIdentity.count()).toBe(0);
             expect(await db.accountEmail.count()).toBe(0);
@@ -308,6 +459,26 @@ describe("native fresh Account admission through the registered method", () => {
             expect(await db.teamMembership.count()).toBe(1);
             expect(await db.teamInvitation.findUnique({ where: { id: invited.invitation.id } }))
                 .toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+            expect(await db.repeatKey.findMany({ orderBy: { key: "asc" } })).toEqual(repeatKeysBefore);
+
+            const retried = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                v: 1,
+                email: " INVITED@EXAMPLE.TEST ",
+                admission: { kind: "team_invitation", token: invited.token },
+                account: { mode: "plain", password },
+            } });
+            expect(retried.statusCode, retried.body).toBe(200);
+            const accountId = retried.json().accountId;
+            expect(await db.account.count()).toBe(2);
+            expect(await db.accountIdentity.findFirst({ where: { accountId } }))
+                .toMatchObject({ provider: "email", providerUserId: "invited@example.test" });
+            expect(await db.accountEmail.findFirst({ where: { accountId } }))
+                .toMatchObject({ normalizedEmail: "invited@example.test" });
+            expect(await db.accountPasswordCredential.count({ where: { accountId } })).toBe(1);
+            expect(await db.teamMembership.findUnique({ where: { teamId_accountId: { teamId: invited.team.id, accountId } } }))
+                .toMatchObject({ role: "member" });
+            expect(await db.teamInvitation.findUnique({ where: { id: invited.invitation.id } }))
+                .toMatchObject({ acceptedAt: expect.any(Date), acceptedByAccountId: accountId });
         } finally { await server.close(); }
     });
 
@@ -603,7 +774,7 @@ describe("native fresh Account admission through the registered method", () => {
                 normalizedEmail: "existing-account@example.test",
                 consumer: consumerKind === "password_enrollment"
                     ? { kind: "password_enrollment", accountId }
-                    : { kind: "sign_in_email_change", accountId, expectedNativeIdentity: "old@example.test" },
+                    : { kind: "sign_in_email_change", accountId, nativeIdentityId: "previous-identity", expectedNativeIdentity: "old@example.test" },
             }));
             const server = app();
             try {
@@ -684,31 +855,35 @@ describe("native fresh Account admission through the registered method", () => {
     });
 
     it("verifies signing possession and content binding before any E2EE Account write", async () => {
-        const issued = await proof();
-        const signing = tweetnacl.sign.keyPair();
-        const content = tweetnacl.box.keyPair();
-        const challenge = await issueKeyChallengeV2({ purpose: "account", env: process.env });
-        if (!challenge) throw new Error("challenge issuance unavailable");
-        const encode = (bytes: Uint8Array) => privacyKit.encodeBase64(new Uint8Array(bytes));
-        const envelope = {
-            v: 1, accountSigningPublicKey: encodePasswordCredentialFieldV1(signing.publicKey),
-            kdf: { algorithm: "argon2id13", salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(23)),
-                opsLimit: 3, memLimitBytes: 64 * 1024 * 1024, outputBytes: 32 },
-            cipher: { algorithm: "aes256gcm", nonce: encodePasswordCredentialFieldV1(new Uint8Array(12).fill(11)),
-                ciphertext: encodePasswordCredentialFieldV1(new Uint8Array(48).fill(17)) },
-        };
-        const proofInput = {
-            challengeId: challenge.challengeId, publicKey: encode(signing.publicKey),
-            signature: encode(tweetnacl.sign.detached(createKeyChallengeV2SigningInput(challenge), signing.secretKey)),
-            contentPublicKey: encode(content.publicKey),
-            contentPublicKeySig: encode(signAccountContentKeyBindingV1({ accountSigningSecretKey: signing.secretKey, contentPublicKey: content.publicKey })),
-        };
-        const payload = {
-            v: 1, email: "signup@example.test", admission: { kind: "native_email_verification", token: issued.rawBearer },
-            account: { mode: "e2ee", authKey: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(7)), envelope, proof: proofInput },
-        };
+        harness.resetEnv({ HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" });
         const server = app();
         try {
+            const issued = await proof();
+            const signing = tweetnacl.sign.keyPair();
+            const content = tweetnacl.box.keyPair();
+            // Native E2EE construction uses this shared protocol even when ordinary
+            // recovery-key login is disabled. Exercise production composition.
+            const challengeResponse = await server.inject({ method: "POST", url: "/v1/auth/challenge", payload: {} });
+            expect(challengeResponse.statusCode, challengeResponse.body).toBe(200);
+            const challenge = KeyChallengeV2IssueResponseSchema.parse(challengeResponse.json());
+            const encode = (bytes: Uint8Array) => privacyKit.encodeBase64(new Uint8Array(bytes));
+            const envelope = {
+                v: 1, accountSigningPublicKey: encodePasswordCredentialFieldV1(signing.publicKey),
+                kdf: { algorithm: "argon2id13", salt: encodePasswordCredentialFieldV1(new Uint8Array(16).fill(23)),
+                    opsLimit: 3, memLimitBytes: 64 * 1024 * 1024, outputBytes: 32 },
+                cipher: { algorithm: "aes256gcm", nonce: encodePasswordCredentialFieldV1(new Uint8Array(12).fill(11)),
+                    ciphertext: encodePasswordCredentialFieldV1(new Uint8Array(48).fill(17)) },
+            };
+            const proofInput = {
+                challengeId: challenge.challengeId, publicKey: encode(signing.publicKey),
+                signature: encode(tweetnacl.sign.detached(createKeyChallengeV2SigningInput(challenge), signing.secretKey)),
+                contentPublicKey: encode(content.publicKey),
+                contentPublicKeySig: encode(signAccountContentKeyBindingV1({ accountSigningSecretKey: signing.secretKey, contentPublicKey: content.publicKey })),
+            };
+            const payload = {
+                v: 1, email: "signup@example.test", admission: { kind: "native_email_verification", token: issued.rawBearer },
+                account: { mode: "e2ee", authKey: encodePasswordCredentialFieldV1(new Uint8Array(32).fill(7)), envelope, proof: proofInput },
+            };
             const invalid = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
                 ...payload, account: { ...payload.account, proof: { ...proofInput, signature: encode(new Uint8Array(64)) } },
             } });
@@ -748,6 +923,25 @@ describe("native fresh Account admission through the registered method", () => {
                 token: issued.rawBearer,
             }))).not.toBeNull();
             await db.account.delete({ where: { id: preExisting.id } });
+
+            const invited = await invitation();
+            const repeatKeysBeforeMismatch = await db.repeatKey.findMany({ orderBy: { key: "asc" } });
+            const mismatch = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload: {
+                ...payload,
+                admission: { kind: "team_invitation", token: invited.token },
+            } });
+            expect(mismatch.statusCode).toBe(403);
+            expect(mismatch.json()).toEqual({ error: "email_mismatch" });
+            expect(await db.account.count()).toBe(1);
+            expect(await db.accountIdentity.count()).toBe(0);
+            expect(await db.accountEmail.count()).toBe(0);
+            expect(await db.accountPasswordCredential.count()).toBe(0);
+            expect(await db.teamMembership.count()).toBe(1);
+            expect(await db.teamInvitation.findUnique({ where: { id: invited.invitation.id } }))
+                .toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+            expect(await db.keyChallengeV2.findUnique({ where: { id: challenge.challengeId } }))
+                .toMatchObject({ consumedAt: null });
+            expect(await db.repeatKey.findMany({ orderBy: { key: "asc" } })).toEqual(repeatKeysBeforeMismatch);
 
             const accepted = await server.inject({ method: "POST", url: "/v1/auth/email/provision", payload });
             expect(accepted.statusCode, accepted.statusCode >= 400 ? accepted.body : undefined).toBe(200);

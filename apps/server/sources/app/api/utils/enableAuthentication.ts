@@ -4,15 +4,20 @@ import type { Fastify } from "../types";
 import { log } from "@/utils/logging/log";
 import { captureAccountStoredContentCompatibilityForHttpRequest } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import {
+    AUTHORITY_CEILING_HEADER_V1,
     ACCOUNT_DIRECTORY_ERROR_CODES_V1,
+    parseAccountApiTokenBearerV1,
     type AuthTokenAuthenticationEvidenceV1,
 } from "@happier-dev/protocol";
 import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
 import {
     isRestrictedAuthTokenDeniedForRoute,
+    admitApiTokenSessionOperation,
+    readRestrictedCredentialRouteField,
     PRESENT_USER_REQUIRED_ERROR,
 } from "./apiTokenRouteAdmission";
-import { readBearerCredential, verifyRequestPrincipal } from "./verifyRequestPrincipal";
+import { readBearerCredential, verifyRequestPrincipal, type RequestPrincipalVerification } from "./verifyRequestPrincipal";
+import { isApiTokenRequestOriginAllowed } from "./isApiTokenRequestOriginAllowed";
 import {
     EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
     EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
@@ -20,6 +25,7 @@ import {
     EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
     EXTERNAL_ACTION_RESOLVED_TARGET_HEADER,
 } from "@happier-dev/protocol/actions";
+import { narrowCredentialAuthority } from "@/app/auth/effectiveCredentialAuthority";
 import {
     verifyExternalActionDomainExecutionRequest,
     verifyExternalActionExecutionAuthorizationCurrentness,
@@ -36,6 +42,13 @@ function stampApiTokenPrincipal(request: FastifyRequest, principal: NonNullable<
     request.authTokenLegacy = false;
     request.authTokenAuthenticationEvidence = principal.authenticationEvidence;
     request.apiTokenPrincipal = principal;
+}
+
+function isApiTokenRequestOriginDenied(request: FastifyRequest): boolean {
+    const origin = request.headers.origin;
+    return origin !== undefined
+        && request.apiTokenPrincipal !== undefined
+        && !isApiTokenRequestOriginAllowed(request.apiTokenPrincipal.grant, origin);
 }
 
 function stampSessionRuntimePrincipal(
@@ -67,6 +80,28 @@ function sendInvalidConnectionCredentialFailure(request: FastifyRequest, reply: 
 }
 
 export function enableAuthentication(app: Fastify) {
+    const earlyRequestPrincipals = new WeakMap<FastifyRequest, RequestPrincipalVerification>();
+
+    app.addHook("onRequest", async (request, reply) => {
+        if (request.headers.origin === undefined) return;
+        const bearer = readBearerCredential(request.headers.authorization);
+        if (bearer === null || parseAccountApiTokenBearerV1(bearer) === null) return;
+        const verification = await verifyRequestPrincipal({
+            authorizationHeader: request.headers.authorization,
+            allowLegacyHomeToken: request.routeOptions.config.allowAccountDirectoryToken !== true
+                && request.routeOptions.config.allowLegacyHomeToken !== false,
+            env: process.env,
+        });
+        // Routes that authenticate in preHandler reuse the canonical verification;
+        // only browser-origin admission runs before the body becomes available.
+        earlyRequestPrincipals.set(request, verification);
+        if (verification.status !== "verified" || !verification.principal.apiTokenPrincipal) return;
+        stampApiTokenPrincipal(request, verification.principal.apiTokenPrincipal);
+        if (isApiTokenRequestOriginDenied(request)) {
+            return reply.code(403).send({ error: "credential_origin_denied" });
+        }
+    });
+
     app.decorate('authenticate', async function (request: any, reply: any) {
         try {
             const authHeader = request.headers.authorization;
@@ -125,7 +160,14 @@ export function enableAuthentication(app: Fastify) {
                     : await verifyExternalActionDomainExecutionRequest(proof);
                 if (!verified) return sendInvalidConnectionCredentialFailure(request, reply);
                 stampApiTokenPrincipal(request, verified.principal);
+                if (isApiTokenRequestOriginDenied(request)) {
+                    return reply.code(403).send({ error: "credential_origin_denied" });
+                }
                 request.externalActionExecutionAuthorized = true;
+                request.externalActionInputConstraints = {
+                    models: verified.binding.grant.models,
+                    permissionModes: verified.binding.grant.permissionModes,
+                };
                 request.externalActionEffectActionId = verified.effectActionId;
                 request.externalActionRootActionId = verified.binding.actionId;
                 request.externalActionExecutionTarget = verified.target;
@@ -148,7 +190,7 @@ export function enableAuthentication(app: Fastify) {
             // route families that explicitly reject legacy Home authority use
             // only the strict current verifier; ordinary Home routes retain
             // the explicitly named compatibility reader.
-            const verification = await verifyRequestPrincipal({
+            const verification = earlyRequestPrincipals.get(request) ?? await verifyRequestPrincipal({
                 authorizationHeader: authHeader,
                 allowLegacyHomeToken: request.routeOptions?.config?.allowAccountDirectoryToken !== true
                     && request.routeOptions?.config?.allowLegacyHomeToken !== false,
@@ -179,6 +221,7 @@ export function enableAuthentication(app: Fastify) {
 
             const principal = verification.principal;
             const tokenKind = principal.kind;
+            request.authTokenEpoch = principal.tokenEpoch;
             if (logDiagnostics) {
                 log({ module: 'auth-decorator' }, `Auth success - user: ${principal.accountId}`);
             }
@@ -188,6 +231,9 @@ export function enableAuthentication(app: Fastify) {
             }
             if (apiTokenPrincipal) {
                 stampApiTokenPrincipal(request, apiTokenPrincipal);
+                if (isApiTokenRequestOriginDenied(request)) {
+                    return reply.code(403).send({ error: "credential_origin_denied" });
+                }
             } else if (principal.sessionRuntimePrincipal) {
                 stampSessionRuntimePrincipal(
                     request,
@@ -201,12 +247,28 @@ export function enableAuthentication(app: Fastify) {
                 request.authTokenLegacy = principal.legacy;
                 request.authTokenAuthenticationEvidence = principal.authenticationEvidence;
             }
+            request.authAuthority = narrowCredentialAuthority(request.authAuthority, request.headers[AUTHORITY_CEILING_HEADER_V1]);
             if (isRestrictedAuthTokenDeniedForRoute(request)) {
                 const error = request.routeOptions?.config?.allowAccountDirectoryToken === true
                     ? ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest
                     : request.routeOptions?.config?.restrictedAuthFailureError
                         ?? PRESENT_USER_REQUIRED_ERROR;
                 return reply.code(403).send({ error });
+            }
+            const sessionAction = request.routeOptions.config.apiTokenSessionAction;
+            const binding = request.routeOptions.config.restrictedCredentialBinding;
+            if (apiTokenPrincipal && sessionAction && binding?.scope === "session") {
+                const sessionId = readRestrictedCredentialRouteField(request, binding.session);
+                if (typeof sessionId !== "string") {
+                    return reply.code(403).send({ error: "credential_scope_denied" });
+                }
+                const admitted = await admitApiTokenSessionOperation({
+                    principal: apiTokenPrincipal, sessionId, actionId: sessionAction,
+                    targetMachineId: await app.resolveCurrentSessionMachine?.({
+                        accountId: apiTokenPrincipal.accountId, sessionId,
+                    }),
+                });
+                if (!admitted.ok) return reply.code(403).send({ error: admitted.error });
             }
             captureAccountStoredContentCompatibilityForHttpRequest(request);
         } catch {

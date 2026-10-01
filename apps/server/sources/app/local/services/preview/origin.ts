@@ -92,7 +92,11 @@ export function resolveLocalServiceHostOrigin(input: Readonly<{
     if (publicBase.protocol !== "https:") {
         return { ok: false, reasonCode: "https_required" };
     }
-    return { ok: true, origin: `https://${resolveLocalServicePreviewHostLabel(input.resourceId)}.${baseDomain}` };
+    const origin = `https://${resolveLocalServicePreviewHostLabel(input.resourceId)}.${baseDomain}`;
+    if (origin === publicBase.origin) {
+        return { ok: false, reasonCode: "host_origin_unavailable" };
+    }
+    return { ok: true, origin };
 }
 
 export function resolveLocalServicePreviewUrl(input: ResolveLocalServicePreviewUrlInput): ResolveLocalServicePreviewUrlResult {
@@ -119,10 +123,6 @@ export function resolveLocalServicePreviewUrl(input: ResolveLocalServicePreviewU
         return { ok: true, url: url.toString(), origin };
     }
 
-    const origin = publicBase.origin;
-    const url = appendPreviewToken(
-        appendInitialPath(new URL(`/v1/local-services/preview/${encodeURIComponent(input.previewId)}`, origin), input.initialPath),
-        input.token,
-    );
-    return { ok: true, url: url.toString(), origin };
+    // Direct browsers and native embeds provide no isolated-origin guarantee for API paths.
+    return { ok: false, reasonCode: "host_origin_unavailable" };
 }

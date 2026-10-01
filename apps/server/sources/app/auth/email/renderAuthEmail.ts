@@ -40,6 +40,31 @@ const AUTHENTICATION_CHANGE_SENTENCE = {
     sign_in_email_changed: "The sign-in email on your Happier account was changed.",
 } as const satisfies Record<AccountAuthenticationChangeV1, string>;
 
+/**
+ * Mail states times in the one timezone the server can name truthfully.
+ *
+ * V1 templates are code-owned English and carry no recipient locale or
+ * timezone, so a raw `toISOString()` leaks a machine value into a consumer
+ * message while a guessed local time would be wrong. A fixed, explicitly
+ * labelled UTC long date is the honest presentation of the same instant; it
+ * deliberately adds no locale or timezone owner.
+ */
+const AUTH_EMAIL_UTC_DATE_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+});
+
+export function formatAuthEmailUtcTimestampV1(value: Date): string {
+    const parts = AUTH_EMAIL_UTC_DATE_FORMATTER.formatToParts(value);
+    const read = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+    return `${read("day")} ${read("month")} ${read("year")} at ${read("hour")}:${read("minute")} UTC`;
+}
+
 function renderDocument(params: Readonly<{
     heading: string;
     paragraphs: readonly string[];
@@ -121,12 +146,25 @@ export async function renderAuthEmailV1(message: AuthEmailMessage): Promise<Rend
             });
             return { subject: "Recovering your Happier account", ...document };
         }
+        case "mail_delivery_test": {
+            const document = renderDocument({
+                heading: "Your Home can send email",
+                paragraphs: [
+                    message.homeName
+                        ? `This test message was sent by ${message.homeName} using its mail settings.`
+                        : "This test message was sent by your Happier Home using its mail settings.",
+                    "If you received it, sign-in and invitation emails from this Home can reach this address.",
+                ],
+                closing: ["You do not need to do anything."],
+            });
+            return { subject: "Test email from your Happier Home", ...document };
+        }
         case "account_authentication_changed_notice": {
             const document = renderDocument({
                 heading: "Your account sign-in settings changed",
                 paragraphs: [
                     AUTHENTICATION_CHANGE_SENTENCE[message.change],
-                    `This happened on ${message.occurredAt.toISOString()}.`,
+                    `This happened on ${formatAuthEmailUtcTimestampV1(message.occurredAt)}.`,
                 ],
                 ...(message.accountSecurityUrl ? {
                     action: { label: "Review account security", url: message.accountSecurityUrl },
@@ -151,7 +189,7 @@ export async function renderAuthEmailV1(message: AuthEmailMessage): Promise<Rend
                     message.emailBound
                         ? `This invitation is intended for ${message.to.address}. Keep this link private.`
                         : "Anyone with this link can accept.",
-                    `This invitation expires on ${message.expiresAt.toISOString()}.`,
+                    `This invitation expires on ${formatAuthEmailUtcTimestampV1(message.expiresAt)}.`,
                 ],
                 action: { label: "Preview invitation", url: message.joinUrl },
                 qrContentId: cid,

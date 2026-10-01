@@ -12,7 +12,7 @@ import {
 import {
   QualifiedConnectedAccountGroupV4Schema,
   QualifiedConnectedAccountProfileV4Schema,
-} from '../connect/qualifiedConnectedAccountsV4.js';
+} from '../connect/qualifiedConnectedAccountProjectionsV4.js';
 import { TeamIdSchema } from '../teams/membership.js';
 import { TEAM_NAME_MAX_LENGTH_V1 } from '../teams/team.js';
 

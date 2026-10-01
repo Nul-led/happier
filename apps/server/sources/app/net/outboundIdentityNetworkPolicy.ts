@@ -6,7 +6,7 @@ import {
     type IpAddressFacts,
     type IpCidr,
 } from "@/app/net/addressPolicy";
-import { isLoopbackHostname } from "@/utils/network/urlSafety";
+import { isLoopbackHostname } from "@happier-dev/protocol";
 
 /**
  * Outbound network policy for administrator-defined identity endpoints (OIDC

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /**
  * The root barrel is what real consumers import.
@@ -16,7 +16,24 @@ import { describe, expect, it } from 'vitest';
  * so this check deliberately enters the way consumers do.
  */
 describe('protocol root barrel', () => {
+  it('initializes the direct Action registry before any root import', async () => {
+    vi.resetModules();
+    const actions = await import('./actions/actionSpecs.js');
+
+    expect(actions.ActionSpecSchema.safeParse(actions.getActionSpec('workflow.trigger.add')).success)
+      .toBe(true);
+  }, 60_000);
+
+  it('initializes the Auth entry contracts before any root import', async () => {
+    vi.resetModules();
+    const auth = await import('./auth/entry.js');
+
+    expect(auth.AuthEntryRequestV1Schema.parse({ v: 1, scope: { kind: 'home' } }))
+      .toEqual({ v: 1, scope: { kind: 'home' } });
+  }, 60_000);
+
   it('initializes every eagerly evaluated owner when a consumer imports the package root', async () => {
+    vi.resetModules();
     const protocol = await import('./index.js');
 
     // The registry the feature/browser graph imports back.
@@ -28,6 +45,10 @@ describe('protocol root barrel', () => {
     // Action registry itself.
     expect(protocol.RuntimeActionIdV1Schema.safeParse('browser.navigate').success).toBe(true);
     expect(protocol.getActionSpec('home.governance.get').id).toBe('home.governance.get');
+    expect(protocol.AutomationEventFilterV1Schema.parse({
+      v: 1,
+      all: [{ op: 'eq', field: '/status', value: 'ready' }],
+    })).toMatchObject({ v: 1 });
 
     // Team credential Actions pull resource schemas into this same eager public
     // graph. Their source-binding leaf must not re-enter the Provider broker

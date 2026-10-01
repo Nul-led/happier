@@ -1,8 +1,8 @@
 import type { Tx } from "@/storage/inTx";
 import {
-    type AccountStatus,
+    AccountStatus,
+    TeamMembershipStatus,
     type SessionHistoryAccess,
-    type TeamMembershipStatus,
 } from "@/storage/enums.generated";
 import { isEffectiveTeamMembership } from "../memberships/effectiveMembership";
 import { sessionHistoryAccessOf } from "../memberships/sessionHistory";
@@ -34,6 +34,21 @@ export type TeamGroupMembershipContextError =
 export type TeamGroupMembershipContextResolution =
     | Readonly<{ ok: true; groupMembership: TeamGroupMembershipLifetimeContext }>
     | Readonly<{ ok: false; error: TeamGroupMembershipContextError }>;
+
+/**
+ * The storage predicate for the same effective Group-membership contract as
+ * `isEffectiveTeamGroupMembership`. Retained rows remain queryable for restore
+ * and history, but list/count projections must exclude them while any parent
+ * lifecycle input is inactive.
+ */
+export const EFFECTIVE_TEAM_GROUP_MEMBERSHIP_WHERE = {
+    teamMembership: {
+        status: TeamMembershipStatus.active,
+        account: { status: AccountStatus.active },
+        team: { archivedAt: null },
+    },
+    group: { archivedAt: null },
+} as const;
 
 /**
  * Lane 01's complete structural Group-membership predicate. Retained roster

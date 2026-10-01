@@ -17,6 +17,20 @@ describe('sessionMessages meta', () => {
     expect((parsed as any).extra).toBe('x');
   });
 
+  it('accepts the 0.2 untyped Automation pending-queue meta without inventing typed provenance', () => {
+    // Provenance-pinned 0.2 shape from ../0.2 apps/cli/src/daemon/automation/automationPendingQueueClient.ts
+    // (HEAD ac30c50856abd2265c14459e77ee3384da1698ad, clean): meta { sentFrom: 'cli', source: 'automation' }
+    // with no automationId or typed provenance keys, in both plain and E2EE ciphertext paths.
+    const parsed = protocol.SessionMessageMetaSchema.parse({
+      sentFrom: 'cli',
+      source: 'automation',
+    });
+
+    expect(parsed.sentFrom).toBe('cli');
+    expect(parsed.source).toBe('automation');
+    expect(protocol.readSessionMessageProvenanceV1(parsed)).toBeNull();
+  });
+
   it('accepts session media in primary and secondary Happier metadata slots', () => {
     const media = {
       id: 'media_1',

@@ -5,6 +5,7 @@ import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { invalidateSessionReviewProjectionsForAutomationInTx } from './sessionReviewProjectionInvalidation';
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import {
     deriveAccountEncryptionCurrentnessFromRow,
@@ -14,17 +15,27 @@ import type {
     AccountEncryptionMigrateAutomationStageItem,
     AccountEncryptionMigrateAutomationsDirective,
     AccountEncryptionMigrateAutomationsDirectiveInput,
+    AccountEncryptionMigrateAutomationsInventoryResponse,
 } from "@happier-dev/protocol";
 import {
     assertWorkflowStoredEnvelopeOuterForMode,
     WorkflowStoredContentError,
 } from "@/app/workflows/runs/storedContent";
+import { invocationSelect, projectInvocation, type InvocationRow } from "@/app/workflows/workflowRunService";
+import {
+    readWorkflowRunKeyProjectionInTx,
+    replaceWorkflowRunKeyEnvelopesInTx,
+    WorkflowRunAccessError,
+} from "@/app/workflows/workflowRunAccess";
 import {
     ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS,
     ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS,
     AUTOMATION_V3_DEFINITION_LIST_MAX_ITEMS,
     AUTOMATION_V3_RUN_LIST_MAX_ITEMS,
     AccountEncryptionMigrateAutomationsDirectiveSchema,
+    AccountEncryptionMigrateAutomationsInventoryResponseSchema,
+    parseWorkflowStoredContentEnvelopeV1,
+    isAccountScopedBlobCiphertextForKind,
     AutomationEventTriggerDefinitionStoredPayloadV1Schema,
     AutomationSourceSelectorIdV1Schema,
     AutomationTriggerIdSchema,
@@ -33,6 +44,8 @@ import {
     AutomationRunResultStoredV1Schema,
     deriveAutomationOccurrenceKeyV1,
     parseAutomationStoredDefinitionExecutionRecipeV1,
+    normalizeAutomationTemplateEnvelopeStoredRead,
+    parseAutomationStoredWorkflowDefinitionRecipeV2,
     pluginJsonValuesEqual,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
     serializeAutomationStoredWorkflowDefinitionRecipeV2,
@@ -72,15 +85,10 @@ import type { AutomationRecipeFeaturePolicy } from "./automationRecipeFeaturePol
 import { validateExistingSessionAutomationTargetTx } from "./automationExistingSessionValidation";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
 import {
-    isAutomationDefinitionRepresentableInV2,
-    isAutomationRunV2HistoryRepresentable,
-} from "./automationApiProjection";
-import {
     automationDefinitionListItemSelect,
     automationListItemSelect,
     automationRunCauseSelect,
     automationRunDetailSelect,
-    automationRunV2ListItemSelect,
     automationRunV3ListItemSelect,
     automationRunItemSelect,
     automationTriggerSelect,
@@ -133,6 +141,8 @@ import {
     isAutomationRunState,
 } from "./automationTypes";
 import type {
+    AutomationAssignmentInput,
+    AutomationTargetType,
     AutomationLegacyTemplateEnvelopeAdmission,
     AutomationLegacyTargetType,
     AutomationListItem,
@@ -140,7 +150,6 @@ import type {
     AutomationCurrentUpsertInput,
     AutomationRunDetailItem,
     AutomationRunItem,
-    AutomationRunV2ListItem,
     AutomationRunV3ListItem,
     AutomationScheduleInput,
     AutomationTriggerItem,
@@ -270,6 +279,34 @@ async function normalizeCurrentAutomationDefinitionWriteTx(params: Readonly<{
             ? { strictExistingSessionId: serialized.recipe.target.sessionId }
             : {}),
     };
+}
+
+/** Trigger-set currentness shares the Definition revision, even without a recipe edit. */
+function advanceAutomationDefinitionRevision(existing: Pick<AutomationListItem, "templateVersion" | "templateCiphertext">) {
+    const templateVersion = existing.templateVersion + 1;
+    const workflow = parseAutomationStoredWorkflowDefinitionRecipeV2(existing.templateCiphertext);
+    const execution = parseAutomationStoredDefinitionExecutionRecipeV1(existing.templateCiphertext);
+    const serialized = workflow.kind === "available"
+        ? serializeAutomationStoredWorkflowDefinitionRecipeV2({ ...workflow.recipe, templateVersion })
+        : execution.kind === "available"
+            ? serializeAutomationStoredDefinitionExecutionRecipeV1({ ...execution.recipe, templateVersion })
+            : null;
+    if (serialized?.kind === "contentInvalid") {
+        throw new AutomationValidationError("Automation execution recipe revision is invalid");
+    }
+    return {
+        templateVersion,
+        // Retained legacy/invalid content stays opaque: removal never requires source recovery.
+        templateCiphertext: serialized?.serialized ?? existing.templateCiphertext,
+    };
+}
+
+async function advanceAutomationTriggerSetRevisionTx(tx: Tx, automation: AutomationListItem, now: Date) {
+    const updated = await tx.automation.updateMany({
+        where: { id: automation.id, accountId: automation.accountId, deletedAt: null, templateVersion: automation.templateVersion },
+        data: { ...advanceAutomationDefinitionRevision(automation), updatedAt: now },
+    });
+    if (updated.count !== 1) throw new AutomationTemplateMutationConflictError();
 }
 
 type AutomationScheduleDbFields = Readonly<{
@@ -968,9 +1005,9 @@ function automationMatchesCurrentCreateInput(
     existing: AutomationListItem,
     requested: AutomationCurrentUpsertInput,
 ): boolean {
-    const serialized = serializeAutomationStoredDefinitionExecutionRecipeV1(
-        requested.executionRecipe,
-    );
+    const serialized = requested.executionRecipe.v === 2
+        ? serializeAutomationStoredWorkflowDefinitionRecipeV2(requested.executionRecipe)
+        : serializeAutomationStoredDefinitionExecutionRecipeV1(requested.executionRecipe);
     if (serialized.kind !== "available") return false;
     if (
         existing.id !== requested.automationId
@@ -978,7 +1015,10 @@ function automationMatchesCurrentCreateInput(
         || existing.name !== requested.name
         || existing.description !== (requested.description ?? null)
         || existing.enabled !== requested.enabled
-        || existing.targetType !== toCurrentAutomationDefinitionTargetType(serialized.recipe)
+        || existing.workflowDefinitionId !== (requested.workflowDefinitionId ?? null)
+        || existing.scopeSessionId !== (requested.scopeSessionId ?? null)
+        || existing.targetType !== (serialized.recipe.v === 2
+            ? null : toCurrentAutomationDefinitionTargetType(serialized.recipe))
         || existing.templateCiphertext !== serialized.serialized
         || !automationCreateAssignmentsMatch(existing.assignments, requested.assignments)
         || existing.triggers.length !== requested.triggers.length
@@ -1117,26 +1157,19 @@ async function deleteSupersededAutomationEventSourceStatusTx(params: Readonly<{
     });
 }
 
-/**
- * A V2 endpoint asks the owner for a released-shape Definition, not merely a
- * schedule trigger. Keep the snapshot columns in conditional mutations so a
- * concurrent V3 replacement cannot be modified after this check.
- */
-function v2DefinitionCurrentnessWhere(
-    requireV2DefinitionRepresentability: boolean | undefined,
-    existing: AutomationListItem,
-): Readonly<{
-    targetType?: AutomationLegacyTargetType;
-    templateCiphertext?: string;
-}> {
-    if (!requireV2DefinitionRepresentability) return {};
-    if (!isAutomationDefinitionRepresentableInV2(existing)) {
-        throw new Error("V2 mutation requires a representable Automation Definition");
+/** A retained template may mutate only its own single schedule or manual-only state. */
+function isRetainedAutomationSingleScheduleDefinition(item: AutomationListItem): boolean {
+    const trigger = item.triggers.length === 1 ? item.triggers[0] : undefined;
+    const hasSingleSchedule = item.triggers.length === 0
+        || (trigger?.kind === "schedule" && trigger.enabled
+            && (trigger.scheduleKind === "cron" || trigger.scheduleKind === "interval"));
+    if (!hasSingleSchedule || item.targetType === null || item.targetType === "execution_run"
+        || parseAutomationStoredDefinitionExecutionRecipeV1(item.templateCiphertext).kind === "available") return false;
+    try {
+        return normalizeAutomationTemplateEnvelopeStoredRead(JSON.parse(item.templateCiphertext)) !== null;
+    } catch {
+        return false;
     }
-    return {
-        targetType: existing.targetType,
-        templateCiphertext: existing.templateCiphertext,
-    };
 }
 
 export async function loadAutomationTx(
@@ -1145,7 +1178,7 @@ export async function loadAutomationTx(
         accountId: string;
         automationId: string;
         includeDeleted?: boolean;
-        requireV2DefinitionRepresentability?: boolean;
+
     },
 ): Promise<AutomationListItem | null> {
     const row = await tx.automation.findFirst({
@@ -1159,12 +1192,7 @@ export async function loadAutomationTx(
 
     if (!row) return null;
     const item = row as AutomationListItem;
-    if (
-        params.requireV2DefinitionRepresentability
-        && !isAutomationDefinitionRepresentableInV2(item)
-    ) {
-        return null;
-    }
+
     return item;
 }
 
@@ -1419,6 +1447,7 @@ const workflowInvocationMigrationParticipantSelect = {
     parentRecordId: true,
     memberOrdinal: true,
     attempt: true,
+    contentRevision: true,
     contentEnvelope: true,
 } satisfies Prisma.WorkflowRunInvocationSelect;
 
@@ -2357,10 +2386,12 @@ export async function applyAutomationAccountEncryptionTransitionStageInTx(
                 id: candidate.row.id,
                 runId: candidate.row.runId,
                 contentEnvelope: candidate.item.source.contentEnvelope,
+                contentRevision: { equals: candidate.row.contentRevision, lt: 9_223_372_036_854_775_807n },
                 run: { accountId: params.accountId },
             },
             data: {
                 contentEnvelope: candidate.item.target.contentEnvelope,
+                contentRevision: { increment: 1 },
                 updatedAt: new Date(),
             },
         });
@@ -2407,6 +2438,77 @@ async function loadAutomationAccountEncryptionMigrationRunsInTx(
         orderBy: { id: "asc" },
     });
     return rows.filter(automationRunHasMigrationPrivateContent);
+}
+
+/** The development cut leaves recognized Account-key Workflow history untouched. */
+function isPreCutWorkflowMigrationRun(row: AutomationAccountEncryptionMigrationRunRow): boolean {
+    if (row.workflowCustodyState === null || row.workflowAcceptedSnapshotEnvelope === null) return false;
+    const envelope = parseWorkflowStoredContentEnvelopeV1(row.workflowAcceptedSnapshotEnvelope);
+    if (envelope?.t === "encrypted") {
+        return isAccountScopedBlobCiphertextForKind({
+            kind: "workflow_accepted_snapshot", ciphertext: envelope.c,
+        });
+    }
+    return envelope?.t === "plain" && typeof envelope.v === "object"
+        && envelope.v !== null && !Array.isArray(envelope.v) && envelope.v.v === 1;
+}
+
+export async function readAutomationAccountEncryptionMigrationInventoryInTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+}>): Promise<AccountEncryptionMigrateAutomationsInventoryResponse> {
+    const fence = await acquireAccountEncryptionTransitionFenceInTx(params.tx, params.accountId);
+    if (fence.status !== "ready") throw new AutomationAccountEncryptionMigrationConflictError();
+    const rows = await loadAutomationAccountEncryptionMigrationRowsInTx(params.tx, params.accountId);
+    const runs = (await loadAutomationAccountEncryptionMigrationRunsInTx(params.tx, params.accountId))
+        .filter((row) => !isPreCutWorkflowMigrationRun(row));
+    return AccountEncryptionMigrateAutomationsInventoryResponseSchema.parse({
+        templates: rows.map((row) => ({
+            automationId: row.id, expectedTemplateVersion: row.templateVersion,
+            ...transitionInventoryDefinition(row).source,
+        })),
+        runs: await Promise.all(runs.map(async (row) => {
+            assertAutomationRunStoredContentForAccountMode({
+                row, mode: fence.account.currentness.encryptionMode,
+                content: automationRunMigrationStoredContent(row), allowLegacyResultSource: true,
+            });
+            const invocations = row.workflowAcceptedSnapshotEnvelope === null ? []
+                : await params.tx.workflowRunInvocation.findMany({
+                    where: { runId: row.id }, orderBy: [{ sequence: "asc" }, { id: "asc" }],
+                    select: invocationSelect,
+                });
+            for (const invocation of invocations) {
+                assertWorkflowStoredEnvelopeOuterForMode({
+                    mode: fence.account.currentness.encryptionMode,
+                    raw: invocation.contentEnvelope,
+                    binding: workflowInvocationStoredBinding(params.accountId, invocation),
+                });
+            }
+            return {
+            runId: row.id, expectedRunRevision: row.revision,
+            triggerEvidenceEnvelope: row.triggerEvidenceEnvelope,
+            occurrenceEvidenceEqualityTag: row.occurrenceEvidenceEqualityTag,
+            executionInputEnvelope: row.executionInputEnvelope,
+            resultEnvelope: row.resultEnvelope,
+            replyContextEnvelope: row.replyContextEnvelope,
+            failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
+            automationId: row.automationId, occurrenceKey: row.occurrenceKey, triggerId: row.triggerId,
+            summaryCiphertext: row.summaryCiphertext,
+            ...(row.workflowCustodyState !== null && row.workflowAcceptedSnapshotEnvelope !== null ? {
+                workflow: {
+                    acceptedSnapshotEnvelope: row.workflowAcceptedSnapshotEnvelope,
+                    checkpointEnvelope: row.workflowCheckpointEnvelope,
+                    keyCensus: await readWorkflowRunKeyProjectionInTx(params.tx, {
+                        actorAccountId: params.accountId, runId: row.id,
+                    }),
+                    invocations: invocations.map((invocation) => ({
+                        index: projectInvocation(invocation), contentEnvelope: invocation.contentEnvelope,
+                    })),
+                },
+            } : {}),
+            };
+        })),
+    });
 }
 
 type AutomationAccountEncryptionMigrationTemplateItem = Extract<
@@ -2636,11 +2738,12 @@ function automationRunMigrationDirectiveTargetContent(
         triggerEvidenceEnvelope: item.triggerEvidenceEnvelope,
         occurrenceEvidenceEqualityTag: item.occurrenceEvidenceEqualityTag,
         executionInputEnvelope: item.executionInputEnvelope,
-        // This predecessor directive cannot re-seal Workflow-owned content.
-        // Retaining its current bytes here preserves legacy Automation Runs
-        // while target-mode validation rejects an unsafe Workflow mode flip.
-        workflowAcceptedSnapshotEnvelope: row.workflowAcceptedSnapshotEnvelope,
-        workflowCheckpointEnvelope: row.workflowCheckpointEnvelope,
+        // Omitted predecessor fields retain their source bytes so unsafe
+        // current Workflow flips still fail target-mode admission.
+        workflowAcceptedSnapshotEnvelope: item.workflow?.acceptedSnapshotEnvelope
+            ?? row.workflowAcceptedSnapshotEnvelope,
+        workflowCheckpointEnvelope: item.workflow
+            ? item.workflow.checkpointEnvelope : row.workflowCheckpointEnvelope,
         resultEnvelope: item.resultEnvelope,
         replyContextEnvelope: item.replyContextEnvelope,
         failureDetailEnvelope: item.failureDetailEnvelope,
@@ -3274,6 +3377,7 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
     accountId: string;
     toMode: "plain" | "e2ee";
     directive: AccountEncryptionMigrateAutomationsDirectiveInput;
+    ownerContentPublicKeyFingerprint?: string;
 }>): Promise<AutomationAccountEncryptionMigrationResult> {
     const accountFence = await acquireAccountEncryptionTransitionFenceInTx(params.tx, params.accountId);
     if (accountFence.status !== "ready") return { status: "invalid_content" };
@@ -3286,10 +3390,10 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
             params.accountId,
         );
     const runRows =
-        await loadAutomationAccountEncryptionMigrationRunsInTx(
+        (await loadAutomationAccountEncryptionMigrationRunsInTx(
             params.tx,
             params.accountId,
-        );
+        )).filter((row) => !isPreCutWorkflowMigrationRun(row));
 
     if (directive.action === "assert_empty") {
         return rows.length === 0 && runRows.length === 0
@@ -3297,6 +3401,7 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
             : { status: "not_empty" };
     }
     if (directive.action === "clear") {
+        if (runRows.length > 0) return { status: "not_empty" };
         const clearResult = await clearLoadedAutomationsForAccountInTx({
             tx: params.tx,
             accountId: params.accountId,
@@ -3369,6 +3474,44 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
     const targetTriggerDefinitionsById = new Map<string, ReturnType<
         typeof validateAutomationTriggerDefinitionMigrationCandidate
     >>();
+    const workflowInvocationsByRunId = new Map<string, InvocationRow[]>();
+    for (const row of runRows) {
+        const workflow = runsById.get(row.id)!.workflow;
+        const hasCurrentWorkflow = row.workflowCustodyState !== null
+            && row.workflowAcceptedSnapshotEnvelope !== null;
+        if (hasCurrentWorkflow && !workflow) return { status: "migration_incomplete" };
+        if (!workflow) continue;
+        if (!hasCurrentWorkflow) return { status: "invalid_content" };
+        if (workflow.sourceAcceptedSnapshotEnvelope !== row.workflowAcceptedSnapshotEnvelope
+            || workflow.sourceCheckpointEnvelope !== row.workflowCheckpointEnvelope) {
+            throw new AutomationAccountEncryptionMigrationConflictError();
+        }
+        const invocations = await params.tx.workflowRunInvocation.findMany({
+            where: { runId: row.id }, select: invocationSelect,
+        });
+        const byId = new Map(workflow.invocations.map((invocation) => [invocation.id, invocation]));
+        if (byId.size !== workflow.invocations.length || byId.size !== invocations.length
+            || invocations.some((invocation) => !byId.has(invocation.id))) {
+            return { status: "migration_incomplete" };
+        }
+        for (const invocation of invocations) {
+            const target = byId.get(invocation.id)!;
+            if (invocation.contentEnvelope !== target.sourceContentEnvelope
+                || invocation.contentRevision.toString() !== target.expectedContentRevision) {
+                throw new AutomationAccountEncryptionMigrationConflictError();
+            }
+        }
+        const census = await readWorkflowRunKeyProjectionInTx(params.tx, {
+            actorAccountId: params.accountId, runId: row.id,
+        });
+        if (census.encryptionMode === "e2ee" && census.dataEncryptionKey === null) {
+            return { status: "invalid_content" };
+        }
+        if (census.dataEncryptionKey !== workflow.expectedDataEncryptionKey) {
+            throw new AutomationAccountEncryptionMigrationConflictError();
+        }
+        workflowInvocationsByRunId.set(row.id, invocations);
+    }
     try {
         const sourceMode = requiresSourceMode
             ? await readAutomationMigrationSourceModeInTx(params.tx, params.accountId)
@@ -3434,10 +3577,19 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
                     mode: params.toMode,
                     content: targetContent,
                 });
+                const workflow = item.workflow;
+                if (workflow) {
+                    const byId = new Map(workflow.invocations.map((invocation) => [invocation.id, invocation]));
+                    for (const invocation of workflowInvocationsByRunId.get(row.id)!) {
+                        const binding = workflowInvocationStoredBinding(params.accountId, invocation);
+                        assertWorkflowStoredEnvelopeOuterForMode({ raw: invocation.contentEnvelope, mode: sourceMode!, binding });
+                        assertWorkflowStoredEnvelopeOuterForMode({ raw: byId.get(invocation.id)!.contentEnvelope, mode: params.toMode, binding });
+                    }
+                }
             }
         }
     } catch (error) {
-        if (error instanceof AutomationValidationError) {
+        if (isAutomationTransitionInvalidContentError(error)) {
             return { status: "invalid_content" };
         }
         throw error;
@@ -3511,6 +3663,10 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
                 id: row.id,
                 accountId: params.accountId,
                 revision: item.expectedRunRevision,
+                ...(item.workflow ? {
+                    workflowAcceptedSnapshotEnvelope: item.workflow.sourceAcceptedSnapshotEnvelope,
+                    workflowCheckpointEnvelope: item.workflow.sourceCheckpointEnvelope,
+                } : {}),
                 ...(cause === null
                     ? { originKind: "direct", automationId: null, causeKind: null }
                     : encodeAutomationRunCause(cause)),
@@ -3520,6 +3676,10 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
                 occurrenceEvidenceEqualityTag:
                     item.occurrenceEvidenceEqualityTag,
                 executionInputEnvelope: item.executionInputEnvelope,
+                ...(item.workflow ? {
+                    workflowAcceptedSnapshotEnvelope: item.workflow.acceptedSnapshotEnvelope,
+                    workflowCheckpointEnvelope: item.workflow.checkpointEnvelope,
+                } : {}),
                 resultEnvelope: item.resultEnvelope,
                 replyContextEnvelope: item.replyContextEnvelope,
                 errorMessage: item.failureDetailEnvelope
@@ -3533,6 +3693,33 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
         });
         if (updated.count !== 1) {
             throw new AutomationAccountEncryptionMigrationConflictError();
+        }
+
+        if (item.workflow) {
+            for (const invocation of item.workflow.invocations) {
+                const result = await params.tx.workflowRunInvocation.updateMany({
+                    where: { id: invocation.id, runId: row.id,
+                        contentRevision: BigInt(invocation.expectedContentRevision),
+                        contentEnvelope: invocation.sourceContentEnvelope },
+                    data: { contentEnvelope: invocation.contentEnvelope,
+                        contentRevision: { increment: 1 }, updatedAt: new Date() },
+                });
+                if (result.count !== 1) throw new AutomationAccountEncryptionMigrationConflictError();
+            }
+            try {
+                await replaceWorkflowRunKeyEnvelopesInTx(params.tx, {
+                    actorAccountId: params.accountId, runId: row.id, encryptionMode: params.toMode,
+                    expectedDataEncryptionKey: item.workflow.expectedDataEncryptionKey,
+                    recipientKeyEnvelopes: item.workflow.recipientKeyEnvelopes,
+                    ownerContentPublicKeyFingerprint: params.ownerContentPublicKeyFingerprint,
+                });
+            } catch (error) {
+                if (error instanceof WorkflowRunAccessError && error.code === "currentness_conflict") {
+                    throw new AutomationAccountEncryptionMigrationConflictError();
+                }
+                // Throw after mutations so the enclosing Account transaction rolls back.
+                throw error;
+            }
         }
 
         const run = await params.tx.automationRun.findFirst({
@@ -3601,10 +3788,10 @@ export async function matchAutomationAccountEncryptionMigrationPostStateInTx(
             params.accountId,
         );
     const runRows =
-        await loadAutomationAccountEncryptionMigrationRunsInTx(
+        (await loadAutomationAccountEncryptionMigrationRunsInTx(
             params.tx,
             params.accountId,
-        );
+        )).filter((row) => !isPreCutWorkflowMigrationRun(row));
     if (
         directive.action === "assert_empty"
         || directive.action === "clear"
@@ -3686,6 +3873,48 @@ export async function matchAutomationAccountEncryptionMigrationPostStateInTx(
                 content: automationRunMigrationStoredContent(row),
             });
             const item = runsById.get(row.id)!;
+            if (item.workflow) {
+                const workflow = item.workflow;
+                if (row.workflowAcceptedSnapshotEnvelope !== workflow.acceptedSnapshotEnvelope
+                    || row.workflowCheckpointEnvelope !== workflow.checkpointEnvelope) {
+                    return { status: "mismatch" };
+                }
+                const invocations = await params.tx.workflowRunInvocation.findMany({
+                    where: { runId: row.id }, select: invocationSelect,
+                });
+                const byId = new Map(workflow.invocations.map((invocation) => [invocation.id, invocation]));
+                if (byId.size !== workflow.invocations.length || byId.size !== invocations.length) {
+                    return { status: "mismatch" };
+                }
+                for (const invocation of invocations) {
+                    const target = byId.get(invocation.id);
+                    if (!target || invocation.contentRevision !== BigInt(target.expectedContentRevision) + 1n
+                        || invocation.contentEnvelope !== target.contentEnvelope) return { status: "mismatch" };
+                    assertWorkflowStoredEnvelopeOuterForMode({ raw: invocation.contentEnvelope,
+                        mode: params.toMode, binding: workflowInvocationStoredBinding(params.accountId, invocation) });
+                }
+                const physicalKeyCount = await params.tx.workflowRunDataKeyEnvelope.count({ where: { runId: row.id } });
+                if (params.toMode === "plain") {
+                    if (physicalKeyCount !== 0) return { status: "mismatch" };
+                } else {
+                    const census = await readWorkflowRunKeyProjectionInTx(params.tx, {
+                        actorAccountId: params.accountId, runId: row.id,
+                    });
+                    const preparedById = new Map(workflow.recipientKeyEnvelopes.map((envelope) => [envelope.recipientAccountId, envelope]));
+                    const eligible = census.recipients.filter((recipient) => {
+                        const prepared = preparedById.get(recipient.recipientAccountId);
+                        return prepared && recipient.contentPublicKeyFingerprint === prepared.recipientContentPublicKeyFingerprint;
+                    });
+                    if (physicalKeyCount !== eligible.length || !eligible.some((recipient) => recipient.recipientAccountId === params.accountId)
+                        || eligible.some((recipient) => {
+                            const prepared = preparedById.get(recipient.recipientAccountId)!;
+                            return recipient.encryptedDataKey !== prepared.encryptedDataKey
+                                || recipient.recipientContentPublicKeyFingerprint !== prepared.recipientContentPublicKeyFingerprint;
+                        })) return { status: "mismatch" };
+                }
+            } else if (row.workflowAcceptedSnapshotEnvelope !== null && row.workflowCustodyState !== null) {
+                return { status: "mismatch" };
+            }
             if (
                 item.triggerEvidenceEnvelope !== row.triggerEvidenceEnvelope
                 || item.occurrenceEvidenceEqualityTag
@@ -3707,6 +3936,7 @@ export async function matchAutomationAccountEncryptionMigrationPostStateInTx(
 }
 
 export async function markAutomationChangedTx(tx: Tx, params: { accountId: string; automationId: string }): Promise<number> {
+    await invalidateSessionReviewProjectionsForAutomationInTx(tx, params.automationId);
     return await markAccountChanged(tx, {
         accountId: params.accountId,
         kind: "automation",
@@ -4124,7 +4354,7 @@ export function emitAutomationMutationAfterTx(params: Readonly<{
 
 export async function listAutomations(params: {
     accountId: string;
-    requireV2DefinitionRepresentability?: boolean;
+
 }): Promise<AutomationListItem[]> {
     const rows = await db.automation.findMany({
         where: {
@@ -4138,9 +4368,7 @@ export async function listAutomations(params: {
     });
 
     const items = rows as AutomationListItem[];
-    return params.requireV2DefinitionRepresentability
-        ? items.filter(isAutomationDefinitionRepresentableInV2)
-        : items;
+    return items;
 }
 
 const AUTOMATION_DEFINITION_LIST_CURSOR_PREFIX = "automation-definition-v1";
@@ -4194,6 +4422,9 @@ export async function listAutomationDefinitionsPage(params: Readonly<{
     accountId: string;
     limit?: number;
     cursor?: string | null;
+    workflowDefinitionId?: string;
+    scopeSessionId?: string;
+    scope?: "account_inline";
 }>): Promise<Readonly<{
     automations: AutomationListItem[];
     nextCursor: string | null;
@@ -4207,6 +4438,9 @@ export async function listAutomationDefinitionsPage(params: Readonly<{
         where: {
             accountId: params.accountId,
             deletedAt: null,
+            ...(params.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.workflowDefinitionId } : {}),
+            ...(params.scopeSessionId !== undefined ? { scopeSessionId: params.scopeSessionId } : {}),
+            ...(params.scope === "account_inline" ? { workflowDefinitionId: null, scopeSessionId: null } : {}),
             ...(cursor ? {
                 OR: [
                     { updatedAt: { lt: cursor.updatedAt } },
@@ -4231,17 +4465,41 @@ export async function listAutomationDefinitionsPage(params: Readonly<{
 export async function getAutomation(params: {
     accountId: string;
     automationId: string;
-    requireV2DefinitionRepresentability?: boolean;
+
 }): Promise<AutomationListItem | null> {
     return await inTx(async (tx) => {
         return await loadAutomationTx(tx, params);
     });
 }
 
+/** Validates the scope and assignment of the one existing trigger-set owner. */
+async function assertWorkflowTriggerContextTx(tx: Tx, params: Readonly<{
+    accountId: string;
+    targetType: AutomationTargetType | null;
+    workflowDefinitionId: string | null;
+    scopeSessionId: string | null;
+    assignments: readonly AutomationAssignmentInput[];
+}>): Promise<void> {
+    if (params.targetType !== null) {
+        if (params.workflowDefinitionId !== null || params.scopeSessionId !== null) {
+            throw new AutomationValidationError("Workflow trigger context requires a workflow recipe");
+        }
+        return;
+    }
+    if (params.assignments.length !== 1) {
+        throw new AutomationValidationError("A workflow trigger set requires exactly one machine assignment");
+    }
+    if (params.scopeSessionId !== null && !await tx.session.findFirst({
+        where: { id: params.scopeSessionId, accountId: params.accountId }, select: { id: true },
+    })) {
+        throw new AutomationValidationError("Workflow trigger scope session is unavailable");
+    }
+}
+
 export async function createAutomation(params: {
     accountId: string;
     input: AutomationUpsertInput;
-    requireV2DefinitionRepresentability?: boolean;
+
 }): Promise<AutomationListItem> {
     const triggerInputs: readonly AutomationTriggerCreateRequest[] =
         isAutomationCurrentUpsertInput(params.input)
@@ -4293,9 +4551,7 @@ export async function createAutomation(params: {
         }> | null = null;
 
         if (isAutomationCurrentUpsertInput(params.input)) {
-            if (params.requireV2DefinitionRepresentability) {
-                throw new AutomationValidationError("V2 create requires a representable Automation Definition");
-            }
+
             currentDefinition = await normalizeCurrentAutomationDefinitionWriteTx({
                 tx,
                 accountId: params.accountId,
@@ -4331,6 +4587,12 @@ export async function createAutomation(params: {
             enabled: params.input.enabled,
             assignments: params.input.assignments ?? [],
         });
+        await assertWorkflowTriggerContextTx(tx, {
+            accountId: params.accountId, targetType: definition.targetType,
+            workflowDefinitionId: params.input.workflowDefinitionId ?? null,
+            scopeSessionId: params.input.scopeSessionId ?? null,
+            assignments: params.input.assignments ?? [],
+        });
 
         await validateExistingSessionAutomationTargetTx({
             tx,
@@ -4358,6 +4620,8 @@ export async function createAutomation(params: {
                 description: params.input.description ?? null,
                 enabled: params.input.enabled,
                 targetType: definition.targetType,
+                workflowDefinitionId: params.input.workflowDefinitionId ?? null,
+                scopeSessionId: params.input.scopeSessionId ?? null,
                 templateCiphertext: definition.templateCiphertext,
                 templateVersion: 1,
             },
@@ -4467,7 +4731,7 @@ export async function updateAutomation(params: {
     accountId: string;
     automationId: string;
     input: AutomationPatchInput;
-    requireV2DefinitionRepresentability?: boolean;
+
     expectedTemplateVersion?: number;
 }): Promise<AutomationListItem | null> {
     return await inTx(async (tx) => {
@@ -4476,8 +4740,6 @@ export async function updateAutomation(params: {
         const existing = await loadAutomationTx(tx, {
             accountId: params.accountId,
             automationId: params.automationId,
-            requireV2DefinitionRepresentability:
-                params.requireV2DefinitionRepresentability,
         });
         if (!existing) {
             return null;
@@ -4500,9 +4762,9 @@ export async function updateAutomation(params: {
                 expectedTemplateVersion: existing.templateVersion + 1,
             })
             : null;
-        const effectiveTargetType = currentDefinition?.targetType
-            ?? legacyInput?.targetType
-            ?? existing.targetType;
+        const effectiveTargetType = currentDefinition
+            ? currentDefinition.targetType
+            : legacyInput?.targetType ?? existing.targetType;
         const inputSuppliesTemplate = currentDefinition !== null
             || typeof legacyInput?.templateCiphertext === "string";
         const inputSuppliesTarget = currentDefinition !== null
@@ -4581,6 +4843,15 @@ export async function updateAutomation(params: {
 
         const schedule = legacyInput?.schedule;
         const effectiveEnabled = params.input.enabled ?? existing.enabled;
+        const effectiveWorkflowDefinitionId = params.input.workflowDefinitionId === undefined
+            ? existing.workflowDefinitionId : params.input.workflowDefinitionId;
+        const effectiveScopeSessionId = params.input.scopeSessionId === undefined
+            ? existing.scopeSessionId : params.input.scopeSessionId;
+        await assertWorkflowTriggerContextTx(tx, {
+            accountId: params.accountId, targetType: effectiveTargetType,
+            workflowDefinitionId: effectiveWorkflowDefinitionId, scopeSessionId: effectiveScopeSessionId,
+            assignments: params.input.assignments ?? existing.assignments,
+        });
         // Assignment-liveness against the exact post-patch set: a replacement
         // set when one is supplied, otherwise the loaded persisted set. Throws
         // before any write so enabling without an assignment — or removing or
@@ -4598,6 +4869,8 @@ export async function updateAutomation(params: {
         const observationBoundaryNow = new Date();
         const automationUpdate = {
             updatedAt: observationBoundaryNow,
+            ...(params.input.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.input.workflowDefinitionId } : {}),
+            ...(params.input.scopeSessionId !== undefined ? { scopeSessionId: params.input.scopeSessionId } : {}),
             ...(typeof params.input.name === "string"
                 ? { name: params.input.name }
                 : {}),
@@ -4624,10 +4897,6 @@ export async function updateAutomation(params: {
                     id: existing.id,
                     accountId: params.accountId,
                     templateVersion: existing.templateVersion,
-                    ...v2DefinitionCurrentnessWhere(
-                        params.requireV2DefinitionRepresentability,
-                        existing,
-                    ),
                 },
                 data: automationUpdate,
             });
@@ -4639,10 +4908,6 @@ export async function updateAutomation(params: {
                 where: {
                     id: existing.id,
                     accountId: params.accountId,
-                    ...v2DefinitionCurrentnessWhere(
-                        params.requireV2DefinitionRepresentability,
-                        existing,
-                    ),
                 },
                 data: automationUpdate,
             });
@@ -4653,7 +4918,7 @@ export async function updateAutomation(params: {
 
         let scheduleChanged = false;
         if (schedule) {
-            if (!isAutomationDefinitionRepresentableInV2(existing)) {
+            if (!isRetainedAutomationSingleScheduleDefinition(existing)) {
                 throw new AutomationTemplateMutationConflictError();
             }
             const trigger = existing.triggers[0];
@@ -4720,6 +4985,10 @@ export async function updateAutomation(params: {
             }
         }
 
+        if (scheduleChanged && !templateSemanticsWritten) {
+            await advanceAutomationTriggerSetRevisionTx(tx, existing, observationBoundaryNow);
+        }
+
         if (!existing.enabled && effectiveEnabled) {
             await tx.automationTrigger.updateMany({
                 where: {
@@ -4756,27 +5025,7 @@ export async function updateAutomation(params: {
             });
         }
         if (params.input.assignments) {
-            // Assignment replacement has no Definition update of its own. A
-            // V2 caller must therefore recheck the same Definition snapshot
-            // immediately before changing its assignments, or a concurrent
-            // strict V3 replacement could receive a legacy assignment write.
-            if (params.requireV2DefinitionRepresentability) {
-                const currentDefinition = await tx.automation.findFirst({
-                    where: {
-                        id: existing.id,
-                        accountId: params.accountId,
-                        deletedAt: null,
-                        ...v2DefinitionCurrentnessWhere(
-                            params.requireV2DefinitionRepresentability,
-                            existing,
-                        ),
-                    },
-                    select: { id: true },
-                });
-                if (!currentDefinition) {
-                    throw new AutomationTemplateMutationConflictError();
-                }
-            }
+
             await replaceAutomationAssignmentsTx({
                 tx,
                 accountId: params.accountId,
@@ -4798,8 +5047,6 @@ export async function updateAutomation(params: {
         const updated = await loadAutomationTx(tx, {
             accountId: params.accountId,
             automationId: existing.id,
-            requireV2DefinitionRepresentability:
-                params.requireV2DefinitionRepresentability,
         });
         if (!updated) {
             return null;
@@ -4892,16 +5139,24 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                 expectedTemplateVersion: existing.templateVersion + 1,
             })
             : null;
-        const effectiveAutomation: AutomationListItem = currentDefinition
-            ? {
-                ...existing,
-                targetType: currentDefinition.targetType,
-                templateCiphertext: currentDefinition.templateCiphertext,
-                templateVersion: existing.templateVersion + 1,
-            }
-            : existing;
+        const revisionUpdate = currentDefinition
+            ? { templateVersion: existing.templateVersion + 1, templateCiphertext: currentDefinition.templateCiphertext }
+            : advanceAutomationDefinitionRevision(existing);
+        const effectiveAutomation: AutomationListItem = {
+            ...existing,
+            ...revisionUpdate,
+            ...(currentDefinition ? { targetType: currentDefinition.targetType } : {}),
+        };
         const effectiveExistingSessionId = currentDefinition?.strictExistingSessionId
             ?? readAutomationExistingSessionTargetId(effectiveAutomation);
+        await assertWorkflowTriggerContextTx(tx, {
+            accountId: params.accountId, targetType: effectiveAutomation.targetType,
+            workflowDefinitionId: params.input.workflowDefinitionId === undefined
+                ? existing.workflowDefinitionId : params.input.workflowDefinitionId,
+            scopeSessionId: params.input.scopeSessionId === undefined
+                ? existing.scopeSessionId : params.input.scopeSessionId,
+            assignments: params.input.assignments,
+        });
         await validateExistingSessionAutomationTargetTx({
             tx,
             accountId: params.accountId,
@@ -4934,10 +5189,11 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                 description: params.input.description,
                 enabled: params.input.enabled,
                 updatedAt: now,
+                ...revisionUpdate,
+                ...(params.input.workflowDefinitionId !== undefined ? { workflowDefinitionId: params.input.workflowDefinitionId } : {}),
+                ...(params.input.scopeSessionId !== undefined ? { scopeSessionId: params.input.scopeSessionId } : {}),
                 ...(currentDefinition ? {
                     targetType: currentDefinition.targetType,
-                    templateCiphertext: currentDefinition.templateCiphertext,
-                    templateVersion: { increment: 1 },
                 } : {}),
             },
         });
@@ -5220,10 +5476,7 @@ export async function createAutomationTrigger(params: Readonly<{
                 ...normalized.data,
             },
         });
-        await tx.automation.update({
-            where: { id: automation.id },
-            data: { updatedAt: now },
-        });
+        await advanceAutomationTriggerSetRevisionTx(tx, automation, now);
         if (normalized.isEvent) {
             await ensureAutomationEventCatalogStateTx({
                 tx,
@@ -5461,10 +5714,7 @@ export async function updateAutomationTrigger(params: Readonly<{
         if (updatedTrigger.count !== 1) {
             throw new AutomationTriggerMutationConflictError();
         }
-        await tx.automation.update({
-            where: { id: automation.id },
-            data: { updatedAt: now },
-        });
+        await advanceAutomationTriggerSetRevisionTx(tx, automation, now);
         const eventProjectionChanged = automation.enabled && (
             existing.kind === "pluginEvent" || nextKind === "pluginEvent"
         );
@@ -5544,10 +5794,7 @@ export async function deleteAutomationTrigger(params: Readonly<{
         if (deleted.count !== 1) {
             throw new AutomationTriggerMutationConflictError();
         }
-        await tx.automation.update({
-            where: { id: automation.id },
-            data: { updatedAt: now },
-        });
+        await advanceAutomationTriggerSetRevisionTx(tx, automation, now);
         if (existing.kind === "pluginEvent") {
             await ensureAutomationEventCatalogStateTx({
                 tx,
@@ -5585,16 +5832,22 @@ export async function deleteAutomationTrigger(params: Readonly<{
 export async function deleteAutomation(params: {
     accountId: string;
     automationId: string;
-    requireV2DefinitionRepresentability?: boolean;
+
 }): Promise<boolean> {
-    return await inTx(async (tx) => {
+    return await inTx(async (tx) => deleteAutomationTx(tx, params));
+}
+
+/** Session deletion composes the same soft-deletion owner in its transaction. */
+export async function deleteAutomationTx(tx: Tx, params: {
+    accountId: string;
+    automationId: string;
+
+}): Promise<boolean> {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return false;
         const existing = await loadAutomationTx(tx, {
             accountId: params.accountId,
             automationId: params.automationId,
-            requireV2DefinitionRepresentability:
-                params.requireV2DefinitionRepresentability,
         });
 
         if (!existing) {
@@ -5607,10 +5860,6 @@ export async function deleteAutomation(params: {
                 id: existing.id,
                 accountId: params.accountId,
                 deletedAt: null,
-                ...v2DefinitionCurrentnessWhere(
-                    params.requireV2DefinitionRepresentability,
-                    existing,
-                ),
             },
             data: {
                 enabled: false,
@@ -5672,7 +5921,6 @@ export async function deleteAutomation(params: {
         });
 
         return true;
-    });
 }
 
 /**
@@ -5726,14 +5974,12 @@ export async function setAutomationEnabled(params: {
     accountId: string;
     automationId: string;
     enabled: boolean;
-    requireV2DefinitionRepresentability?: boolean;
+
 }): Promise<AutomationListItem | null> {
     return await updateAutomation({
         accountId: params.accountId,
         automationId: params.automationId,
         input: { enabled: params.enabled },
-        requireV2DefinitionRepresentability:
-            params.requireV2DefinitionRepresentability,
     });
 }
 
@@ -5741,7 +5987,7 @@ export async function runAutomationNow(params: {
     accountId: string;
     automationId: string;
     idempotencyKey?: string;
-    requireV2DefinitionRepresentability?: boolean;
+
     recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }): Promise<AutomationRunItem | null> {
     const idempotencyKey = params.idempotencyKey?.trim();
@@ -5751,14 +5997,7 @@ export async function runAutomationNow(params: {
     return await rejoinAutomationOccurrenceInsertRace(async () => await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return null;
-        if (params.requireV2DefinitionRepresentability) {
-            const representable = await loadAutomationTx(tx, {
-                accountId: params.accountId,
-                automationId: params.automationId,
-                requireV2DefinitionRepresentability: true,
-            });
-            if (!representable) return null;
-        }
+
 
         const now = new Date();
         const admitted = await admitAutomationRunTx({
@@ -5767,11 +6006,7 @@ export async function runAutomationNow(params: {
             accountId: params.accountId,
             now,
             cause: { kind: "manual", invokedAt: now.getTime() },
-            ...(idempotencyKey
-                ? params.requireV2DefinitionRepresentability
-                    ? { legacyV2ManualIdempotencyKey: idempotencyKey }
-                    : { manualIdempotencyKey: idempotencyKey }
-                : {}),
+            ...(idempotencyKey ? { manualIdempotencyKey: idempotencyKey } : {}),
             ...(params.recipeFeaturePolicy ? { recipeFeaturePolicy: params.recipeFeaturePolicy } : {}),
         });
         if (admitted.kind === "ineligible") {
@@ -5788,104 +6023,16 @@ type AutomationRunListParams = Readonly<{
     automationId: string;
     limit: number;
     cursor?: string | null;
-    requireV2DefinitionRepresentability?: boolean;
-    requireV2RunRepresentability?: false;
 }>;
 
-type AutomationRunV2ListParams = Omit<AutomationRunListParams, "requireV2RunRepresentability"> & Readonly<{
-    requireV2RunRepresentability: true;
-}>;
-
-export function listAutomationRuns(params: AutomationRunV2ListParams): Promise<{
-    runs: AutomationRunV2ListItem[];
-    nextCursor: string | null;
-} | null>;
-export function listAutomationRuns(params: AutomationRunListParams): Promise<{
+export async function listAutomationRuns(params: AutomationRunListParams): Promise<{
     runs: AutomationRunV3ListItem[];
     nextCursor: string | null;
-} | null>;
-export async function listAutomationRuns(params: AutomationRunListParams | AutomationRunV2ListParams): Promise<{
-    runs: Array<AutomationRunV3ListItem | AutomationRunV2ListItem>;
-    nextCursor: string | null;
 } | null> {
-    if (params.requireV2DefinitionRepresentability) {
-        const automation = await getAutomation({
-            accountId: params.accountId,
-            automationId: params.automationId,
-            requireV2DefinitionRepresentability: true,
-        });
-        if (!automation) return null;
-    }
     const normalizedLimit = Math.min(
         Math.max(Math.floor(params.limit || 20), 1),
         AUTOMATION_V3_RUN_LIST_MAX_ITEMS,
     );
-    const readRows = async (client: Tx, cursor?: string | null, take = normalizedLimit + 1) => await client.automationRun.findMany({
-        where: {
-            accountId: params.accountId,
-            automationId: params.automationId,
-            originKind: "automation",
-            causeKind: { not: null },
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take,
-        ...(cursor
-            ? {
-                cursor: { id: cursor },
-                skip: 1,
-            }
-            : {}),
-        select: automationRunV2ListItemSelect,
-    });
-    if (params.requireV2RunRepresentability) {
-        const rows = await inTx(async (tx) => {
-            const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
-            if (accountFence.status !== "ready") return [];
-            const automationExists = await tx.automation.findFirst({
-                where: {
-                    id: params.automationId,
-                    accountId: params.accountId,
-                },
-                select: { id: true },
-            });
-            if (!automationExists) return null;
-
-            // V2 history advances through one bounded raw Run window. Filtering
-            // after that read preserves the exact raw cursor and cannot scan
-            // arbitrarily far across current-only V3 rows to fill a page.
-            return await readRows(tx, params.cursor);
-        });
-        if (rows === null) return null;
-        const hasNext = rows.length > normalizedLimit;
-        const rawWindow = hasNext ? rows.slice(0, normalizedLimit) : rows;
-        const resultRows: AutomationRunV2ListItem[] = [];
-        for (const run of rawWindow) {
-            const state = run.state;
-            if (!isAutomationCauseRow(run)) {
-                throw new Error("Stored Automation history Run has invalid origin correspondence");
-            }
-            if (!isAutomationRunState(state)) continue;
-            const automationRun = { ...run, state };
-            if (isAutomationRunV2HistoryRepresentable(automationRun)) {
-                resultRows.push(automationRun);
-            }
-        }
-        const currentTriggerIds = new Set((await db.automationTrigger.findMany({
-            where: {
-                id: { in: resultRows.flatMap((run) => run.triggerId ? [run.triggerId] : []) },
-                deletedAt: null,
-            },
-            select: { id: true },
-        })).map((trigger) => trigger.id));
-        return {
-            runs: resultRows.map((run) => ({
-                ...run,
-                triggerRetired: run.triggerId !== null && !currentTriggerIds.has(run.triggerId),
-            })),
-            nextCursor: hasNext ? rawWindow[rawWindow.length - 1]?.id ?? null : null,
-        };
-    }
-
     const automationExists = await db.automation.findFirst({
         where: {
             id: params.automationId,

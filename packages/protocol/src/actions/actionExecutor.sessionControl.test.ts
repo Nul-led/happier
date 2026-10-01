@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
 import { buildSessionAwarenessListResultV1 } from '../sessions/awareness/action.js';
+import { bindHomeDomainActionHttpRequestV1 } from './homeDomainActionFamily.js';
+import { ActionIdSchema } from './actionIds.js';
 
 function createExecutor(overrides: Partial<ActionExecutorDeps> = {}) {
   return createActionExecutor({
@@ -53,6 +55,162 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (session control)', () => {
+  it('executes folder and tag resource parity through the incumbent organization transport', async () => {
+    const folder = { folderId: 'folder-1', folderKey: 'folder-1', parentFolderId: null,
+      parentFolderKey: null, sortKey: null, display: { t: 'plain' as const, v: { name: 'Leads' } },
+      archivedAt: null, createdAt: 1, updatedAt: 1 };
+    const tag = { tagId: 'tag-1', tagKey: 'tag-1', sortKey: null,
+      display: { t: 'plain' as const, v: { label: 'Warm' } }, archivedAt: null, createdAt: 1, updatedAt: 1 };
+    const snapshot = { schemaVersion: 1 as const, version: 1, pins: [], folders: [folder],
+      folderAssignments: [], tags: [tag], tagAssignments: [], orderEntries: [], labels: [] };
+    // This port is the Home's HTTP boundary; registry admission and result parsing remain real.
+    const executor = createExecutor({ homeDomainAction: async ({ actionId }) => {
+      const id = String(actionId);
+      if (id.endsWith('.list')) return { snapshot };
+      if (id === 'session.folders.delete') return { deletedFolderIds: ['folder-1'],
+        assignmentTargetFolderId: null, affectedAssignmentCount: 0 };
+      if (id === 'session.tags.delete') return { tagId: 'tag-1', removedAssignmentCount: 0 };
+      return id.startsWith('session.folders.') ? { folder } : { tag };
+    } });
+    const folderInput = { folderId: 'folder-1', folderKey: 'folder-1', parentFolderId: null,
+      parentFolderKey: null, sortKey: null, display: { t: 'plain' as const, v: { name: 'Leads' } } };
+    const tagInput = { tagId: 'tag-1', tagKey: 'tag-1', sortKey: null,
+      display: { t: 'plain' as const, v: { label: 'Warm' } } };
+    for (const [id, input, result] of [
+      ['session.folders.list', {}, { snapshot }],
+      ['session.folders.create', folderInput, { folder }],
+      ['session.folders.rename', folderInput, { folder }],
+      ['session.folders.delete', { folderId: 'folder-1' }, { deletedFolderIds: ['folder-1'], assignmentTargetFolderId: null, affectedAssignmentCount: 0 }],
+      ['session.tags.list', {}, { snapshot }],
+      ['session.tags.create', tagInput, { tag }],
+      ['session.tags.rename', tagInput, { tag }],
+      ['session.tags.delete', { tagId: 'tag-1' }, { tagId: 'tag-1', removedAssignmentCount: 0 }],
+    ] as const) {
+      await expect(executor.execute(ActionIdSchema.parse(id), input, { surface: 'agent', serverId: 'home-1' }))
+        .resolves.toEqual({ ok: true, result });
+    }
+  });
+
+  it('fails discoverable workspace Actions with typed unsupported when this host has no mounted workspace', async () => {
+    for (const surface of ['agent', 'mcp', 'cli'] as const) {
+      await expect(createExecutor().execute('workspace.tabs.list', {}, { surface })).resolves.toMatchObject({
+        ok: false, errorCode: 'unsupported_action',
+      });
+    }
+  });
+  it('admits tab reorder on the advertised client surfaces and rejects it without a mounted workspace', async () => {
+    // The mounted workspace port is the host boundary; canonical Action parsing remains real.
+    const workspaceAction: NonNullable<ActionExecutorDeps['workspaceAction']> = async (request) => {
+      expect(request).toMatchObject({ actionId: 'workspace.tabs.reorder', input: { tabId: 'tab-1', index: 1 } });
+      return { ok: true };
+    };
+    for (const surface of ['ui', 'voice', 'agent', 'mcp', 'cli'] as const) {
+      await expect(createExecutor({ workspaceAction }).execute('workspace.tabs.reorder', { tabId: 'tab-1', index: 1 }, { surface }))
+        .resolves.toEqual({ ok: true, result: { ok: true } });
+    }
+    await expect(createExecutor().execute('workspace.tabs.reorder', { tabId: 'tab-1', index: 1 }, { surface: 'agent' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+  });
+  it('preserves the explicitly selected workspace tab when opening a qualified session', async () => {
+    const sessionOpen = vi.fn(async () => ({ ok: true, status: 'opened' }));
+    const executor = createExecutor({ sessionOpen, workspaceAction: async () => ({ ok: true }) });
+    await expect(executor.execute('session.open', { sessionId: 's1', serverId: 'home-1', tabId: 'tab-2' }, {
+      surface: 'ui', serverId: 'home-1', defaultSessionId: 's1',
+    })).resolves.toMatchObject({ ok: true });
+    expect(sessionOpen).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1', serverId: 'home-1', tabId: 'tab-2' }));
+  });
+  it('discovers and invokes the mounted command palette through its current host owner', async () => {
+    const commands = [{ id: 'account', title: 'Account' }];
+    const uiCommandPaletteAction = async (request: Readonly<{ actionId: string; input: unknown }>) => (
+      request.actionId === 'ui.command_palette.list'
+        ? { ok: true, result: { commands } }
+        : { ok: true, result: { invoked: true } }
+    );
+    const executor = createExecutor({ uiCommandPaletteAction });
+    await expect(executor.execute('ui.command_palette.list', {}, { surface: 'agent' }))
+      .resolves.toEqual({ ok: true, result: { commands } });
+    await expect(executor.execute('ui.command_palette.invoke', { commandId: 'account' }, { surface: 'mcp' }))
+      .resolves.toEqual({ ok: true, result: { invoked: true } });
+    await expect(createExecutor().execute('ui.command_palette.invoke', { commandId: 'account' }, { surface: 'cli' }))
+      .resolves.toMatchObject({ ok: false, errorCode: 'unsupported_action' });
+  });
+
+  it('carries explicit fresh-folder consent through the existing session.open owner', async () => {
+    const sessionOpen = vi.fn(async () => ({ ok: true, status: 'opened' }));
+    const executor = createExecutor({ sessionOpen });
+    await expect(executor.execute('session.open', {
+      sessionId: 's1', approvedNewDirectoryCreation: true,
+    }, { surface: 'ui', authority: 'present_user', serverId: 'home-1', defaultSessionId: 's1' })).resolves.toMatchObject({ ok: true });
+    expect(sessionOpen).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 's1', serverId: 'home-1', approvedNewDirectoryCreation: true,
+    }));
+  });
+
+  it('executes delete and organization assignment through the existing Home HTTP owner', async () => {
+    const homeDomainAction = vi.fn(async ({ actionId }: Parameters<NonNullable<ActionExecutorDeps['homeDomainAction']>>[0]) =>
+      actionId === 'session.folder.set' ? { sessionId: 's1', folderId: null }
+        : actionId === 'session.tags.set' ? { sessionId: 's1', tagIds: ['tag-1'] }
+          : { success: true });
+    const executor = createExecutor({ homeDomainAction });
+    for (const [actionId, input] of [
+      ['session.delete', { sessionId: 's1' }],
+      ['session.folder.set', { sessionId: 's1', folderId: null }],
+      ['session.tags.set', { sessionId: 's1', tagIds: ['tag-1'] }],
+    ] as const) {
+      await expect(executor.execute(actionId, input, {
+        surface: 'agent', serverId: 'home-1', defaultSessionId: 's1',
+      })).resolves.toMatchObject({ ok: true });
+      expect(homeDomainAction).toHaveBeenLastCalledWith(expect.objectContaining({ actionId, input }));
+    }
+  });
+
+  it('binds parity Actions to the existing delete and organization routes', () => {
+    for (const [actionId, input, request] of [
+      ['session.delete', { sessionId: 's/1' }, { method: 'DELETE', path: '/v1/sessions/s%2F1', body: {} }],
+      ['session.folder.set', { sessionId: 's/1', folderId: null }, {
+        method: 'PUT', path: '/v2/session-organization/folder-assignments/s%2F1', body: { folderId: null },
+      }],
+      ['session.tags.set', { sessionId: 's/1', tagIds: [] }, {
+        method: 'PUT', path: '/v2/session-organization/tag-assignments/s%2F1', body: { tagIds: [] },
+      }],
+    ] as const) {
+      expect(bindHomeDomainActionHttpRequestV1(actionId, input)).toEqual(request);
+    }
+  });
+
+  it('marks a plugin tool answer delivery on the canonical message metadata', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
+    const executor = createExecutor({ sessionSendMessage });
+    const result = await executor.execute('session.message.send' as any, {
+      sessionId: 's1', message: 'encoded answer', idempotencyKey: 'reply-1',
+      toolAnswerDelivery: { toolCallId: 'question-1' },
+    }, {
+      surface: 'plugin',
+      actionCaller: {
+        kind: 'plugin', pluginId: 'acme.plugin', contributionLocalId: 'question-reply',
+        occurrenceId: 'plugin-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
+      },
+      defaultSessionId: 's1',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      messageMeta: { happier: { kind: 'tool-answer-delivery.v1', payload: { toolCallId: 'question-1' } } },
+    }));
+  });
+
+  it('rejects a public attempt to mark a message as an internal tool answer delivery', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ status: 'accepted' as const, localId: 'input-1' }));
+    const executor = createExecutor({ sessionSendMessage });
+    const result = await executor.execute('session.message.send' as any, {
+      sessionId: 's1', message: 'hidden text',
+      toolAnswerDelivery: { toolCallId: 'question-1' },
+    }, { surface: 'cli', defaultSessionId: 's1' });
+
+    expect(result.ok).toBe(false);
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+  });
+
   it('carries the admitted causal permission ceiling without turning it into a message override', async () => {
     const sessionSpawnNew = vi.fn(async () => ({ type: 'success' as const }));
     const sessionSendMessage = vi.fn(async () => ({ status: 'accepted', localId: 'input-1' }));

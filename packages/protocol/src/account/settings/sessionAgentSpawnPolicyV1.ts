@@ -5,10 +5,10 @@ import { SESSION_PERMISSION_MODES } from '../../sessions/metadata/sessionPermiss
 const SessionAgentSpawnPermissionCeilingV1Schema = z
   .enum(SESSION_PERMISSION_MODES)
   .nullable()
-  .default(null)
-  .catch(null);
+  .default(null);
 
-export const SessionAgentSpawnPolicyV1Schema = z.object({
+// The V1 durable shape is also read by released 0.2 strict readers.
+export const SessionAgentSpawnPolicyV1StrictSchema = z.object({
   v: z.literal(1).default(1),
   allowCustomDirectory: z.boolean().default(true),
   allowCrossMachine: z.boolean().default(true),
@@ -18,33 +18,40 @@ export const SessionAgentSpawnPolicyV1Schema = z.object({
   allowAgentModeOverride: z.boolean().default(true),
   allowConfigOptionOverrides: z.boolean().default(true),
   allowProfileOverride: z.boolean().default(true),
+  allowEnvironmentVariables: z.boolean().default(true),
   allowConnectedServicesOverride: z.boolean().default(true),
   allowMcpSelectionOverride: z.boolean().default(true),
   allowTranscriptStorageOverride: z.boolean().default(true),
   permissionCeiling: SessionAgentSpawnPermissionCeilingV1Schema,
-}).strict().catch({
-  v: 1,
-  allowCustomDirectory: true,
-  allowCrossMachine: true,
-  allowBackendTargetOverride: true,
-  allowModelOverride: true,
-  allowPermissionModeOverride: true,
-  allowAgentModeOverride: true,
-  allowConfigOptionOverrides: true,
-  allowProfileOverride: true,
-  allowConnectedServicesOverride: true,
-  allowMcpSelectionOverride: true,
-  allowTranscriptStorageOverride: true,
-  permissionCeiling: null,
-});
+}).strict();
+
+// Recover each malformed field through its own default; never erase other
+// restrictions because one field is invalid or a newer writer added a key.
+export const SessionAgentSpawnPolicyV1Schema = z.preprocess((raw) => {
+  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown> : {};
+  return Object.fromEntries(Object.entries(SessionAgentSpawnPolicyV1StrictSchema.shape).map(([key, schema]) => [
+    key, schema.safeParse(record[key]).success ? record[key] : undefined,
+  ]));
+}, SessionAgentSpawnPolicyV1StrictSchema.strip());
 
 export type SessionAgentSpawnPolicyV1 = z.infer<typeof SessionAgentSpawnPolicyV1Schema>;
 
-// Durable authorization evidence rejects malformed policy instead of using
-// the settings reader's recovery defaults.
-export const SessionAgentSpawnPolicyV1StrictSchema = SessionAgentSpawnPolicyV1Schema
-  .removeCatch()
-  .extend({ permissionCeiling: SessionAgentSpawnPermissionCeilingV1Schema.removeCatch() });
-
 export const DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1: SessionAgentSpawnPolicyV1 =
   SessionAgentSpawnPolicyV1Schema.parse({});
+
+export type SessionAgentStartOverridesV1 = Readonly<{
+  customDirectory?: boolean;
+  crossMachine?: boolean;
+  backendTarget?: boolean;
+  modelSelection?: boolean;
+  permissionMode?: boolean;
+  agentModeId?: boolean;
+  configOptions?: boolean;
+  profileId?: boolean;
+  environmentVariables?: boolean;
+  connectedServices?: boolean;
+  mcpSelection?: boolean;
+  transcriptStorage?: boolean;
+  requiredPermissionMode?: unknown;
+}>;

@@ -47,7 +47,6 @@ describe("tracked Session badge-refresh push fanout (SQLite)", () => {
      * count alone would still leak the timing.
      */
     it("pushes only to tracked recipients background delivery may currently reach", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const restrictedFollower = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const inheritFollower = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });

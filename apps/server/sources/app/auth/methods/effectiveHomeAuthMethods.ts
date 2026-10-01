@@ -4,7 +4,7 @@ import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
 import {
     createProviderAuthMethodActionTable,
     isAccountProvisionModePermittedByHomePolicy,
-    narrowAuthMethodDecisionForHomePolicy,
+    applyHomePolicyToAuthMethodDecision,
     projectProviderDecisionPresentation,
     resolveEffectiveAuthMethodDecisions,
     type EffectiveAuthMethodDecision,
@@ -16,6 +16,7 @@ import { resolveEffectiveHomeSignInServicePolicy } from "@/app/auth/methods/sign
 import { listProviderDescriptorsInTx, resolveOAuthRuntimeByIdInTx } from "@/app/auth/providers/identityProviderCatalog";
 import { resolveAccountDirectoryFeature } from "@/app/features/accountDirectoryFeature";
 import { readHomeGovernancePolicyInTx, resolveTeamProviderKindPolicy } from "@/app/home/governance/governancePolicy";
+import { applyHomeAuthenticationPolicyToEnv } from "@/app/home/governance/homeAuthenticationPolicyEnv";
 import { readTeamIdentityConnectionInTx } from "@/app/teams/identity/teamIdentityConnectionLifecycle";
 import { inTx, type Tx } from "@/storage/inTx";
 import type { TeamOAuthAdmissionSource } from "@/app/teams/memberships/teamOAuthAdmissionSource";
@@ -52,21 +53,24 @@ async function resolveEffectiveHomeAuthMethodsForPolicyInTx(
 ): Promise<EffectiveHomeAuthMethodsResult> {
     if (input.homeAuthenticationPolicy.status === "unreadable") return { status: "unavailable" };
 
-    const policy = resolveAuthPolicyFromEnv(input.env);
+    // The Home policy decides in both directions where the deployment left a key unset (§3.4).
+    const env = applyHomeAuthenticationPolicyToEnv(input.env, input.homeAuthenticationPolicy);
+
+    const policy = resolveAuthPolicyFromEnv(env);
     const baseDecisions = resolveEffectiveAuthMethodDecisions({
-        env: input.env,
+        env: env,
         homeAuthenticationPolicy: input.homeAuthenticationPolicy,
         ...(input.emailDeliveryReady === undefined ? {} : { emailDeliveryReady: input.emailDeliveryReady }),
         ...(input.admission === undefined ? {} : { admission: input.admission }),
     });
     const existingIds = new Set(baseDecisions.map((decision) => normalizeId(decision.id)));
-    const allowedProvisionModes = resolveAllowedAccountProvisionModes(input.env);
-    const recommendedProvisionMode = resolveRecommendedAccountProvisionMode(input.env);
-    const providerActions = createProviderAuthMethodActionTable(input.env);
-    const managedDecisions = (await listProviderDescriptorsInTx(tx, input.env))
+    const allowedProvisionModes = resolveAllowedAccountProvisionModes(env);
+    const recommendedProvisionMode = resolveRecommendedAccountProvisionMode(env);
+    const providerActions = createProviderAuthMethodActionTable(env);
+    const managedDecisions = (await listProviderDescriptorsInTx(tx, env))
         .flatMap(({ descriptor: details, reference, providerKind }) => {
             if (reference.source !== "managed" || existingIds.has(reference.id)) return [];
-            const decision = narrowAuthMethodDecisionForHomePolicy({
+            const decision = applyHomePolicyToAuthMethodDecision({
                 id: reference.id,
                 actions: providerActions({
                     id: reference.id,
@@ -90,10 +94,10 @@ async function resolveEffectiveHomeAuthMethodsForPolicyInTx(
         narrowing: input.homeAuthenticationPolicy.status === "narrowed"
             ? input.homeAuthenticationPolicy.policy.signInService
             : undefined,
-        accountDirectoryCapable: resolveAccountDirectoryFeature(input.env)
+        accountDirectoryCapable: resolveAccountDirectoryFeature(env)
             .capabilities?.accountDirectory?.homeDirectory === true,
     });
-    const coreIds = new Set(resolveAuthMethodRegistry(input.env).map((method) => normalizeId(method.id)));
+    const coreIds = new Set(resolveAuthMethodRegistry(env).map((method) => normalizeId(method.id)));
     const coreDecisions = baseDecisions.filter((decision) => coreIds.has(normalizeId(decision.id)));
     const providerDecisions = [
         ...baseDecisions.filter((decision) => !coreIds.has(normalizeId(decision.id))),
@@ -162,10 +166,6 @@ export async function isEffectiveHomeAuthMethodActionEnabledInTx(
         || admission.connectionId === null) return false;
     if (normalizeId(admission.providerId) !== normalizeId(input.methodId)) return false;
     const requestedAccountMode = input.mode === "keyed" ? "e2ee" : input.mode === "keyless" ? "plain" : null;
-    if (requestedAccountMode
-        && !resolveAllowedAccountProvisionModes(input.env).includes(requestedAccountMode)) {
-        return false;
-    }
     const [governance, team, connectionRead, runtime] = await Promise.all([
         readHomeGovernancePolicyInTx(tx),
         tx.team.findUnique({
@@ -188,8 +188,13 @@ export async function isEffectiveHomeAuthMethodActionEnabledInTx(
             teamId: admission.teamId,
         }, "oauth_finalize"),
     ]);
+    if (requestedAccountMode
+        && !resolveAllowedAccountProvisionModes(applyHomeAuthenticationPolicyToEnv(input.env, governance.authentication))
+            .includes(requestedAccountMode)) {
+        return false;
+    }
     // The Home's own storage narrowing bounds this admission exactly as it
-    // bounds the ordinary path (`narrowAuthMethodDecisionForHomePolicy`): a Team
+    // bounds the ordinary path (`applyHomePolicyToAuthMethodDecision`): a Team
     // identity connection admits members, it does not widen the Account
     // protections this Home stores.
     if (requestedAccountMode

@@ -9,6 +9,10 @@ import {
   ExternalSessionTranscriptItemIdV1Schema,
 } from './sourceTranscriptItemV1.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
+import {
+  PluginSourceCustodyV1Schema,
+  pluginSourceCustodyV1Equal,
+} from '../../plugins/runtime/sourceCustody.js';
 
 export const EXTERNAL_SESSION_TRANSCRIPT_INVALIDATION_EVENT_V1 =
   'external-session-transcript-invalidated' as const;
@@ -71,7 +75,7 @@ export const ExternalSessionTranscriptRefreshBindingV1Schema = z.object({
     qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema,
     generation: ExternalSessionRefreshGenerationV1Schema,
   }).strict(),
-  contributionGeneration: ExternalSessionRefreshGenerationV1Schema,
+  sourceCustody: PluginSourceCustodyV1Schema,
   cursorIdentity: ExternalSessionRefreshCursorIdentityV1Schema,
 }).strict();
 export type ExternalSessionTranscriptRefreshBindingV1 = z.infer<
@@ -212,8 +216,9 @@ const EMPTY_REFRESH_ITEMS = Object.freeze([]) as readonly [];
 /**
  * The one read-after continuation decision, shared by the encrypted secure
  * refresh exchange and the released direct-session read-after surface: a
- * stalled cursor, an unfinished page stream, or a required diagnostic must
- * resync instead of silently advancing the applied tail. Only a caller that
+ * stalled cursor or a required diagnostic must resync. An unfinished stream
+ * also resyncs for live-tail demand; explicit adjacent paging may keep its bounded
+ * continuous page. Only a caller that
  * has already classified the outcome as an `advanced` read consumes this; the
  * envelope decision below owns that classification for the refresh contract.
  */
@@ -222,9 +227,11 @@ export function shouldResyncExternalSessionTranscriptReadAfterV1(params: Readonl
   nextCursor: string;
   hasMore: boolean;
   diagnostics?: readonly Readonly<{ severity: 'benign' | 'required' }>[];
+  /** Explicit forward paging may consume one continuous page without reaching the live tail. */
+  allowAdjacentPage?: boolean;
 }>): boolean {
   return params.nextCursor === params.requestCursor
-    || params.hasMore
+    || (params.hasMore && params.allowAdjacentPage !== true)
     || (
       params.diagnostics?.some(
         (diagnostic) => diagnostic.severity === 'required',
@@ -249,7 +256,7 @@ export function externalSessionTranscriptRefreshBindingsEqualV1(
     && left.source.qualifiedIdentity.source.contractVersion
       === right.source.qualifiedIdentity.source.contractVersion
     && left.source.generation === right.source.generation
-    && left.contributionGeneration === right.contributionGeneration
+    && pluginSourceCustodyV1Equal(left.sourceCustody, right.sourceCustody)
     && left.cursorIdentity === right.cursorIdentity;
 }
 

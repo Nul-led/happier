@@ -897,7 +897,7 @@ describe("registerExternalActionRoutes", () => {
         }
     });
 
-    it("keeps Action preflight unhandled and non-CORS", async () => {
+    it("answers Action preflight through the global CORS owner", async () => {
         const app = createApp({ withGlobalCors: true });
         await app.ready();
         try {
@@ -910,9 +910,8 @@ describe("registerExternalActionRoutes", () => {
                 },
             });
 
-            expect(response.statusCode).toBe(404);
-            expect(response.headers["cache-control"]).toBe("no-store");
-            expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+            expect(response.statusCode).toBe(204);
+            expect(response.headers["access-control-allow-origin"]).toBe("*");
         } finally {
             await app.close();
         }

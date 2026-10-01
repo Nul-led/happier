@@ -29,7 +29,6 @@ describe("Account activity badge admission (SQLite)", () => {
      * recipient because both read the one access owner.
      */
     it("contributes a restricted-Team session only for a currently qualified recipient", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const restrictedFollower = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const inheritFollower = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
@@ -84,7 +83,6 @@ describe("Account activity badge admission (SQLite)", () => {
      * batch, not once per Account inside the transaction.
      */
     it("reads Team memberships once for a batch of recipients", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
         const followers = await Promise.all([0, 1, 2].map(() =>
             db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } })));

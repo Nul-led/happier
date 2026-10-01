@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RouteOptions } from "fastify";
+import { SessionMessagesPageV1Schema } from "@happier-dev/protocol";
 
 import {
     catchupFetchesInc,
@@ -54,7 +55,7 @@ describe("sessionRoutes v1 messages pagination", () => {
         registerSessionMessageRoutes(app);
         try {
             expect(routeConfig).toMatchObject({
-                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+                restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
             });
             expect(routeConfig?.allowApiToken).toBeUndefined();
         } finally {
@@ -96,6 +97,7 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(catchupFetchesInc).toHaveBeenCalledWith({ type: "session-messages-afterSeq" });
         expect(catchupReturnedInc).toHaveBeenCalledWith({ type: "session-messages-afterSeq" }, 2);
+        expect(SessionMessagesPageV1Schema.parse(res)).toEqual(res);
 
         expect(sessionMessageFindMany).toHaveBeenCalledWith(
             expect.objectContaining({

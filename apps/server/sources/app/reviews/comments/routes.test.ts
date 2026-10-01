@@ -121,4 +121,27 @@ describe("review comment routes", () => {
         expect(createReply.statusCode).toBe(400);
         expect(created).toMatchObject({ error: "review_comment_invalid_request" });
     });
+
+    it("decodes HTTP query scalar and array values while retaining strict workspace scope", async () => {
+        const { app } = createHarness();
+        const workspace = { machineId: "machine-1", path: "/repo" };
+        const created = ReviewCommentCreateResponseV1Schema.parse(await getRouteHandler(app, "POST", "/v1/reviews/comments")({
+            userId: "user-1", body: { workspace, anchor: { kind: "file", filePath: "src/example.ts" },
+                snapshot: textSnapshot(), body: "Guard this value", authorIntent: "open", clientMutationId: "query-create" },
+        }, createReplyStub()));
+        await getRouteHandler(app, "POST", "/v1/reviews/comments/:commentId/transition")({ userId: "user-1", params: { commentId: created.comment.id },
+            body: { workspace, expectedServerRevision: 1, expectedState: "open", toState: "dismissed", reason: "Already guarded", clientMutationId: "query-dismiss" },
+        }, createReplyStub());
+        const listed = await getRouteHandler(app, "GET", "/v1/reviews/comments")({ userId: "user-1",
+            query: { workspace: JSON.stringify(workspace), "states[]": "dismissed", includeHistory: "true", limit: "1" },
+        }, createReplyStub());
+        expect(listed).toMatchObject({ items: [{ id: created.comment.id, state: "dismissed" }] });
+        const fetched = await getRouteHandler(app, "GET", "/v1/reviews/comments/:commentId")({ userId: "user-1",
+            params: { commentId: created.comment.id }, query: { includeHistory: "true" },
+        }, createReplyStub());
+        expect(fetched).toMatchObject({ comment: { id: created.comment.id } });
+        const reply = createReplyStub();
+        await getRouteHandler(app, "GET", "/v1/reviews/comments")({ userId: "user-1", query: { workspace: "[object Object]" } }, reply);
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_invalid_filter" }));
+    });
 });

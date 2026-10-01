@@ -3,18 +3,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MACHINE_LIVE_STREAM_SOCKET_EVENT,
   MACHINE_LIVE_STREAM_RELAY_AUTHORIZATION_AUDIENCE_V1,
-  MachineLiveStreamFrameV1Schema,
+  MachineLiveStreamWireFrameV1Schema as MachineLiveStreamFrameV1Schema,
   PEER_MEDIATION_RECEIPTS,
   createMachineLiveStreamRelayAuthorizationSigningInputV1,
-  type MachineLiveStreamFrameV1,
+  type MachineLiveStreamWireFrameV1 as MachineLiveStreamFrameV1,
 } from '@happier-dev/protocol';
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import tweetnacl from 'tweetnacl';
 
-import { createFakeSocket, getSocketHandler } from '../testkit/socketHarness';
+import { createFakeSocket as createSocketFixture, getSocketHandler } from '../testkit/socketHarness';
 import type { machineLiveStreamRelayHandler } from './machineLiveStreamRelayHandler';
 
 type LiveStreamRelaySocket = Parameters<typeof machineLiveStreamRelayHandler>[1];
+
+const socketsToDisconnect: ReturnType<typeof createSocketFixture>[] = [];
+
+function createFakeSocket(...args: Parameters<typeof createSocketFixture>) {
+  const socket = createSocketFixture(...args);
+  socketsToDisconnect.push(socket);
+  return socket;
+}
 
 function payloadBase64ForBytes(bytes: number): string {
   return Buffer.from(new Uint8Array(bytes)).toString('base64');
@@ -29,7 +37,7 @@ function frame(overrides: Partial<MachineLiveStreamFrameV1> = {}): MachineLiveSt
     timestampMs: 1_000,
     payloadKind: 'image_keyframe',
     payloadEncoding: 'binary_base64',
-    payloadBase64: payloadBase64ForBytes(payloadSizeBytes),
+    payload: { t: 'plain', v: payloadBase64ForBytes(payloadSizeBytes) },
     payloadSizeBytes,
     ...overrides,
   };
@@ -249,8 +257,375 @@ function emittedFrames(emit: ReturnType<typeof vi.fn>): MachineLiveStreamFrameV1
 }
 
 describe('machineLiveStreamRelayHandler', () => {
-  afterEach(() => {
-    vi.resetModules();
+  afterEach(async () => {
+    // Exercise real teardown so owner state is isolated without recompiling the protocol graph.
+    for (const socket of socketsToDisconnect.splice(0)) await socket.handlers.get('disconnect')?.();
+  });
+
+  it('preserves the initial keyframe while start admission awaits viewer ownership', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let releaseOwnership!: (owned: boolean) => void;
+    const ownership = new Promise<boolean>((resolve) => { releaseOwnership = resolve; });
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: async () => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: () => ownership, nowMs: () => 1_000,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const start = handler(viewerStartMessage('viewer-socket-1'));
+    const firstFrame = handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame({ sequence: 9 }) },
+    });
+    releaseOwnership(true);
+    await Promise.all([start, firstFrame]);
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'frame', frame: expect.objectContaining({ sequence: 9 }),
+    } }) });
+  });
+
+  it('enforces explicit concurrency limits after the Account mode lookup resolves', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const sourceEmit = vi.fn();
+    const socket = createFakeSocket({ emit: sourceEmit, id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let releaseMode!: (mode: 'plain') => void;
+    const mode = new Promise<'plain'>((resolve) => { releaseMode = resolve; });
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: () => ({ emit: vi.fn() }) }, resolveAccountEncryptionMode: () => mode,
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => 1_000,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const first = handler(viewerStartMessage('viewer-socket-1', 'stream_1'));
+    const second = handler(viewerStartMessage('viewer-socket-1', 'stream_2'));
+    releaseMode('plain');
+    await Promise.all([first, second]);
+    expect(sourceEmit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, {
+      type: 'machine-live-stream', error: 'max_concurrent_streams_per_socket_exceeded',
+    });
+  });
+
+  it('does not consume relay admission when the producer disconnects during Account mode lookup', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const source = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    source.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const reconnected = createFakeSocket({ emit: vi.fn(), id: 'reconnected-source-socket' });
+    reconnected.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let releaseMode!: (mode: 'plain') => void;
+    const mode = new Promise<'plain'>((resolve) => { releaseMode = resolve; });
+    const ctx = {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: () => mode, serverRoutedLiveStreamEnabled: true, relayCaps,
+      relayAuthorizationTrustRoots, verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => 1_000,
+    };
+    machineLiveStreamRelayHandler('user-1', source as unknown as LiveStreamRelaySocket, ctx);
+    const admitting = getSocketHandler(source, MACHINE_LIVE_STREAM_SOCKET_EVENT)(viewerStartMessage('viewer-socket-1', 'stream_1'));
+    getSocketHandler(source, 'disconnect')();
+    releaseMode('plain');
+    await admitting;
+    machineLiveStreamRelayHandler('user-1', reconnected as unknown as LiveStreamRelaySocket, ctx);
+    const handler = getSocketHandler(reconnected, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handler(viewerStartMessage('viewer-socket-1', 'stream_2'));
+    await handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame({ streamId: 'stream_2' }) },
+    });
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'frame', frame: expect.objectContaining({ streamId: 'stream_2' }),
+    } }) });
+  });
+
+  it('delivers a terminal source result received while its start admission is pending', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let releaseMode!: (mode: 'plain') => void;
+    const mode = new Promise<'plain'>((resolve) => { releaseMode = resolve; });
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: () => mode, serverRoutedLiveStreamEnabled: true,
+      relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => 1_000,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const admitting = handler(viewerStartMessage('viewer-socket-1'));
+    const receipt = { v: 1, id: PEER_MEDIATION_RECEIPTS.streamPaused, streamId: 'stream_1',
+      routeKind: 'server_relay', flowKind: 'live_stream', reasonCode: 'capture_failed', terminal: true };
+    const ending = handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'receipt', receipt },
+    });
+    releaseMode('plain');
+    await Promise.all([admitting, ending]);
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({
+      message: { kind: 'receipt', receipt },
+    }) });
+  });
+
+  it('honors a viewer stop received while the source start admission is pending', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const source = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    source.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const viewer = createFakeSocket({ emit: vi.fn(), id: 'viewer-socket-1' });
+    viewer.data = { clientType: 'user-scoped' };
+    let releaseMode!: (mode: 'plain') => void;
+    const mode = new Promise<'plain'>((resolve) => { releaseMode = resolve; });
+    const ctx = {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: () => mode, serverRoutedLiveStreamEnabled: true, relayCaps,
+      relayAuthorizationTrustRoots, verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => 1_000,
+    };
+    machineLiveStreamRelayHandler('user-1', source as unknown as LiveStreamRelaySocket, ctx);
+    machineLiveStreamRelayHandler('user-1', viewer as unknown as LiveStreamRelaySocket, ctx);
+    const produce = getSocketHandler(source, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const admitting = produce(viewerStartMessage('viewer-socket-1'));
+    const stopping = getSocketHandler(viewer, MACHINE_LIVE_STREAM_SOCKET_EVENT)({
+      v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target', viewerSocketId: 'viewer-socket-1',
+      message: { kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'stop', reasonCode: 'viewer_stopped' } },
+    });
+    releaseMode('plain');
+    await Promise.all([admitting, stopping]);
+    await produce({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame() },
+    });
+    expect(delivered).toContainEqual({ room: 'machine:machine-source:user-1', payload: expect.objectContaining({ message: {
+      kind: 'control', control: expect.objectContaining({ kind: 'stop', reasonCode: 'viewer_stopped' }),
+    } }) });
+    expect(delivered.some(({ payload }) => (payload as { message: { kind: string } }).message.kind === 'frame')).toBe(false);
+  });
+
+  it('stops both endpoints when a frame arrives after the signed grant expires', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let nowMs = 1_000;
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: async () => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => nowMs,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handler(viewerStartMessage('viewer-socket-1'));
+    nowMs = 61_000;
+    await handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame() },
+    });
+    expect(delivered).toEqual(expect.arrayContaining([
+      { room: 'viewer-socket-1', payload: expect.objectContaining({
+        message: { kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'stop', reasonCode: 'live_stream_authorization_expired' } },
+      }) },
+      { room: 'machine:machine-source:user-1', payload: expect.objectContaining({
+        message: { kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'stop', reasonCode: 'live_stream_authorization_expired' } },
+      }) },
+    ]));
+  });
+
+  it('refuses admission when the signed grant expires during the Account-mode read', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const emit = vi.fn();
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const socket = createFakeSocket({ emit, id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let nowMs = 1_000;
+    let releaseMode!: (mode: 'plain') => void;
+    const mode = new Promise<'plain'>((resolve) => { releaseMode = resolve; });
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: () => mode,
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => nowMs,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const admitting = handler(viewerStartMessage('viewer-socket-1'));
+    nowMs = 61_000;
+    releaseMode('plain');
+    await admitting;
+    expect(emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, {
+      type: 'machine-live-stream', error: 'live_stream_authorization_expired',
+    });
+    // An expired admission must not own state; a subsequent frame requires a fresh start.
+    emit.mockClear();
+    await handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame() },
+    });
+    expect(emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, {
+      type: 'machine-live-stream', error: 'live_stream_start_required',
+    });
+    expect(delivered).toEqual([]);
+  });
+
+  it.each([PEER_MEDIATION_RECEIPTS.streamPaused, PEER_MEDIATION_RECEIPTS.streamBandwidthCapped])(
+    'delivers terminal source receipt %s to the minted viewer and releases relay admission',
+    async (id) => {
+      const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+      const delivered: Array<{ room: string; payload: unknown }> = [];
+      const socket = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+      socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+      machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+        io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+        resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
+        serverRoutedLiveStreamEnabled: true,
+        relayCaps,
+        relayAuthorizationTrustRoots,
+        verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership,
+        nowMs: () => 1_000,
+      });
+      const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+      await handler(viewerStartMessage('viewer-socket-1'));
+      const receipt = { v: 1, id, streamId: 'stream_1', routeKind: 'server_relay', flowKind: 'live_stream', reasonCode: 'capture_failed', terminal: true };
+      await handler({
+        v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+        viewerSocketId: 'self-asserted-viewer', message: { kind: 'receipt', receipt },
+      });
+      expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: {
+        v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+        viewerSocketId: 'viewer-socket-1', message: { kind: 'receipt', receipt },
+      } });
+      await handler(viewerStartMessage('viewer-socket-1', 'stream_2'));
+      await handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+        message: { kind: 'frame', frame: frame({ streamId: 'stream_2' }) },
+      });
+      expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({
+        message: { kind: 'frame', frame: expect.objectContaining({ streamId: 'stream_2' }) },
+      }) });
+    },
+  );
+
+  it('keeps viewer ACK credit at the relay and clamps it to the admitted network window', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const source = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    source.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const viewer = createFakeSocket({ emit: vi.fn(), id: 'viewer-socket-1' });
+    viewer.data = { clientType: 'user-scoped' };
+    const ctx = {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
+      relayAuthorizationTrustRoots, verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership,
+      relayWindowFrames: 1, relayWindowBytes: 3, nowMs: () => 1_000,
+    };
+    machineLiveStreamRelayHandler('user-1', source as unknown as LiveStreamRelaySocket, ctx);
+    machineLiveStreamRelayHandler('user-1', viewer as unknown as LiveStreamRelaySocket, ctx);
+    const produce = getSocketHandler(source, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await produce(viewerStartMessage('viewer-socket-1', 'stream_1', { maxTotalBytes: 1_000 }));
+    await produce({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target', message: { kind: 'frame', frame: frame() } });
+    delivered.length = 0;
+    await getSocketHandler(viewer, MACHINE_LIVE_STREAM_SOCKET_EVENT)({
+      v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target', viewerSocketId: 'viewer-socket-1',
+      message: { kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'ack', nextSequence: 2, windowFrames: 100, windowBytes: 1_000 } },
+    });
+    expect(delivered).toEqual([]);
+    for (const sequence of [2, 3]) await produce({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame({ sequence }) },
+    });
+    expect(delivered).toEqual([{ room: 'viewer-socket-1', payload: expect.objectContaining({
+      message: { kind: 'frame', frame: expect.objectContaining({ sequence: 2 }) },
+    }) }]);
+  });
+
+  it('renews the signed live stream without resetting credit and denies renewed resource changes', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const sourceEmit = vi.fn();
+    const socket = createFakeSocket({ emit: sourceEmit, id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    let nowMs = 1_000;
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots,
+      verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership, nowMs: () => nowMs,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handler(viewerStartMessage('viewer-socket-1', 'stream_1', {}, { exp: 2_000 }));
+    const renewed = viewerStartMessage('viewer-socket-1', 'stream_1', {}, { iat: 1_000, exp: 5_000 });
+    await handler({ ...renewed, message: { kind: 'renew', startRequest: renewed.message.startRequest } });
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'grant_expiring', expiresAtMs: 5_000 },
+    } }) });
+    nowMs = 2_100;
+    await handler({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame() },
+    });
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'frame', frame: expect.objectContaining({ sequence: 1 }),
+    } }) });
+    sourceEmit.mockClear();
+    const changed = viewerStartMessage('viewer-socket-1', 'stream_1', { maxTotalBytes: 7 }, { iat: 2_100, exp: 6_000 });
+    await handler({ ...changed, message: { kind: 'renew', startRequest: changed.message.startRequest } });
+    expect(sourceEmit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, {
+      type: 'machine-live-stream', error: 'live_stream_authorization_mismatch',
+    });
+  });
+
+  it('bounds the serialized frame envelope at the socket transport budget with no default lifetime cap', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const toViewer = vi.fn();
+    const sourceEmit = vi.fn();
+    const socket = createFakeSocket({ emit: sourceEmit, id: 'source-socket' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: () => ({ emit: toViewer }) }, serverRoutedLiveStreamEnabled: true,
+      resolveAccountEncryptionMode: async () => 'plain',
+      relayCaps: {}, relayAuthorizationTrustRoots, socketMaxHttpBufferSize: 280,
+      nowMs: () => 1_000,
+    });
+    const handler = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handler(startMessage());
+    const valid = { v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target', message: { kind: 'frame', frame: frame() } };
+    const budget = Buffer.byteLength(JSON.stringify(valid), 'utf8');
+    expect(budget).toBeGreaterThan(280);
+    await handler(valid);
+    expect(toViewer).not.toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, expect.objectContaining({ message: { kind: 'frame', frame: expect.anything() } }));
+    expect(sourceEmit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, { type: 'machine-live-stream', error: 'socket_message_bytes_exceeded' });
+  });
+
+  it('enforces aggregate relay caps when queued frames drain and stops both endpoints', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const delivered: Array<{ room: string; payload: unknown }> = [];
+    const source = createFakeSocket({ emit: vi.fn(), id: 'source-socket' });
+    source.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const viewer = createFakeSocket({ emit: vi.fn(), id: 'viewer-socket-1' });
+    viewer.data = { clientType: 'user-scoped' };
+    const ctx = {
+      io: { to: (room: string) => ({ emit: (_event: string, payload: unknown) => delivered.push({ room, payload }) }) },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps: { ...relayCaps, maxTotalBytes: 5 },
+      relayAuthorizationTrustRoots, verifyViewerSocketOwnership: verifyUserOneViewerSocketOwnership,
+      relayWindowFrames: 2, relayWindowBytes: 1_000, nowMs: () => 1_000,
+    };
+    machineLiveStreamRelayHandler('user-1', source as unknown as LiveStreamRelaySocket, ctx);
+    machineLiveStreamRelayHandler('user-1', viewer as unknown as LiveStreamRelaySocket, ctx);
+    const produce = getSocketHandler(source, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    const consume = getSocketHandler(viewer, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await produce(viewerStartMessage('viewer-socket-1', 'stream_1', { maxTotalBytes: 5 }));
+    const ack = (windowFrames: number) => ({
+      v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target', viewerSocketId: 'viewer-socket-1',
+      message: { kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'ack', nextSequence: 1, windowFrames } },
+    });
+    await consume(ack(0));
+    for (const sequence of [1, 2]) await produce({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame({ sequence }) },
+    });
+    delivered.length = 0;
+    await consume(ack(2));
+    expect(delivered).toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'frame', frame: expect.objectContaining({ sequence: 1 }),
+    } }) });
+    expect(delivered).not.toContainEqual({ room: 'viewer-socket-1', payload: expect.objectContaining({ message: {
+      kind: 'frame', frame: expect.objectContaining({ sequence: 2 }),
+    } }) });
+    for (const room of ['viewer-socket-1', 'machine:machine-source:user-1']) expect(delivered).toContainEqual({ room, payload: expect.objectContaining({ message: {
+      kind: 'control', control: { v: 1, streamId: 'stream_1', kind: 'stop', reasonCode: 'max_total_bytes_exceeded' },
+    } }) });
   });
 
   it('rejects server-routed live stream by default without leaking frame payloads', async () => {
@@ -265,6 +640,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn() },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: false,
       relayCaps: null,
       nowMs: () => 1_000,
@@ -278,7 +654,7 @@ describe('machineLiveStreamRelayHandler', () => {
       message: {
         kind: 'frame',
         frame: frame({
-          payloadBase64: 'c2VudGluZWw=',
+          payload: { t: 'plain', v: 'c2VudGluZWw=' },
           payloadSizeBytes: 8,
         }),
       },
@@ -306,6 +682,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -341,7 +718,7 @@ describe('machineLiveStreamRelayHandler', () => {
       message: expect.objectContaining({
         kind: 'control',
         control: expect.objectContaining({
-          kind: 'pause',
+          kind: 'stop',
           reasonCode: 'max_total_bytes_exceeded',
         }),
       }),
@@ -361,6 +738,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -390,6 +768,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -426,6 +805,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -455,6 +835,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -494,6 +875,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -549,6 +931,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -564,7 +947,7 @@ describe('machineLiveStreamRelayHandler', () => {
       message: {
         kind: 'frame',
         frame: frame({
-          payloadBase64: payloadBase64ForBytes(64),
+          payload: { t: 'plain', v: payloadBase64ForBytes(64) },
           payloadSizeBytes: 1,
         }),
       },
@@ -591,6 +974,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -654,6 +1038,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -718,6 +1103,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -786,6 +1172,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -809,7 +1196,7 @@ describe('machineLiveStreamRelayHandler', () => {
       targetMachineId: 'machine-target',
       message: {
         kind: 'sideband_control',
-        control: {
+        control: {v:1,streamId:'stream_1',payload:{t:"plain",v:{
           v: 1,
           streamId: 'stream_1',
           sourceId: 'source_1',
@@ -818,7 +1205,7 @@ describe('machineLiveStreamRelayHandler', () => {
           kind: 'tap',
           x: 0.25,
           y: 0.75,
-        },
+        }}},
       },
     });
 
@@ -826,7 +1213,7 @@ describe('machineLiveStreamRelayHandler', () => {
     expect(emit).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, expect.objectContaining({
       message: expect.objectContaining({
         kind: 'sideband_control',
-        control: expect.objectContaining({ kind: 'tap', eventId: 'tap_1' }),
+        control: expect.objectContaining({ payload: { t: 'plain', v: expect.objectContaining({ kind: 'tap', eventId: 'tap_1' }) } }),
       }),
     }));
   });
@@ -844,6 +1231,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', targetSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -887,6 +1275,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', targetSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -938,6 +1327,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1012,6 +1402,7 @@ describe('machineLiveStreamRelayHandler', () => {
     const caps = liveStreamCaps({ maxTotalBytes: 1_000 });
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1092,6 +1483,7 @@ describe('machineLiveStreamRelayHandler', () => {
     let nowMs = 1_000;
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1154,6 +1546,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1213,6 +1606,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -1248,6 +1642,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1284,6 +1679,7 @@ describe('machineLiveStreamRelayHandler', () => {
     };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1325,6 +1721,7 @@ describe('machineLiveStreamRelayHandler', () => {
     let nowMs = 1_000;
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1374,6 +1771,7 @@ describe('machineLiveStreamRelayHandler', () => {
     let nowMs = 1_000;
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,
@@ -1410,6 +1808,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1451,6 +1850,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', sourceSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1506,6 +1906,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', sourceSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1555,6 +1956,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', sourceSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1563,6 +1965,7 @@ describe('machineLiveStreamRelayHandler', () => {
     });
     machineLiveStreamRelayHandler('user-1', viewerSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1610,6 +2013,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', sourceSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1663,6 +2067,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', sourceSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1733,6 +2138,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 5 },
       relayAuthorizationTrustRoots,
@@ -1759,7 +2165,7 @@ describe('machineLiveStreamRelayHandler', () => {
         message: expect.objectContaining({
           kind: 'control',
           control: expect.objectContaining({
-            kind: 'pause',
+            kind: 'stop',
             reasonCode: 'max_total_bytes_exceeded',
           }),
         }),
@@ -1778,6 +2184,7 @@ describe('machineLiveStreamRelayHandler', () => {
     viewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1840,6 +2247,7 @@ describe('machineLiveStreamRelayHandler', () => {
     wrongViewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1901,6 +2309,7 @@ describe('machineLiveStreamRelayHandler', () => {
     wrongViewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -1978,6 +2387,7 @@ describe('machineLiveStreamRelayHandler', () => {
     viewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -2060,6 +2470,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', viewerSocket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -2085,7 +2496,7 @@ describe('machineLiveStreamRelayHandler', () => {
       viewerSocketId: 'viewer-socket-1',
       message: {
         kind: 'sideband_control',
-        control: {
+        control: {v:1,streamId:'stream_1',payload:{t:"plain",v:{
           v: 1,
           streamId: 'stream_1',
           sourceId: 'source_1',
@@ -2094,7 +2505,7 @@ describe('machineLiveStreamRelayHandler', () => {
           kind: 'tap',
           x: 0.25,
           y: 0.75,
-        },
+        }}},
       },
     });
 
@@ -2127,6 +2538,7 @@ describe('machineLiveStreamRelayHandler', () => {
     viewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -2190,6 +2602,7 @@ describe('machineLiveStreamRelayHandler', () => {
     viewerSocket.data = { clientType: 'user-scoped' };
     const ctx = {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -2241,6 +2654,7 @@ describe('machineLiveStreamRelayHandler', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to },
+      resolveAccountEncryptionMode: async (): Promise<'plain'> => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: {
         ...relayCaps,

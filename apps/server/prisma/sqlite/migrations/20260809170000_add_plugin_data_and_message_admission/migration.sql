@@ -97,8 +97,6 @@ CREATE TABLE "PluginCollectionRelation" (
     CONSTRAINT "PluginCollectionRelation_sourceRowDbId_fkey" FOREIGN KEY ("sourceRowDbId") REFERENCES "PluginCollectionRow" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
-CREATE UNIQUE INDEX "PluginCollectionContract_identity_schema_key"
-ON "PluginCollectionContract"("pluginId", "collectionId", "schemaVersion");
 CREATE UNIQUE INDEX "PluginCollectionContract_identity_digest_key"
 ON "PluginCollectionContract"("pluginId", "collectionId", "contractDigest");
 CREATE INDEX "PluginCollectionContract_identity_idx"
@@ -143,6 +141,7 @@ CREATE TABLE "AccountPluginIntent" (
     "enabled" BOOLEAN NOT NULL DEFAULT false,
     "offlineUiHosting" TEXT NOT NULL DEFAULT 'disabled',
     "writableCollections" JSONB NOT NULL,
+    "releaseLessDeclaration" JSONB,
     "revision" INTEGER NOT NULL DEFAULT 0,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,

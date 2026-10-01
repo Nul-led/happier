@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { ScmOperationErrorCodeSchema } from './operationError.js';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
 import { ScmRequestBaseSchema } from './requestBase.js';
 
 export const ScmStashKindSchema = z.enum(['branch', 'transient', 'unmanaged']);
@@ -8,6 +9,7 @@ export type ScmStashKind = z.infer<typeof ScmStashKindSchema>;
 
 export const ScmStashEntrySchema = z.object({
   stashRef: z.string(),
+  stashOid: z.string().optional(),
   kind: ScmStashKindSchema,
   branch: z.string().optional(),
   createdAt: z.number().int().optional(),
@@ -31,6 +33,24 @@ export const ScmStashListResponseSchema = z.object({
 });
 export type ScmStashListResponse = z.infer<typeof ScmStashListResponseSchema>;
 
+export const ScmStashCreateRequestSchema = ScmRequestBaseSchema.extend({
+  message: z.string().trim().min(1).optional(),
+});
+export type ScmStashCreateRequest = z.infer<typeof ScmStashCreateRequestSchema>;
+
+export const ScmStashCreateResponseSchema = z.object({
+  success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
+  stashCreated: z.boolean().optional(),
+  stashRef: z.string().nullable().optional(),
+  stashOid: z.string().optional(),
+  stdout: z.string().optional(),
+  stderr: z.string().optional(),
+  error: z.string().optional(),
+  errorCode: ScmOperationErrorCodeSchema.optional(),
+});
+export type ScmStashCreateResponse = z.infer<typeof ScmStashCreateResponseSchema>;
+
 export const ScmStashDropRequestSchema = ScmRequestBaseSchema.extend({
   stashRef: z.string(),
 });
@@ -38,6 +58,7 @@ export type ScmStashDropRequest = z.infer<typeof ScmStashDropRequestSchema>;
 
 export const ScmStashDropResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -52,6 +73,7 @@ export type ScmStashPopRequest = z.infer<typeof ScmStashPopRequestSchema>;
 
 export const ScmStashPopResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -66,6 +88,7 @@ export type ScmStashApplyRequest = z.infer<typeof ScmStashApplyRequestSchema>;
 
 export const ScmStashApplyResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),

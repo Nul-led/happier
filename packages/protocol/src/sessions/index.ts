@@ -15,6 +15,7 @@ export {
 export * from './access/index.js';
 export * from './subagents/index.js';
 export * from './slashCommands.js';
+export * from './media/imageReferenceV1.js';
 export * from './runtimeModeV1.js';
 export * from './runtimeModeSetRpcV1.js';
 export * from './runtime/index.js';
@@ -51,6 +52,7 @@ export * from './presentation/index.js';
 export * from './metadata/sessionMetadataEnvelopesV1.js';
 export * from './metadata/sessionActionConfirmationsV1.js';
 export * from './metadata/sessionWorkspaceLocationV1.js';
+export * from './metadata/sessionDirectoryV1.js';
 export * from './creation/index.js';
 export * from './permissions/index.js';
 export * from './userActionRequiredOccurrenceV1.js';

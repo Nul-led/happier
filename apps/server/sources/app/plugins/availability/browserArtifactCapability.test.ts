@@ -17,9 +17,8 @@ const artifactDigest: PluginUiArtifactDigestV1 =
     "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 const graph = {
-    contributionId: "panel",
+    artifactId: "panel",
     tier: "hostedWeb" as const,
-    platform: "web" as const,
     entry: "hosted-web/panel/index.html",
     files: [
         {
@@ -49,9 +48,8 @@ const graph = {
         },
     ],
     digest: artifactDigest,
-    builtWith: { bundler: "vite" as const, version: "7.0.0" },
-    hostUiApiVersion: "1.0.0",
-    compat: {},
+    builtWith: { staging: "staticDirectory" as const },
+    hostUiApiRange: "^1.0.0",
 };
 
 const config = {
@@ -70,10 +68,10 @@ describe("browser Artifact capability", () => {
             claim: {
                 accountId,
                 release: { pluginId: "com.acme.panel", version: "1.2.3" },
-                contributionId: graph.contributionId,
+                contributionId: "panel",
                 tier: graph.tier,
-                platform: graph.platform,
-                artifactId: "00000000-0000-4000-8000-000000000001",
+                platform: "web",
+                artifactId: graph.artifactId,
                 artifactDigest: graph.digest,
                 hostedWebScope: {
                     profile: policy.profile,
@@ -154,10 +152,10 @@ describe("browser Artifact capability", () => {
             claim: {
                 accountId: "account-a",
                 release: { pluginId: "com.acme.panel", version: "1.2.3" },
-                contributionId: graph.contributionId,
+                contributionId: "panel",
                 tier: graph.tier,
-                platform: graph.platform,
-                artifactId: "00000000-0000-4000-8000-000000000001",
+                platform: "web",
+                artifactId: graph.artifactId,
                 artifactDigest: graph.digest,
                 hostedWebScope,
             },
@@ -172,6 +170,7 @@ describe("browser Artifact capability", () => {
             nowMs: 1_800_000_000_001,
         })).toEqual(expect.objectContaining({
             accountId: "account-a",
+            artifactId: graph.artifactId,
             artifactDigest: graph.digest,
             artifactOrigin: config.artifactOrigin,
             embeddingOrigin: config.embeddingOrigin,

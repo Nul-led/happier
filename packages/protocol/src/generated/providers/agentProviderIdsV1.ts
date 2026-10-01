@@ -2,7 +2,7 @@
  * GENERATED FILE CONTRACT (A.X-agent-ids-codegen)
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  *
  * This protocol-owned V1 wire schema intentionally preserves the
  * daemon-facing provider id subset while deriving it from the generated

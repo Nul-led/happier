@@ -18,6 +18,17 @@ import {
 } from "./eventRouter";
 
 describe("eventRouter payloads (protocol container)", () => {
+    it("preserves the ready transcript local identity in the live projection", () => {
+        const projection = {
+            latestReadyEventSeq: 47,
+            latestReadyEventAt: 200,
+            latestReadyEventLocalId: "ready-local-id",
+        };
+        const payload = buildUpdateSessionUpdate("s1", 101, "ready-update", undefined, undefined, projection);
+
+        expect(UpdateContainerSchema.parse(payload).body).toMatchObject(projection);
+    });
+
     it("buildNewMessageUpdate emits a full container", () => {
         const payload = buildNewMessageUpdate(
             {
@@ -120,6 +131,31 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).id).toBe("s1");
         expect((payload.body as any).sid).toBe("s1");
         expect((payload.body as any).encryptionMode).toBe("e2ee");
+    });
+
+    it("buildNewSessionUpdate carries the Session's storage state (an imported external session is machine_only)", () => {
+        const payload = buildNewSessionUpdate(
+            {
+                id: "s_import",
+                seq: 0,
+                metadata: "enc-meta",
+                metadataVersion: 1,
+                agentState: null,
+                agentStateVersion: 1,
+                dataEncryptionKey: "AQID",
+                encryptionMode: "e2ee",
+                active: true,
+                lastActiveAt: new Date(1),
+                createdAt: new Date(1),
+                updatedAt: new Date(1),
+                currentStorageState: "machine_only",
+            },
+            103,
+            "upd-3",
+        );
+
+        expect(UpdateContainerSchema.safeParse(payload).success).toBe(true);
+        expect((payload.body as any).currentStorageState).toBe("machine_only");
     });
 
     it("buildNewSessionUpdate emits explicit plaintext mode", () => {

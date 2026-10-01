@@ -54,6 +54,8 @@ import {
   normalizePluginAccountCollectionContractV1,
   normalizePluginAccountCollectionContractsV1,
   resolveEffectivePluginCollectionLimitsV1,
+  resolvePluginCollectionMigrationArtifactOwnerV1,
+  resolvePluginCollectionMigrationChainV1,
   resolvePluginCollectionContractAccessV1,
   splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1,
   validatePluginCollectionUiQueryParametersV1,
@@ -114,8 +116,43 @@ function collectionRef(contract: Readonly<{
     collectionId: contract.collectionId,
     schemaVersion: contract.schemaVersion,
     contractDigest: contract.contractDigest,
-  };
+};
 }
+
+describe('Collection migration Artifact ownership', () => {
+  it('resolves only the exact migrating Collection declaration without changing its semantic contract digest', () => {
+    const migrating = PluginAccountCollectionContributionV1Schema.parse({
+      ...baseCollection,
+      schemaVersion: 2,
+      readableSchemaVersions: [1],
+      migrations: [{ id: 'v1-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }],
+      migrationArtifact: {
+        artifactId: 'tasks-migrations',
+        exportName: 'collectionMigrations',
+      },
+    });
+    const withoutExecutableReference = PluginAccountCollectionContributionV1Schema.parse({
+      ...migrating,
+      migrationArtifact: undefined,
+    });
+
+    expect(resolvePluginCollectionMigrationArtifactOwnerV1([migrating])).toEqual({
+      contributionId: 'tasks',
+      reference: {
+        artifactId: 'tasks-migrations',
+        exportName: 'collectionMigrations',
+      },
+    });
+    expect(resolvePluginCollectionMigrationArtifactOwnerV1([withoutExecutableReference])).toBeNull();
+    expect(normalizePluginAccountCollectionContractV1({
+      pluginId: 'acme.tasks',
+      contribution: migrating,
+    })).toEqual(normalizePluginAccountCollectionContractV1({
+      pluginId: 'acme.tasks',
+      contribution: withoutExecutableReference,
+    }));
+  });
+});
 
 describe('Plugin Account Collection contracts', () => {
   it('grants older declared-compatible contracts reads but reserves writes for the exact current ref', () => {
@@ -1403,9 +1440,6 @@ describe('Plugin Account Collection contracts', () => {
       allowedRuntimeRegistration: null,
       consumer: 'account-collection-service',
     });
-    expect(() => PluginContributesV2Schema.parse({
-      accountCollections: [baseCollection, { ...baseCollection, schemaVersion: 2 }],
-    })).toThrow('Duplicate account collection contribution id');
   });
 
   it('normalizes one plugin collection set into stable qualified contract references', () => {
@@ -1634,6 +1668,58 @@ describe('Plugin Account Collection contracts', () => {
         ],
       },
     });
+
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: normalized.schemaVersion,
+      readableSchemaVersions: normalized.readableSchemaVersions,
+      migrations: normalized.migrations,
+      sourceSchemaVersion: 1,
+    })).toEqual(evolvingCollection.migrations);
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: normalized.schemaVersion,
+      readableSchemaVersions: normalized.readableSchemaVersions,
+      migrations: normalized.migrations,
+      sourceSchemaVersion: 2,
+    })).toEqual([evolvingCollection.migrations[1]]);
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: normalized.schemaVersion,
+      readableSchemaVersions: normalized.readableSchemaVersions,
+      migrations: normalized.migrations,
+      sourceSchemaVersion: 3,
+    })).toEqual([]);
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: normalized.schemaVersion,
+      readableSchemaVersions: normalized.readableSchemaVersions,
+      migrations: normalized.migrations,
+      sourceSchemaVersion: 0,
+    })).toBeNull();
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: normalized.schemaVersion,
+      readableSchemaVersions: normalized.readableSchemaVersions,
+      migrations: normalized.migrations,
+      sourceSchemaVersion: 4,
+    })).toBeNull();
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: 2,
+      readableSchemaVersions: [1, 2],
+      migrations: [{ id: 'channel-state-v1-to-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }],
+      sourceSchemaVersion: 1,
+    })).toEqual([{ id: 'channel-state-v1-to-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }]);
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: 3,
+      readableSchemaVersions: [1, 2],
+      migrations: [{ id: 'upgrade-v1-to-v2', fromSchemaVersion: 1, toSchemaVersion: 2 }],
+      sourceSchemaVersion: 1,
+    })).toBeNull();
+    expect(resolvePluginCollectionMigrationChainV1({
+      targetSchemaVersion: 3,
+      readableSchemaVersions: [1, 2],
+      migrations: [
+        { id: 'upgrade-v1-to-v2', fromSchemaVersion: 1, toSchemaVersion: 2 },
+        { id: 'upgrade-v4-to-v3', fromSchemaVersion: 4, toSchemaVersion: 3 },
+      ],
+      sourceSchemaVersion: 1,
+    })).toBeNull();
 
     expect(normalized.migrations).toEqual(evolvingCollection.migrations);
     expect(changedIdentity.contractDigest).not.toBe(normalized.contractDigest);

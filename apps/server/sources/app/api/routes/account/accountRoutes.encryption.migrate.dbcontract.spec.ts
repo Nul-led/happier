@@ -947,6 +947,8 @@ function buildMigrationRequest(
                 artifactId: fixture.artifact.id,
                 expectedHeaderVersion: 5,
                 expectedBodyVersion: 6,
+                expectedDataEncryptionKey: privacyKit.encodeBase64(new Uint8Array(fixture.artifact.dataEncryptionKey)),
+                recipientKeyEnvelopes: [],
                 header:
                     fixture.target.artifactHeader,
                 body: fixture.target.artifactBody,

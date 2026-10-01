@@ -54,8 +54,7 @@ export function resolvePluginsFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDe
     // default-ALLOW kill-switches (§4.1/§13.5.3): the server/build can disable a tier, but
     // per-plugin install/enable/trust/runtime derivation (5.1/5.2) governs actual render.
     // Dependency enforcement in resolveServerFeaturePayload cascades a parent off-state to the
-    // children. The finer reactNativeBundles.devHotReload tier stays client + fail-closed (CLI/UI
-    // local policy owns it), so it is not emitted here.
+    // children.
     return {
         features: {
             plugins: {

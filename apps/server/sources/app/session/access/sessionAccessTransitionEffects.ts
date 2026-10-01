@@ -4,6 +4,7 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { tombstoneSessionDraftForLifecycleInTx } from "@/app/account/sessionDrafts/sessionDraftService";
 import { removeAccountSessionFollowsOnAccessLossInTx } from "@/app/session/follow/accountFollowService";
 import { removeUnsafeSessionFollowEdgesForAccessChangeInTx } from "@/app/session/follow/sessionFollowEdgeService";
+import { removeUnsafeSessionReportsToEdgesForAccessChangeInTx } from "@/app/session/relations/sessionReportsToService";
 import { projectSessionEffectiveAccessV1, type EffectiveSessionAccess } from "./sessionAccess";
 import { clearSessionResponsibilityIfNoReadAccessInTx } from "./sessionResponsibilityService";
 
@@ -97,6 +98,7 @@ export async function applySessionAccessTransitionEffectsInTx(
         await removeUnsafeSessionFollowEdgesForAccessChangeInTx(tx, {
             sessionId: params.sessionId,
         });
+        await removeUnsafeSessionReportsToEdgesForAccessChangeInTx(tx, { sessionId: params.sessionId });
     }
 
     // Responsibility is a workflow fact layered on current access, so this one

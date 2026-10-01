@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import {
     PrimaryTurnStatusV1Schema,
+    SessionAwarenessOriginV1Schema,
     parseSessionRuntimeActivityProjectionFields,
     projectLegacyViewerLastViewedSessionSeqV1,
     projectLegacyViewerUnreadSinceV1,
@@ -50,12 +51,27 @@ export function parseStoredSessionLatestTurnStatus(value: string | null | undefi
     return parsed.success ? parsed.data : null;
 }
 
+/** Stored creation origin is shared by initial creation and current row projections. */
+export function projectStoredSessionOrigin(row: Readonly<{
+    originKind: string;
+    originRunId: string | null;
+}>): V2SessionRecord["origin"] {
+    const origin = SessionAwarenessOriginV1Schema.safeParse({
+        kind: row.originKind,
+        ...(row.originRunId ? { runId: row.originRunId } : {}),
+    });
+    return origin.success ? origin.data : undefined;
+}
+
 function isTerminalTurnStatus(status: V2SessionRecord["latestTurnStatus"]): boolean {
     return status === "completed" || status === "cancelled" || status === "failed";
 }
 
 const V2_SESSION_LIST_ROW_BASE_SELECT = {
     id: true,
+    originKind: true,
+    originRunId: true,
+    workDepth: true,
     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
     accountId: true,
     createdAt: true,
@@ -405,8 +421,11 @@ export function mapV2SessionListRow(params: Readonly<{
             effectiveAccess,
             now: params.now,
         });
+    const origin = projectStoredSessionOrigin(row);
     return {
         id: row.id,
+        ...(origin ? { origin } : {}),
+        workDepth: row.workDepth,
         seq: publicationProjection.seq,
         createdAt: row.createdAt.getTime(),
         updatedAt: publicationProjection.updatedAt,

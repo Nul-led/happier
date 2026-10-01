@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
+import type { z } from "zod";
 import {
     SessionBoardMutationV1Schema, SessionBoardLayoutV1Schema, SessionSurfaceItemV1Schema,
     isSessionSurfaceItemSourceCompatible,
     type SessionBoardMutationV1, type SessionBoardMutationResultV1, type SessionBoardErrorV1,
+    type SessionBoardFeatureGateErrorV1Schema,
 } from "@happier-dev/protocol/sessions/board";
 import {
     type SessionSystemRecordContent, type SessionSystemRecordStored,
@@ -13,12 +15,14 @@ import { resolveSessionBoardRecordsInTx } from "@/app/session/systemRecords/sess
 import { markSessionProjectionRecipientsChanged } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
+type SessionBoardMutationError = SessionBoardErrorV1 | z.infer<typeof SessionBoardFeatureGateErrorV1Schema>;
+
 class BoardMutationFailure extends Error {
-    constructor(readonly result: SessionBoardErrorV1) { super(result.error); }
+    constructor(readonly result: SessionBoardMutationError) { super(result.error); }
 }
 
 type SessionBoardMutationOutcome =
-    { ok: true; result: SessionBoardMutationResultV1 } | { ok: false; result: SessionBoardErrorV1 };
+    { ok: true; result: SessionBoardMutationResultV1 } | { ok: false; result: SessionBoardMutationError };
 
 async function mutateSessionBoardAttempt(
     params: Readonly<{ actorUserId: string; sessionId: string; authentication: SessionAccessAuthentication }>,
@@ -28,7 +32,9 @@ async function mutateSessionBoardAttempt(
     try {
         return await inTx(async tx => {
             const records = await resolveSessionBoardRecordsInTx(tx, params);
-            if (!records) throw new BoardMutationFailure({ error: "session_board_forbidden" });
+            if (!records.ok) throw new BoardMutationFailure({
+                error: records.code === "plugin_session_record_feature_disabled" ? "not_found" : "session_board_forbidden",
+            });
             const read = async (id: string | null) => {
                 const result = await records.read(id);
                 if (!result.ok) {

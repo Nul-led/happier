@@ -9,7 +9,9 @@ import {
 import { Server, Socket } from "socket.io";
 import { log } from "@/utils/logging/log";
 import { auth } from "@/app/auth/auth";
-import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
+import { narrowCredentialAuthority } from "@/app/auth/effectiveCredentialAuthority";
+import { admitApiTokenSessionOperation, isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
+import { isApiTokenRequestOriginAllowed } from "./utils/isApiTokenRequestOriginAllowed";
 import {
     recordSocketAuthHandshake,
     recordSocketAuthHandshakeStageDuration,
@@ -44,7 +46,7 @@ import {
     createExternalProviderBrokerDispatcher,
     createTeamCredentialResourceTestBrokerDispatcher,
 } from "./routes/providers/externalProviderBrokerDispatcher";
-import { createPeerMediationObservabilityStore } from "./socket/peer/mediation/observability/store";
+import { createPeerMediationObservabilityEmitter, createPeerMediationObservabilityStore } from "./socket/peer/mediation/observability/store";
 import {
     registerPeerMediationObservabilitySocketRoutes,
     type PeerMediationObservabilityPrincipal,
@@ -53,7 +55,7 @@ import { artifactUpdateHandler } from "./socket/artifactUpdateHandler";
 import { accessKeyHandler } from "./socket/accessKeyHandler";
 import { createServerRpcForwarder } from "./socket/serverRpcForwarder";
 import { createAutomationReplyHandoffDaemonDispatcher } from "./socket/automationReplyHandoffDispatcher";
-import { createExternalActionDaemonDispatcher } from "./socket/externalActionDispatcher";
+import { createExternalActionDaemonDispatcher, resolveCurrentSessionMachineFromServer } from "./socket/externalActionDispatcher";
 import {
     createSessionServerStartAutomationIngress,
     createSessionServerStartDaemonDispatcher,
@@ -61,6 +63,8 @@ import {
 import { resolveVerifiedMachineSocketInstallationId } from "./socket/machineSocketInstallationProof";
 import {
     getAccountRevocationSocketRoom,
+    getApiTokenRevocationSocketRoom,
+    getAccountTerminalSocketRoom,
     getProtectedSocketRooms,
     type SocketClientType,
 } from "./socketRooms";
@@ -73,26 +77,22 @@ import {
 import { randomUUID } from "node:crypto";
 import { readSocketAdapterRuntimeConfigFromEnv } from "@/config/socketAdapter";
 import { db, isPrismaErrorCode } from "@/storage/db";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome, isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { readMachineLiveStreamFeatureEnv, readMachineTransferFeatureEnv, readMachineTunnelFeatureEnv, readPeerMediationFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
-import { resolveFeaturesFromEnv } from "@/app/features/registry";
 import { readSessionScopedSocketBinding, resolveSessionScopedSocketBinding } from "./socket/sessionScopedBinding";
 import {
-    resolveEphemeralRunnerSocketAdmission,
-    type EphemeralRunnerSocketAdmission,
-} from "./socket/ephemeralRunnerSocketAdmission";
+    resolveRestrictedSocketAdmission,
+    type RestrictedSocketAdmission,
+} from "./socket/restrictedSocketAdmission";
 import { createMachineSocketOwnershipRegistry } from "./socket/machineSocketOwnershipRegistry";
 import { createPeerMediationViewerSocketOwnershipVerifier } from "./socket/viewerSocketOwnership";
 import { activityCache } from "@/app/presence/sessionCache";
 import {
-    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2,
-    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     EXTERNAL_SESSION_OPERATION_SOCKET_MAX_BATCH_ITEMS_V1,
     resolvePeerRouteFeatureId,
     resolveExternalSessionOperationSocketBatchLimitsV1,
     type ExternalSessionOperationSocketBatchLimitResolutionV1,
-    type PeerMediationObservabilityEventV1,
     type PeerTcpTunnelRelayEnvelope,
 } from "@happier-dev/protocol";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
@@ -109,34 +109,12 @@ import {
     writeAccountStoredContentCompatibilityForSocket,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 
-export const DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE = Math.max(
-    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2,
-    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2,
-);
+import { resolveSocketMaxHttpBufferSizeFromEnv } from './socket/transportBudget';
+export { DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE, resolveSocketMaxHttpBufferSizeFromEnv } from './socket/transportBudget';
 // Socket.IO adds its event name, acknowledgement id, and packet framing around the
 // serialized command. Keep that reserve beside the one live transport ceiling.
 export const EXTERNAL_SESSION_OPERATION_SOCKET_ENVELOPE_RESERVE_BYTES = 64 * 1024;
 export const EXTERNAL_SESSION_OPERATION_SOCKET_MAX_BATCH_SERIALIZED_BYTES = 512 * 1024;
-
-export function resolveSocketMaxHttpBufferSizeFromEnv(env: Record<string, string | undefined>): number {
-    const raw = (env.HAPPIER_SOCKET_MAX_HTTP_BUFFER_SIZE ?? env.HAPPY_SOCKET_MAX_HTTP_BUFFER_SIZE ?? '').trim();
-    if (!raw) return DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE;
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE;
-    if (
-        parsed < EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2
-        || parsed < EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2
-    ) {
-        throw new Error(
-            "Socket.IO maxHttpBufferSize must be at least "
-            + EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2
-            + " bytes for external Action relay requests and "
-            + EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2
-            + " bytes for responses",
-        );
-    }
-    return parsed;
-}
 
 export function resolveExternalSessionOperationSocketBatchLimitsForMaxHttpBufferSize(
     socketMaxHttpBufferSize: number,
@@ -192,6 +170,19 @@ export function normalizeSocketHandshakeClientType(clientType: unknown): SocketC
         return clientType;
     }
     return 'user-scoped';
+}
+
+export function scheduleApiTokenSocketExpiry(socket: Pick<Socket, "once" | "disconnect">, expiresAt: Date): void {
+    const expiresAtMs = expiresAt.getTime();
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    const expire = (): void => {
+        const remaining = expiresAtMs - Date.now();
+        if (remaining <= 0) { socket.disconnect(true); return; }
+        // The platform timer range is not a credential lifetime limit.
+        expiryTimer = setTimeout(expire, Math.min(remaining, 2_147_483_647));
+    };
+    socket.once("disconnect", () => { if (expiryTimer) clearTimeout(expiryTimer); });
+    expire();
 }
 
 function resolvePeerMediationObservabilityPrincipal(input: Readonly<{
@@ -293,6 +284,10 @@ export function startSocket(app: Fastify) {
     });
 
     app.machineDaemonPresence = io;
+    const resolveCurrentSessionMachine = (input: Readonly<{ accountId: string; sessionId: string }>) => resolveCurrentSessionMachineFromServer({
+        ...input, io, presence: sessionPublisherPresence,
+    });
+    app.resolveCurrentSessionMachine = resolveCurrentSessionMachine;
     const humanPresence = createSessionHumanPresenceService({
         io,
         clusterAccessChangePublicationEnabled: shouldEnableRedisAdapter,
@@ -304,6 +299,7 @@ export function startSocket(app: Fastify) {
     app.disconnectAccountSockets = (accountId: string): void => {
         eventRouter.disconnectAccountSockets(accountId);
     };
+    app.disconnectApiTokenSockets = tokenIds => eventRouter.disconnectApiTokenSockets(tokenIds);
 
     setSocketAdapterModeInfo({
         adapter: socketAdapter,
@@ -362,11 +358,7 @@ export function startSocket(app: Fastify) {
     });
     const tunnelRelayBridge = createPeerTcpTunnelRelayBridge(io);
     const peerMediationObservabilityStore = createPeerMediationObservabilityStore();
-    const peerMediationObservabilityEmitter = {
-        emit: (event: PeerMediationObservabilityEventV1): void => {
-            peerMediationObservabilityStore.publish(event);
-        },
-    } as const;
+    const peerMediationObservabilityEmitter = createPeerMediationObservabilityEmitter(peerMediationObservabilityStore);
     app.peerMediationObservability = peerMediationObservabilityEmitter;
     const tunnelRelayAuthorizationTrustRoots = peerMediationFeatureEnv.grantSigningKeys.map((key) => ({
         keyId: key.keyId,
@@ -377,7 +369,6 @@ export function startSocket(app: Fastify) {
         relayAuthorizationTrustRoots: tunnelRelayAuthorizationTrustRoots,
         serverRoutedEnabled: serverRoutedTunnelRelayEnabledByFlowKind.tcp_tunnel,
         serverRoutedEnabledByFlowKind: serverRoutedTunnelRelayEnabledByFlowKind,
-        maxBytes: machineTunnelFeatureEnv.serverRoutedMaxBytes,
         maxActiveTunnelsPerSocket: machineTunnelFeatureEnv.serverRoutedMaxActiveTunnelsPerSocket,
         maxFrameBytes: machineTunnelFeatureEnv.serverRoutedMaxFrameBytes,
         supportedEncodings: machineTunnelFeatureEnv.serverRoutedSupportedEncodings,
@@ -386,8 +377,6 @@ export function startSocket(app: Fastify) {
         maxRawPayloadBytes: machineTunnelFeatureEnv.serverRoutedMaxRawPayloadBytes,
         maxFramedMessageBytes: machineTunnelFeatureEnv.serverRoutedMaxFramedMessageBytes,
         substreams: machineTunnelFeatureEnv.serverRoutedSubstreams,
-        maxIdleMs: machineTunnelFeatureEnv.maxIdleMs,
-        maxDurationMs: machineTunnelFeatureEnv.maxDurationMs,
         allowedPorts: machineTunnelFeatureEnv.allowedPorts,
         observability: peerMediationObservabilityEmitter,
         coordinator: tunnelRelayCoordinator,
@@ -425,15 +414,21 @@ export function startSocket(app: Fastify) {
             },
         };
     };
+    // The provider broker relay is `teams.credentialResources`, a live feature: decided per dispatch
+    // on the Home-effective configuration (the tunnel relay's startup capture above stays the
+    // transport ceiling for frames of flows these dispatchers already authorized).
+    const providerBrokerRelayEnabled = () => isServerFeatureEnabledForHome(
+        resolvePeerRouteFeatureId({ flowKind: 'provider_broker', routeKind: 'server_relay' }),
+    );
     app.forwardExternalProviderBrokerRequest = createExternalProviderBrokerDispatcher({
         env: process.env,
         createRelayTransport: app.createPeerTcpTunnelRelayTransport,
-        enabled: serverRoutedTunnelRelayEnabledByFlowKind.provider_broker,
+        enabled: providerBrokerRelayEnabled,
     });
     app.forwardTeamCredentialBrokerResourceTest = createTeamCredentialResourceTestBrokerDispatcher({
         env: process.env,
         createRelayTransport: app.createPeerTcpTunnelRelayTransport,
-        enabled: serverRoutedTunnelRelayEnabledByFlowKind.provider_broker,
+        enabled: providerBrokerRelayEnabled,
     });
 
     io.use(async (socket, next) => {
@@ -488,7 +483,7 @@ export function startSocket(app: Fastify) {
             return rejectHandshake({ statusCode: 400, error: 'missing-machine-id' });
         }
         let releaseMachineOwnershipIfClaimed: (() => Promise<void>) | null = null;
-        let ephemeralRunnerAdmission: EphemeralRunnerSocketAdmission | null = null;
+        let ephemeralRunnerAdmission: RestrictedSocketAdmission | null = null;
         try {
             setHandshakeStage("verify-token");
             const verified = await auth.verifyTokenForRoute(token);
@@ -496,9 +491,10 @@ export function startSocket(app: Fastify) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
             }
-            ephemeralRunnerAdmission = verified.authTokenKind === "ephemeral_session_runner"
-                ? resolveEphemeralRunnerSocketAdmission({
+            ephemeralRunnerAdmission = verified.authTokenKind === "ephemeral_session_runner" || verified.authTokenKind === "api_token"
+                ? resolveRestrictedSocketAdmission({
                     principal: verified.ephemeralSessionRunnerPrincipal,
+                    apiTokenPrincipal: verified.apiTokenPrincipal,
                     clientType,
                     ...(sessionId ? { sessionId } : {}),
                     ...(machineId ? { machineId } : {}),
@@ -507,6 +503,21 @@ export function startSocket(app: Fastify) {
             if (isRestrictedAuthTokenKind(verified.authTokenKind) && !ephemeralRunnerAdmission) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
+            }
+            if (ephemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                const principal = ephemeralRunnerAdmission.principal;
+                const origin = socket.handshake.headers.origin;
+                if (origin !== undefined && !isApiTokenRequestOriginAllowed(principal.grant, origin)) {
+                    return rejectHandshake({ statusCode: 403, error: "origin_denied" });
+                }
+                const admitted = await admitApiTokenSessionOperation({ principal,
+                    sessionId: ephemeralRunnerAdmission.sessionId, actionId: "session.transcript.get",
+                    capability: "readTranscript", targetMachineId: await resolveCurrentSessionMachine({
+                        accountId: principal.accountId, sessionId: ephemeralRunnerAdmission.sessionId,
+                    }),
+                });
+                if (!admitted.ok) return rejectHandshake({ statusCode: 403, error: admitted.error });
+                socket.data.apiTokenPrincipal = principal;
             }
             observeHandshakeStage("ok");
 
@@ -647,7 +658,8 @@ export function startSocket(app: Fastify) {
             }
 
             socket.data.userId = verified.userId;
-            socket.data.authAuthority = verified.authority;
+            socket.data.authTokenKind = verified.authTokenKind;
+            socket.data.authAuthority = narrowCredentialAuthority(verified.authority, socket.handshake.auth.authorityCeiling);
             socket.data.authTokenAuthenticationEvidence = verified.authenticationEvidence;
             socket.data.clientType = clientType;
             socket.data.clientPurpose = clientPurpose;
@@ -772,14 +784,14 @@ export function startSocket(app: Fastify) {
         // only the content-free revocation room until final token currentness is
         // established; protected fanout rooms remain unavailable in that window.
         const handshakeEphemeralRunnerAdmission = (
-            socket.data as { ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission }
+            socket.data as { ephemeralRunnerAdmission?: RestrictedSocketAdmission }
         ).ephemeralRunnerAdmission ?? null;
         const protectedRooms = getProtectedSocketRooms({
             userId,
             clientType,
             sessionId,
             machineId,
-            ...(handshakeEphemeralRunnerAdmission?.kind === "session-runtime"
+            ...(handshakeEphemeralRunnerAdmission?.kind === "session-runtime" || handshakeEphemeralRunnerAdmission?.kind === "api-token-session-viewer"
                 ? { includeUserRoomForSessionScoped: false }
                 : {}),
             ...(handshakeEphemeralRunnerAdmission?.kind === "machine-runtime"
@@ -823,10 +835,19 @@ export function startSocket(app: Fastify) {
 
         try {
             await socket.join(getAccountRevocationSocketRoom(userId));
+            // Join before the existing final currentness read, closing the
+            // policy-change window without admitting protected fanout early.
+            if (socket.data.authTokenKind === "terminal") await socket.join(getAccountTerminalSocketRoom(userId));
+            if (handshakeEphemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                const principal = handshakeEphemeralRunnerAdmission.principal;
+                await socket.join([getApiTokenRevocationSocketRoom(principal.credentialId),
+                    ...(principal.parentTokenId ? [getApiTokenRevocationSocketRoom(principal.parentTokenId)] : [])]);
+            }
             const currentVerified = await auth.verifyTokenForRoute(token);
-            const currentEphemeralRunnerAdmission = currentVerified?.authTokenKind === "ephemeral_session_runner"
-                ? resolveEphemeralRunnerSocketAdmission({
+            const currentEphemeralRunnerAdmission = currentVerified?.authTokenKind === "ephemeral_session_runner" || currentVerified?.authTokenKind === "api_token"
+                ? resolveRestrictedSocketAdmission({
                     principal: currentVerified.ephemeralSessionRunnerPrincipal,
+                    apiTokenPrincipal: currentVerified.apiTokenPrincipal,
                     clientType,
                     ...(sessionId ? { sessionId } : {}),
                     ...(machineId ? { machineId } : {}),
@@ -841,8 +862,24 @@ export function startSocket(app: Fastify) {
                 await rejectPostConnectAdmission();
                 return;
             }
-            socket.data.authAuthority = currentVerified.authority;
+            socket.data.authTokenKind = currentVerified.authTokenKind;
+            socket.data.authAuthority = narrowCredentialAuthority(currentVerified.authority, socket.handshake.auth.authorityCeiling);
             socket.data.authTokenAuthenticationEvidence = currentVerified.authenticationEvidence;
+            if (currentEphemeralRunnerAdmission?.kind === "api-token-session-viewer") {
+                const principal = currentEphemeralRunnerAdmission.principal;
+                const origin = socket.handshake.headers.origin;
+                const admitted = await admitApiTokenSessionOperation({ principal,
+                    sessionId: currentEphemeralRunnerAdmission.sessionId, actionId: "session.transcript.get",
+                    capability: "readTranscript", targetMachineId: await resolveCurrentSessionMachine({
+                        accountId: userId, sessionId: currentEphemeralRunnerAdmission.sessionId,
+                    }),
+                });
+                if (!admitted.ok || (origin !== undefined && !isApiTokenRequestOriginAllowed(principal.grant, origin))) {
+                    await rejectPostConnectAdmission(); return;
+                }
+                socket.data.apiTokenPrincipal = principal;
+                socket.data.ephemeralRunnerAdmission = currentEphemeralRunnerAdmission;
+            }
             await socket.join(protectedRooms);
             if (!socket.connected) {
                 await rejectPostConnectAdmission();
@@ -869,10 +906,16 @@ export function startSocket(app: Fastify) {
             return;
         }
 
+        const viewerAdmission = (socket.data as { ephemeralRunnerAdmission?: RestrictedSocketAdmission })
+            .ephemeralRunnerAdmission;
+        if (viewerAdmission?.kind === "api-token-session-viewer" && viewerAdmission.principal.expiresAt) {
+            scheduleApiTokenSocketExpiry(socket, viewerAdmission.principal.expiresAt);
+        }
+
         // Store connection based on type
         const metadata = { clientType, clientPurpose: clientPurpose || 'unknown', sessionId, machineId };
         const ephemeralRunnerAdmission = (
-            socket.data as { ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission }
+            socket.data as { ephemeralRunnerAdmission?: RestrictedSocketAdmission }
         ).ephemeralRunnerAdmission ?? null;
         let connection: ClientConnection;
         if (metadata.clientType === 'session-scoped' && sessionId) {
@@ -1030,7 +1073,7 @@ export function startSocket(app: Fastify) {
         }
 
         // Handlers
-        if (ephemeralRunnerAdmission?.kind !== "machine-runtime") {
+        if (ephemeralRunnerAdmission?.kind !== "machine-runtime" && ephemeralRunnerAdmission?.kind !== "api-token-session-viewer") {
             usageHandler(
                 userId,
                 socket,
@@ -1068,7 +1111,10 @@ export function startSocket(app: Fastify) {
                         principalKind: "ephemeral-session-runner",
                         principal: ephemeralRunnerAdmission.principal,
                     }
-                    : undefined,
+                    : ephemeralRunnerAdmission?.kind === "api-token-session-viewer"
+                        ? { principalKind: "api-token-session-viewer", principal: ephemeralRunnerAdmission.principal,
+                            resolveSessionMachine: resolveCurrentSessionMachine }
+                        : undefined,
                 { resolveExecutionRunCurrentness },
             );
         }
@@ -1088,6 +1134,12 @@ export function startSocket(app: Fastify) {
             });
             machineLiveStreamRelayHandler(userId, socket, {
                 io,
+                socketMaxHttpBufferSize,
+                resolveAccountEncryptionMode: async () => {
+                    const account = await db.account.findUnique({ where: { id: userId }, select: { encryptionMode: true } });
+                    return account?.encryptionMode === 'plain' || account?.encryptionMode === 'e2ee'
+                        ? account.encryptionMode : null;
+                },
                 serverRoutedLiveStreamEnabled,
                 relayCaps: machineLiveStreamFeatureEnv.serverRoutedCaps,
                 relayAuthorizationTrustRoots: tunnelRelayAuthorizationTrustRoots,
@@ -1102,7 +1154,6 @@ export function startSocket(app: Fastify) {
             });
             registerPeerMediationObservabilitySocketRoutes(socket, {
                 store: peerMediationObservabilityStore,
-                featurePayload: () => resolveFeaturesFromEnv(process.env),
                 principal: resolvePeerMediationObservabilityPrincipal({
                     userId,
                     clientType,

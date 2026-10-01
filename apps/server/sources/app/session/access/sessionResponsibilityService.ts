@@ -22,6 +22,7 @@ import { buildAccountTextPrefixFilter } from "@/app/account/accountTextPrefixFil
 import { scheduleSessionActivityRemoteAlerts } from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
 import { applySessionAutoFollowForRelationshipChangeInTx } from "@/app/session/follow/accountFollowService";
 import { markCurrentSessionReadersChanged } from "@/app/session/changeTracking/markCurrentSessionReadersChanged";
+import { scheduleSessionPersonalEvent } from "@/app/session/personal/publishPersonalEvent";
 import { AccountStatus, getDbProviderFromEnv } from "@/storage/prisma";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import {
@@ -201,7 +202,7 @@ export async function setSessionResponsibility(params: Readonly<{
 
         // One broad content-safe wake for the Accounts that can currently read the
         // Session. It is synchronization, not notification eligibility.
-        await markCurrentSessionReadersChanged({
+        const readerCursors = await markCurrentSessionReadersChanged({
             tx,
             sessionId: params.sessionId,
             // The id/summary pair is one viewer-safe projection. Publishing
@@ -209,6 +210,19 @@ export async function setSessionResponsibility(params: Readonly<{
             // assignee's name until a full list refresh.
             hint: { responsibleAccountId: desired, responsibleAccount },
         });
+
+        if (desired !== null && desired !== params.actorAccountId) {
+            const recipientChange = readerCursors.find(change => change.accountId === desired);
+            if (recipientChange) {
+                scheduleSessionPersonalEvent(tx, desired, {
+                    type: "session-personal-event",
+                    sessionId: params.sessionId,
+                    event: "assigned",
+                    eventId: `assigned:${desired}:${recipientChange.cursor}`,
+                    assignmentAutoFollowed: autoFollowed,
+                });
+            }
+        }
 
         return {
             ok: true as const,

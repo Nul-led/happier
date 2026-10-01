@@ -9,13 +9,8 @@ import {
 import releasedV2Wire from "../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json";
 
 import {
-    isAutomationDefinitionRepresentableInV2,
-    isAutomationRunV2ExecutionRepresentable,
-    isAutomationRunV2HistoryRepresentable,
-    toAutomationV2ApiDto,
     toAutomationDefinitionDetailApiDto,
     toAutomationDefinitionListItemApiDto,
-    toAutomationRunV2ApiDto,
     toAutomationRunV3DetailApiDto,
     toAutomationRunV3ListApiDto,
 } from "./automationApiProjection";
@@ -83,7 +78,7 @@ function strictEventExecutionRecipe(): string {
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server-1", machineId: "machine-1" },
-                directory: "/tmp/event-detail",
+                directory: { kind: "path", path: "/tmp/event-detail" },
                 agentTarget: {
                     kind: "agent",
                     identity: { pluginId: "happier.agent.codex", localId: "codex" },
@@ -102,6 +97,8 @@ function scheduleAutomation() {
     return {
         id: "automation-schedule",
         accountId: "account-1",
+        workflowDefinitionId: null,
+        scopeSessionId: null,
         name: "Daily summary",
         description: null,
         enabled: true,
@@ -213,7 +210,10 @@ function eventStatusProjection() {
                 materializationId: "materialization-1",
                 pluginId: "com.example.github",
             },
-            reporterImmutableGenerationId: "github-immutable-generation-a",
+            reporterSourceCustody: {
+                kind: "development" as const,
+                registeredRootId: "github-test-source-root",
+            },
             state: "attention" as const,
             code: "historyGap" as const,
             lastObservedAt: DATE.getTime(),
@@ -371,86 +371,11 @@ function conversationRun() {
     };
 }
 
-const V2_AUTOMATION_KEYS = [
-    "assignments",
-    "createdAt",
-    "description",
-    "enabled",
-    "id",
-    "lastRunAt",
-    "name",
-    "nextRunAt",
-    "schedule",
-    "targetType",
-    "templateCiphertext",
-    "templateVersion",
-    "updatedAt",
-];
-
-const V2_RUN_KEYS = [
-    "attempt",
-    "automationId",
-    "claimedAt",
-    "claimedByMachineId",
-    "createdAt",
-    "dueAt",
-    "errorCode",
-    "errorMessage",
-    "finishedAt",
-    "id",
-    "leaseExpiresAt",
-    "producedSessionId",
-    "scheduledAt",
-    "startedAt",
-    "state",
-    "summaryCiphertext",
-    "updatedAt",
-];
-
 describe("Automation API projections", () => {
-    it("keeps predecessor v2 schedule/manual-only and projects the v3 trigger union without source leakage", () => {
+    it("projects the current trigger union without source leakage", () => {
         const schedule = scheduleAutomation();
         const event = eventAutomation();
 
-        expect(isAutomationDefinitionRepresentableInV2(schedule)).toBe(true);
-        expect(isAutomationDefinitionRepresentableInV2(event)).toBe(false);
-        expect(isAutomationDefinitionRepresentableInV2({
-            ...schedule,
-            triggers: [],
-        })).toBe(true);
-        expect(isAutomationDefinitionRepresentableInV2({
-            ...schedule,
-            triggers: [schedule.triggers[0], { ...schedule.triggers[0], id: "trigger-schedule-2" }],
-        })).toBe(false);
-        expect(isAutomationDefinitionRepresentableInV2({
-            ...schedule,
-            triggers: [{ ...schedule.triggers[0], enabled: false }],
-        })).toBe(false);
-        expect(isAutomationDefinitionRepresentableInV2({
-            ...schedule,
-            triggers: [{ ...schedule.triggers[0], scheduleKind: "manual" }],
-        })).toBe(false);
-        expect(isAutomationDefinitionRepresentableInV2({
-            ...schedule,
-            templateCiphertext: "not a retained V2 template envelope",
-        })).toBe(false);
-        const v2 = toAutomationV2ApiDto(schedule);
-        expect(v2).toEqual(releasedV2Wire.definition);
-        expect(Object.keys(v2).sort()).toEqual(V2_AUTOMATION_KEYS);
-        expect(Object.keys(v2.schedule).sort()).toEqual([
-            "everyMs",
-            "kind",
-            "scheduleExpr",
-            "timezone",
-        ]);
-        const manualV2 = toAutomationV2ApiDto({ ...schedule, triggers: [] });
-        expect(manualV2.schedule).toEqual({
-            kind: "manual",
-            scheduleExpr: null,
-            everyMs: null,
-            timezone: null,
-        });
-        expect(manualV2.nextRunAt).toBeNull();
         expect(toAutomationDefinitionDetailApiDto(
             event,
             ACCOUNT_CURRENTNESS,
@@ -483,7 +408,7 @@ describe("Automation API projections", () => {
                         materializationId: "materialization-1",
                         pluginId: "com.example.github",
                     },
-                    reporterImmutableGenerationId: "github-immutable-generation-a",
+                    reporterSourceCustody: { kind: "development", registeredRootId: "github-test-source-root" },
                 }),
                 sourceCatalogStatus: {
                     observedRevision: "9",
@@ -513,69 +438,6 @@ describe("Automation API projections", () => {
         const run = eventRun();
         const manual = manualRun();
 
-        expect(isAutomationRunV2ExecutionRepresentable(run)).toBe(false);
-        expect(isAutomationRunV2ExecutionRepresentable(manual)).toBe(true);
-        expect(isAutomationRunV2ExecutionRepresentable({
-            ...scheduledRun(),
-            executionInputEnvelope: null,
-        })).toBe(false);
-        expect(isAutomationRunV2ExecutionRepresentable({
-            ...scheduledRun(),
-            executionInputEnvelope: "{\"kind\":\"happier_automation_run_execution_recipe_v1\"}",
-        })).toBe(false);
-        expect(isAutomationRunV2ExecutionRepresentable({
-            ...scheduledRun(),
-            executionInputEnvelope: frozenV2ExecutionInput({
-                kind: "manual",
-                invokedAt: SCHEDULE_DUE_AT.getTime(),
-            }),
-        })).toBe(false);
-        expect(isAutomationRunV2ExecutionRepresentable({
-            ...scheduledRun(),
-            executionInputEnvelope: JSON.stringify({
-                kind: "happier_automation_run_execution_input_v1",
-                targetType: "execution_run",
-                templateVersion: 2,
-                templateCiphertext: V2_TEMPLATE_CIPHERTEXT,
-                origin: { kind: "scheduled", scheduledFor: SCHEDULE_DUE_AT.getTime() },
-            }),
-        })).toBe(false);
-
-        const migratedTerminalRun = {
-            ...scheduledRun(),
-            state: "succeeded" as const,
-            executionInputEnvelope: null,
-            finishedAt: DATE,
-        };
-        expect(isAutomationRunV2ExecutionRepresentable(migratedTerminalRun)).toBe(false);
-        expect(isAutomationRunV2HistoryRepresentable(migratedTerminalRun)).toBe(true);
-        expect(toAutomationRunV2ApiDto(migratedTerminalRun)).toMatchObject({
-            id: "run-scheduled",
-            state: "succeeded",
-        });
-        expect(isAutomationRunV2HistoryRepresentable({
-            ...migratedTerminalRun,
-            state: "queued",
-            finishedAt: null,
-        })).toBe(false);
-        expect(isAutomationRunV2HistoryRepresentable({
-            ...migratedTerminalRun,
-            state: "outcome_uncertain",
-        })).toBe(false);
-        const v2Manual = toAutomationRunV2ApiDto(manual);
-        expect(v2Manual.scheduledAt).toBe(DATE.getTime());
-        expect(v2Manual.summaryCiphertext).toBeNull();
-        expect(Object.keys(v2Manual).sort()).toEqual(V2_RUN_KEYS);
-
-        const v2Legacy = toAutomationRunV2ApiDto({
-            ...manual,
-            resultEnvelope: JSON.stringify({
-                t: "legacySummaryCiphertext",
-                c: " exact predecessor bytes ",
-            }),
-            summaryCiphertext: null,
-        });
-        expect(v2Legacy.summaryCiphertext).toBe(" exact predecessor bytes ");
         expect(toAutomationRunV3ListApiDto(run)).toEqual(expect.objectContaining({
             id: "run-event",
             revision: 0,
@@ -723,14 +585,13 @@ describe("Automation API projections", () => {
             .toThrow("Automation row has no sessionLifecycle status for its declared arm");
     });
 
-    it("keeps a strict Event Run invisible to V2 while exposing its frozen recipe to V3 detail", () => {
+    it("exposes a strict Event Run frozen recipe to current detail", () => {
         const executionInputEnvelope = strictEventExecutionRecipe();
         const run = {
             ...eventRun(),
             executionInputEnvelope,
         };
 
-        expect(isAutomationRunV2ExecutionRepresentable(run)).toBe(false);
         expect(toAutomationRunV3DetailApiDto(run, "plain")).toEqual(expect.objectContaining({
             executionInputEnvelope,
         }));
@@ -837,7 +698,7 @@ describe("Automation API projections", () => {
         });
     });
 
-    it("projects every Run cause from immutable bytes without changing V2 scheduledAt", () => {
+    it("projects every Run cause from immutable bytes", () => {
         const manual = {
             ...manualRun(),
             createdAt: MANUAL_CREATED_AT,
@@ -876,7 +737,7 @@ describe("Automation API projections", () => {
             occurrenceKey: CONVERSATION_OCCURRENCE_KEY,
             occurredAt: CONVERSATION_OCCURRED_AT.getTime(),
         });
-        expect(toAutomationRunV2ApiDto(manual).scheduledAt).toBe(DATE.getTime());
+
     });
 
     it("keeps an immutable trigger cause renderable after the trigger is retired", () => {
@@ -945,7 +806,7 @@ describe("Automation API projections", () => {
             .toThrow("Automation stored content mode does not match the Account");
     });
 
-    it("keeps a current private failure detail out of structural and predecessor projections", () => {
+    it("keeps a current private failure detail out of structural projections", () => {
         const errorDetailEnvelope = JSON.stringify({
             t: "plain",
             v: {
@@ -966,7 +827,7 @@ describe("Automation API projections", () => {
         expect(toAutomationRunV3ListApiDto(run)).not.toHaveProperty("errorDetailEnvelope");
         const detail = toAutomationRunV3DetailApiDto(run, "plain");
         expect(detail.errorDetailEnvelope).toBe(errorDetailEnvelope);
-        expect(toAutomationRunV2ApiDto(run).errorMessage).toBeNull();
+
     });
     it("classifies a blocked reply handoff by whether anything external could still repair it", () => {
         const blockedBase = {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
-import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
+import { RunnerBrokerReadinessProjectionV1Schema, signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 
 import {
     createQualifiedConnectedAccountGroupDigest,
@@ -159,7 +159,7 @@ describe("Runner Team credential readiness authorization", () => {
                 evidence: [{ kind: "home_method", methodId: "key_challenge" }],
             } },
         });
-        await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
+        const authorizedProjection = await inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
             activationId: activation.id,
             env: harness.envBase,
             selection: {
@@ -175,7 +175,9 @@ describe("Runner Team credential readiness authorization", () => {
                 },
                 sourceRevision: "source-revision-1",
             },
-        }))).resolves.toMatchObject({ readiness: { kind: "available" } });
+        }));
+        expect(authorizedProjection).toMatchObject({ readiness: { kind: "available" } });
+        expect(RunnerBrokerReadinessProjectionV1Schema.safeParse(authorizedProjection).success).toBe(true);
 
         // A Pool placement is a broker location for a Runner too: the exact member
         // frozen into the activation's binding keeps its already reviewed target,

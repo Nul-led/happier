@@ -3,17 +3,13 @@ import { z } from 'zod';
 import { ReviewFindingSchema } from '../../reviews/ReviewFinding.js';
 import { ExecutionRunStructuredRunRefSchema } from './executionRunStructuredRunRef.js';
 
-export const ReviewTriageStatusSchema = z.enum([
-  'accept',
-  'reject',
-  'defer',
-  'needs_refinement',
-]);
-export type ReviewTriageStatus = z.infer<typeof ReviewTriageStatusSchema>;
+import { ReviewTriageStatusSchema } from '../../reviews/reviewTriageStatus.js';
+export { ReviewTriageStatusSchema, type ReviewTriageStatus } from '../../reviews/reviewTriageStatus.js';
 
 export const ReviewTriageOverlaySchema = z.object({
   findings: z.array(z.object({
     id: z.string().min(1),
+    commentId: z.string().min(1).optional(),
     status: ReviewTriageStatusSchema,
     comment: z.string().min(1).optional(),
   }).passthrough()),

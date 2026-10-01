@@ -92,7 +92,7 @@ export function registerAutomationConversationRoutes(
                     machineInstallationId: publisher.installationId,
                     materializationId:
                         request.body.caller.materialization.materializationId,
-                    immutableGenerationId: request.body.caller.immutableGenerationId,
+                    sourceCustody: request.body.caller.sourceCustody,
                 },
                 input: request.body.input,
             }));
@@ -140,7 +140,7 @@ export function registerAutomationConversationRoutes(
                     machineInstallationId: publisher.installationId,
                     materializationId:
                         request.body.caller.materialization.materializationId,
-                    immutableGenerationId: request.body.caller.immutableGenerationId,
+                    sourceCustody: request.body.caller.sourceCustody,
                 },
                 input: request.body.input,
             }));
@@ -187,7 +187,7 @@ export function registerAutomationConversationRoutes(
                 machineInstallationId: publisher.installationId,
                 materializationId:
                     request.body.caller.materialization.materializationId,
-                immutableGenerationId: request.body.caller.immutableGenerationId,
+                sourceCustody: request.body.caller.sourceCustody,
             };
             // The wire arm names the Account mode the admitting host produced
             // for. An encrypted body carries no plugin input at all, so there

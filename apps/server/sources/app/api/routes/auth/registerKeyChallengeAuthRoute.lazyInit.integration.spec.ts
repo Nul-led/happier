@@ -843,7 +843,7 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         await app.close();
     });
 
-    it("fails Account-bound eligibility generically without issuing a token or changing Account bindings", async () => {
+    it("reports the typed Account-bound eligibility refusal without issuing a token or changing Account bindings", async () => {
         harness.resetEnv({
             AUTH_REQUIRED_LOGIN_PROVIDERS: "github",
             AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
@@ -895,9 +895,14 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
             }),
         });
 
-        expect(response.statusCode).toBe(401);
-        expect(response.json()).toEqual({
-            error: "Invalid token",
+        // The incumbent arm reports the enforcement owner's verdict exactly as
+        // the keyless arm does: only an unvalidatable Account (401) is flattened
+        // into the neutral message, so a retryable or provider-required refusal
+        // is not mistaken for an invalid credential.
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toMatchObject({
+            error: "provider-required",
+            provider: "github",
         });
         expect(createToken).not.toHaveBeenCalled();
         await expect(db.account.findUniqueOrThrow({

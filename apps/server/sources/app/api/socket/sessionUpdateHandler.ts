@@ -11,12 +11,16 @@ import {
 } from "@/app/events/eventRouter";
 import { resolveSessionMessageAccountActor } from "@/app/session/messages/projectSessionMessageAccountActors";
 import { db } from "@/storage/db";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { AsyncLock, isLockAdmissionDeadlineExceededError } from "@/utils/runtime/lock";
 import { debug, error as logError, log } from "@/utils/logging/log";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { Socket } from "socket.io";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
+import type { VerifiedApiTokenPrincipal } from "@/app/auth/auth";
+import { admitApiTokenSessionOperation } from "@/app/api/utils/apiTokenRouteAdmission";
+import { API_TOKEN_SOCKET_EVENT_ACTIONS } from "@happier-dev/protocol/rpc";
+import { hasCurrentSocketCredential } from "./socketCredentialCurrentness";
 import {
     applySessionTurnMutation,
     applySessionReadCursorOperation,
@@ -28,6 +32,7 @@ import { publishSessionReadyProjectionUpdate } from "@/app/session/ready/publish
 import { publishSessionTurnMutationUpdate } from "@/app/session/turns/publishSessionTurnMutationUpdate";
 import { publishSessionReadCursorUpdate } from "@/app/session/readCursor/publishSessionReadCursorUpdate";
 import { recordSessionAlive } from "@/app/presence/presenceRecorder";
+import { resolvePresenceTimeoutConfig } from "@/app/presence/timeout";
 import {
     blockPendingDelivery,
     mapPendingMaterializationError,
@@ -386,10 +391,10 @@ const RELEASED_ALIVE_FAILURE_BACKOFF_BASE_MS = 2_000;
  * failures back off exponentially up to the ordinary persistence interval, so a saturated database
  * stops being answered with more write pressure (heartbeats arrive every 2s while thinking).
  */
-function resolveReleasedAliveFailureHoldMs(failureStreak: number): number {
+function resolveReleasedAliveFailureHoldMs(failureStreak: number, maxBackoffMs: number): number {
     if (failureStreak <= 1) return 0;
     return Math.min(
-        RELEASED_ALIVE_PERSISTENCE_INTERVAL_MS,
+        maxBackoffMs,
         RELEASED_ALIVE_FAILURE_BACKOFF_BASE_MS * 2 ** (failureStreak - 2),
     );
 }
@@ -412,17 +417,41 @@ export function sessionUpdateHandler(
     admission?: Readonly<{
         principalKind: "ephemeral-session-runner";
         principal: VerifiedEphemeralSessionRunnerPrincipal;
+    }> | Readonly<{
+        principalKind: "api-token-session-viewer";
+        principal: VerifiedApiTokenPrincipal;
+        resolveSessionMachine?: (input: Readonly<{ accountId: string; sessionId: string }>) => Promise<string | null>;
     }>,
     dependencies?: Readonly<{
         resolveExecutionRunCurrentness: TeamCredentialExecutionRunCurrentnessResolver;
     }>,
 ) {
+    const registerSessionEvent = (event: Parameters<Socket["on"]>[0], listener: Parameters<Socket["on"]>[1]) => {
+        if (admission?.principalKind === "api-token-session-viewer" && event !== "disconnect"
+            && !Object.prototype.hasOwnProperty.call(API_TOKEN_SOCKET_EVENT_ACTIONS, event)) return socket;
+        return socket.on(event, listener);
+    };
     let legacyAliveInFlight = false;
-    // The alive persistence throttle is armed on every settled attempt, not only on success, so a
-    // failing session cannot fall back to attempting a write on every heartbeat.
-    let legacyAliveThrottledAtMs: number | null = null;
-    let legacyAliveThrottleHoldMs = 0;
+    // Bound retained observations by expiry without changing the default settled-write cadence.
+    const observationRefreshWindowMs = resolvePresenceTimeoutConfig().sessionTimeoutMs / 2;
+    let nextLegacyAliveAttemptAtMs: number | null = null;
     let legacyAliveFailureStreak = 0;
+    let pendingLegacyAlive: Readonly<{
+        observedAtMs: number;
+        record: Parameters<typeof recordSessionAlive>[0];
+    }> | null = null;
+    let legacyAliveTimer: ReturnType<typeof setTimeout> | null = null;
+    let legacyAliveStopped = false;
+    const clearPendingLegacyAlive = (): void => {
+        pendingLegacyAlive = null;
+        if (legacyAliveTimer !== null) clearTimeout(legacyAliveTimer);
+        legacyAliveTimer = null;
+    };
+    const stopLegacyAlive = (): void => {
+        legacyAliveStopped = true;
+        clearPendingLegacyAlive();
+    };
+    registerSessionEvent("disconnect", stopLegacyAlive);
     // The authenticated publisher reports whether it owns rich delivery to the
     // Account owner. Keep that fact with this exact socket/publisher authority so
     // later committed turn failures use the same centralized Activity routing
@@ -448,12 +477,7 @@ export function sessionUpdateHandler(
         return publisherAuthority ? { publisherAuthority, ownerActivityDelivery: delivery } : undefined;
     };
 
-    const armLegacyAliveThrottle = (holdMs: number): void => {
-        legacyAliveThrottledAtMs = Date.now();
-        legacyAliveThrottleHoldMs = holdMs;
-    };
-
-    socket.on(
+    registerSessionEvent(
         SESSION_PUBLISHER_AUTHORITY_CHECK_EVENT,
         async (data: unknown, callback?: (response: unknown) => void) => {
             const respond = (response: unknown) =>
@@ -500,10 +524,10 @@ export function sessionUpdateHandler(
         },
     );
 
-    socket.on(SESSION_DISCUSSION_AGENT_POST_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_DISCUSSION_AGENT_POST_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(SessionDiscussionAgentPostResponseV1Schema.parse(response));
         const request = SessionDiscussionAgentPostRequestV1Schema.safeParse(data);
-        if (!isServerFeatureEnabledForRequest("sessions.conversations", process.env)) {
+        if (!await isServerFeatureEnabledForHome("sessions.conversations")) {
             respond({ ok: false, v: 1, error: "session_discussions_unavailable" });
             return;
         }
@@ -570,10 +594,10 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(SESSION_FOLLOW_OBSERVE_PENDING_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_FOLLOW_OBSERVE_PENDING_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(SessionFollowObservePendingResponseV1Schema.parse(response));
         const request = SessionFollowObservePendingRequestV1Schema.safeParse(data);
-        if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+        if (!await isServerFeatureEnabledForHome("sessions.following")) {
             respond({ ok: false, v: 1, error: "unsupported" });
             return;
         }
@@ -596,6 +620,7 @@ export function sessionUpdateHandler(
                     const session = await tx.session.findUnique({ where: { id: request.data.sessionId }, select: { publisherGeneration: true } });
                     if (!session) return null;
                     const observation = await observePendingSessionFollowForDestinationInTx(tx, {
+                        includeReportsTo: request.data.includeReportsTo,
                         principal: admission?.principalKind === "ephemeral-session-runner"
                             ? admission.principal
                             : {
@@ -617,10 +642,10 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(SESSION_FOLLOW_ACKNOWLEDGE_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_FOLLOW_ACKNOWLEDGE_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(SessionFollowAcknowledgeResponseV1Schema.parse(response));
         const request = SessionFollowAcknowledgeRequestV1Schema.safeParse(data);
-        if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+        if (!await isServerFeatureEnabledForHome("sessions.following")) {
             respond({ ok: false, v: 1, error: "unsupported" });
             return;
         }
@@ -650,6 +675,7 @@ export function sessionUpdateHandler(
                             authentication: readSessionAccessAuthenticationFromSocket(socket),
                         },
                         destinationSessionId, sourceSessionId: request.data.sourceSessionId,
+                        edgeKind: request.data.edgeKind, attachedAt: request.data.attachedAt,
                         expectedPublisherGeneration: BigInt(request.data.expectedPublisherGeneration),
                         expected: request.data.expected, observed: request.data.observed, consumed: request.data.consumed,
                         acceptance: request.data.acceptance,
@@ -665,14 +691,14 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(ACCOUNT_VOICE_FOLLOW_OBSERVE_PENDING_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(ACCOUNT_VOICE_FOLLOW_OBSERVE_PENDING_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(AccountVoiceFollowObservePendingResponseV1Schema.parse(response));
         if (admission?.principalKind === "ephemeral-session-runner") {
             respond({ ok: false, v: 1, error: "forbidden" });
             return;
         }
         const request = AccountVoiceFollowObservePendingRequestV1Schema.safeParse(data);
-        if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+        if (!await isServerFeatureEnabledForHome("sessions.following")) {
             respond({ ok: false, v: 1, error: "unsupported" });
             return;
         }
@@ -739,14 +765,14 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(ACCOUNT_VOICE_FOLLOW_ACKNOWLEDGE_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(ACCOUNT_VOICE_FOLLOW_ACKNOWLEDGE_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(AccountVoiceFollowAcknowledgeResponseV1Schema.parse(response));
         if (admission?.principalKind === "ephemeral-session-runner") {
             respond({ ok: false, v: 1, error: "forbidden" });
             return;
         }
         const request = AccountVoiceFollowAcknowledgeRequestV1Schema.safeParse(data);
-        if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+        if (!await isServerFeatureEnabledForHome("sessions.following")) {
             respond({ ok: false, v: 1, error: "unsupported" });
             return;
         }
@@ -892,7 +918,7 @@ export function sessionUpdateHandler(
         return { didWrite };
     };
 
-    socket.on(SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_TRANSCRIPT_OBSERVATION_CAPABILITY_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(SessionTranscriptObservationCapabilityAckV1Schema.parse(response));
         try {
             const record = data && typeof data === "object" && !Array.isArray(data)
@@ -917,7 +943,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_TRANSCRIPT_OBSERVATION_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
         const respond = (response: unknown) => callback?.(SessionTranscriptObservationAckV1Schema.parse(response));
         try {
             const parsed = SessionTranscriptObservationV1Schema.safeParse(data);
@@ -1026,7 +1052,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on('update-metadata', async (data: any, callback: (response: any) => void) => {
+    registerSessionEvent('update-metadata', async (data: any, callback: (response: any) => void) => {
         try {
             if (data?.mode === "owner" || data?.mode === "shared_editor") {
                 callback?.({ result: "metadata_privacy_upgrade_required" });
@@ -1157,7 +1183,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on('update-state', async (data: any, callback: (response: any) => void) => {
+    registerSessionEvent('update-state', async (data: any, callback: (response: any) => void) => {
         try {
             const { sid, agentState, expectedVersion } = data;
             const activitySummaryV1 = readSocketPayloadRecordField(data, "activitySummaryV1");
@@ -1345,7 +1371,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on(SESSION_RUNTIME_ACTIVITY_SNAPSHOT_EVENT, async (value: unknown, acknowledge?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_RUNTIME_ACTIVITY_SNAPSHOT_EVENT, async (value: unknown, acknowledge?: (response: unknown) => void) => {
         const request = SessionRuntimeActivitySnapshotRequestSchema.safeParse(value);
         if (!request.success || !trustedSessionPublisher || trustedSessionPublisher.binding.sessionId !== request.data.sessionId) {
             acknowledge?.(SessionRuntimeActivitySnapshotAckSchema.parse({
@@ -1415,7 +1441,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on("session-turn-mutation", async (data: unknown, callback: (response: any) => void) => {
+    registerSessionEvent("session-turn-mutation", async (data: unknown, callback: (response: any) => void) => {
         try {
             const parsed = SessionTurnMutationV1Schema.safeParse(data);
             if (!parsed.success) {
@@ -1469,7 +1495,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on('update-read-cursor', async (data: any, callback: (response: any) => void) => {
+    registerSessionEvent('update-read-cursor', async (data: any, callback: (response: any) => void) => {
         if (admission?.principalKind === "ephemeral-session-runner") {
             callback?.({ result: 'forbidden' });
             return;
@@ -1544,63 +1570,37 @@ export function sessionUpdateHandler(
             callback?.({ result: 'error' });
         }
     });
-    socket.on('session-alive', async (data: {
-        sid: string;
-        time: number;
-        thinking?: boolean;
-        latestTurnStatus?: unknown;
-        latestTurnStatusObservedAt?: unknown;
-    }) => {
-        let ownsLegacyAliveAttempt = false;
+    const flushLegacyAlive = async (): Promise<void> => {
+        const publisher = trustedSessionPublisher;
+        if (!publisher || legacyAliveStopped || legacyAliveInFlight || pendingLegacyAlive === null) return;
+        if (nextLegacyAliveAttemptAtMs !== null && Date.now() < nextLegacyAliveAttemptAtMs) {
+            if (legacyAliveTimer === null) {
+                legacyAliveTimer = setTimeout(async () => {
+                    legacyAliveTimer = null;
+                    await flushLegacyAlive();
+                }, nextLegacyAliveAttemptAtMs - Date.now());
+                legacyAliveTimer.unref();
+            }
+            return;
+        }
+        const observation = pendingLegacyAlive;
+        const sid = observation.record.sessionId;
+        clearPendingLegacyAlive();
+        legacyAliveInFlight = true;
         let legacyAlivePersisted = false;
         try {
-            // Track metrics
-            websocketEventsCounter.inc({ event_type: 'session-alive' });
-            sessionAliveEventsCounter.inc();
-
-            // Basic validation
-            if (!data || typeof data.time !== 'number' || !data.sid) {
-                return;
-            }
-            if (!trustedSessionPublisher || trustedSessionPublisher.binding.sessionId !== data.sid) {
-                return;
-            }
-
-            let t = data.time;
-            if (t > Date.now()) {
-                t = Date.now();
-            }
-            if (t < Date.now() - 1000 * 60 * 10) {
-                return;
-            }
-
-            const { sid } = data;
-            const latestTurnStatus = PrimaryTurnStatusV1Schema.safeParse(data.latestTurnStatus);
-            const latestTurnStatusObservedAt = typeof data.latestTurnStatusObservedAt === "number"
-                && Number.isFinite(data.latestTurnStatusObservedAt)
-                && data.latestTurnStatusObservedAt >= 0
-                ? Math.trunc(data.latestTurnStatusObservedAt)
-                : null;
-
-            if (legacyAliveInFlight) return;
-            const nowMs = Date.now();
-            if (
-                legacyAliveThrottledAtMs !== null
-                && nowMs >= legacyAliveThrottledAtMs
-                && nowMs - legacyAliveThrottledAtMs < legacyAliveThrottleHoldMs
-            ) return;
-            legacyAliveInFlight = true;
-            ownsLegacyAliveAttempt = true;
-
             const presenceResult = await serializeReleasedAlivePersistence(
-                trustedSessionPublisher.presence,
+                publisher.presence,
                 async () => {
-                    const touched = await trustedSessionPublisher.presence.touchPublisher({ socket });
-                    return touched.status === "unregistered"
-                        ? await trustedSessionPublisher.presence.registerPublisher({
+                    if (legacyAliveStopped) return { status: "superseded" } as const;
+                    const observedAt = new Date(observation.observedAtMs);
+                    const touched = await publisher.presence.touchPublisher({ socket, observedAt });
+                    return touched.status === "unregistered" && !legacyAliveStopped
+                        ? await publisher.presence.registerPublisher({
                             socket,
-                            binding: trustedSessionPublisher.binding,
+                            binding: publisher.binding,
                             completeActivitySnapshot: { state: "unknown", activeCount: 0 },
+                            observedAt,
                         })
                         : touched;
                 },
@@ -1610,19 +1610,12 @@ export function sessionUpdateHandler(
             }
             legacyAlivePersisted = true;
             legacyAliveFailureStreak = 0;
-            armLegacyAliveThrottle(RELEASED_ALIVE_PERSISTENCE_INTERVAL_MS);
+            nextLegacyAliveAttemptAtMs = Math.min(
+                Date.now() + RELEASED_ALIVE_PERSISTENCE_INTERVAL_MS,
+                observation.observedAtMs + observationRefreshWindowMs,
+            );
 
-            await recordSessionAlive({
-                accountId: userId,
-                sessionId: sid,
-                timestamp: t,
-                ...(latestTurnStatus.success && latestTurnStatusObservedAt !== null
-                    ? {
-                        latestTurnStatus: latestTurnStatus.data,
-                        latestTurnStatusObservedAt,
-                    }
-                    : {}),
-            });
+            await recordSessionAlive(observation.record);
 
             const session = await loadSessionTranscriptPublicationRecipientProjection(sid);
             if (session) await Promise.all(
@@ -1688,17 +1681,53 @@ export function sessionUpdateHandler(
         } catch (error) {
             log({ module: 'websocket', level: 'error' }, `Error in session-alive: ${error}`);
         } finally {
-            if (ownsLegacyAliveAttempt) {
-                if (!legacyAlivePersisted) {
-                    legacyAliveFailureStreak += 1;
-                    armLegacyAliveThrottle(resolveReleasedAliveFailureHoldMs(legacyAliveFailureStreak));
-                }
-                legacyAliveInFlight = false;
+            if (!legacyAlivePersisted) {
+                legacyAliveFailureStreak += 1;
+                nextLegacyAliveAttemptAtMs = Date.now() + resolveReleasedAliveFailureHoldMs(
+                    legacyAliveFailureStreak,
+                    Math.min(RELEASED_ALIVE_PERSISTENCE_INTERVAL_MS, observationRefreshWindowMs),
+                );
             }
+            legacyAliveInFlight = false;
+            await flushLegacyAlive();
         }
+    };
+
+    registerSessionEvent('session-alive', async (data: {
+        sid: string;
+        time: number;
+        thinking?: boolean;
+        latestTurnStatus?: unknown;
+        latestTurnStatusObservedAt?: unknown;
+    }) => {
+        websocketEventsCounter.inc({ event_type: 'session-alive' });
+        sessionAliveEventsCounter.inc();
+        if (!data || typeof data.time !== 'number' || !data.sid || legacyAliveStopped) return;
+        if (!trustedSessionPublisher || trustedSessionPublisher.binding.sessionId !== data.sid) return;
+        const observedAtMs = Date.now();
+        const timestamp = Math.min(data.time, observedAtMs);
+        if (timestamp < observedAtMs - 1000 * 60 * 10) return;
+        const latestTurnStatus = PrimaryTurnStatusV1Schema.safeParse(data.latestTurnStatus);
+        const latestTurnStatusObservedAt = typeof data.latestTurnStatusObservedAt === "number"
+            && Number.isFinite(data.latestTurnStatusObservedAt)
+            && data.latestTurnStatusObservedAt >= 0
+            ? Math.trunc(data.latestTurnStatusObservedAt)
+            : null;
+        pendingLegacyAlive = {
+            observedAtMs,
+            record: {
+                accountId: userId,
+                sessionId: data.sid,
+                timestamp,
+                ...(latestTurnStatus.success && latestTurnStatusObservedAt !== null
+                    ? { latestTurnStatus: latestTurnStatus.data, latestTurnStatusObservedAt }
+                    : {}),
+            },
+        };
+        await flushLegacyAlive();
     });
 
-    socket.on('execution-run-updated', async (data: any) => {
+    registerSessionEvent('execution-run-updated', async (data: any) => {
         try {
             websocketEventsCounter.inc({ event_type: 'execution-run-updated' });
 
@@ -1759,7 +1788,7 @@ export function sessionUpdateHandler(
         }
     });
 
-    socket.on('transcript-stream-segment', async (data: any) => {
+    registerSessionEvent('transcript-stream-segment', async (data: any) => {
         try {
             websocketEventsCounter.inc({ event_type: 'transcript-stream-segment' });
 
@@ -1816,7 +1845,7 @@ export function sessionUpdateHandler(
     // Delta form of the live transcript segment stream: carries ONLY appended text plus
     // tick/baseLength chaining fields. Mirrors the snapshot handler exactly (session-scoped-socket
     // proof, edit+owner access, per-event schema validation with `.strip()`).
-    socket.on('transcript-stream-segment-delta', async (data: any) => {
+    registerSessionEvent('transcript-stream-segment-delta', async (data: any) => {
         try {
             websocketEventsCounter.inc({ event_type: 'transcript-stream-segment-delta' });
 
@@ -1871,7 +1900,7 @@ export function sessionUpdateHandler(
     });
 
     const receiveMessageLock = new AsyncLock();
-    socket.on('message', async (data: any, callback?: (response: any) => void) => {
+    registerSessionEvent('message', async (data: any, callback?: (response: any) => void) => {
         await receiveMessageLock.inLock(async () => {
             const respond = (response: any) => {
                 if (typeof callback === 'function') {
@@ -1912,6 +1941,20 @@ export function sessionUpdateHandler(
                     respond({ ok: false, error: 'forbidden' });
                     return;
                 }
+                if (admission?.principalKind === "api-token-session-viewer") {
+                    if (!await hasCurrentSocketCredential(userId, socket)) {
+                        respond({ ok: false, error: "forbidden" }); return;
+                    }
+                    const principal: VerifiedApiTokenPrincipal | undefined = socket.data.apiTokenPrincipal;
+                    if (!principal) { respond({ ok: false, error: "forbidden" }); return; }
+                    const admitted = await admitApiTokenSessionOperation({
+                        principal, sessionId: sid, actionId: API_TOKEN_SOCKET_EVENT_ACTIONS.message,
+                        capability: "submitAgentInput",
+                        authentication: readSessionAccessAuthenticationFromSocket(socket),
+                        targetMachineId: await admission.resolveSessionMachine?.({ accountId: userId, sessionId: sid }),
+                    });
+                    if (!admitted.ok) { respond({ ok: false, error: admitted.error }); return; }
+                }
                 if (isReleasedUiV020DirectUserMessagePayload(data)) {
                     socketMessageAckCounter.inc({ result: 'error', error: 'client-upgrade-required' });
                     respond({ ok: false, error: 'client-upgrade-required' });
@@ -1931,6 +1974,10 @@ export function sessionUpdateHandler(
                         ? SessionMessageRoleSchema.safeParse(messageRole)
                         : null;
                 const trustedSessionEventType = data?.sessionEventType === "ready" ? "ready" : undefined;
+                if (admission?.principalKind === "api-token-session-viewer"
+                    && ((messageRole !== undefined && messageRole !== "user") || trustedSessionEventType)) {
+                    respond({ ok: false, error: "forbidden" }); return;
+                }
                 if (parsedMessageRole !== null && !parsedMessageRole.success) {
                     socketMessageAckCounter.inc({ result: 'error', error: 'invalid-params' });
                     respond({ ok: false, error: 'invalid-params' });
@@ -1952,22 +1999,37 @@ export function sessionUpdateHandler(
                     );
                 }
 
-                const inputAdmission = connection.connectionType === "user-scoped"
+                const inputAdmission = connection.connectionType === "user-scoped" || admission?.principalKind === "api-token-session-viewer"
                     ? {
                         inputAdmission: "authenticatedAccount" as const,
                         authentication: readSessionAccessAuthenticationFromSocket(socket),
                     }
                     : { inputAdmission: "transcriptOnly" as const };
-                const result = await createSessionMessage({
-                    ...inputAdmission,
-                    actorUserId: userId,
-                    sessionId: sid,
-                    content,
-                    localId,
-                    messageRole: parsedMessageRole?.data,
-                    sidechainId,
-                    ...(trustedSessionEventType ? { trustedSessionEventType } : {}),
-                });
+                const writeMessage = async (
+                    publisherAuthority?: CurrentSessionPublisherAuthority,
+                ) => await createSessionMessage({
+                        ...inputAdmission,
+                        actorUserId: userId,
+                        sessionId: sid,
+                        content,
+                        localId,
+                        messageRole: admission?.principalKind === "api-token-session-viewer" ? "user" : parsedMessageRole?.data,
+                        sidechainId,
+                        ...(trustedSessionEventType ? { trustedSessionEventType } : {}),
+                        ...(publisherAuthority ? { publisherAuthority } : {}),
+                    });
+                const publisher = trustedSessionPublisher;
+                const result = publisher && publisher.binding.sessionId === sid
+                    ? await publisher.presence.runAsCurrentPublisher({
+                        socket,
+                        operation: writeMessage,
+                    })
+                    : await writeMessage();
+                if (result === null) {
+                    socketMessageAckCounter.inc({ result: 'error', error: 'forbidden' });
+                    respond({ ok: false, error: 'forbidden' });
+                    return;
+                }
 
                 if (!result.ok) {
                     socketMessageAckCounter.inc({ result: 'error', error: result.error });
@@ -2043,7 +2105,7 @@ export function sessionUpdateHandler(
         });
     });
 
-    socket.on(
+    registerSessionEvent(
         SESSION_PENDING_ADMISSION_SETTLEMENT_EVENT_V1,
         async (data: unknown, callback?: (response: unknown) => void) => {
             await receiveMessageLock.inLock(async () => {
@@ -2143,7 +2205,7 @@ export function sessionUpdateHandler(
         },
     );
 
-    socket.on(SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2, async (data: unknown, callback?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2, async (data: unknown, callback?: (response: unknown) => void) => {
         await receiveMessageLock.inLock(async () => {
             const parsed = SessionPendingExecutionRunBlockRequestV2Schema.safeParse(data);
             if (!parsed.success) {
@@ -2186,7 +2248,7 @@ export function sessionUpdateHandler(
     });
 
     for (const executionRunTarget of [false, true]) {
-        socket.on(executionRunTarget ? SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2 : ACCEPTED_PENDING_SETTLEMENT_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
+        registerSessionEvent(executionRunTarget ? SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2 : ACCEPTED_PENDING_SETTLEMENT_EVENT_V1, async (data: unknown, callback?: (response: unknown) => void) => {
             await receiveMessageLock.inLock(async () => {
                 const parsed = (executionRunTarget ? SessionPendingExecutionRunAcceptedRequestV2Schema : AcceptedPendingSettlementRequestV1Schema).safeParse(data);
                 const respond = (response: unknown) => {
@@ -2271,7 +2333,7 @@ export function sessionUpdateHandler(
     }
 
     for (const executionRunTarget of [false, true]) {
-        socket.on(executionRunTarget ? SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2 : 'pending-materialize-next', async (data: unknown, callback?: (response: unknown) => void) => {
+        registerSessionEvent(executionRunTarget ? SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2 : 'pending-materialize-next', async (data: unknown, callback?: (response: unknown) => void) => {
             const targetRequest = executionRunTarget ? SessionPendingExecutionRunMaterializeNextRequestV2Schema.safeParse(data) : null;
             const respond = (response: Record<string, unknown>) => {
                 if (!executionRunTarget) { callback?.(response); return; }
@@ -2478,7 +2540,7 @@ export function sessionUpdateHandler(
     }
 
     if (connection.connectionType !== "user-scoped") {
-    socket.on('session-end', async (data: SessionEndSocketPayload, callback?: (response: SessionEndAckResponse) => void) => {
+    registerSessionEvent('session-end', async (data: SessionEndSocketPayload, callback?: (response: SessionEndAckResponse) => void) => {
         const respond = (response: SessionEndAckResponse): void => {
             callback?.(response);
         };
@@ -2501,6 +2563,7 @@ export function sessionUpdateHandler(
                 return;
             }
 
+            clearPendingLegacyAlive();
             const closed = await serializeReleasedAlivePersistence(
                 trustedSessionPublisher.presence,
                 async () => await trustedSessionPublisher.presence.closePublisher({ socket }),
@@ -2509,6 +2572,7 @@ export function sessionUpdateHandler(
                 respond({ ok: false, error: "forbidden" });
                 return;
             }
+            stopLegacyAlive();
             if (closed.status === "closed") {
                 await publishSessionPublisherClose({
                     sessionId: sid,
@@ -2531,7 +2595,7 @@ export function sessionUpdateHandler(
     });
     }
 
-    socket.on(SESSION_RUNTIME_ACTIVITY_CLOSE_EVENT, async (value: unknown, acknowledge?: (response: unknown) => void) => {
+    registerSessionEvent(SESSION_RUNTIME_ACTIVITY_CLOSE_EVENT, async (value: unknown, acknowledge?: (response: unknown) => void) => {
         const request = SessionRuntimeActivityCloseRequestSchema.safeParse(value);
         if (!request.success || !trustedSessionPublisher || trustedSessionPublisher.binding.sessionId !== request.data.sessionId) {
             acknowledge?.(SessionRuntimeActivityCloseAckSchema.parse({
@@ -2541,11 +2605,13 @@ export function sessionUpdateHandler(
             return;
         }
 
+        clearPendingLegacyAlive();
         try {
             const closed = await serializeReleasedAlivePersistence(
                 trustedSessionPublisher.presence,
                 async () => await trustedSessionPublisher.presence.closePublisher({ socket }),
             );
+            if (closed.status === 'closed' || closed.status === 'closed_replay') stopLegacyAlive();
             if (closed.status === 'closed') {
                 await publishSessionPublisherClose({
                     sessionId: request.data.sessionId,

@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/storage/db";
 import { readCurrentServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { redeemHomeClaimCode } from "./homeClaimCode";
 
 /**
  * The composed proof for the deployment-local owner claim.
@@ -104,6 +105,8 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => await harness.close());
 afterEach(async () => {
+    await db.simpleCache.deleteMany({ where: { key: "home.owner-claim-code.v1" } });
+    await db.homeAdministrationEvent.deleteMany({});
     await db.accountChange.deleteMany({});
     await db.account.deleteMany({});
 });
@@ -173,4 +176,35 @@ describe.each(["./sources/main.light.ts", "./sources/main.ts"])("Home owner clai
         expect(await db.accountChange.count()).toBe(0);
     }, ENTRYPOINT_TIMEOUT_MS);
 
+});
+
+describe.each(["./sources/main.light.ts", "./sources/main.ts"])("Home claim code through %s", (entrypoint) => {
+    it("prints a one-time code that the app redeems for the owner claim", async () => {
+        const claimant = await createAccount();
+
+        const run = runEntrypoint(entrypoint, ["--print-home-claim-code"]);
+
+        expect(run.status, `stderr: ${run.stderr}`).toBe(0);
+        const output = readClaimOutput(run) as { result: { status: string; code: string; expiresAt: string } };
+        expect(output).toMatchObject({ v: 1, command: "print-home-claim-code", result: { status: "minted" } });
+        expect(output.result.code).toMatch(/^[A-Z2-7]{4}(-[A-Z2-7]{1,4})+$/);
+        expect(Date.parse(output.result.expiresAt) - Date.now()).toBeGreaterThan(14 * 60 * 1000);
+        // Only the hash is stored.
+        const stored = await db.simpleCache.findUniqueOrThrow({ where: { key: "home.owner-claim-code.v1" } });
+        expect(stored.value).not.toContain(output.result.code.replace(/-/g, ""));
+
+        await expect(redeemHomeClaimCode({ accountId: claimant, code: output.result.code }))
+            .resolves.toEqual({ status: "claimed" });
+        expect(await readHomeRole(claimant)).toBe("owner");
+    }, ENTRYPOINT_TIMEOUT_MS);
+
+    it("prints no code for an owned Home and exits nonzero", async () => {
+        await createAccount({ homeRole: "owner" });
+
+        const run = runEntrypoint(entrypoint, ["--print-home-claim-code"]);
+
+        expect(run.status).toBe(1);
+        expect(readClaimOutput(run)).toEqual({ v: 1, command: "print-home-claim-code", result: { status: "already_owned" } });
+        await expect(db.simpleCache.count({ where: { key: "home.owner-claim-code.v1" } })).resolves.toBe(0);
+    }, ENTRYPOINT_TIMEOUT_MS);
 });

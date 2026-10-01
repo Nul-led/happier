@@ -11,10 +11,10 @@ import {
 describe('plugin-UI public subpath initialization', () => {
   it('initializes the root contribution descriptor and the public UI semantic-action schema together', () => {
     expectTypeOf<PluginUiInlineSurfaceMountV1>().toMatchTypeOf<
-      | Readonly<{ role: 'sessionWidget'; presentation: 'content' | 'fill' }>
+      | Readonly<{ role: 'widget'; presentation: 'content' | 'fill' }>
       | Readonly<{ role: 'sessionInline'; presentation: 'content' }>
     >();
-    expect(isPluginUiAuthoredViewInlineSurfaceRoleV1('sessionWidget')).toBe(true);
+    expect(isPluginUiAuthoredViewInlineSurfaceRoleV1('widget')).toBe(true);
     expect(PluginSessionHeaderActionDescriptorV1Schema.parse({
       id: 'open-activity',
       title: 'Open activity',

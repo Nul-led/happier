@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BrowserActiveTargetV1Schema } from '../events/activeTarget.js';
 
 import { BrowserSemanticAdapterKindV1Schema } from '../adapters/kinds.js';
 import { BrowserDiagnosticsEvalRequestV1Schema } from '../diagnostics/v1.js';
@@ -25,7 +26,8 @@ export {
 
 const IdSchema = z.string().trim().min(1).max(256);
 const NonNegativeIntSchema = z.number().int().nonnegative();
-const PositiveTimeoutMsSchema = z.number().int().positive().max(60_000);
+export const BROWSER_AUTOMATION_MAX_ACTION_TIMEOUT_MS = 60_000;
+const PositiveTimeoutMsSchema = z.number().int().positive().max(BROWSER_AUTOMATION_MAX_ACTION_TIMEOUT_MS);
 
 export const BrowserAutomationReadOnlyActionKindV1Schema = z.enum([
   'getStatus',
@@ -111,6 +113,15 @@ const TimelineDetailsSchema = z
 
 export const BrowserAutomationRequesterKindV1Schema = z.enum(['user', 'agent', 'plugin', 'system']);
 export type BrowserAutomationRequesterKindV1 = z.infer<typeof BrowserAutomationRequesterKindV1Schema>;
+
+/** Action payloads cannot grant human input authority; only the host context can. */
+export function resolveBrowserAutomationActionRequester(
+  requestedBy: BrowserAutomationRequesterKindV1,
+  authority: unknown,
+): 'user' | 'agent' | null {
+  if (authority === 'present_user') return 'user';
+  return requestedBy === 'user' ? null : 'agent';
+}
 
 export const BrowserAutomationRequesterRefV1Schema = z
   .object({
@@ -244,6 +255,8 @@ export const BrowserAutomationCancelActiveResultV1Schema = z.discriminatedUnion(
     v: z.literal(1),
     outcome: z.literal('canceled'),
     canceledCount: z.number().int().positive(),
+    // Cancel acknowledgement reports drain certainty, never rollback of dispatched effects.
+    completion: z.enum(['stopped', 'uncertain']).default('uncertain'),
   }).strict(),
   z.object({
     v: z.literal(1),
@@ -324,6 +337,10 @@ export const BrowserAutomationControllerStateV1Schema = z
     controller: BrowserAutomationControllerKindV1Schema,
     controlEpoch: NonNegativeIntSchema,
     activeAutomationRequestId: IdSchema.optional(),
+    activeActionKind: BrowserAutomationActionKindV1Schema.optional(),
+    activeTarget: BrowserActiveTargetV1Schema.optional(),
+    interruptionSettling: z.boolean().optional(),
+    uncertain: z.boolean().optional(),
   })
   .strict();
 export type BrowserAutomationControllerStateV1 = z.infer<typeof BrowserAutomationControllerStateV1Schema>;
@@ -440,6 +457,8 @@ export const BrowserInjectedRuntimeResultMessageV1Schema = z
   .object({
     v: z.literal(1),
     kind: z.literal('browser.injectedRuntime.result'),
+    phase: z.enum(['target', 'complete']).optional(),
+    activeTarget: BrowserActiveTargetV1Schema.optional(),
     runtimeId: IdSchema,
     collectorId: IdSchema,
     nonce: IdSchema,

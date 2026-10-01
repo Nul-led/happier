@@ -23,7 +23,8 @@ vi.mock('@/app/retention/config/retentionPolicyState', () => ({
     resolveEffectiveRetentionEnabled,
 }));
 
-vi.mock('./retentionRuleRegistry', () => ({
+vi.mock('@/app/retention/config/retentionDomains', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/app/retention/config/retentionDomains')>()),
     hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled,
 }));
 
@@ -39,6 +40,9 @@ vi.mock('./retentionRunLogging', () => ({
 vi.mock('./retentionSweepLock', () => ({
     acquireRetentionSweepLock,
 }));
+
+// The Home settings row is the database boundary; each sweep reads an empty Home here.
+const readEnv = async () => ({});
 
 function createPolicy(intervalMs: number) {
     return {
@@ -63,6 +67,7 @@ function createPolicy(intervalMs: number) {
             globalLocks: { mode: 'keep_forever' },
             automationRuns: { mode: 'keep_forever' },
             automationRunEvents: { mode: 'keep_forever' },
+            homeAdministrationEvents: { mode: 'keep_forever' },
         },
     };
 }
@@ -87,7 +92,7 @@ describe('startRetentionWorker', () => {
 
         const { startRetentionWorker } = await import('./startRetentionWorker');
 
-        const worker = startRetentionWorker();
+        const worker = startRetentionWorker({ readEnv });
         await vi.advanceTimersByTimeAsync(0);
 
         expect(acquireRetentionSweepLock).toHaveBeenCalledWith({
@@ -103,7 +108,7 @@ describe('startRetentionWorker', () => {
             .mockResolvedValueOnce({ release: vi.fn(async () => {}) });
 
         const { startRetentionWorker } = await import('./startRetentionWorker');
-        const worker = startRetentionWorker();
+        const worker = startRetentionWorker({ readEnv });
         await vi.advanceTimersByTimeAsync(0);
         await vi.advanceTimersByTimeAsync(15_000);
 
@@ -119,7 +124,7 @@ describe('startRetentionWorker', () => {
         hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled.mockReturnValue(true);
 
         const { startRetentionWorker } = await import('./startRetentionWorker');
-        const worker = startRetentionWorker();
+        const worker = startRetentionWorker({ readEnv });
         await vi.advanceTimersByTimeAsync(0);
 
         expect(worker).not.toBeNull();

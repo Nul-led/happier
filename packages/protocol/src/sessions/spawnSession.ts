@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SessionAuthoringTerminalV1Schema } from './authoring/creationFieldsV1.js';
 import { OperationUpdateRequiredV1Schema } from '../compat/operationUpdateRequiredV1.js';
 import { SessionAccessErrorCodeV1Schema } from './access/sessionAccessOperationsV1.js';
 
@@ -10,6 +11,14 @@ import {
   type ConnectedServiceUxDiagnosticV1,
 } from '../connect/connectedServiceUxDiagnostics.js';
 import { ProviderErrorV1Schema, type ProviderErrorV1 } from '../providers/errors.js';
+
+// Process launch accepts the existing daemon modes, not integrated UI authoring.
+export const SpawnSessionTerminalSchema = SessionAuthoringTerminalV1Schema.pick({ mode: true, tmux: true, herdr: true }).extend({
+  mode: SessionAuthoringTerminalV1Schema.shape.mode.unwrap().exclude(['integrated']).optional(),
+  tmux: SessionAuthoringTerminalV1Schema.shape.tmux.unwrap().strip().optional(),
+  herdr: SessionAuthoringTerminalV1Schema.shape.herdr.unwrap().strip().optional(),
+}).strip();
+
 /** Fresh execution authority is bound to the exact opaque user-message local id. */
 export const SpawnSessionExecutionAuthorizationSchema = z.object({
   provenance: z.literal('user_request'),
@@ -28,7 +37,10 @@ export const SPAWN_SESSION_ERROR_CODES = {
   RESUME_MISSING_ENCRYPTION_KEY: 'RESUME_MISSING_ENCRYPTION_KEY',
   RESUME_UNSUPPORTED_ENCRYPTION_VARIANT: 'RESUME_UNSUPPORTED_ENCRYPTION_VARIANT',
   DIRECTORY_CREATE_FAILED: 'DIRECTORY_CREATE_FAILED',
+  SESSION_DIRECTORY_MISSING: 'SESSION_DIRECTORY_MISSING',
   SPAWN_VALIDATION_FAILED: 'SPAWN_VALIDATION_FAILED',
+  AGENT_CLI_MISSING: 'agent_cli_missing',
+  AGENT_SIGNED_OUT: 'agent_signed_out',
   SPAWN_NO_PID: 'SPAWN_NO_PID',
   CHILD_EXITED_BEFORE_WEBHOOK: 'CHILD_EXITED_BEFORE_WEBHOOK',
   SESSION_WEBHOOK_TIMEOUT: 'SESSION_WEBHOOK_TIMEOUT',
@@ -52,7 +64,10 @@ export const SpawnSessionErrorCodeSchema = z.enum([
   SPAWN_SESSION_ERROR_CODES.RESUME_MISSING_ENCRYPTION_KEY,
   SPAWN_SESSION_ERROR_CODES.RESUME_UNSUPPORTED_ENCRYPTION_VARIANT,
   SPAWN_SESSION_ERROR_CODES.DIRECTORY_CREATE_FAILED,
+  SPAWN_SESSION_ERROR_CODES.SESSION_DIRECTORY_MISSING,
   SPAWN_SESSION_ERROR_CODES.SPAWN_VALIDATION_FAILED,
+  SPAWN_SESSION_ERROR_CODES.AGENT_CLI_MISSING,
+  SPAWN_SESSION_ERROR_CODES.AGENT_SIGNED_OUT,
   SPAWN_SESSION_ERROR_CODES.SPAWN_NO_PID,
   SPAWN_SESSION_ERROR_CODES.CHILD_EXITED_BEFORE_WEBHOOK,
   SPAWN_SESSION_ERROR_CODES.SESSION_WEBHOOK_TIMEOUT,
@@ -486,4 +501,4 @@ export type SpawnSessionResult =
       sessionIdStatus?: 'pending' | 'available';
     }
   | { type: 'requestToApproveDirectoryCreation'; directory: string }
-  | { type: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; errorDetail?: SpawnSessionErrorDetail };
+  | { type: 'error'; errorCode: SpawnSessionErrorCode; errorMessage: string; agentId?: string; errorDetail?: SpawnSessionErrorDetail };

@@ -35,13 +35,6 @@ export type CredentialAccessSelectedRawAccessDigest = z.infer<
   typeof CredentialAccessSelectedRawAccessDigestSchema
 >;
 
-/** Exact immutable runtime generation that admitted this raw-credential authority. */
-export const PluginPermissionInstalledGenerationIdSchema = z.string().trim().min(1).max(512)
-  .brand<'PluginPermissionInstalledGenerationId'>();
-export type PluginPermissionInstalledGenerationId = z.infer<
-  typeof PluginPermissionInstalledGenerationIdSchema
->;
-
 export const PluginInstallReviewPrincipalDigestSchema = LowercaseSha256DigestSchema
   .brand<'PluginInstallReviewPrincipalDigest'>();
 export type PluginInstallReviewPrincipalDigest = z.infer<typeof PluginInstallReviewPrincipalDigestSchema>;
@@ -89,11 +82,30 @@ export const PluginPermissionSubjectV1Schema = z.discriminatedUnion('kind', [
     accessDeclarationDigest: CredentialAccessDeclarationDigestSchema,
     selectedAuthorityDigest: CredentialAccessSelectedAuthorityDigestSchema,
     selectedRawAccessDigest: CredentialAccessSelectedRawAccessDigestSchema,
-    installedGenerationId: PluginPermissionInstalledGenerationIdSchema,
-    installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema,
   }).strict(),
 ]);
 export type PluginPermissionSubjectV1 = z.infer<typeof PluginPermissionSubjectV1Schema>;
+
+/** Compares the complete strict identity of two plugin permission subjects. */
+export function pluginPermissionSubjectsEqualV1(
+  leftInput: PluginPermissionSubjectV1,
+  rightInput: PluginPermissionSubjectV1,
+): boolean {
+  const left = PluginPermissionSubjectV1Schema.parse(leftInput);
+  const right = PluginPermissionSubjectV1Schema.parse(rightInput);
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'general' && right.kind === 'general') return true;
+  if (left.kind !== 'credential_access_disclosure' || right.kind !== 'credential_access_disclosure') {
+    return false;
+  }
+  return left.contribution.pluginId === right.contribution.pluginId
+    && left.contribution.localId === right.contribution.localId
+    && left.credentialSlotId === right.credentialSlotId
+    && left.purpose === right.purpose
+    && left.accessDeclarationDigest === right.accessDeclarationDigest
+    && left.selectedAuthorityDigest === right.selectedAuthorityDigest
+    && left.selectedRawAccessDigest === right.selectedRawAccessDigest;
+}
 
 export const GENERAL_PLUGIN_PERMISSION_SUBJECT_V1 = Object.freeze({
   kind: 'general',

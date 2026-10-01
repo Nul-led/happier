@@ -321,6 +321,7 @@ export async function createTeamWorkosAdminPortalLink(
         homeServerIdentityId,
         teamId: input.teamId,
         connectionId: input.connectionId,
+        purpose: 'workos_admin_portal',
     });
     if (!returnUrl) return { ok: false, error: "identity_connection_invalid" };
     try {

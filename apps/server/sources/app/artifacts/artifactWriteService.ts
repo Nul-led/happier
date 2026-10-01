@@ -6,6 +6,7 @@ import {
 import type {
     AccountEncryptionMigrateArtifactsDirective,
 } from "@happier-dev/protocol";
+import { ArtifactRecipientKeyEnvelopesV1Schema, parseEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
 import { buildPluginDomainAccountChangeEntityId } from "@happier-dev/protocol/changes";
 import {
     artifactDataKeyMatchesAccountMode,
@@ -19,6 +20,12 @@ import {
     artifactClassificationFromRelations,
     artifactOrdinaryWhere,
 } from "./artifactClassification";
+import {
+    readArtifactForCallerInTx,
+    resolveArtifactAccessInTx,
+    resolveArtifactAudienceInTx,
+    applyArtifactRecipientKeyEnvelopesInTx,
+} from "./artifactAccessService";
 
 type Cursor = number;
 
@@ -241,8 +248,16 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
             !item
             || item.expectedHeaderVersion !== row.headerVersion
             || item.expectedBodyVersion !== row.bodyVersion
+            || !artifactBytesEqual(
+                row.dataEncryptionKey, new Uint8Array(Buffer.from(item.expectedDataEncryptionKey, "base64")),
+            )
         ) {
             return { status: "migration_incomplete" };
+        }
+        if (!ArtifactRecipientKeyEnvelopesV1Schema.safeParse(item.recipientKeyEnvelopes).success
+            || item.recipientKeyEnvelopes.some(envelope => !parseEncryptedDataKeyEnvelopeV1(new Uint8Array(Buffer.from(envelope.encryptedDataKey, "base64"))))
+            || (item.recipientKeyEnvelopes.length > 0 && params.toMode === "plain")) {
+            return { status: "invalid_content" };
         }
         const header = new Uint8Array(Buffer.from(item.header, "base64"));
         const body = new Uint8Array(Buffer.from(item.body, "base64"));
@@ -327,6 +342,7 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
                 id: item.artifactId,
                 headerVersion: item.expectedHeaderVersion,
                 bodyVersion: item.expectedBodyVersion,
+                dataEncryptionKey: Buffer.from(item.expectedDataEncryptionKey, "base64"),
             },
             data: {
                 header: Buffer.from(replacement.header),
@@ -342,6 +358,21 @@ export async function migrateArtifactAccountEncryptionInTx(params: Readonly<{
         });
         if (updated.count !== 1) {
             throw new ArtifactAccountEncryptionMigrationConflictError();
+        }
+        // A replacement resource key invalidates every previously wrapped key.
+        await params.tx.artifactKeyEnvelope.deleteMany({ where: { artifactId: item.artifactId } });
+        const notifiedRecipients = new Set<string>();
+        if (params.toMode === "e2ee") {
+            const committed = await applyArtifactRecipientKeyEnvelopesInTx(params.tx, {
+                artifactId: item.artifactId, recipientKeyEnvelopes: item.recipientKeyEnvelopes,
+            });
+            for (const accountId of committed.appliedRecipientAccountIds) notifiedRecipients.add(accountId);
+        }
+        // Removed wraps are also a content change: live, unprepared recipients
+        // must refresh into the truthful locked state (plain targets refresh too).
+        for (const accountId of await resolveArtifactAudienceInTx(params.tx, item.artifactId)) {
+            if (accountId === params.accountId || notifiedRecipients.has(accountId)) continue;
+            await markAccountChanged(params.tx, { accountId, kind: "artifact", entityId: item.artifactId });
         }
         await markChanged(item.artifactId);
     }
@@ -606,6 +637,7 @@ export type UpdateArtifactResult =
     | {
         ok: true;
         cursor: Cursor;
+        ownerUpdate?: Readonly<{ accountId: string; cursor: Cursor }>;
         header?: { bytes: Uint8Array; version: number };
         body?: { bytes: Uint8Array; version: number };
       }
@@ -674,8 +706,21 @@ export async function updateArtifactTx(
         supportsCurrentStoredContentProtocol?: boolean;
     },
 ): Promise<UpdateArtifactResult> {
+    const access = await resolveArtifactAccessInTx(tx, {
+        actorAccountId: params.actorUserId,
+        artifactId: params.artifactId,
+    });
+    if (!access || access.level === "view") return { ok: false, error: "not-found" };
+    if (access.ownerAccountId !== params.actorUserId) {
+        const readable = await readArtifactForCallerInTx(tx, {
+            actorAccountId: params.actorUserId,
+            artifactId: params.artifactId,
+        });
+        if (!readable.ok) return { ok: false, error: "not-found" };
+    }
+    const ownerAccountId = access.ownerAccountId;
     const account = await tx.account.findUnique({
-        where: { id: params.actorUserId },
+        where: { id: ownerAccountId },
         select: {
             encryptionMode: true,
             publicKey: true,
@@ -692,7 +737,7 @@ export async function updateArtifactTx(
     const current = await tx.artifact.findFirst({
         where: {
             id: params.artifactId,
-            accountId: params.actorUserId,
+            accountId: ownerAccountId,
             ...artifactOrdinaryWhere,
         },
         select: {
@@ -726,7 +771,7 @@ export async function updateArtifactTx(
         return { ok: false, error: "invalid-params" };
     }
     const openedCurrent = openArtifactStoredContentPair({
-        accountId: params.actorUserId,
+        accountId: ownerAccountId,
         artifactId: current.id,
         mode: currentness.currentness.encryptionMode,
         dataEncryptionKey: current.dataEncryptionKey,
@@ -752,7 +797,14 @@ export async function updateArtifactTx(
         };
     }
 
-    const updateData: any = {
+    const updateData: {
+        updatedAt: Date;
+        seq: number;
+        header?: Uint8Array<ArrayBuffer>;
+        headerVersion?: number;
+        body?: Uint8Array<ArrayBuffer>;
+        bodyVersion?: number;
+    } = {
         updatedAt: new Date(),
         seq: current.seq + 1,
     };
@@ -763,7 +815,7 @@ export async function updateArtifactTx(
     if (params.header) {
         const storedHeader = isPlainArtifactDataKeyBytes(current.dataEncryptionKey)
             ? storePlainArtifactDbBytes({
-                accountId: params.actorUserId,
+                accountId: ownerAccountId,
                 artifactId: current.id,
                 field: "header",
                 content: params.header.bytes,
@@ -777,7 +829,7 @@ export async function updateArtifactTx(
     if (params.body) {
         const storedBody = isPlainArtifactDataKeyBytes(current.dataEncryptionKey)
             ? storePlainArtifactDbBytes({
-                accountId: params.actorUserId,
+                accountId: ownerAccountId,
                 artifactId: current.id,
                 field: "body",
                 content: params.body.bytes,
@@ -792,7 +844,7 @@ export async function updateArtifactTx(
     const { count } = await tx.artifact.updateMany({
         where: {
             id: params.artifactId,
-            accountId: params.actorUserId,
+            accountId: ownerAccountId,
             ...(params.header && { headerVersion: params.header.expectedVersion }),
             ...(params.body && { bodyVersion: params.body.expectedVersion }),
             ...artifactOrdinaryWhere,
@@ -804,7 +856,7 @@ export async function updateArtifactTx(
         const fresh = await tx.artifact.findFirst({
             where: {
                 id: params.artifactId,
-                accountId: params.actorUserId,
+                accountId: ownerAccountId,
                 ...artifactOrdinaryWhere,
             },
             select: {
@@ -829,7 +881,7 @@ export async function updateArtifactTx(
             };
         }
         const openedFresh = openArtifactStoredContentPair({
-            accountId: params.actorUserId,
+            accountId: ownerAccountId,
             artifactId: fresh.id,
             mode: currentness.currentness.encryptionMode,
             dataEncryptionKey: fresh.dataEncryptionKey,
@@ -851,9 +903,22 @@ export async function updateArtifactTx(
         };
     }
 
-    const cursor = await markAccountChanged(tx, { accountId: params.actorUserId, kind: "artifact", entityId: params.artifactId });
-    return { ok: true, cursor, ...(headerUpdate ? { header: headerUpdate } : {}), ...(bodyUpdate ? { body: bodyUpdate } : {}) };
+    const recipients = await resolveArtifactAudienceInTx(tx, params.artifactId);
+    const recipientCursors = [];
+    for (const accountId of recipients) {
+        const cursor = await markAccountChanged(tx, { accountId, kind: "artifact", entityId: params.artifactId });
+        recipientCursors.push({ accountId, cursor });
+    }
+    const cursor = recipientCursors.find((recipient) => recipient.accountId === params.actorUserId)?.cursor;
+    if (cursor === undefined) throw new Error("Artifact writer is missing from its authorized audience");
+    const ownerCursor = recipientCursors.find((recipient) => recipient.accountId === ownerAccountId)?.cursor;
+    if (ownerCursor === undefined) throw new Error("Artifact owner is missing from its authorized audience");
+    return { ok: true, cursor,
+        ...(ownerAccountId !== params.actorUserId ? { ownerUpdate: { accountId: ownerAccountId, cursor: ownerCursor } } : {}),
+        ...(headerUpdate ? { header: headerUpdate } : {}), ...(bodyUpdate ? { body: bodyUpdate } : {}) };
 }
+
+class ArtifactDeleteVersionConflictError extends Error {}
 
 export type DeleteArtifactResult =
     | { ok: true; cursor: Cursor }
@@ -863,6 +928,7 @@ export type DeleteArtifactResult =
             | "invalid-params"
             | "not-found"
             | "client-upgrade-required"
+            | "version-mismatch"
             | "internal";
       };
 
@@ -870,6 +936,7 @@ export async function deleteArtifact(params: {
     actorUserId: string;
     artifactId: string;
     supportsCurrentStoredContentProtocol?: boolean;
+    expectedRevision?: Readonly<{ headerVersion: number; bodyVersion: number }>;
 }): Promise<DeleteArtifactResult> {
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const artifactId = typeof params.artifactId === "string" ? params.artifactId : "";
@@ -927,11 +994,29 @@ export async function deleteArtifact(params: {
                 };
             }
 
-            const cursor = await markAccountChanged(tx, { accountId: actorUserId, kind: "artifact", entityId: artifactId });
-            await tx.artifact.delete({ where: { id: artifactId } });
+            const audience = await resolveArtifactAudienceInTx(tx, artifactId);
+            let cursor: Cursor | undefined;
+            // Write changes while the FK target still exists; deletion nulls the
+            // projection link, retaining the entity id for a removal refresh.
+            for (const accountId of audience) {
+                const recipientCursor = await markAccountChanged(tx, { accountId, kind: "artifact", entityId: artifactId });
+                if (accountId === actorUserId) cursor = recipientCursor;
+            }
+            if (cursor === undefined) throw new Error("Artifact owner is missing from its authorized audience");
+            if (params.expectedRevision) {
+                const deleted = await tx.artifact.deleteMany({ where: {
+                    id: artifactId, accountId: actorUserId, ...artifactOrdinaryWhere,
+                    headerVersion: params.expectedRevision.headerVersion,
+                    bodyVersion: params.expectedRevision.bodyVersion,
+                } });
+                if (deleted.count !== 1) throw new ArtifactDeleteVersionConflictError();
+            } else {
+                await tx.artifact.delete({ where: { id: artifactId } });
+            }
             return { ok: true, cursor };
         });
-    } catch {
+    } catch (error) {
+        if (error instanceof ArtifactDeleteVersionConflictError) return { ok: false, error: "version-mismatch" };
         return { ok: false, error: "internal" };
     }
 }

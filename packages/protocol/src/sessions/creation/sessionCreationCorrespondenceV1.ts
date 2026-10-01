@@ -11,11 +11,12 @@ import { SessionAuthoringTerminalV1Schema } from '../authoring/creationFieldsV1.
 import { SessionCreationTagV1Schema } from './sessionCreationIdentityV1.js';
 import { SessionOrganizationPlacementV1Schema } from './sessionSpawnNewResultV1.js';
 import { SecretReferenceOverlayV1Schema } from '../../profiles/secretReferenceOverlayV1.js';
+import { SessionDirectoryIntentV1Schema, refineSessionDirectoryIntentCheckoutV1 } from './sessionDirectoryIntentV1.js';
 
 export const SessionCreationImmutableRecipeV1Schema = z.object({
   execution: z.object({
     machineId: z.string().trim().min(1),
-    directory: z.string().trim().min(1),
+    directory: SessionDirectoryIntentV1Schema,
   }).strict(),
   organization: SessionOrganizationPlacementV1Schema,
   agentTarget: AgentExecutionTargetV1Schema,
@@ -37,7 +38,11 @@ export const SessionCreationImmutableRecipeV1Schema = z.object({
     baseRef: z.string().trim().min(1).nullable(),
     branchMode: z.enum(['new', 'existing']),
   }).strict().nullable(),
-}).strict();
+}).strict().superRefine((recipe, context) => refineSessionDirectoryIntentCheckoutV1(
+  { directory: recipe.execution.directory, checkoutCreationDraft: recipe.checkout },
+  context,
+  ['checkout'],
+));
 export type SessionCreationImmutableRecipeV1 = z.infer<
   typeof SessionCreationImmutableRecipeV1Schema
 >;

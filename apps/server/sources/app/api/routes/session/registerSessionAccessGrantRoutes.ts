@@ -4,17 +4,21 @@ import {
     SetSessionAccessGrantRequestV1Schema, SetSessionAccessGrantResponseV1Schema,
     RemoveSessionAccessGrantRequestV1Schema, RemoveSessionAccessGrantResponseV1Schema,
     SetSessionAccessContextRequestV1Schema, SetSessionAccessContextResponseV1Schema,
+    ResolveSessionAccessPrincipalsRequestV1Schema, ResolveSessionAccessPrincipalsResponseV1Schema,
 } from "@happier-dev/protocol";
 import { ACCOUNT_DISPLAY_PROFILE_SELECT } from "@/app/account/profile/accountDisplayProfile";
 import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
 import { inspectSessionAccessGrants } from "@/app/session/access/sessionAccessGrantInspection";
-import { putSessionAccessGrantInTx, deleteSessionAccessGrantInTx, setSessionAccessContextInTx, type SessionAccessGrantErrorCode } from "@/app/session/access/sessionAccessGrantService";
+import { assertSessionAccessManageAccessInTx, putSessionAccessGrantInTx, deleteSessionAccessGrantInTx, setSessionAccessContextInTx, type SessionAccessGrantErrorCode } from "@/app/session/access/sessionAccessGrantService";
 import { projectReleasedDirectShareEvent, scheduleReleasedDirectShareEvent } from "@/app/session/access/publishSessionAccessChange";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import { validateRequiredTeamVisibilityInTx } from "@/app/teams/credentials/sessionBinding";
+import { SessionTeamCredentialBindingRejectionV1Schema } from "@happier-dev/protocol/teams";
 import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
+import { resolveSessionAccessPrincipalsInTx } from "@/app/session/access/sessionAccessPrincipalResolution";
 
-const ErrorSchema = z.object({ error: z.string() });
+const ErrorSchema = z.object({ error: z.string(), reason: SessionTeamCredentialBindingRejectionV1Schema.optional() });
 const errors = { 400: ErrorSchema, 403: ErrorSchema, 404: ErrorSchema, 409: ErrorSchema, 503: ErrorSchema };
 
 function errorStatus(error: SessionAccessGrantErrorCode): 400 | 403 | 404 | 409 | 503 {
@@ -32,6 +36,22 @@ function errorStatus(error: SessionAccessGrantErrorCode): 400 | 403 | 404 | 409 
 /** Current desired-state transport; the grant service owns admission, persistence and access effects. */
 export function registerSessionAccessGrantRoutes(app: Fastify) {
     const collaborationApp = createServerFeatureGatedRouteApp(app, "sharing.session");
+    collaborationApp.post("/v1/session-access/principals/resolve", {
+        preHandler: app.authenticate,
+        schema: {
+            body: ResolveSessionAccessPrincipalsRequestV1Schema,
+            response: { 200: ResolveSessionAccessPrincipalsResponseV1Schema },
+        },
+    }, async (request, reply) => {
+        const value = await inTx((tx) => resolveSessionAccessPrincipalsInTx({
+            tx,
+            actorAccountId: request.userId,
+            subjects: request.body.subjects,
+            ...(request.body.creationTeamId === undefined ? {} : { creationTeamId: request.body.creationTeamId }),
+            authentication: readSessionAccessAuthenticationFromRequest(request),
+        }));
+        return reply.send(value);
+    });
     collaborationApp.post("/v2/sessions/access-grants/list", {
         preHandler: app.authenticate,
         schema: { body: SessionAccessGrantsListRequestV1Schema, response: { 200: SessionAccessGrantsListResponseV1Schema, ...errors } },
@@ -48,12 +68,34 @@ export function registerSessionAccessGrantRoutes(app: Fastify) {
         preHandler: app.authenticate,
         schema: { body: SetSessionAccessGrantRequestV1Schema, response: { 200: SetSessionAccessGrantResponseV1Schema, ...errors } },
     }, async (request, reply) => {
-        const { sessionId, subject, accessLevel, canApprovePermissions, accountEnvelopeInput } = request.body;
+        const { sessionId, subject, accessLevel, canApprovePermissions, accountEnvelopeInput, requiredTeamCredential } = request.body;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
         const result = await inTx(async (tx) => {
+            // A compound Team-credential binding must not reveal whether a
+            // Session/resource exists before the canonical access owner admits
+            // this actor as its manager. The grant writer repeats this check
+            // after the binding validation in the same transaction.
+            const accessError = await assertSessionAccessManageAccessInTx(tx, {
+                actorAccountId: request.userId, sessionId, authentication,
+            });
+            if (accessError) return { ok: false as const, error: accessError };
+            if (requiredTeamCredential) {
+                const admission = subject.kind === "team"
+                    ? await validateRequiredTeamVisibilityInTx(tx, {
+                        sessionId, accountId: request.userId, consentTeamId: subject.teamId,
+                        requiredTeamCredential, authentication,
+                    })
+                    : { ok: false as const, reason: "invalid_input" as const };
+                if (!admission.ok) return {
+                    ok: false as const,
+                    error: "session_team_credential_binding_rejected" as const,
+                    reason: admission.reason,
+                };
+            }
             const mutation = await putSessionAccessGrantInTx(tx, {
                 actorAccountId: request.userId, sessionId, subject,
                 grant: { accessLevel, canApprovePermissions },
-                authentication: readSessionAccessAuthenticationFromRequest(request),
+                authentication,
                 ...(accountEnvelopeInput === undefined ? {} : { accountEnvelopeInput }),
             });
             if (mutation.ok && mutation.changed && mutation.directShare) {
@@ -72,7 +114,12 @@ export function registerSessionAccessGrantRoutes(app: Fastify) {
             }
             return mutation;
         });
-        if (!result.ok) return reply.code(errorStatus(result.error)).send({ error: result.error });
+        if (!result.ok) {
+            if (result.error === "session_team_credential_binding_rejected") {
+                return reply.code(409).send({ error: result.error, reason: result.reason });
+            }
+            return reply.code(errorStatus(result.error)).send({ error: result.error });
+        }
         const grant = result.subject.kind === "team"
             ? {
                 subject: result.subject,

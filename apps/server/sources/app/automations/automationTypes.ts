@@ -11,6 +11,7 @@ import {
     type AutomationTriggerCreateRequest,
     type AutomationTriggerDefinitionInput,
     type AutomationRunCause,
+    type AutomationSessionLifecycleEvent,
 } from '@happier-dev/protocol';
 
 export type AutomationScheduleKind = 'cron' | 'interval';
@@ -140,6 +141,8 @@ type AutomationDefinitionInputCommon = Readonly<{
     description?: string | null;
     enabled: boolean;
     assignments?: ReadonlyArray<AutomationAssignmentInput>;
+    workflowDefinitionId?: string | null;
+    scopeSessionId?: string | null;
 }>;
 
 /** Retained release-compatible definition bytes. Current V3 routes never construct this arm. */
@@ -171,6 +174,8 @@ type AutomationPatchCommon = Readonly<{
     description?: string | null;
     enabled?: boolean;
     assignments?: ReadonlyArray<AutomationAssignmentInput>;
+    workflowDefinitionId?: string | null;
+    scopeSessionId?: string | null;
 }>;
 
 export type AutomationCurrentPatchInput = AutomationPatchCommon & Readonly<{
@@ -215,6 +220,8 @@ export function isAutomationLegacyTargetType(
 export type AutomationListItem = Readonly<{
     id: string;
     accountId: string;
+    workflowDefinitionId: string | null;
+    scopeSessionId: string | null;
     name: string;
     description: string | null;
     enabled: boolean;
@@ -281,7 +288,8 @@ export type AutomationRunItem = Readonly<{
     id: string;
     originKind: 'automation';
     automationId: string;
-    originSessionId: null;
+    /** Scoped Workflow context does not change the Run's Automation cause. */
+    originSessionId: string | null;
     accountId: string;
     state: AutomationRunState;
     triggerId: string | null;
@@ -294,12 +302,7 @@ export type AutomationRunItem = Readonly<{
     causeEventPluginId: string | null;
     causeEventLocalId: string | null;
     causeScheduledFor: Date | null;
-    causeSessionLifecycleEvent:
-        | 'parentTurnCompleted'
-        | 'parentTurnFailed'
-        | 'parentTurnCancelled'
-        | 'userActionRequired'
-        | null;
+    causeSessionLifecycleEvent: AutomationSessionLifecycleEvent | null;
     causeSourceSessionId: string | null;
     causeSourceTurnId: string | null;
     causeSessionLifecycleRequestId: string | null;
@@ -392,9 +395,6 @@ export type AutomationRunV3ListItem =
         | 'updatedAt'
     > & Readonly<{ triggerRetired?: boolean }>;
 
-/** The released-V2 adapter's retained Run-list row. */
-export type AutomationRunV2ListItem = AutomationRunV3ListItem &
-    Pick<AutomationRunItem, 'executionInputEnvelope' | 'resultEnvelope' | 'errorMessage' | 'scheduledAt'>;
 
 /** One committed Run transition as persisted by the lifecycle owners. */
 export type AutomationRunEventRow = Readonly<{

@@ -11,9 +11,11 @@ import {
 import { projectDirectorySyncFreshness } from "./directorySourceProjection";
 import type { DirectoryGroup, DirectoryGroupMember, DirectoryPerson } from "./directorySourceEvidence";
 import {
+    isDirectorySourceAllowedInTx,
     isDirectorySourceCompletedEvidenceAllowedInTx,
     isDirectorySourceKindAllowedInTx,
 } from "./directorySourcePolicy";
+import type { ExpectedDirectorySourceCurrentness } from "./directorySourcePolicy";
 import { publishDirectorySourceStatusTransitionInTx } from "./directorySourceService";
 
 export type DirectoryProjectionWriteResult =
@@ -732,6 +734,7 @@ export async function applyReadyDirectorySourceFactsForAccountInTx(
             teamId: params.teamId,
         },
         select: {
+            id: true,
             teamId: true,
             kind: true,
             state: true,
@@ -746,13 +749,17 @@ export async function applyReadyDirectorySourceFactsForAccountInTx(
 }
 
 export async function commitActiveWorkosProjectionEvent(
-    params: Omit<InitializingWorkosProjectionEvent, "reconcileRunId"> & Readonly<{ completedAt?: Date }>,
+    params: Omit<InitializingWorkosProjectionEvent, "reconcileRunId"> & Readonly<{
+        completedAt?: Date;
+        expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+        env?: NodeJS.ProcessEnv;
+    }>,
 ): Promise<DirectoryProjectionWriteResult> {
     const eventId = params.eventId.trim();
     if (eventId.length === 0) throw new TypeError("WorkOS event ID must be non-empty");
     const completedAt = params.completedAt ?? new Date();
     return await inTx(async (tx): Promise<DirectoryProjectionWriteResult> => {
-        if (!await isDirectorySourceKindAllowedInTx(tx, "workos_directory")) {
+        if (!await isDirectorySourceAllowedInTx(tx, { id: params.sourceId, kind: "workos_directory" }, params.expectedCurrentness, params.env)) {
             return { applied: false, reason: "stale_run" };
         }
         const position = params.expectedPosition.eventCursor === null
@@ -813,13 +820,15 @@ export async function completeActiveWorkosEmptyPoll(params: Readonly<{
     sourceId: string;
     expectedPosition: InitializingWorkosProjectionEvent["expectedPosition"];
     completedAt?: Date;
+    expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+    env?: NodeJS.ProcessEnv;
 }>): Promise<DirectoryProjectionWriteResult> {
     const completedAt = params.completedAt ?? new Date();
     const position = params.expectedPosition.eventCursor === null
         ? { eventCursor: null, eventRangeStart: params.expectedPosition.eventRangeStart }
         : { eventCursor: params.expectedPosition.eventCursor };
     return await inTx(async (tx) => {
-        if (!await isDirectorySourceKindAllowedInTx(tx, "workos_directory")) {
+        if (!await isDirectorySourceAllowedInTx(tx, { id: params.sourceId, kind: "workos_directory" }, params.expectedCurrentness, params.env)) {
             return { applied: false, reason: "stale_run" };
         }
         const where = {
@@ -877,6 +886,8 @@ export async function completeDirectoryProjection(params: Readonly<{
     reconcileRunId: string;
     observedManualSyncRequestedAt: Date | null;
     completedAt?: Date;
+    expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+    env?: NodeJS.ProcessEnv;
 }>): Promise<DirectoryProjectionWriteResult> {
     const completedAt = params.completedAt ?? new Date();
     return await inTx(async (tx): Promise<DirectoryProjectionWriteResult> => {
@@ -897,7 +908,7 @@ export async function completeDirectoryProjection(params: Readonly<{
             },
         });
         if (!current) return { applied: false, reason: "stale_run" };
-        if (!await isDirectorySourceKindAllowedInTx(tx, current.kind)) {
+        if (!await isDirectorySourceAllowedInTx(tx, current, params.expectedCurrentness, params.env)) {
             return { applied: false, reason: "stale_run" };
         }
 

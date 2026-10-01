@@ -54,7 +54,6 @@ export const FEATURE_ENV_KEYS = Object.freeze({
     'HAPPIER_FEATURE_MACHINES_TRANSFER_SERVER_ROUTED__MAX_ACTIVE_TRANSFERS_PER_SOCKET',
   machinesTunnelDirectPeerEnabled: 'HAPPIER_FEATURE_MACHINES_TUNNEL_DIRECT_PEER__ENABLED',
   machinesTunnelServerRoutedEnabled: 'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ENABLED',
-  machinesTunnelServerRoutedMaxBytes: 'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BYTES',
   machinesTunnelServerRoutedMaxActiveTunnelsPerSocket:
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_ACTIVE_TUNNELS_PER_SOCKET',
   machinesTunnelServerRoutedMaxFrameBytes: 'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAME_BYTES',
@@ -70,22 +69,10 @@ export const FEATURE_ENV_KEYS = Object.freeze({
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAMED_MESSAGE_BYTES',
   machinesTunnelServerRoutedMaxConcurrentSubstreams:
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_CONCURRENT_SUBSTREAMS',
-  machinesTunnelServerRoutedMaxTotalSubstreams:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_TOTAL_SUBSTREAMS',
-  machinesTunnelServerRoutedMaxBytesPerSubstream:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BYTES_PER_SUBSTREAM',
-  machinesTunnelServerRoutedMaxAggregateBytes:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_AGGREGATE_BYTES',
-  machinesTunnelServerRoutedMaxSubstreamIdleMs:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_SUBSTREAM_IDLE_MS',
-  machinesTunnelServerRoutedMaxSessionIdleMs:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_SESSION_IDLE_MS',
-  machinesTunnelMaxIdleMs: 'HAPPIER_FEATURE_MACHINES_TUNNEL__MAX_IDLE_MS',
-  machinesTunnelMaxDurationMs: 'HAPPIER_FEATURE_MACHINES_TUNNEL__MAX_DURATION_MS',
   machinesTunnelAllowedPorts: 'HAPPIER_FEATURE_MACHINES_TUNNEL_ALLOWED_PORTS',
 
-  // Core local-services product gates (server-represented + default-allow). Exposure
-  // (preview / publicPreview) below stays fail-closed default-off.
+  // Server-represented local-services settings. Preview availability also depends on
+  // the canonical transport, origin, authorization and signing prerequisites.
   localServicesEnabled: 'HAPPIER_FEATURE_LOCAL_SERVICES__ENABLED',
   localServicesManagedEnabled: 'HAPPIER_FEATURE_LOCAL_SERVICES_MANAGED__ENABLED',
   localServicesLauncherEnabled: 'HAPPIER_FEATURE_LOCAL_SERVICES_LAUNCHER__ENABLED',
@@ -123,8 +110,8 @@ export const FEATURE_ENV_KEYS = Object.freeze({
 
   searchEnabled: 'HAPPIER_FEATURE_SEARCH__ENABLED',
 
-  // Core browser product gates (server-represented + default-allow). The capture/automation
-  // surfaces (sidecar/diagnostics/context/recording/automation) are server-represented but default-off.
+  // Server-represented browser settings, including capture and automation. Defaults
+  // are defined by the canonical feature settings owner, not validation status.
   browserEnabled: 'HAPPIER_FEATURE_BROWSER__ENABLED',
   browserViewTargetsEnabled: 'HAPPIER_FEATURE_BROWSER_VIEW_TARGETS__ENABLED',
   browserInternalEnabled: 'HAPPIER_FEATURE_BROWSER_INTERNAL__ENABLED',

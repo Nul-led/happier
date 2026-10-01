@@ -75,7 +75,7 @@ export async function readDirectoryProvisionedIdentityCandidatesInTx(
             id: true,
             directorySourceId: true,
             boundAccountId: true,
-            source: { select: { kind: true, state: true, activeReconcileRunId: true } },
+            source: { select: { id: true, kind: true, state: true, activeReconcileRunId: true } },
         },
         orderBy: [{ directorySourceId: "asc" }, { externalUserId: "asc" }],
     });

@@ -285,9 +285,9 @@ describe("Automation trigger-set persistence contract", () => {
         expect(sourceStatus).toMatch(/^\s*triggerId\s+String\s+@id\s*$/m);
         expect(sourceStatus).toMatch(/^\s*trigger\s+AutomationTrigger\s+@relation\(/m);
         expect(sourceStatus).toMatch(/^\s*triggerRevision\s+Int\s*$/m);
-        expect(sourceStatus).toMatch(/^\s*reporterImmutableGenerationId\s+String(?:\s+@db\.VarChar\(256\))?\s*$/m);
+        expect(sourceStatus).toMatch(/^\s*reporterSourceCustody\s+Json\s*$/m);
         expect(sourceStatus).not.toMatch(/^\s*automationId\s+/m);
-        expect(catalogStatus).toMatch(/^\s*reporterImmutableGenerationId\s+String(?:\s+@db\.VarChar\(256\))?\s*$/m);
+        expect(catalogStatus).toMatch(/^\s*reporterSourceCustody\s+Json\s*$/m);
     });
 
     it.each(historyIndexMigrationPaths)("adds one provider-native Run-history index in %s", async (migrationPath) => {
@@ -410,10 +410,10 @@ describe("Automation trigger-set persistence contract", () => {
             /AutomationEventSourceStatus.*triggerId.*PRIMARY KEY.*triggerId.*REFERENCES AutomationTrigger.*id/s,
         );
         expect(sourceStatusTable).toMatch(
-            /reporterImmutableGenerationId (?:VARCHAR\(256\)|TEXT) NOT NULL/,
+            /reporterSourceCustody (?:JSONB|JSON|TEXT) NOT NULL/,
         );
         expect(catalogStatusTable).toMatch(
-            /reporterImmutableGenerationId (?:VARCHAR\(256\)|TEXT) NOT NULL/,
+            /reporterSourceCustody (?:JSONB|JSON|TEXT) NOT NULL/,
         );
         expect(normalized).toMatch(
             /AutomationRunAssignment.*PRIMARY KEY.*runId.*machineId.*REFERENCES AutomationRun.*id/s,

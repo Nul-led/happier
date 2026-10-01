@@ -771,6 +771,65 @@ describe("Saved Secret resource service (SQLite integration)", () => {
         expect(directOnly.accessSources).toEqual([{ kind: "account" }]);
     });
 
+    it("removes Group-granted Saved Secret access when the Account is suspended", async () => {
+        const owner = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const member = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const team = await db.team.create({ data: { name: "Suspension audience" }, select: { id: true } });
+        const ownerMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: owner.id, role: "owner" },
+            select: { id: true },
+        });
+        const memberMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: member.id, role: "member" },
+            select: { id: true },
+        });
+        const group = await db.teamGroup.create({
+            data: { teamId: team.id, name: "Suspension group", nameKey: "suspension-group" },
+            select: { id: true },
+        });
+        await db.teamGroupMembership.createMany({
+            data: [
+                { teamId: team.id, teamGroupId: group.id, teamMembershipId: ownerMembership.id },
+                { teamId: team.id, teamGroupId: group.id, teamMembershipId: memberMembership.id },
+            ],
+        });
+
+        await expect(inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: owner.id,
+            resourceId: "resource_suspended_group_member",
+            displayName: "Suspension token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Suspension token", kind: "token", value: "suspension-value" } },
+            groupGrants: [group.id],
+        }))).resolves.toMatchObject({ ok: true });
+
+        const listRefs = async () => {
+            const [catalog, materials] = await Promise.all([
+                inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id)),
+                inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, member.id)),
+            ]);
+            return {
+                catalog: catalog.map((entry) => ('ref' in entry ? entry.ref : null)),
+                materials: materials.map((entry) => ('ref' in entry.entry ? entry.entry.ref : null)),
+            };
+        };
+
+        expect(await listRefs()).toEqual({
+            catalog: [formatSharedSavedSecretRefV1("resource_suspended_group_member")],
+            materials: [formatSharedSavedSecretRefV1("resource_suspended_group_member")],
+        });
+
+        await db.account.update({ where: { id: member.id }, data: { status: "suspended" } });
+        expect(await listRefs()).toEqual({ catalog: [], materials: [] });
+
+        await db.account.update({ where: { id: member.id }, data: { status: "active" } });
+        expect(await listRefs()).toEqual({
+            catalog: [formatSharedSavedSecretRefV1("resource_suspended_group_member")],
+            materials: [formatSharedSavedSecretRefV1("resource_suspended_group_member")],
+        });
+    });
+
     it("replaces explicit grants under one owner-only resource revision CAS", async () => {
         const [owner, firstRecipient, secondRecipient] = await Promise.all([
             db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } }),

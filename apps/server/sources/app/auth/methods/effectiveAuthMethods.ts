@@ -19,6 +19,7 @@ import type { AuthProviderFeatures } from "@/app/auth/providers/types";
 import { resolveKeylessAutoProvisionEligibility } from "@/app/auth/keyless/resolveKeylessAutoProvisionEligibility";
 import { resolveKeylessAccountsEnabled } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import { applyHomeAuthenticationPolicyToEnv } from "@/app/home/governance/homeAuthenticationPolicyEnv";
 
 export type EffectiveAuthMethodDecision = Readonly<{
     id: string;
@@ -64,7 +65,7 @@ export function projectProviderDecisionPresentation(
 
 export type EffectiveAuthMethodInputs = Readonly<{
     env: NodeJS.ProcessEnv;
-    /** Persisted Home narrowing. Omitted means the deployment policy is inherited. */
+    /** Persisted Home policy (both directions within the env locks). Omitted means the deployment policy is inherited. */
     homeAuthenticationPolicy?: HomeAuthenticationPolicyReadV1;
     /**
      * Transactional-mail readiness from the composed `AuthEmailDelivery`
@@ -171,8 +172,16 @@ export function isAccountProvisionModePermittedByHomePolicy(
     return !permitted || permitted.includes(mode);
 }
 
-/** Applies the persisted Home document only as a narrowing of a deployment-backed decision. */
-export function narrowAuthMethodDecisionForHomePolicy(
+/**
+ * The narrowing half of the persisted Home policy (plan `2026-09-26-home-owner-console` §3.4).
+ *
+ * The widening half never reaches this function as a special case: a document value for a key the
+ * deployment left unset is already in the env the decision was built from
+ * (`applyHomeAuthenticationPolicyToEnv`), so a method the Home turned on arrives here enabled and an
+ * explicitly set deployment key stays a lock. What remains is subtractive: unlisted methods,
+ * excluded Account modes and a narrower admission.
+ */
+export function applyHomePolicyToAuthMethodDecision(
     decision: EffectiveAuthMethodDecision,
     homePolicy: HomeAuthenticationPolicyReadV1 | undefined,
     admission?: EffectiveAuthMethodInputs["admission"],
@@ -241,7 +250,11 @@ export function narrowAuthMethodDecisionForHomePolicy(
 export function resolveEffectiveAuthMethodDecisions(
     inputs: EffectiveAuthMethodInputs,
 ): readonly EffectiveAuthMethodDecision[] {
-    const { env, emailDeliveryReady } = inputs;
+    const { emailDeliveryReady } = inputs;
+    // Both directions: the document's values for keys the deployment left unset, then the narrowing.
+    const env = inputs.homeAuthenticationPolicy
+        ? applyHomeAuthenticationPolicyToEnv(inputs.env, inputs.homeAuthenticationPolicy)
+        : inputs.env;
     const policy = resolveAuthPolicyFromEnv(env);
     const allowedProvisionModes = resolveAllowedAccountProvisionModes(env);
     const recommendedProvisionMode = resolveRecommendedAccountProvisionMode(env);
@@ -252,7 +265,7 @@ export function resolveEffectiveAuthMethodDecisions(
             policy,
             ...(inputs.admission ? { admission: inputs.admission } : {}),
         });
-        return narrowAuthMethodDecisionForHomePolicy({
+        return applyHomePolicyToAuthMethodDecision({
             id: normalizeId(resolved.id),
             actions: narrowForMailReadiness(
                 resolved.actions as readonly EffectiveAuthMethodAction[],
@@ -275,7 +288,7 @@ export function resolveEffectiveAuthMethodDecisions(
         .map((provider) => {
             const id = normalizeId(provider.id);
             const details = provider.resolveFeatures({ env, policy });
-            return narrowAuthMethodDecisionForHomePolicy({
+            return applyHomePolicyToAuthMethodDecision({
                 id,
                 actions: providerActions({
                     id,

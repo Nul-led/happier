@@ -174,28 +174,51 @@ function slimLegacyProfile(
   });
 }
 
-export type LegacyAiLaunchProfilesMigrationResultV1 = ProviderAccountSettingsMigrationResultV1 | Readonly<{
+export type LegacyProfileAuthoringMemoryV1 = Readonly<{ lastUsedProfile: string | null }>;
+export type LegacyProfileAuthoringMemoryClearV1 = Readonly<{ base: string; proposed: null }>;
+export type LegacyAiLaunchProfilesMigrationResultV1 =
+  | (Extract<ProviderAccountSettingsMigrationResultV1, { ok: true }> & Readonly<{
+      lastUsedProfileClear?: LegacyProfileAuthoringMemoryClearV1;
+    }>)
+  | Extract<ProviderAccountSettingsMigrationResultV1, { ok: false }> | Readonly<{
   ok: false;
   changed: false;
   settings: unknown;
   reason: 'migration_conflict';
 }>;
 
+function withAuthoringMemoryClear(
+  result: Extract<ProviderAccountSettingsMigrationResultV1, { ok: true }>,
+  authoringMemory: LegacyProfileAuthoringMemoryV1,
+): LegacyAiLaunchProfilesMigrationResultV1 {
+  const sourceId = authoringMemory.lastUsedProfile;
+  if (sourceId === null || (Array.isArray(result.settings.profiles)
+    && result.settings.profiles.some((profile) => isRecord(profile) && profile.id === sourceId))) return result;
+  const classified = classifyProviderSettingsSubtreeV1(result.settings);
+  const outcome = result.outcomes.find((entry) => entry.sourceProfileId === sourceId)
+    ?? (classified.kind === 'current'
+      ? classified.settings.migration?.completedSources.find((entry) => entry.sourceProfileId === sourceId) : undefined);
+  if (!outcome || outcome.kind === 'skipped_disabled') return result;
+  return { ...result, lastUsedProfileClear: { base: sourceId, proposed: null } };
+}
+
 export function migrateLegacyAiLaunchProfilesV1(
   raw: unknown,
   context: ProviderAccountSettingsMigrationContextV1,
+  authoringMemory: LegacyProfileAuthoringMemoryV1,
 ): LegacyAiLaunchProfilesMigrationResultV1 {
   if (!isRecord(raw)) return migrateProviderAccountSettingsV1(raw, context);
   if (context.candidates.length === 0
     && context.pendingCustomProfileIds.length === 0
     && (context.pendingConflicts?.length ?? 0) === 0) {
-    return { ok: true, changed: false, settings: raw, outcomes: [] };
+    return withAuthoringMemoryClear({ ok: true, changed: false, settings: raw, outcomes: [] }, authoringMemory);
   }
   if (hasConflictingConnectionCandidates(context.candidates)) {
     return { ok: false, changed: false, settings: raw, reason: 'migration_conflict' };
   }
   const migrated = migrateProviderAccountSettingsV1(raw, context);
-  if (!migrated.ok || !migrated.changed) return migrated;
+  if (!migrated.ok) return migrated;
+  if (!migrated.changed) return withAuthoringMemoryClear(migrated, authoringMemory);
 
   const outcomeBySource = new Map(migrated.outcomes.map((outcome) => [outcome.sourceProfileId, outcome]));
   const candidateBySource = new Map(context.candidates.map((candidate) => [candidate.sourceProfileId, candidate]));
@@ -277,7 +300,6 @@ export function migrateLegacyAiLaunchProfilesV1(
     retainedProfileIds.add(outcome.sourceProfileId);
   }
 
-  const lastUsedProfile = typeof raw.lastUsedProfile === 'string' ? raw.lastUsedProfile : null;
   const favoriteProfiles = Array.isArray(raw.favoriteProfiles)
     ? raw.favoriteProfiles.filter((id): id is string => typeof id === 'string')
     : [];
@@ -352,13 +374,8 @@ export function migrateLegacyAiLaunchProfilesV1(
         }
       : {}),
     ...(favoriteModelSelections.length > 0 ? { favoriteModelSelectionsV1: favoriteModelSelections } : {}),
-    ...(lastUsedProfile !== null
-      && outcomeBySource.has(lastUsedProfile)
-      && dispositionBySource.get(lastUsedProfile) === 'migrate_legacy_state'
-      ? { lastUsedProfile: retainedProfileIds.has(lastUsedProfile) ? lastUsedProfile : null }
-      : {}),
   };
-  return { ...migrated, settings };
+  return withAuthoringMemoryClear({ ...migrated, settings }, authoringMemory);
 }
 
 export const LegacyProfileCredentialStyleV1Schema = z.enum(['bearer', 'x-api-key', 'api-key']);
@@ -437,6 +454,7 @@ function readRawProfileBindings(
 
 export function createLegacyProfileMigrationSourceFingerprintV1(input: Readonly<{
   rawSettings: Readonly<Record<string, unknown>>;
+  authoringMemory: LegacyProfileAuthoringMemoryV1;
   sourceProfileId: string;
   reviewedMapping: LegacyProfileReviewedMappingV1;
 }>): string {
@@ -456,7 +474,7 @@ export function createLegacyProfileMigrationSourceFingerprintV1(input: Readonly<
     rawProfile,
     relevantBindingIds,
     evidence: {
-      lastUsed: input.rawSettings.lastUsedProfile === input.sourceProfileId,
+      lastUsed: input.authoringMemory.lastUsedProfile === input.sourceProfileId,
       favorite: Array.isArray(input.rawSettings.favoriteProfiles) && input.rawSettings.favoriteProfiles.includes(input.sourceProfileId),
       enabled: typeof enabled === 'boolean' ? enabled : null,
     },
@@ -466,6 +484,7 @@ export function createLegacyProfileMigrationSourceFingerprintV1(input: Readonly<
 
 export function confirmLegacyAiLaunchProfileMigrationV1(input: Readonly<{
   rawSettings: Readonly<Record<string, unknown>>;
+  authoringMemory: LegacyProfileAuthoringMemoryV1;
   sourceProfileId: string;
   expectedSourceFingerprint: string;
   reviewedMapping: LegacyProfileReviewedMappingV1;
@@ -512,5 +531,5 @@ export function confirmLegacyAiLaunchProfileMigrationV1(input: Readonly<{
       ],
       movedSecretBindingEnvironmentVariableNames: mapping.credentialMoves.map((move) => move.legacyEnvVarName),
     }],
-  });
+  }, input.authoringMemory);
 }

@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { PLUGIN_WEBHOOK_MAX_RAW_BODY_BYTES_V1 } from "@happier-dev/protocol";
 import { z } from "zod";
 
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import {
     createPluginWebhookProcessAdmissionV1,
     createPluginWebhookRedisAdmissionV1,
@@ -246,7 +246,7 @@ export function registerPluginWebhookIngressRoute(
                 params: z.object({ opaqueRouteId: z.string().regex(ROUTE_ID_PATTERN_V1) }).strict(),
             },
             onRequest: async (request, reply) => {
-                if (!isServerFeatureEnabledForRequest("plugins.webhooks", env)) {
+                if (!await isServerFeatureEnabledForHome("plugins.webhooks", { env, request })) {
                     return publicEmpty(reply, 404);
                 }
                 if (distributedAdmissionRequired && !distributedAdmission) {
@@ -491,8 +491,8 @@ export function registerPluginWebhookIngressRoute(
         scoped.route({
             method: [...UNSUPPORTED_INGRESS_METHODS_V1],
             url: "/v1/plugins/webhooks/:opaqueRouteId",
-            handler: async (_request, reply) => {
-                if (!isServerFeatureEnabledForRequest("plugins.webhooks", env)) {
+            handler: async (request, reply) => {
+                if (!await isServerFeatureEnabledForHome("plugins.webhooks", { env, request })) {
                     return publicEmpty(reply, 404);
                 }
                 reply.header("Allow", "POST");

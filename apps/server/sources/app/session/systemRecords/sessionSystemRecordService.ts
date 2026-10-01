@@ -50,7 +50,7 @@ import {
     SessionBoardLayoutRecordContentV1Schema,
 } from "@happier-dev/protocol/sessions/board";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { resolveEncryptionWriteRejectionCode, type EncryptionPolicyRejectionCode } from "@/app/session/encryptionRejectionCodes";
 import {
     resolveEffectiveSessionAccess,
@@ -856,7 +856,7 @@ async function ensureV1RecordAccess(
         target.owner === "host"
         && target.namespace === "surface"
         && target.operation === "read"
-        && !isServerFeatureEnabledForRequest("sessions.board", process.env)
+        && !await isServerFeatureEnabledForHome("sessions.board")
     ) {
         return { ok: false, code: "plugin_session_record_feature_disabled" };
     }
@@ -1578,17 +1578,23 @@ interface SessionBoardRecordScopeInTx {
     remove(localId: string, expectedRevision: SessionSystemRecordRevision): ReturnType<typeof deleteSessionSystemRecordV1InTx>;
 }
 
+type SessionBoardRecordScopeResult =
+    | (Readonly<{ ok: true }> & SessionBoardRecordScopeInTx)
+    | Readonly<{ ok: false; code: "plugin_session_record_feature_disabled" | "plugin_session_record_forbidden" }>;
+
 /**
  * Mint the typed Board's exact-Session record scope inside its transaction.
  * Generic CRUD never receives this scope: its catalog policy remains unavailable.
  * Both callers use the same conditional row operations above.
  */
-export async function resolveSessionBoardRecordsInTx(tx: Tx, params: Readonly<{ actorUserId: string; sessionId: string; authentication: SessionAccessAuthentication }>): Promise<SessionBoardRecordScopeInTx | null> {
-    if (!isSessionSystemRecordsProtocolV1Active() || !isServerFeatureEnabledForRequest("sessions.board", process.env)) return null;
+export async function resolveSessionBoardRecordsInTx(tx: Tx, params: Readonly<{ actorUserId: string; sessionId: string; authentication: SessionAccessAuthentication }>): Promise<SessionBoardRecordScopeResult> {
+    if (!isSessionSystemRecordsProtocolV1Active() || !await isServerFeatureEnabledForHome("sessions.board", { tx })) {
+        return { ok: false, code: "plugin_session_record_feature_disabled" };
+    }
     const authority = await resolveEffectiveSessionAccess(tx, { accountId: params.actorUserId, sessionId: params.sessionId, authentication: params.authentication });
-    if (!authority?.capabilities.editSessionRecords) return null;
+    if (!authority?.capabilities.editSessionRecords) return { ok: false, code: "plugin_session_record_forbidden" };
     const session = await tx.session.findUnique({ where: { id: params.sessionId }, select: { accountId: true, encryptionMode: true } });
-    if (!session) return null;
+    if (!session) return { ok: false, code: "plugin_session_record_forbidden" };
     const access = { accountId: session.accountId, currentAccess: "edit" as const };
     const matchesPersistedMode = (content: SessionSystemRecordContent) =>
         (session.encryptionMode === "plain") === (content.t === "plain");
@@ -1596,6 +1602,7 @@ export async function resolveSessionBoardRecordsInTx(tx: Tx, params: Readonly<{ 
         owner: "host", namespace: "surface", kind: localId === null ? "layout.v1" : "item.v1", localId: localId ?? "layout",
     });
     return {
+        ok: true,
         validateContent(localId: string | null, content: SessionSystemRecordContent): "invalid" | "storage_mode_mismatch" | null {
             const boardContentSchema = localId === null
                 ? SessionBoardLayoutRecordContentV1Schema

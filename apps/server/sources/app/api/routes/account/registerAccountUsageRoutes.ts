@@ -181,7 +181,7 @@ export function registerAccountUsageRoutes(app: Fastify): void {
 
     app.post(accountUsageRoutePaths.analyticsEventsIngest, {
         config: {
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",

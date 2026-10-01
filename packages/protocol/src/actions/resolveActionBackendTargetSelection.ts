@@ -7,7 +7,7 @@ import {
   readBackendTargetRefV2,
   type BackendTargetRefV2,
 } from '../backends/targets/backendTargetRefV2.js';
-import { buildBackendTargetKey, type BackendTargetRefV1 } from '../backends/targets/backendTargetRef.js';
+import { BackendTargetKeySchema, buildBackendTargetKey, type BackendTargetRefV1 } from '../backends/targets/backendTargetRef.js';
 import {
   hasLegacyCustomAcpConcreteBackendId,
   isLegacyConfiguredAcpCompatible,
@@ -43,6 +43,22 @@ export type ActionBackendTargetSelectionResult =
       path: 'agentId' | 'backendTargetKey' | 'backendTarget' | 'runtimeDescriptorV1';
     }>;
 
+/** Canonical option-value translation shared by Action dispatch and Workflow admission. */
+export function resolveExecutionBackendTargetSelectionForValue(value: string): ActionBackendTargetSelection | null {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) return null;
+  const isExplicitTargetKey = BackendTargetKeySchema.safeParse(normalizedValue).success
+    || BackendTargetKeyV2Schema.safeParse(normalizedValue).success;
+  const candidateKey = isExplicitTargetKey ? normalizedValue
+    : normalizedValue.includes('/')
+      ? buildBackendTargetKeyV2({ kind: 'backend', backendId: normalizedValue, sourceKind: 'built_in' })
+      : buildBackendTargetKey({ kind: 'builtInAgent', agentId: normalizedValue });
+  const resolved = resolveActionBackendTargetSelection({
+    backendTargetKey: candidateKey, ...(!isExplicitTargetKey ? { agentId: normalizedValue } : {}),
+  });
+  return resolved.ok ? resolved.selection : null;
+}
+
 function normalizeValue(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -65,10 +81,20 @@ function doBackendTargetCarriersAgree(params: Readonly<{
   keyedTarget: BackendTargetRefV2;
   structuredTarget: BackendTargetRefV2;
 }>): boolean {
-  if (!params.backendTargetKey.startsWith('backend:')) {
+  if (!BackendTargetKeyV2Schema.safeParse(params.backendTargetKey).success) {
     return buildBackendTargetKey(convertBackendTargetRefV2ToV1(params.structuredTarget)) === params.backendTargetKey;
   }
   return buildBackendTargetKeyV2(params.keyedTarget) === buildBackendTargetKeyV2(params.structuredTarget);
+}
+
+function isRoutableAgentTargetKey(key: string | null): boolean {
+  if (!key) return false;
+  try {
+    readBackendTargetRefV2(key);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveActionBackendTargetSelection(
@@ -108,7 +134,9 @@ export function resolveActionBackendTargetSelection(
   const parsedTarget = parsedBackendTargetKey?.success
     ? parseBackendTargetKeyV2(parsedBackendTargetKey.data)
     : null;
-  const qualifiedAgentIdentity = parsedTarget?.kind === 'agent'
+  // A bundled Agent's canonical key is also `agent:`-qualified, but it routes by
+  // its bundled id; only an Agent the protocol cannot route needs a carrier.
+  const qualifiedAgentIdentity = parsedTarget?.kind === 'agent' && !isRoutableAgentTargetKey(backendTargetKey)
     ? parsedTarget.identity
     : null;
   if (qualifiedAgentIdentity) {

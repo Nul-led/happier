@@ -1,6 +1,7 @@
 import { prismaRuntime as Prisma } from "@/storage/prisma";
 import { getDbProviderFromEnv } from "@/storage/prisma";
 import type { Tx } from "@/storage/inTx";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 import { filterAccountsWithCurrentSessionReadAccessInTx } from "./access";
 
@@ -17,10 +18,12 @@ import { filterAccountsWithCurrentSessionReadAccessInTx } from "./access";
 export async function initializeSessionDiscussionCursorsOnTrackingEntryInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     accountId: string;
+    authentication?: SessionAccessAuthentication;
 }>): Promise<number> {
     return await initializeSessionDiscussionCursorsOnTrackingEntriesInTx(tx, {
         sessionId: params.sessionId,
         accountIds: [params.accountId],
+        authentication: params.authentication,
     });
 }
 
@@ -40,12 +43,14 @@ export async function initializeSessionDiscussionCursorsOnTrackingEntryInTx(tx: 
 export async function initializeSessionDiscussionCursorsOnTrackingEntriesInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     accountIds: readonly string[];
+    authentication?: SessionAccessAuthentication;
 }>): Promise<number> {
     const unique = [...new Set(params.accountIds)].filter(accountId => typeof accountId === 'string' && accountId.length > 0);
     if (unique.length === 0) return 0;
     const readable = await filterAccountsWithCurrentSessionReadAccessInTx(tx, {
         sessionId: params.sessionId,
         accountIds: unique,
+        authentication: params.authentication,
     });
     const eligible = unique.filter(accountId => readable.has(accountId));
     if (eligible.length === 0) return 0;

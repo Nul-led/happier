@@ -24,6 +24,8 @@ function createTestApp() {
             return reply.code(401).send({ error: "Unauthorized" });
         }
         request.userId = userId;
+        request.authTokenKind = "account";
+        request.authAuthority = "present_user";
     });
 
     return trackApp(typed);

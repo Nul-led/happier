@@ -23,6 +23,12 @@ datasource db {
 //
 
 model Account {
+    artifactAccountGrants ArtifactAccountGrant[] @relation("ArtifactAccountGrantRecipient")
+    createdArtifactAccountGrants ArtifactAccountGrant[] @relation("ArtifactAccountGrantCreator")
+    createdArtifactTeamGrants ArtifactTeamGrant[] @relation("ArtifactTeamGrantCreator")
+    createdArtifactGroupGrants ArtifactGroupGrant[] @relation("ArtifactGroupGrantCreator")
+    artifactKeyEnvelopes ArtifactKeyEnvelope[] @relation("ArtifactKeyEnvelopeRecipient")
+    workflowRunDataKeyEnvelopes WorkflowRunDataKeyEnvelope[]
     teamCredentialActivityEvents TeamCredentialActivityEvent[]
     custodiedTeamCredentialResources TeamCredentialResource[]
     ownedSavedSecretResources SavedSecretResource[] @relation("SavedSecretResourceOwner")
@@ -52,6 +58,7 @@ model Account {
     settingsVersion Int         @default(0)
     remoteAlertPolicy Json?
     tokenEpoch      Int         @default(0)
+    terminalPresentUserPolicy String @default("allowed")
     encryptionMode  String      @default("e2ee")
     encryptionModeUpdatedAt DateTime @default(now())
     /// Server-readable Automation operational policy; never stored in private Account settings.
@@ -137,7 +144,7 @@ model Account {
     SessionSystemRecord    SessionSystemRecord[]
     SessionSubagentCustody SessionSubagentCustody[]
     SessionSubagentCustodyReceipt SessionSubagentCustodyReceipt[]
-    SessionSubagentCustodyRetiredGeneration SessionSubagentCustodyRetiredGeneration[]
+    SessionSubagentCustodyRetiredSource SessionSubagentCustodyRetiredSource[]
     ReviewComments         ReviewComment[]
     ReviewCommentEvents    ReviewCommentEvent[]
     ReviewCommentPublicationCorrelations ReviewCommentPublicationCorrelation[]
@@ -187,11 +194,41 @@ enum TeamCreationPolicy {
 model HomeGovernancePolicy {
     id                    String             @id
     teamCreationPolicy    TeamCreationPolicy @default(managed_only)
+    /// Whether members outside every Team are shown the Teams destination. Members of a Team and Home
+    /// administrators always are.
+    teamsVisibleToMembers Boolean            @default(true)
     authenticationPolicy  Json?
     teamProviderPolicy    Json?
     identityNetworkPolicy Json?
     revision              Int                @default(1)
     updatedAt             DateTime           @updatedAt
+}
+
+/// Home settings: owner-set values of the server configuration registry (one row, `id = 'home'`).
+/// `values` maps registry env names to typed values for `editable: 'home'` entries; secrets live only
+/// in `encryptedSecrets`, a JSON map of env name to a value sealed by the server's at-rest key.
+model HomeSettings {
+    id               String   @id
+    values           Json?
+    encryptedSecrets Bytes?
+    revision         Int      @default(1)
+    updatedAt        DateTime @updatedAt
+}
+
+/// One Home administration event, written in the transaction of the change it records.
+/// `summary` is strict per `action` and never carries a secret value.
+model HomeAdministrationEvent {
+    id             String   @id @default(cuid())
+    at             DateTime @default(now())
+    actorKind      String
+    actorAccountId String?
+    action         String
+    targetKind     String?
+    targetId       String?
+    summary        Json
+
+    @@index([at, id])
+    @@index([targetId, at])
 }
 
 enum TeamRole {
@@ -230,6 +267,7 @@ enum TeamAdmissionMode {
 }
 
 model Team {
+    artifactGrants ArtifactTeamGrant[]
     credentialActivityEvents TeamCredentialActivityEvent[]
     credentialResources TeamCredentialResource[]
     id                          String                    @id @default(cuid())
@@ -546,6 +584,7 @@ model TeamDirectoryGroupMember {
 }
 
 model TeamGroup {
+    artifactGrants ArtifactGroupGrant[]
     credentialGrants TeamCredentialGroupGrant[]
     id               String   @id @default(cuid())
     teamId           String
@@ -620,6 +659,8 @@ model TeamCredentialExternalApiKey {
     label            String
     displayPrefix    String
     secretDigest     String   @unique
+    authenticationEvidence Json?
+    currentBrokerOperationJson String?
     createdAt        DateTime @default(now())
     lastUsedAt       DateTime?
     expiresAt        DateTime?
@@ -936,6 +977,12 @@ model AccountApiToken {
     secretDigest  String
     encryptionAccess Json?
     authenticationEvidence Json?
+    accessGrant   Json?
+    embedConfig   Json?
+    parentTokenId String?
+    parent        AccountApiToken? @relation("ApiTokenChildren", fields: [parentTokenId], references: [id], onDelete: Cascade)
+    children      AccountApiToken[] @relation("ApiTokenChildren")
+    createdSessions Session[] @relation("ApiTokenCreatedSessions")
     label         String
     createdAt     DateTime @default(now())
     lastUsedAt    DateTime?
@@ -944,6 +991,7 @@ model AccountApiToken {
     Account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
     @@index([accountId, createdAt])
+    @@index([parentTokenId])
 }
 
 /// The Account-owned preparation record for a bounded encryption transition. It is not a
@@ -1359,10 +1407,17 @@ model AccountLiveActivityTarget {
 //
 
 model Session {
+    /// Immutable authenticated-host creation facts; not access or fork lineage.
+    originKind        String              @default("none")
+    originSessionId   String?
+    originRunId       String?
+    workDepth         Int                 @default(0)
     teamCredentialBindings SessionTeamCredentialBinding[]
     id                String              @id @default(cuid())
     tag               String
     accountId         String
+    createdByApiTokenId String?
+    createdByApiToken AccountApiToken? @relation("ApiTokenCreatedSessions", fields: [createdByApiTokenId], references: [id], onDelete: SetNull)
     account           Account             @relation(fields: [accountId], references: [id])
     accountFollows    AccountSessionFollow[]
     /// Explicit authored Team context only; access remains grant-owned.
@@ -1451,8 +1506,11 @@ model Session {
     discussions       SessionDiscussion[]
     followSourceEdges      SessionFollowEdge[] @relation("SessionFollowSource")
     followDestinationEdges SessionFollowEdge[] @relation("SessionFollowDestination")
+    reportsTo              SessionReportsTo? @relation("SessionReportChild")
+    reports                SessionReportsTo[] @relation("SessionReportLead")
 
     @@unique([accountId, tag])
+    @@index([createdByApiTokenId])
     @@index([accountId, updatedAt])
     @@index([accountId, meaningfulActivityAt, id])
     @@index([accountId, needsAttention, meaningfulActivityAt, id])
@@ -1475,6 +1533,10 @@ model SessionDataKeyEnvelope {
 }
 
 model SessionTurn {
+    /// Host-stamped admission facts, preserved on later mutations and rejoin.
+    initiator               String   @default("user")
+    workDepth               Int      @default(0)
+    workflowInvocationJson  String?
     id                      String   @id @default(cuid())
     sessionId               String
     session                 Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1731,7 +1793,8 @@ model SessionSubagentCustody {
     sessionId   String
     pluginId    String
     contributionId String
-    immutableGenerationId String
+    sourceCustodyKind String
+    sourceCustodyId String
     custodyKey  String
     subagentId  String
     subagentKey String
@@ -1748,7 +1811,7 @@ model SessionSubagentCustody {
 
     @@unique([accountId, sessionId, custodyKey, subagentKey], map: "SubagentCustody_scope_subagent_key")
     @@index([accountId, sessionId, custodyKey, subagentKey], map: "SessionSubagentCustody_scope_list_idx")
-    @@index([accountId, pluginId, immutableGenerationId], map: "SubagentCustody_generation_retirement_idx")
+    @@index([accountId, pluginId, sourceCustodyKind, sourceCustodyId], map: "SubagentCustody_source_retirement_idx")
     @@index([sessionId])
 }
 
@@ -1758,7 +1821,8 @@ model SessionSubagentCustodyReceipt {
     sessionId        String
     pluginId         String
     contributionId   String
-    immutableGenerationId String
+    sourceCustodyKind String
+    sourceCustodyId String
     custodyKey       String
     operationId      String
     requestDigest    String
@@ -1775,23 +1839,24 @@ model SessionSubagentCustodyReceipt {
 
     @@unique([accountId, sessionId, custodyKey, operationId], map: "SubagentCustodyReceipt_scope_operation_key")
     @@index([accountId, sessionId, custodyKey, expiresAt], map: "SessionSubagentCustodyReceipt_scope_expiry_idx")
-    @@index([accountId, pluginId, immutableGenerationId], map: "SubagentCustodyReceipt_generation_retirement_idx")
+    @@index([accountId, pluginId, sourceCustodyKind, sourceCustodyId], map: "SubagentCustodyReceipt_source_retirement_idx")
     @@index([expiresAt])
     @@index([sessionId])
 }
 
-model SessionSubagentCustodyRetiredGeneration {
+model SessionSubagentCustodyRetiredSource {
     id                    String   @id @default(cuid())
     accountId             String
     pluginId              String
-    immutableGenerationId String
+    sourceCustodyKind     String
+    sourceCustodyId       String
     capacitySlot          Int
     retiredAt             DateTime @default(now())
 
     account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-    @@unique([accountId, pluginId, immutableGenerationId], map: "SubagentCustodyRetiredGeneration_key")
-    @@unique([accountId, capacitySlot], map: "SubagentCustodyRetiredGeneration_capacity_slot_key")
+    @@unique([accountId, pluginId, sourceCustodyKind, sourceCustodyId], map: "SubagentCustodyRetiredSource_key")
+    @@unique([accountId, capacitySlot], map: "SubagentCustodyRetiredSource_capacity_slot_key")
 }
 
 /// One human discussion attached to a Session. Its readers are derived live
@@ -1935,6 +2000,23 @@ model SessionFollowEdge {
 
     @@id([destinationSessionId, sourceSessionId])
     @@index([sourceSessionId])
+}
+
+/// Mutable single-parent work tree. Membership grants no Session authority.
+model SessionReportsTo {
+    sessionId                  String @id
+    leadSessionId              String
+    attachedAt                 DateTime @default(now())
+    deliveredTranscriptSeq     Int @default(0)
+    deliveredReadyEventSeq     Int @default(0)
+    deliveredAgentStateVersion Int @default(0)
+    deliveredTurnId            String?
+    deliveredTurnStatus        SessionFollowDeliveredTurnStatus?
+
+    session     Session @relation("SessionReportChild", fields: [sessionId], references: [id], onDelete: Cascade)
+    leadSession Session @relation("SessionReportLead", fields: [leadSessionId], references: [id], onDelete: Cascade)
+
+    @@index([leadSessionId])
 }
 
 model SessionMessage {
@@ -2308,18 +2390,12 @@ enum AutomationRunState {
     pause_requested
     paused
     interrupted
+    waiting_for_review
 }
 
 enum WorkflowRunCustodyState {
     pending
     settled
-}
-
-enum WorkflowRunResultDeliveryState {
-    pending
-    accepted
-    unavailable
-    workflow_outcome_unresolved
 }
 
 enum WorkflowInvocationLifecycle {
@@ -2328,6 +2404,7 @@ enum WorkflowInvocationLifecycle {
     admitting
     running
     waiting_for_approval
+    waiting_for_review
     needs_attention
     completed
     failed
@@ -2349,6 +2426,8 @@ enum AutomationSessionLifecycleEvent {
     parentTurnFailed
     parentTurnCancelled
     userActionRequired
+    sessionStarted
+    sessionArchived
 }
 
 enum AutomationSessionLifecyclePolicyKind {
@@ -2411,6 +2490,8 @@ enum AutomationEventSourceCatalogStatusState {
 model Automation {
     id               String                 @id @default(cuid())
     accountId        String
+    workflowDefinitionId String?
+    scopeSessionId   String?
     account          Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
     name             String
     description      String?
@@ -2427,6 +2508,8 @@ model Automation {
     runs             AutomationRun[]
 
     @@index([accountId, enabled, updatedAt])
+    @@index([accountId, workflowDefinitionId], map: "Automation_account_workflow_idx")
+    @@index([accountId, scopeSessionId], map: "Automation_account_scope_idx")
     @@index([accountId, deletedAt, updatedAt, id], map: "Automation_account_deleted_updated_id_idx")
 }
 
@@ -2496,9 +2579,13 @@ model AutomationRun {
     originSessionId            String?
     originSession              Session? @relation("WorkflowRunOriginSession", fields: [originSessionId], references: [id], onDelete: SetNull)
     workflowAcceptedSnapshotEnvelope String?
+    sourceArtifactId           String?
+    visibleTeamId              String?
     workflowCheckpointEnvelope String?
     workflowCustodyState       WorkflowRunCustodyState?
-    workflowResultDeliveryState WorkflowRunResultDeliveryState?
+    /// Null means no pending boundary Resume; a successful claim consumes the revision.
+    workflowResumeRequestedRevision Int?
+    originDeliveryAckRevision Int?
     accountId          String
     account            Account            @relation(fields: [accountId], references: [id], onDelete: Cascade)
     state              AutomationRunState @default(queued)
@@ -2561,6 +2648,7 @@ model AutomationRun {
     events             AutomationRunEvent[]
     assignments        AutomationRunAssignment[]
     workflowInvocations        WorkflowRunInvocation[]
+    workflowDataKeyEnvelopes    WorkflowRunDataKeyEnvelope[]
 
     @@index([accountId, state, dueAt])
     @@index([accountId, causeKind, state])
@@ -2579,7 +2667,21 @@ model AutomationRun {
     @@unique([automationId, legacyManualIdempotencyKey], map: "AutomationRun_automationId_idempotencyKey_key")
     @@index([triggerId, state])
     @@index([accountId, originKind, createdAt, id], map: "AutomationRun_account_origin_created_id_idx")
+    @@index([accountId, createdAt, id], map: "AutomationRun_account_created_id_idx")
+    @@index([sourceArtifactId, createdAt, id], map: "AutomationRun_source_created_id_idx")
     @@index([originSessionId, createdAt, id], map: "AutomationRun_originSession_created_id_idx")
+}
+
+model WorkflowRunDataKeyEnvelope {
+    runId String
+    run AutomationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+    recipientAccountId String
+    recipient Account @relation(fields: [recipientAccountId], references: [id], onDelete: Cascade)
+    encryptedDataKey Bytes
+    recipientContentPublicKeyFingerprint String
+
+    @@id([runId, recipientAccountId])
+    @@index([recipientAccountId])
 }
 
 model WorkflowRunInvocation {
@@ -2590,6 +2692,7 @@ model WorkflowRunInvocation {
     parentRecordId  String?
     memberOrdinal   BigInt
     attempt         BigInt   @default(0)
+    contentRevision BigInt   @default(0)
     lifecycle       WorkflowInvocationLifecycle @default(pending)
     contentEnvelope String
     createdAt       DateTime @default(now())
@@ -2655,7 +2758,7 @@ model AutomationEventSourceStatus {
     reporterMachineId               String
     reporterMachineInstallationId   String
     reporterMaterializationId       String
-    reporterImmutableGenerationId   String
+    reporterSourceCustody           Json
     state                           AutomationEventSourceStatusState
     code                            String?
     lastObservedAt                  DateTime?
@@ -2676,7 +2779,7 @@ model AutomationEventSourceCatalogStatus {
     reporterMachineId               String
     reporterMachineInstallationId   String
     reporterMaterializationId       String
-    reporterImmutableGenerationId   String
+    reporterSourceCustody           Json
     scopeKey                        String
     observedRevision                BigInt
     adoptedRevision                 BigInt?
@@ -2928,6 +3031,10 @@ model ConnectedServiceAuthGroupMember {
 //
 
 model Artifact {
+    accountGrants ArtifactAccountGrant[]
+    teamGrants ArtifactTeamGrant[]
+    groupGrants ArtifactGroupGrant[]
+    keyEnvelopes ArtifactKeyEnvelope[]
     id                String   @id // UUID provided by client
     accountId         String
     account           Account  @relation(fields: [accountId], references: [id])
@@ -2947,23 +3054,87 @@ model Artifact {
     @@index([accountId, updatedAt])
 }
 
+model ArtifactAccountGrant {
+    artifactId String
+    accountId String
+    accessLevel ShareAccessLevel
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+    account Account @relation("ArtifactAccountGrantRecipient", fields: [accountId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("ArtifactAccountGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([artifactId, accountId])
+    @@index([accountId, artifactId])
+}
+
+model ArtifactTeamGrant {
+    artifactId String
+    teamId String
+    accessLevel ShareAccessLevel
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+    team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("ArtifactTeamGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([artifactId, teamId])
+    @@index([teamId, artifactId])
+}
+
+model ArtifactGroupGrant {
+    artifactId String
+    teamGroupId String
+    accessLevel ShareAccessLevel
+    createdByAccountId String
+    createdAt DateTime @default(now())
+
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+    teamGroup TeamGroup @relation(fields: [teamGroupId], references: [id], onDelete: Cascade)
+    createdBy Account @relation("ArtifactGroupGrantCreator", fields: [createdByAccountId], references: [id], onDelete: Cascade)
+
+    @@id([artifactId, teamGroupId])
+    @@index([teamGroupId, artifactId])
+}
+
+model ArtifactKeyEnvelope {
+    artifactId String
+    recipientAccountId String
+    encryptedDataKey Bytes
+    recipientContentPublicKeyFingerprint String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+    recipient Account @relation("ArtifactKeyEnvelopeRecipient", fields: [recipientAccountId], references: [id], onDelete: Cascade)
+
+    @@id([artifactId, recipientAccountId])
+    @@index([recipientAccountId, artifactId])
+}
+
 //
 // Account plugin availability / Artifact classification
 //
 
 /// Present-user selection and writable collection policy for one plugin on one Account.
+/// A release-less intent (`desiredVersion` null) is claimed by a daemon-selected
+/// (bundled/development) host; `releaseLessDeclaration` then holds its admitted
+/// normalized manifest and digest, and is null whenever a release is selected.
 model AccountPluginIntent {
-    id                  String   @id @default(cuid())
-    accountId           String
-    account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-    pluginId            String
-    desiredVersion      String?
-    enabled             Boolean  @default(false)
-    offlineUiHosting    String   @default("disabled")
-    writableCollections Json
-    revision            BigInt   @default(0)
-    createdAt           DateTime @default(now())
-    updatedAt           DateTime @updatedAt
+    id                     String   @id @default(cuid())
+    accountId              String
+    account                Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+    pluginId               String
+    desiredVersion         String?
+    enabled                Boolean  @default(false)
+    offlineUiHosting       String   @default("disabled")
+    writableCollections    Json
+    releaseLessDeclaration Json?
+    revision               BigInt   @default(0)
+    createdAt              DateTime @default(now())
+    updatedAt              DateTime @updatedAt
 
     @@unique([accountId, pluginId])
 }
@@ -3341,7 +3512,6 @@ model PluginCollectionContract {
     candidatePreparationSourceStages PluginCollectionCandidatePreparationStage[] @relation("PluginCollectionCandidatePreparationSourceContract")
     candidatePreparationTargetStages PluginCollectionCandidatePreparationStage[] @relation("PluginCollectionCandidatePreparationTargetContract")
 
-    @@unique([pluginId, collectionId, schemaVersion], map: "PluginCollectionContract_identity_schema_key")
     @@unique([pluginId, collectionId, contractDigest], map: "PluginCollectionContract_identity_digest_key")
     @@index([pluginId, collectionId], map: "PluginCollectionContract_identity_idx")
 }
@@ -3526,12 +3696,18 @@ model PluginCollectionRelation {
 model ReviewComment {
     id                   String   @id
     accountId            String   @map("account_id")
-    projectId            String   @map("project_id")
+    projectId            String?  @map("project_id")
+    workspaceJson        String?  @map("workspace_json")
     workspaceId          String?  @map("workspace_id")
     sessionId            String?  @map("session_id")
     runId                String?  @map("run_id")
     engineId             String?  @map("engine_id")
     findingId            String?  @map("finding_id")
+    findingIdentity      String?  @map("finding_identity")
+    findingSeverity      String?  @map("finding_severity")
+    reviewedFingerprint  String?  @map("reviewed_fingerprint")
+    reviewTriageStatus    String?  @map("review_triage_status")
+    findingScopeKey      String?  @map("finding_scope_key")
     createClientMutationId String? @map("create_client_mutation_id")
     createRequestFingerprint String? @map("create_request_fingerprint")
     threadId             String   @map("thread_id")
@@ -3567,6 +3743,7 @@ model ReviewComment {
     @@index([projectId, engineId, updatedAt])
     @@index([projectId, anchorFilePath, updatedAt])
     @@unique([accountId, createClientMutationId], map: "review_comments_account_create_mutation_key")
+    @@unique([accountId, findingScopeKey], map: "review_comments_account_finding_scope_key")
     @@map("review_comments")
 }
 
@@ -3574,7 +3751,8 @@ model ReviewCommentEvent {
     eventId           String   @id @map("event_id")
     commentId         String   @map("comment_id")
     accountId         String   @map("account_id")
-    projectId         String   @map("project_id")
+    projectId         String?  @map("project_id")
+    workspaceJson     String?  @map("workspace_json")
     eventKind         String   @map("event_kind")
     eventEnvelopeJson String   @map("event_envelope_json")
     bulkActionId      String?  @map("bulk_action_id")

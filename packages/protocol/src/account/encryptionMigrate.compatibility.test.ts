@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  AccountEncryptionMigratePredecessorRequestSchema,
   AccountEncryptionMigrateRequestBindingDigestV1Schema,
   AccountEncryptionMigrateRequestSchema,
   createAccountEncryptionMigrateRequestBindingDigestV1,
 } from './encryptionMigrate.js';
 
 describe('account/encryptionMigrate compatibility', () => {
-  it('keeps the immutable predecessor wire admissible without treating it as a current request', () => {
+  it('rejects the predecessor transport request at the current contract', () => {
     // Exact released/prospective producer shape:
     // cli-v0.2.1@b1d15a8a9c241737d1ca9b167459901e6259173a
     // cli-v0.2.2-preview.1775586717.26498@4913c1e533c872a0712ba1c25b3104fd470aacc2
@@ -20,12 +19,6 @@ describe('account/encryptionMigrate compatibility', () => {
       connectedServices: { action: 'assert_empty' },
       automations: { action: 'assert_empty' },
     } as const;
-
-    expect(
-      AccountEncryptionMigratePredecessorRequestSchema.safeParse(
-        predecessorRequest,
-      ).success,
-    ).toBe(true);
     expect(
       AccountEncryptionMigrateRequestSchema.safeParse(predecessorRequest)
         .success,
@@ -40,7 +33,7 @@ describe('account/encryptionMigrate compatibility', () => {
     ).toThrow();
   });
 
-  it('keeps the required Session inventory on the current wire and rejects it at the old strict reader', () => {
+  it('binds the required inventory on the current wire', () => {
     const currentRequest = {
       toMode: 'plain',
       expectedAccountVersion: 7,
@@ -63,11 +56,6 @@ describe('account/encryptionMigrate compatibility', () => {
       AccountEncryptionMigrateRequestSchema.safeParse(currentRequest)
         .success,
     ).toBe(true);
-    expect(
-      AccountEncryptionMigratePredecessorRequestSchema.safeParse(
-        currentRequest,
-      ).success,
-    ).toBe(false);
 
     const binding = {
       accountId: 'account-compatibility-vector',

@@ -74,7 +74,6 @@ export function resolvePeerMediationFeature(env: NodeJS.ProcessEnv): FeaturesPay
                     ...(featureConfig.grantSigningKeys.length > 0
                         ? {
                             grantSigningKeys: featureConfig.grantSigningKeys,
-                            directRouteGrantProofMintVersions: [2],
                             tcpTunnelRelayAuthorizationMintVersions: [2],
                         }
                         : {}),

@@ -1,40 +1,16 @@
-import { parseBooleanEnv, parseIntEnv } from '../../../config/env';
+import { parseBooleanEnv } from '../../../config/env';
 import {
-  DEFAULT_MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES,
-  DEFAULT_LOCAL_SERVICE_PREVIEW_TOKEN_TTL_MS,
-  DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
-  DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_CONCURRENT_SUBSTREAMS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAMED_MESSAGE_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_SUPPORTED_ENCODINGS,
   MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES_ENV_KEY,
-  MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
-  MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET_HARD_MAX,
-  MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
-  MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX,
-  MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAMS_HARD_MAX,
   MachineLiveStreamRelayCapsV1Schema,
   LocalServicePublicExposureModeV1Schema,
-  PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
-  PLUGIN_COLLECTION_LIMITS_V1,
   PLUGIN_WEBHOOK_MAX_RAW_BODY_BYTES_V1,
   PluginDataCollectionsCapabilitiesSchema,
+  readServerConfig,
   normalizeMachineTunnelAllowedPorts,
   normalizeMachineTunnelPreferredEncoding,
   normalizeMachineTunnelPositiveInt,
   normalizeMachineTunnelSupportedEncodings,
   normalizeMachineTransferServerRoutedMaxBytes,
-  PET_PACKAGE_LIMITS_V1,
   type MachineLiveStreamRelayCaps,
   type MachineTunnelSubstreamCapabilities,
   type LocalServicePublicExposureModeV1,
@@ -46,6 +22,18 @@ import { resolvePeerMediationGrantSigningConfig } from '@/app/machines/peer/medi
 import { resolveEffectiveWebappBaseUrl } from '../../serverUrls/effectiveServerUrls';
 import { chargePluginWebhookWorkingBytesV1 } from '@/app/plugins/webhooks/admission';
 import { FEATURE_ENV_KEYS, type FeatureEnvKey } from './featureEnvSchema';
+import { FEATURE_READER_DEFAULTS, type FeatureEnvProperty } from './featureReaderDefaults';
+import { FEATURE_CONFIG } from './featureServerConfig';
+
+export { FEATURE_READER_DEFAULTS };
+
+/**
+ * Reads one feature key through the server configuration registry codec, with the default and
+ * bounds `FEATURE_READER_DEFAULTS` declares (the same parse `parseBooleanEnv`/`parseIntEnv` did).
+ */
+function readFeatureConfig<P extends FeatureEnvProperty>(env: NodeJS.ProcessEnv, property: P) {
+  return readServerConfig(env, FEATURE_CONFIG[property]);
+}
 
 export type AutomationsFeatureEnv = Readonly<{
   enabled: boolean;
@@ -138,9 +126,6 @@ export type MachineTunnelFeatureEnv = Readonly<{
   directPeerEnabled: boolean;
   serverRoutedEnabled: boolean;
   allowedPorts: readonly number[];
-  maxIdleMs: number;
-  maxDurationMs: number;
-  serverRoutedMaxBytes: number;
   serverRoutedMaxActiveTunnelsPerSocket: number;
   serverRoutedMaxFrameBytes: number;
   serverRoutedSupportedEncodings: readonly PeerTcpTunnelEncoding[];
@@ -400,12 +385,6 @@ function parseLocalServicePublicExposureModes(raw: string | undefined): LocalSer
   return modes;
 }
 
-function readOptionalPositiveInt(raw: string | undefined): number | undefined {
-  if (typeof raw !== 'string' || !raw.trim()) return undefined;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 function readTrimmedOptional(raw: string | undefined): string | null {
   return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
 }
@@ -421,7 +400,7 @@ function readLocalServicePublicAuditDependency(
   }
   if (
     allowTestDevDependency
-    && parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesPublicPreviewAllowTestAuditSink], false)
+    && readFeatureConfig(env, 'localServicesPublicPreviewAllowTestAuditSink')
   ) {
     return { kind: 'test_dev' };
   }
@@ -434,19 +413,15 @@ function readLocalServicePublicRateLimitDependency(
 ): LocalServicePublicRateLimitDependencyEnv {
   const checker = readTrimmedOptional(env[FEATURE_ENV_KEYS.localServicesPublicPreviewRateLimitChecker])?.toLowerCase() ?? '';
   if (checker === 'fixed_window') {
-    const maxRequests = readOptionalPositiveInt(
-      env[FEATURE_ENV_KEYS.localServicesPublicPreviewRateLimitMaxRequests],
-    );
-    const windowMs = readOptionalPositiveInt(
-      env[FEATURE_ENV_KEYS.localServicesPublicPreviewRateLimitWindowMs],
-    );
+    const maxRequests = readFeatureConfig(env, 'localServicesPublicPreviewRateLimitMaxRequests');
+    const windowMs = readFeatureConfig(env, 'localServicesPublicPreviewRateLimitWindowMs');
     return maxRequests && windowMs
       ? { kind: 'fixed_window', maxRequests, windowMs }
       : { kind: 'none' };
   }
   if (
     allowTestDevDependency
-    && parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesPublicPreviewAllowTestRateLimitChecker], false)
+    && readFeatureConfig(env, 'localServicesPublicPreviewAllowTestRateLimitChecker')
   ) {
     return { kind: 'test_dev' };
   }
@@ -513,97 +488,75 @@ function parseIssuerAllowlist(raw: string | undefined): string[] {
 
 export function readAutomationsFeatureEnv(env: NodeJS.ProcessEnv): AutomationsFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.automationsEnabled], true),
+    enabled: readFeatureConfig(env, 'automationsEnabled'),
   };
 }
 
 export function readWorkflowsFeatureEnv(env: NodeJS.ProcessEnv): WorkflowsFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.workflowsEnabled], true),
+    enabled: readFeatureConfig(env, 'workflowsEnabled'),
   };
 }
 
 export function readBugReportsFeatureEnv(env: NodeJS.ProcessEnv): BugReportsFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.bugReportsEnabled], true),
+    enabled: readFeatureConfig(env, 'bugReportsEnabled'),
     providerUrlRaw:
       typeof env[FEATURE_ENV_KEYS.bugReportsProviderUrl] === 'string'
         ? (env[FEATURE_ENV_KEYS.bugReportsProviderUrl] ?? '').trim()
         : null,
-    defaultIncludeDiagnostics: parseBooleanEnv(env[FEATURE_ENV_KEYS.bugReportsDefaultIncludeDiagnostics], true),
-    maxArtifactBytes: parseIntEnv(env[FEATURE_ENV_KEYS.bugReportsMaxArtifactBytes], 10 * 1024 * 1024, { min: 1024 }),
-    uploadTimeoutMs: parseIntEnv(env[FEATURE_ENV_KEYS.bugReportsUploadTimeoutMs], 120000, { min: 5000 }),
+    defaultIncludeDiagnostics: readFeatureConfig(env, 'bugReportsDefaultIncludeDiagnostics'),
+    maxArtifactBytes: readFeatureConfig(env, 'bugReportsMaxArtifactBytes'),
+    uploadTimeoutMs: readFeatureConfig(env, 'bugReportsUploadTimeoutMs'),
     acceptedArtifactKindsRaw: env[FEATURE_ENV_KEYS.bugReportsAcceptedArtifactKinds],
-    contextWindowMs: parseIntEnv(env[FEATURE_ENV_KEYS.bugReportsContextWindowMs], 30 * 60 * 1000, {
-      min: 1000,
-      max: 24 * 60 * 60 * 1000,
-    }),
+    contextWindowMs: readFeatureConfig(env, 'bugReportsContextWindowMs'),
   };
 }
 
 export function readVoiceFeatureEnv(env: NodeJS.ProcessEnv): VoiceFeatureEnv {
   const isProduction = env.NODE_ENV === 'production';
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.voiceEnabled], true),
+    enabled: readFeatureConfig(env, 'voiceEnabled'),
     requireSubscription: parseBooleanEnv(env[FEATURE_ENV_KEYS.voiceRequireSubscription], isProduction),
   };
 }
 
 export function readConnectedServicesFeatureEnv(env: NodeJS.ProcessEnv): ConnectedServicesFeatureEnv {
   return {
-    quotasEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.connectedServicesQuotasEnabled], true),
-    accountGroupsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.connectedServicesAccountGroupsEnabled], true),
-    accountFallbackEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.connectedServicesAccountFallbackEnabled], true),
+    quotasEnabled: readFeatureConfig(env, 'connectedServicesQuotasEnabled'),
+    accountGroupsEnabled: readFeatureConfig(env, 'connectedServicesAccountGroupsEnabled'),
+    accountFallbackEnabled: readFeatureConfig(env, 'connectedServicesAccountFallbackEnabled'),
   };
 }
 
 export function readUpdatesFeatureEnv(env: NodeJS.ProcessEnv): UpdatesFeatureEnv {
   return {
-    otaEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.updatesOtaEnabled], true),
+    otaEnabled: readFeatureConfig(env, 'updatesOtaEnabled'),
   };
 }
 
 export function readAttachmentsUploadsFeatureEnv(env: NodeJS.ProcessEnv): AttachmentsUploadsFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.attachmentsUploadsEnabled], true),
+    enabled: readFeatureConfig(env, 'attachmentsUploadsEnabled'),
   };
 }
 
 export function readPetsFeatureEnv(env: NodeJS.ProcessEnv): PetsFeatureEnv {
   return {
-    companionEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.petsCompanionEnabled], true),
-    syncEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.petsSyncEnabled], false),
-    maxManifestBytes: parseIntEnv(env[FEATURE_ENV_KEYS.petsSyncMaxManifestBytes], PET_PACKAGE_LIMITS_V1.maxManifestBytes, { min: 1 }),
-    maxCanonicalSpritesheetBytes: parseIntEnv(
-      env[FEATURE_ENV_KEYS.petsSyncMaxCanonicalSpritesheetBytes],
-      PET_PACKAGE_LIMITS_V1.maxCanonicalSpritesheetBytes,
-      { min: 1 },
-    ),
-    maxCanonicalPackageBytes: parseIntEnv(
-      env[FEATURE_ENV_KEYS.petsSyncMaxCanonicalPackageBytes],
-      PET_PACKAGE_LIMITS_V1.maxCanonicalPackageBytes,
-      { min: 1 },
-    ),
-    maxImportedPetsPerAccount: parseIntEnv(
-      env[FEATURE_ENV_KEYS.petsSyncMaxImportedPetsPerAccount],
-      PET_PACKAGE_LIMITS_V1.maxImportedPetsPerAccount,
-      { min: 1 },
-    ),
-    maxImportedPetBytesPerAccount: parseIntEnv(
-      env[FEATURE_ENV_KEYS.petsSyncMaxImportedPetBytesPerAccount],
-      PET_PACKAGE_LIMITS_V1.maxImportedPetBytesPerAccount,
-      { min: 1 },
-    ),
-    encryptedCustomPetSyncPolicy: "disabled",
+    companionEnabled: readFeatureConfig(env, 'petsCompanionEnabled'),
+    syncEnabled: readFeatureConfig(env, 'petsSyncEnabled'),
+    maxManifestBytes: readFeatureConfig(env, 'petsSyncMaxManifestBytes'),
+    maxCanonicalSpritesheetBytes: readFeatureConfig(env, 'petsSyncMaxCanonicalSpritesheetBytes'),
+    maxCanonicalPackageBytes: readFeatureConfig(env, 'petsSyncMaxCanonicalPackageBytes'),
+    maxImportedPetsPerAccount: readFeatureConfig(env, 'petsSyncMaxImportedPetsPerAccount'),
+    maxImportedPetBytesPerAccount: readFeatureConfig(env, 'petsSyncMaxImportedPetBytesPerAccount'),
+    encryptedCustomPetSyncPolicy: FEATURE_READER_DEFAULTS.petsSyncEncryptedCustomPetSyncPolicy.default,
   };
 }
 
 export function readPeerMediationFeatureEnv(env: NodeJS.ProcessEnv): PeerMediationFeatureEnv {
   // Fail closed: an absent or malformed observability variable resolves to disabled.
-  const observabilityEnabled = parseBooleanEnv(
-    env[FEATURE_ENV_KEYS.machinesPeerMediationObservabilityEnabled],
-    false,
-  );
+  const observabilityEnabled = readFeatureConfig(env, 'machinesPeerMediationObservabilityEnabled');
   const signing = resolvePeerMediationGrantSigningConfig(env);
   if (!signing.ok) {
     return { grantSigningKeys: [], substrateEnabled: false, observabilityEnabled };
@@ -618,60 +571,57 @@ export function readPeerMediationFeatureEnv(env: NodeJS.ProcessEnv): PeerMediati
 
 export function readSessionHandoffFeatureEnv(env: NodeJS.ProcessEnv): SessionHandoffFeatureEnv {
   return {
-    handoffEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsHandoffEnabled], true),
+    handoffEnabled: readFeatureConfig(env, 'sessionsHandoffEnabled'),
   };
 }
 
 export function readSessionEphemeralRunnerFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ ephemeralRunnerEnabled: boolean }> {
-  return { ephemeralRunnerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsEphemeralRunnerEnabled], true) };
+  return { ephemeralRunnerEnabled: readFeatureConfig(env, 'sessionsEphemeralRunnerEnabled') };
 }
 
 export function readSessionAgentSwitchingFeatureEnv(env: NodeJS.ProcessEnv): SessionAgentSwitchingFeatureEnv {
   return {
-    agentSwitchingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsAgentSwitchingEnabled], true),
+    agentSwitchingEnabled: readFeatureConfig(env, 'sessionsAgentSwitchingEnabled'),
   };
 }
 
 export function readSessionFoldersFeatureEnv(env: NodeJS.ProcessEnv): SessionFoldersFeatureEnv {
   return {
-    foldersEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFoldersEnabled], true),
+    foldersEnabled: readFeatureConfig(env, 'sessionsFoldersEnabled'),
   };
 }
 
 export function readSessionDraftsFeatureEnv(env: NodeJS.ProcessEnv): SessionDraftsFeatureEnv {
   return {
-    draftsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDraftsEnabled], true),
+    draftsEnabled: readFeatureConfig(env, 'sessionsDraftsEnabled'),
   };
 }
 
 export function readSessionFilteredListingFeatureEnv(env: NodeJS.ProcessEnv): SessionFilteredListingFeatureEnv {
   return {
-    filteredListingEnabled: parseBooleanEnv(
-      env[FEATURE_ENV_KEYS.sessionsFilteredListingEnabled],
-      true,
-    ),
+    filteredListingEnabled: readFeatureConfig(env, 'sessionsFilteredListingEnabled'),
   };
 }
 
 export function readSessionBoardFeatureEnv(env: NodeJS.ProcessEnv) {
-  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsBoardEnabled], true) };
+  return { enabled: readFeatureConfig(env, 'sessionsBoardEnabled') };
 }
 
 export function readSessionFollowingFeatureEnv(env: NodeJS.ProcessEnv): SessionFollowingFeatureEnv {
   return {
-    followingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFollowingEnabled], true),
+    followingEnabled: readFeatureConfig(env, 'sessionsFollowingEnabled'),
   };
 }
 
 export function readSessionConversationsFeatureEnv(env: NodeJS.ProcessEnv): SessionConversationsFeatureEnv {
   return {
-    conversationsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsConversationsEnabled], true),
+    conversationsEnabled: readFeatureConfig(env, 'sessionsConversationsEnabled'),
   };
 }
 
 export function readSessionUsageLimitRecoveryFeatureEnv(env: NodeJS.ProcessEnv): SessionUsageLimitRecoveryFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsUsageLimitRecoveryEnabled], true),
+    enabled: readFeatureConfig(env, 'sessionsUsageLimitRecoveryEnabled'),
   };
 }
 
@@ -680,19 +630,15 @@ export function readMachineTransferFeatureEnv(env: NodeJS.ProcessEnv): MachineTr
     env[FEATURE_ENV_KEYS.machinesTransferServerRoutedMaxBytes] ?? env[MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES_ENV_KEY],
   );
   const resolvedServerRoutedMaxBytes = Math.min(
-    configuredServerRoutedMaxBytes ?? DEFAULT_MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES,
-    MACHINE_TRANSFER_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
+    configuredServerRoutedMaxBytes ?? FEATURE_READER_DEFAULTS.machinesTransferServerRoutedMaxBytes.default,
+    FEATURE_READER_DEFAULTS.machinesTransferServerRoutedMaxBytes.bounds.max,
   );
 
   return {
-    directPeerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesTransferDirectPeerEnabled], true),
-    serverRoutedEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesTransferServerRoutedEnabled], true),
+    directPeerEnabled: readFeatureConfig(env, 'machinesTransferDirectPeerEnabled'),
+    serverRoutedEnabled: readFeatureConfig(env, 'machinesTransferServerRoutedEnabled'),
     serverRoutedMaxBytes: resolvedServerRoutedMaxBytes,
-    serverRoutedMaxActiveTransfersPerSocket: parseIntEnv(
-      env[FEATURE_ENV_KEYS.machinesTransferServerRoutedMaxActiveTransfersPerSocket],
-      128,
-      { min: 1, max: 10_000 },
-    ),
+    serverRoutedMaxActiveTransfersPerSocket: readFeatureConfig(env, 'machinesTransferServerRoutedMaxActiveTransfersPerSocket'),
   };
 }
 
@@ -701,31 +647,18 @@ export function readMachineTunnelFeatureEnv(env: NodeJS.ProcessEnv): MachineTunn
     env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedSupportedEncodings],
   );
   return {
-    directPeerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesTunnelDirectPeerEnabled], true),
-    serverRoutedEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled], false),
+    directPeerEnabled: readFeatureConfig(env, 'machinesTunnelDirectPeerEnabled'),
+    serverRoutedEnabled: readFeatureConfig(env, 'machinesTunnelServerRoutedEnabled'),
     allowedPorts: parsePortList(env[FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]),
-    maxIdleMs: normalizeMachineTunnelPositiveInt(
-      env[FEATURE_ENV_KEYS.machinesTunnelMaxIdleMs],
-      DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
-    ),
-    maxDurationMs: normalizeMachineTunnelPositiveInt(
-      env[FEATURE_ENV_KEYS.machinesTunnelMaxDurationMs],
-      DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
-    ),
-    serverRoutedMaxBytes: normalizeMachineTunnelPositiveInt(
-      env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX },
-    ),
     serverRoutedMaxActiveTunnelsPerSocket: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxActiveTunnelsPerSocket],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET_HARD_MAX },
+      FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxActiveTunnelsPerSocket.default,
+      { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxActiveTunnelsPerSocket.bounds.max },
     ),
     serverRoutedMaxFrameBytes: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX },
+      FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxFrameBytes.default,
+      { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxFrameBytes.bounds.max },
     ),
     serverRoutedSupportedEncodings,
     serverRoutedPreferredEncoding: normalizeMachineTunnelPreferredEncoding(
@@ -734,47 +667,24 @@ export function readMachineTunnelFeatureEnv(env: NodeJS.ProcessEnv): MachineTunn
     ),
     serverRoutedMaxBinaryHeaderBytes: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBinaryHeaderBytes],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX },
+      FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxBinaryHeaderBytes.default,
+      { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxBinaryHeaderBytes.bounds.max },
     ),
     serverRoutedMaxRawPayloadBytes: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxRawPayloadBytes],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX },
+      FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxRawPayloadBytes.default,
+      { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxRawPayloadBytes.bounds.max },
     ),
     serverRoutedMaxFramedMessageBytes: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFramedMessageBytes],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAMED_MESSAGE_BYTES,
-      { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX },
+      FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxFramedMessageBytes.default,
+      { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxFramedMessageBytes.bounds.max },
     ),
     serverRoutedSubstreams: {
       maxConcurrentSubstreams: normalizeMachineTunnelPositiveInt(
         env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxConcurrentSubstreams],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_CONCURRENT_SUBSTREAMS,
-        { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET_HARD_MAX },
-      ),
-      maxTotalSubstreams: normalizeMachineTunnelPositiveInt(
-        env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxTotalSubstreams],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS,
-        { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAMS_HARD_MAX },
-      ),
-      maxBytesPerSubstream: normalizeMachineTunnelPositiveInt(
-        env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytesPerSubstream],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM,
-        { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX },
-      ),
-      maxAggregateBytes: normalizeMachineTunnelPositiveInt(
-        env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxAggregateBytes],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
-        { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX },
-      ),
-      maxSubstreamIdleMs: normalizeMachineTunnelPositiveInt(
-        env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxSubstreamIdleMs],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS,
-      ),
-      maxSessionIdleMs: normalizeMachineTunnelPositiveInt(
-        env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxSessionIdleMs],
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS,
+        FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxConcurrentSubstreams.default,
+        { max: FEATURE_READER_DEFAULTS.machinesTunnelServerRoutedMaxConcurrentSubstreams.bounds.max },
       ),
     },
   };
@@ -785,8 +695,8 @@ export function readLocalServicesFeatureEnv(env: NodeJS.ProcessEnv): LocalServic
   // internet exposure, proxy, or tunnel involved — so it defaults ON (VS Code/Codespaces
   // "private auto-forward"). `publicPreview` (real internet exposure) stays fail-closed
   // default-off below: that is the explicit, per-use line.
-  const previewEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesPreviewEnabled], true);
-  const publicPreviewEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesPublicPreviewEnabled], false);
+  const previewEnabled = readFeatureConfig(env, 'localServicesPreviewEnabled');
+  const publicPreviewEnabled = readFeatureConfig(env, 'localServicesPublicPreviewEnabled');
   const allowLocalPublicPreviewTestDependencies = env.NODE_ENV !== 'production';
   const publicAuditDependency = readLocalServicePublicAuditDependency(env, allowLocalPublicPreviewTestDependencies);
   const publicRateLimitDependency = readLocalServicePublicRateLimitDependency(env, allowLocalPublicPreviewTestDependencies);
@@ -794,29 +704,25 @@ export function readLocalServicesFeatureEnv(env: NodeJS.ProcessEnv): LocalServic
   // Core product gates default to allow (the server is the gate); inventory no longer derives
   // from preview. Private `preview` defaults ON (loopback only); the `publicPreview` exposure
   // gate stays fail-closed default-off.
-  const enabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesEnabled], true);
+  const enabled = readFeatureConfig(env, 'localServicesEnabled');
 
   return {
     enabled,
-    managedEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesManagedEnabled], true),
-    launcherEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesLauncherEnabled], true),
-    actionsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesActionsEnabled], true),
-    actionsTerminateEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesActionsTerminateEnabled], false),
-    inventoryEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesInventoryEnabled], true),
+    managedEnabled: readFeatureConfig(env, 'localServicesManagedEnabled'),
+    launcherEnabled: readFeatureConfig(env, 'localServicesLauncherEnabled'),
+    actionsEnabled: readFeatureConfig(env, 'localServicesActionsEnabled'),
+    actionsTerminateEnabled: readFeatureConfig(env, 'localServicesActionsTerminateEnabled'),
+    inventoryEnabled: readFeatureConfig(env, 'localServicesInventoryEnabled'),
     previewEnabled,
-    previewTokenTtlMs: parseIntEnv(
-      env[FEATURE_ENV_KEYS.localServicesPreviewTokenTtlMs],
-      DEFAULT_LOCAL_SERVICE_PREVIEW_TOKEN_TTL_MS,
-      { min: 1 },
-    ),
-    previewHostOriginBaseDomain: readTrimmedOptional(env[FEATURE_ENV_KEYS.localServicesPreviewHostOriginDomain]),
+    previewTokenTtlMs: readFeatureConfig(env, 'localServicesPreviewTokenTtlMs'),
+    previewHostOriginBaseDomain: readFeatureConfig(env, 'localServicesPreviewHostOriginDomain') ?? null,
     publicPreviewEnabled,
     publicPolicy: {
       enabled: publicPreviewEnabled,
       allowedModes: parseLocalServicePublicExposureModes(env[FEATURE_ENV_KEYS.localServicesPublicPreviewAllowedModes]),
-      maxTtlMs: readOptionalPositiveInt(env[FEATURE_ENV_KEYS.localServicesPublicPreviewMaxTtlMs]),
-      maxConcurrentExposures: readOptionalPositiveInt(env[FEATURE_ENV_KEYS.localServicesPublicPreviewMaxConcurrentExposures]),
-      dnsTlsRequired: parseBooleanEnv(env[FEATURE_ENV_KEYS.localServicesPublicPreviewDnsTlsRequired], true),
+      maxTtlMs: readFeatureConfig(env, 'localServicesPublicPreviewMaxTtlMs'),
+      maxConcurrentExposures: readFeatureConfig(env, 'localServicesPublicPreviewMaxConcurrentExposures'),
+      dnsTlsRequired: readFeatureConfig(env, 'localServicesPublicPreviewDnsTlsRequired'),
       // OE-4: not operator-configurable. The only non-default value (`false`) emitted the
       // `audit_required_disabled` DISABLED reason, so the knob could only ever be set to its
       // default. A public exposure always requires a durable audit sink.
@@ -832,34 +738,28 @@ export function readLocalServicesFeatureEnv(env: NodeJS.ProcessEnv): LocalServic
 
 export function readProvidersFeatureEnv(env: NodeJS.ProcessEnv): ProvidersFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.providersEnabled], true),
-    localDiscoveryEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.providersLocalDiscoveryEnabled], true),
-    localModelManagementEnabled: parseBooleanEnv(
-      env[FEATURE_ENV_KEYS.providersLocalModelManagementEnabled],
-      true,
-    ),
+    enabled: readFeatureConfig(env, 'providersEnabled'),
+    localDiscoveryEnabled: readFeatureConfig(env, 'providersLocalDiscoveryEnabled'),
+    localModelManagementEnabled: readFeatureConfig(env, 'providersLocalModelManagementEnabled'),
   };
 }
 
 export function readSearchFeatureEnv(env: NodeJS.ProcessEnv): SearchFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.searchEnabled], true),
+    enabled: readFeatureConfig(env, 'searchEnabled'),
   };
 }
 
 export function readTeamsFeatureEnv(env: NodeJS.ProcessEnv): TeamsFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsEnabled], true),
-    credentialResourcesEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsCredentialResourcesEnabled], true),
-    credentialResourcesExternalApiEnabled: parseBooleanEnv(
-      env[FEATURE_ENV_KEYS.teamsCredentialResourcesExternalApiEnabled],
-      true,
-    ),
+    enabled: readFeatureConfig(env, 'teamsEnabled'),
+    credentialResourcesEnabled: readFeatureConfig(env, 'teamsCredentialResourcesEnabled'),
+    credentialResourcesExternalApiEnabled: readFeatureConfig(env, 'teamsCredentialResourcesExternalApiEnabled'),
   };
 }
 
 export function readMachinePoolsFeatureEnv(env: NodeJS.ProcessEnv): MachinePoolsFeatureEnv {
-  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesPoolsEnabled], true) };
+  return { enabled: readFeatureConfig(env, 'machinesPoolsEnabled') };
 }
 
 export function readBrowserFeatureEnv(env: NodeJS.ProcessEnv): BrowserFeatureEnv {
@@ -877,14 +777,14 @@ export function readBrowserFeatureEnv(env: NodeJS.ProcessEnv): BrowserFeatureEnv
   // The managed Chromium sidecar is now source-backed and server-represented + default-ALLOW like
   // the rest of the browser branch. Servers can still explicitly disable `browser.sidecar`.
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserEnabled], true),
-    viewTargetsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserViewTargetsEnabled], true),
-    internalEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserInternalEnabled], true),
-    sidecarEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserSidecarEnabled], true),
-    diagnosticsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserDiagnosticsEnabled], true),
-    contextEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserContextEnabled], true),
-    recordingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserRecordingEnabled], true),
-    automationEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.browserAutomationEnabled], true),
+    enabled: readFeatureConfig(env, 'browserEnabled'),
+    viewTargetsEnabled: readFeatureConfig(env, 'browserViewTargetsEnabled'),
+    internalEnabled: readFeatureConfig(env, 'browserInternalEnabled'),
+    sidecarEnabled: readFeatureConfig(env, 'browserSidecarEnabled'),
+    diagnosticsEnabled: readFeatureConfig(env, 'browserDiagnosticsEnabled'),
+    contextEnabled: readFeatureConfig(env, 'browserContextEnabled'),
+    recordingEnabled: readFeatureConfig(env, 'browserRecordingEnabled'),
+    automationEnabled: readFeatureConfig(env, 'browserAutomationEnabled'),
   };
 }
 
@@ -903,7 +803,7 @@ function readWebhookIngressPolicyV1(env: NodeJS.ProcessEnv): WebhookIngressPolic
   const maxRequests = readLoweredWebhookIngressLimit(
     env,
     FEATURE_ENV_KEYS.pluginsWebhooksProcessMaxRequests,
-    4,
+    FEATURE_READER_DEFAULTS.pluginsWebhooksProcessMaxRequests.default,
   );
   return Object.freeze({
     version: 1,
@@ -916,27 +816,19 @@ function readWebhookIngressPolicyV1(env: NodeJS.ProcessEnv): WebhookIngressPolic
       ),
     }),
     route: Object.freeze({
-      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksRouteRatePerMinute, 600),
-      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksRouteConcurrency, 16),
+      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksRouteRatePerMinute, FEATURE_READER_DEFAULTS.pluginsWebhooksRouteRatePerMinute.default),
+      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksRouteConcurrency, FEATURE_READER_DEFAULTS.pluginsWebhooksRouteConcurrency.default),
     }),
     endpoint: Object.freeze({
-      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksEndpointRatePerMinute, 300),
-      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksEndpointConcurrency, 8),
+      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksEndpointRatePerMinute, FEATURE_READER_DEFAULTS.pluginsWebhooksEndpointRatePerMinute.default),
+      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksEndpointConcurrency, FEATURE_READER_DEFAULTS.pluginsWebhooksEndpointConcurrency.default),
     }),
     account: Object.freeze({
-      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksAccountRatePerMinute, 3_000),
-      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksAccountConcurrency, 32),
+      ratePerMinute: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksAccountRatePerMinute, FEATURE_READER_DEFAULTS.pluginsWebhooksAccountRatePerMinute.default),
+      concurrency: readLoweredWebhookIngressLimit(env, FEATURE_ENV_KEYS.pluginsWebhooksAccountConcurrency, FEATURE_READER_DEFAULTS.pluginsWebhooksAccountConcurrency.default),
     }),
   });
 }
-
-/**
- * The shipped deployment policy is protocol-owned so a client that has not yet
- * read this deployment's published capability assumes the same numbers this
- * server would enforce.
- */
-const DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS: PluginDataCollectionsCapabilities =
-  PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1;
 
 function readCollectionDeploymentPositiveInt(input: Readonly<{
   env: NodeJS.ProcessEnv;
@@ -967,32 +859,32 @@ function readPluginDataCollectionsDeploymentLimits(env: NodeJS.ProcessEnv): Plug
     maxRowEncodedBytes: readCollectionDeploymentPositiveInt({
       env,
       key: FEATURE_ENV_KEYS.collectionMaxRowEncodedBytes,
-      fallback: DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS.maxRowEncodedBytes,
-      maximum: PLUGIN_COLLECTION_LIMITS_V1.maximumStoredRowEncodedBytes,
+      fallback: FEATURE_READER_DEFAULTS.collectionMaxRowEncodedBytes.default,
+      maximum: FEATURE_READER_DEFAULTS.collectionMaxRowEncodedBytes.bounds.max,
     }),
     maxBatchBytes: readCollectionDeploymentPositiveInt({
       env,
       key: FEATURE_ENV_KEYS.collectionMaxBatchBytes,
-      fallback: DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS.maxBatchBytes,
-      maximum: PLUGIN_COLLECTION_LIMITS_V1.maximumMutationBatchEncodedBytes,
+      fallback: FEATURE_READER_DEFAULTS.collectionMaxBatchBytes.default,
+      maximum: FEATURE_READER_DEFAULTS.collectionMaxBatchBytes.bounds.max,
     }),
     maxBatchRows: readCollectionDeploymentPositiveInt({
       env,
       key: FEATURE_ENV_KEYS.collectionMaxBatchRows,
-      fallback: DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS.maxBatchRows,
-      maximum: PLUGIN_COLLECTION_LIMITS_V1.maximumMutationBatchRows,
+      fallback: FEATURE_READER_DEFAULTS.collectionMaxBatchRows.default,
+      maximum: FEATURE_READER_DEFAULTS.collectionMaxBatchRows.bounds.max,
     }),
     maxAccountRows: readCollectionDeploymentPositiveInt({
       env,
       key: FEATURE_ENV_KEYS.collectionMaxAccountRows,
-      fallback: DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS.maxAccountRows,
-      maximum: PLUGIN_COLLECTION_LIMITS_V1.maximumAccountRows,
+      fallback: FEATURE_READER_DEFAULTS.collectionMaxAccountRows.default,
+      maximum: FEATURE_READER_DEFAULTS.collectionMaxAccountRows.bounds.max,
     }),
     maxAccountBytes: readCollectionDeploymentPositiveInt({
       env,
       key: FEATURE_ENV_KEYS.collectionMaxAccountBytes,
-      fallback: DEFAULT_PLUGIN_DATA_COLLECTIONS_LIMITS.maxAccountBytes,
-      maximum: PLUGIN_COLLECTION_LIMITS_V1.maximumAccountEncodedBytes,
+      fallback: FEATURE_READER_DEFAULTS.collectionMaxAccountBytes.default,
+      maximum: FEATURE_READER_DEFAULTS.collectionMaxAccountBytes.bounds.max,
     }),
   } satisfies PluginDataCollectionsCapabilities;
   const parsed = PluginDataCollectionsCapabilitiesSchema.safeParse(limits);
@@ -1012,19 +904,15 @@ export function readPluginsFeatureEnv(env: NodeJS.ProcessEnv): PluginsFeatureEnv
   // disable a tier for its users, but per-plugin install/enable/trust/runtime derivation (5.1/5.2)
   // governs actual render.
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsEnabled], true),
-    webhooksEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsWebhooksEnabled], false),
+    enabled: readFeatureConfig(env, 'pluginsEnabled'),
+    webhooksEnabled: readFeatureConfig(env, 'pluginsWebhooksEnabled'),
     webhookIngressPolicy: readWebhookIngressPolicyV1(env),
-    uiEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsUiEnabled], true),
-    uiHostedWebEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsUiHostedWebEnabled], true),
-    uiReactNativeBundlesEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsUiReactNativeBundlesEnabled], true),
-    uiArtifactHostingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.pluginsUiArtifactHostingEnabled], false),
-    uiArtifactHostingMaxArtifactBytes: readOptionalPositiveInt(
-      env[FEATURE_ENV_KEYS.pluginsUiArtifactHostingMaxArtifactBytes],
-    ),
-    uiArtifactHostingMaxAccountBytes: readOptionalPositiveInt(
-      env[FEATURE_ENV_KEYS.pluginsUiArtifactHostingMaxAccountBytes],
-    ),
+    uiEnabled: readFeatureConfig(env, 'pluginsUiEnabled'),
+    uiHostedWebEnabled: readFeatureConfig(env, 'pluginsUiHostedWebEnabled'),
+    uiReactNativeBundlesEnabled: readFeatureConfig(env, 'pluginsUiReactNativeBundlesEnabled'),
+    uiArtifactHostingEnabled: readFeatureConfig(env, 'pluginsUiArtifactHostingEnabled'),
+    uiArtifactHostingMaxArtifactBytes: readFeatureConfig(env, 'pluginsUiArtifactHostingMaxArtifactBytes'),
+    uiArtifactHostingMaxAccountBytes: readFeatureConfig(env, 'pluginsUiArtifactHostingMaxAccountBytes'),
     collectionLimits: readPluginDataCollectionsDeploymentLimits(env),
   };
 }
@@ -1033,26 +921,26 @@ export function readDevicesFeatureEnv(env: NodeJS.ProcessEnv): DevicesFeatureEnv
   // Server-represented + default-allow (§4.1): the device/simulator preview product is on by
   // default (viewing your own simulator); the server/build can disable it for its users.
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.devicesEnabled], true),
-    simulatorPreviewEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.devicesSimulatorPreviewEnabled], true),
+    enabled: readFeatureConfig(env, 'devicesEnabled'),
+    simulatorPreviewEnabled: readFeatureConfig(env, 'devicesSimulatorPreviewEnabled'),
   };
 }
 
 export function readMachineRpcFeatureEnv(env: NodeJS.ProcessEnv): MachineRpcFeatureEnv {
   return {
-    directPeerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesRpcDirectPeerEnabled], true),
+    directPeerEnabled: readFeatureConfig(env, 'machinesRpcDirectPeerEnabled'),
   };
 }
 
-function parseOptionalPositiveIntFromEnv(env: NodeJS.ProcessEnv, key: string): number | null {
+function parseOptionalPositiveIntFromEnv(env: NodeJS.ProcessEnv, key: string): number | null | undefined {
   const raw = env[key];
-  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
   const parsed = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 export function readMachineLiveStreamFeatureEnv(env: NodeJS.ProcessEnv): MachineLiveStreamFeatureEnv {
-  const serverRoutedRequested = parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedEnabled], false);
+  const serverRoutedRequested = readFeatureConfig(env, 'machinesLiveStreamServerRoutedEnabled');
   const capsCandidate = {
     maxBitrateBps: parseOptionalPositiveIntFromEnv(env, FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxBitrateBps),
     maxFramesPerSecond: parseOptionalPositiveIntFromEnv(
@@ -1075,11 +963,13 @@ export function readMachineLiveStreamFeatureEnv(env: NodeJS.ProcessEnv): Machine
       FEATURE_ENV_KEYS.machinesLiveStreamServerRoutedMaxConcurrentStreamsPerMachine,
     ),
   };
-  const parsedCaps = MachineLiveStreamRelayCapsV1Schema.safeParse(capsCandidate);
+  const parsedCaps = MachineLiveStreamRelayCapsV1Schema.safeParse(
+    Object.fromEntries(Object.entries(capsCandidate).filter(([, value]) => value !== undefined)),
+  );
   const serverRoutedCaps = serverRoutedRequested && parsedCaps.success ? parsedCaps.data : null;
 
   return {
-    directPeerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesLiveStreamDirectPeerEnabled], true),
+    directPeerEnabled: readFeatureConfig(env, 'machinesLiveStreamDirectPeerEnabled'),
     serverRoutedEnabled: serverRoutedRequested && serverRoutedCaps !== null,
     serverRoutedCaps,
     serverRoutedDisabledReason: serverRoutedRequested ? 'relay_caps_missing' : 'relay_not_enabled',
@@ -1087,23 +977,20 @@ export function readMachineLiveStreamFeatureEnv(env: NodeJS.ProcessEnv): Machine
 }
 
 export function readTerminalFeatureEnv(env: NodeJS.ProcessEnv): TerminalFeatureEnv {
-  const embeddedPtyEnabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.terminalEmbeddedPtyEnabled], true);
+  const embeddedPtyEnabled = readFeatureConfig(env, 'terminalEmbeddedPtyEnabled');
   return {
     embeddedPtyEnabled,
     transportByteStreamEnabled: embeddedPtyEnabled
-      && parseBooleanEnv(env[FEATURE_ENV_KEYS.terminalTransportByteStreamEnabled], true),
+      && readFeatureConfig(env, 'terminalTransportByteStreamEnabled'),
   };
 }
 
 export function readSocialFriendsFeatureEnv(env: NodeJS.ProcessEnv): SocialFriendsFeatureEnv {
-  const rawIdentityProvider =
-    typeof env[FEATURE_ENV_KEYS.socialFriendsIdentityProvider] === 'string' && env[FEATURE_ENV_KEYS.socialFriendsIdentityProvider]?.trim()
-      ? env[FEATURE_ENV_KEYS.socialFriendsIdentityProvider]!.trim()
-      : 'github';
+  const rawIdentityProvider = readFeatureConfig(env, 'socialFriendsIdentityProvider');
 
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.socialFriendsEnabled], true),
-    allowUsername: parseBooleanEnv(env[FEATURE_ENV_KEYS.socialFriendsAllowUsername], true),
+    enabled: readFeatureConfig(env, 'socialFriendsEnabled'),
+    allowUsername: readFeatureConfig(env, 'socialFriendsAllowUsername'),
     identityProvider: rawIdentityProvider,
   };
 }
@@ -1117,22 +1004,24 @@ export function readAuthFeatureEnv(env: NodeJS.ProcessEnv): AuthFeatureEnv {
   return {
     recoveryProviderResetEnabled: parseBooleanEnv(
       env[FEATURE_ENV_KEYS.authRecoveryProviderResetEnabled] ?? legacyRecoveryProviderResetEnabled,
-      true,
+      FEATURE_READER_DEFAULTS.authRecoveryProviderResetEnabled.default,
     ),
-    loginKeyChallengeEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authLoginKeyChallengeEnabled], true),
-    pairingDesktopQrMobileScanEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authPairingDesktopQrMobileScanEnabled], true),
+    loginKeyChallengeEnabled: readFeatureConfig(env, 'authLoginKeyChallengeEnabled'),
+    pairingDesktopQrMobileScanEnabled: readFeatureConfig(env, 'authPairingDesktopQrMobileScanEnabled'),
     uiAutoRedirectEnabled: parseBooleanEnv(
       env[FEATURE_ENV_KEYS.authUiAutoRedirectEnabled] ?? legacyUiAutoRedirectEnabled,
-      false,
+      FEATURE_READER_DEFAULTS.authUiAutoRedirectEnabled.default,
     ),
     uiAutoRedirectProviderId: (
-      env[FEATURE_ENV_KEYS.authUiAutoRedirectProviderId] ?? legacyUiAutoRedirectProviderId ?? ''
+      env[FEATURE_ENV_KEYS.authUiAutoRedirectProviderId]
+      ?? legacyUiAutoRedirectProviderId
+      ?? FEATURE_READER_DEFAULTS.authUiAutoRedirectProviderId.default
     )
       .trim()
       .toLowerCase(),
     uiRecoveryKeyReminderEnabled: parseBooleanEnv(
       env[FEATURE_ENV_KEYS.authUiRecoveryKeyReminderEnabled] ?? legacyUiRecoveryKeyReminderEnabled,
-      true,
+      FEATURE_READER_DEFAULTS.authUiRecoveryKeyReminderEnabled.default,
     ),
   };
 }
@@ -1148,45 +1037,40 @@ export function readAuthFeatureEnv(env: NodeJS.ProcessEnv): AuthFeatureEnv {
  */
 export function readAuthEmailPasswordFeatureEnv(env: NodeJS.ProcessEnv): AuthEmailPasswordFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordEnabled], true),
-    provisionEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordProvisionEnabled], true),
+    enabled: readFeatureConfig(env, 'authEmailPasswordEnabled'),
+    provisionEnabled: readFeatureConfig(env, 'authEmailPasswordProvisionEnabled'),
   };
 }
 
 export function readAuthMtlsFeatureEnv(env: NodeJS.ProcessEnv): AuthMtlsFeatureEnv {
-  const enabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.authMtlsEnabled], false);
-  const rawMode = (env[FEATURE_ENV_KEYS.authMtlsMode] ?? "").toString().trim().toLowerCase();
-  const mode: AuthMtlsFeatureEnv["mode"] = rawMode === "direct" ? "direct" : "forwarded";
+  const enabled = readFeatureConfig(env, 'authMtlsEnabled');
+  const mode = readFeatureConfig(env, 'authMtlsMode') as AuthMtlsFeatureEnv["mode"];
 
-  const autoProvision = parseBooleanEnv(env[FEATURE_ENV_KEYS.authMtlsAutoProvision], false);
-  const trustForwardedHeaders = parseBooleanEnv(env[FEATURE_ENV_KEYS.authMtlsTrustForwardedHeaders], false);
+  const autoProvision = readFeatureConfig(env, 'authMtlsAutoProvision');
+  const trustForwardedHeaders = readFeatureConfig(env, 'authMtlsTrustForwardedHeaders');
 
-  const rawIdentitySource = (env[FEATURE_ENV_KEYS.authMtlsIdentitySource] ?? "").toString().trim().toLowerCase();
-  const identitySource: AuthMtlsFeatureEnv["identitySource"] =
-    rawIdentitySource === "san_upn" || rawIdentitySource === "subject_cn" || rawIdentitySource === "fingerprint" || rawIdentitySource === "san_email"
-      ? (rawIdentitySource as AuthMtlsFeatureEnv["identitySource"])
-      : "san_email";
+  const identitySource = readFeatureConfig(env, 'authMtlsIdentitySource') as AuthMtlsFeatureEnv["identitySource"];
 
   const allowedEmailDomains = Object.freeze(parseCsvList(env[FEATURE_ENV_KEYS.authMtlsAllowedEmailDomains]).map((s) => s.toLowerCase()));
   const allowedIssuers = Object.freeze(parseIssuerAllowlist(env[FEATURE_ENV_KEYS.authMtlsAllowedIssuers]).map(normalizeAuthMtlsIssuerValue).filter(Boolean));
 
-  const forwardedEmailHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedEmailHeader] ?? "x-happier-client-cert-email")
+  const forwardedEmailHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedEmailHeader] ?? FEATURE_READER_DEFAULTS.authMtlsForwardedEmailHeader.default)
     .toString()
     .trim()
     .toLowerCase();
-  const forwardedUpnHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedUpnHeader] ?? "x-happier-client-cert-upn")
+  const forwardedUpnHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedUpnHeader] ?? FEATURE_READER_DEFAULTS.authMtlsForwardedUpnHeader.default)
     .toString()
     .trim()
     .toLowerCase();
-  const forwardedSubjectHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedSubjectHeader] ?? "x-happier-client-cert-subject")
+  const forwardedSubjectHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedSubjectHeader] ?? FEATURE_READER_DEFAULTS.authMtlsForwardedSubjectHeader.default)
     .toString()
     .trim()
     .toLowerCase();
-  const forwardedFingerprintHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedFingerprintHeader] ?? "x-happier-client-cert-sha256")
+  const forwardedFingerprintHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedFingerprintHeader] ?? FEATURE_READER_DEFAULTS.authMtlsForwardedFingerprintHeader.default)
     .toString()
     .trim()
     .toLowerCase();
-  const forwardedIssuerHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedIssuerHeader] ?? "x-happier-client-cert-issuer")
+  const forwardedIssuerHeader = (env[FEATURE_ENV_KEYS.authMtlsForwardedIssuerHeader] ?? FEATURE_READER_DEFAULTS.authMtlsForwardedIssuerHeader.default)
     .toString()
     .trim()
     .toLowerCase();
@@ -1199,7 +1083,7 @@ export function readAuthMtlsFeatureEnv(env: NodeJS.ProcessEnv): AuthMtlsFeatureE
       .filter(Boolean),
   );
 
-  const claimTtlSeconds = parseIntEnv(env[FEATURE_ENV_KEYS.authMtlsClaimTtlSeconds], 60, { min: 10, max: 3600 });
+  const claimTtlSeconds = readFeatureConfig(env, 'authMtlsClaimTtlSeconds');
 
   return {
     enabled,
@@ -1220,9 +1104,9 @@ export function readAuthMtlsFeatureEnv(env: NodeJS.ProcessEnv): AuthMtlsFeatureE
 }
 
 export function readAuthOauthKeylessFeatureEnv(env: NodeJS.ProcessEnv): AuthOauthKeylessFeatureEnv {
-  const enabled = parseBooleanEnv(env[FEATURE_ENV_KEYS.authOauthKeylessEnabled], false);
+  const enabled = readFeatureConfig(env, 'authOauthKeylessEnabled');
   const providers = Object.freeze(parseCsvList(env[FEATURE_ENV_KEYS.authOauthKeylessProviders]).map((s) => s.toLowerCase()));
-  const autoProvision = parseBooleanEnv(env[FEATURE_ENV_KEYS.authOauthKeylessAutoProvision], false);
+  const autoProvision = readFeatureConfig(env, 'authOauthKeylessAutoProvision');
   return {
     enabled,
     providers,
@@ -1235,24 +1119,20 @@ export function readEncryptionFeatureEnv(env: NodeJS.ProcessEnv): EncryptionFeat
   const storagePolicy: EncryptionFeatureEnv["storagePolicy"] =
     rawStoragePolicy === "optional" || rawStoragePolicy === "plaintext_only" || rawStoragePolicy === "required_e2ee"
       ? rawStoragePolicy
-      : "required_e2ee";
+      : FEATURE_READER_DEFAULTS.encryptionStoragePolicy.default;
 
-  const allowAccountOptOut = parseBooleanEnv(env[FEATURE_ENV_KEYS.encryptionAllowAccountOptOut], false);
+  const allowAccountOptOut = readFeatureConfig(env, 'encryptionAllowAccountOptOut');
   const rawDefaultAccountMode = (env[FEATURE_ENV_KEYS.encryptionDefaultAccountMode] ?? "").toString().trim();
   const defaultAccountMode: EncryptionFeatureEnv["defaultAccountMode"] =
-    rawDefaultAccountMode === "plain" || rawDefaultAccountMode === "e2ee" ? rawDefaultAccountMode : "e2ee";
+    rawDefaultAccountMode === "plain" || rawDefaultAccountMode === "e2ee"
+      ? rawDefaultAccountMode
+      : FEATURE_READER_DEFAULTS.encryptionDefaultAccountMode.default;
 
-  const rawSettingsAtRest = (env[FEATURE_ENV_KEYS.encryptionPlainAccountSettingsAtRest] ?? "").toString().trim().toLowerCase();
-  const plainAccountSettingsAtRest: EncryptionFeatureEnv["plainAccountSettingsAtRest"] =
-    rawSettingsAtRest === "none" || rawSettingsAtRest === "server_sealed" ? (rawSettingsAtRest as any) : "server_sealed";
+  const plainAccountSettingsAtRest = readFeatureConfig(env, 'encryptionPlainAccountSettingsAtRest') as EncryptionFeatureEnv["plainAccountSettingsAtRest"];
 
-  const rawCredentialsAtRest = (env[FEATURE_ENV_KEYS.encryptionPlainAccountCredentialsAtRest] ?? "").toString().trim().toLowerCase();
-  const plainAccountCredentialsAtRest: EncryptionFeatureEnv["plainAccountCredentialsAtRest"] =
-    rawCredentialsAtRest === "none" || rawCredentialsAtRest === "server_sealed" ? (rawCredentialsAtRest as any) : "server_sealed";
+  const plainAccountCredentialsAtRest = readFeatureConfig(env, 'encryptionPlainAccountCredentialsAtRest') as EncryptionFeatureEnv["plainAccountCredentialsAtRest"];
 
-  const rawArtifactsAtRest = (env[FEATURE_ENV_KEYS.encryptionPlainAccountArtifactsAtRest] ?? "").toString().trim().toLowerCase();
-  const plainAccountArtifactsAtRest: EncryptionFeatureEnv["plainAccountArtifactsAtRest"] =
-    rawArtifactsAtRest === "none" || rawArtifactsAtRest === "server_sealed" ? rawArtifactsAtRest : "server_sealed";
+  const plainAccountArtifactsAtRest = readFeatureConfig(env, 'encryptionPlainAccountArtifactsAtRest') as EncryptionFeatureEnv["plainAccountArtifactsAtRest"];
 
   return {
     storagePolicy,
@@ -1266,6 +1146,6 @@ export function readEncryptionFeatureEnv(env: NodeJS.ProcessEnv): EncryptionFeat
 
 export function readE2eeFeatureEnv(env: NodeJS.ProcessEnv): E2eeFeatureEnv {
   return {
-    keylessAccountsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.e2eeKeylessAccountsEnabled], false),
+    keylessAccountsEnabled: readFeatureConfig(env, 'e2eeKeylessAccountsEnabled'),
   };
 }

@@ -4,6 +4,7 @@ import type {
     LocalServicePublicPreviewSnapshotV1,
     PeerMediationObservabilityEventV1,
 } from "@happier-dev/protocol";
+import { API_TOKEN_FULL_GRANT_V1 } from "@happier-dev/protocol";
 import { auth } from "@/app/auth/auth";
 import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from "@/app/api/testkit/routeHarness";
 import { createPeerMediationWebSocketEvent } from "@/app/api/socket/peer/mediation/observability/events";
@@ -202,7 +203,7 @@ describe("local service public exposure routes", () => {
 
         expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.config).toMatchObject({
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -210,7 +211,7 @@ describe("local service public exposure routes", () => {
         });
         expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.config).toMatchObject({
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -218,7 +219,7 @@ describe("local service public exposure routes", () => {
         });
         expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.config).toMatchObject({
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -1253,6 +1254,9 @@ describe("local service public exposure routes", () => {
                     credentialId: "pat_1",
                     authority: "account_automation",
                     expiresAt: null,
+                    grant: API_TOKEN_FULL_GRANT_V1,
+                    parentTokenId: null,
+                    embedConfig: null,
                 },
             },
         });
@@ -1805,7 +1809,6 @@ describe("local service public exposure routes", () => {
         }, reply);
 
         const upstream = writes.join("");
-        expect(upstream.split("\r\n\r\n")).toHaveLength(2);
         expect(upstreamRequestLines(upstream)).toHaveLength(1);
         expect(upstream).not.toMatch(/\r\nX-Injected:/u);
         expect(upstream.split("\r\n")[0]).toBe(`GET ${CANONICAL_ENCODED_CRLF_PATH} HTTP/1.1`);

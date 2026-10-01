@@ -9,6 +9,11 @@ import {
     SessionOwnerMetadataEnvelopeV1Schema,
     SessionInitialAccessMaterializedV1Schema,
     SESSION_METADATA_LAYOUT_VERSION_V1,
+    SessionCreateOriginFieldsV1Schema,
+    refineSessionCreateOriginFieldsV1,
+    SessionReportsToV1Schema,
+    V2SessionRecordSchema,
+    SESSION_CREATION_AUTHORIZATION_HEADER_V1,
 } from "@happier-dev/protocol";
 import { SessionTeamCredentialBindingIntentsV1Schema } from "@happier-dev/protocol/teams";
 import { applySessionTranscriptPublicationCeiling } from "@/app/session/sessionTranscriptPublicationPolicy";
@@ -42,8 +47,15 @@ import { mapPendingActivationAuthorization } from "@/app/session/pending/pending
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { isSessionCollaborationEnabled } from "@/app/session/access/sessionAccess";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import { projectSessionReportsForRowsInTx } from "@/app/session/awareness/sessionReportsProjection";
+import { projectStoredSessionOrigin } from "@/app/session/listing/rows";
 
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import { auth, ApiTokenOperationError } from "@/app/auth/auth";
+import { verifyCurrentExternalActionPrincipal } from "@/app/auth/externalActionExecutionAuthorization";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import type { ExternalActionExecutionAuthorizationBindingV1 } from "@happier-dev/protocol/actions";
 
 export function registerSessionCreateOrLoadRoute(app: Fastify) {
     app.post('/v1/sessions', {
@@ -68,10 +80,23 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 initialAccess: SessionInitialAccessMaterializedV1Schema.optional(),
                 primaryTeamId: z.string().min(1).nullable().optional(),
                 teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.optional(),
-            }).strict()])
+                reportsTo: SessionReportsToV1Schema.optional(),
+                ...SessionCreateOriginFieldsV1Schema.shape,
+            }).strict().superRefine(refineSessionCreateOriginFieldsV1)])
         },
         preHandler: app.authenticate
     }, async (request, reply) => {
+        let sessionCreationAuthorization: ExternalActionExecutionAuthorizationBindingV1 | undefined;
+        const creationHeader = request.headers[SESSION_CREATION_AUTHORIZATION_HEADER_V1];
+        if (creationHeader !== undefined) {
+            if (typeof creationHeader !== "string") return reply.code(401).send({ error: "invalid_token" });
+            const binding = await auth.verifyExternalActionExecutionAuthorization(creationHeader);
+            if (!binding || binding.accountId !== request.userId || binding.actionId !== "session.spawn_new"
+                || binding.serverIdentityId !== await getOrCreateServerIdentityId()) return reply.code(401).send({ error: "invalid_token" });
+            if (!await verifyCurrentExternalActionPrincipal(binding)) return reply.code(401).send({ error: "invalid_token" });
+            sessionCreationAuthorization = binding;
+        }
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const layoutOneRequest =
             "sharedMetadata" in request.body
@@ -93,7 +118,7 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
         }
         if (
             layoutOneRequest?.teamCredentialBindings !== undefined
-            && !isServerFeatureEnabledForRequest("teams.credentialResources", process.env)
+            && !isServerFeatureEnabledForRequest("teams.credentialResources", requestHomeEnv)
         ) {
             return reply.code(409).send({
                 error: "update_required",
@@ -114,10 +139,15 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 : request.body.metadata;
         const requestedEncryptionMode = request.body.encryptionMode;
         const requestedStorageState = request.body.currentStorageState;
-        const policy = readEncryptionFeatureEnv(process.env);
+        const policy = readEncryptionFeatureEnv(requestHomeEnv);
 
         function sendSessionCreateRejection(rejection: Layout1SessionCreateRejection) {
             switch (rejection.reason) {
+                case "session-reports-to-invalid":
+                    return reply.code(rejection.result.error === "reports_to_cycle" ? 400
+                        : rejection.result.error === "reports_to_cas_conflict" ? 409 : 403).send(rejection.result);
+                case "session-origin-forbidden":
+                    return reply.code(403).send({ error: "session-origin-forbidden" });
                 case "account-disabled":
                     return reply.code(403).send({ error: "account-disabled" });
                 case "encryption-mode-not-allowed":
@@ -228,6 +258,11 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
             initialAccess: layoutOneRequest.initialAccess,
             primaryTeamId: layoutOneRequest.primaryTeamId,
             teamCredentialBindings: layoutOneRequest.teamCredentialBindings,
+                reportsTo: layoutOneRequest.reportsTo,
+                originKind: layoutOneRequest.originKind,
+                originSessionId: layoutOneRequest.originSessionId,
+                originRunId: layoutOneRequest.originRunId,
+                workDepth: layoutOneRequest.workDepth,
                 accountEncryptionMode,
                 storagePolicy: policy.storagePolicy,
                 defaultAccountMode: policy.defaultAccountMode,
@@ -239,7 +274,12 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
             const outcome = await createOrRejoinLayout1SessionByTag(
                 preparation.prepared,
                 readSessionAccessAuthenticationFromRequest(request),
-            );
+                sessionCreationAuthorization,
+            ).catch((error: unknown) => {
+                if (error instanceof ApiTokenOperationError && error.code === "invalid_token") return null;
+                throw error;
+            });
+            if (outcome === null) return reply.code(401).send({ error: "invalid_token" });
             if (outcome.kind === "rejected") {
                 return sendSessionCreateRejection(outcome.rejection);
             }
@@ -276,11 +316,13 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                         dataEncryptionKey: dataEncryptionKey
                             ? new Uint8Array(Buffer.from(dataEncryptionKey, "base64"))
                             : null,
+                        sessionCreationAuthorization,
                     });
                     createdFresh = true;
                     return created;
                 });
             } catch (error) {
+                if (error instanceof ApiTokenOperationError && error.code === "invalid_token") return reply.code(401).send({ error: "invalid_token" });
                 if (error instanceof InactiveAccountError) {
                     return sendSessionCreateRejection({ reason: "account-disabled" });
                 }
@@ -386,6 +428,38 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
             throw error;
         }
 
+        const origin = projectStoredSessionOrigin(resolvedSession);
+        const session = V2SessionRecordSchema.parse({
+            id: resolvedSession.id,
+            seq: applySessionTranscriptPublicationCeiling(resolvedSession.seq, resolvedSession),
+            encryptionMode: resolvedSession.encryptionMode,
+            ...metadataProjection,
+            ...(metadataProjection.metadataLayoutVersion
+                === SESSION_METADATA_LAYOUT_VERSION_V1
+                ? { share: null }
+                : {}),
+            dataEncryptionKey: viewerDataEncryptionKey,
+            pendingCount: resolvedSession.pendingCount,
+            pendingBlockedCount: resolvedSession.pendingBlockedCount,
+            pendingVersion: resolvedSession.pendingVersion,
+            pendingActivationAuthorization: mapPendingActivationAuthorization(resolvedSession),
+            active: resolvedSession.active,
+            activeAt: resolvedSession.lastActiveAt.getTime(),
+            createdAt: resolvedSession.createdAt.getTime(),
+            updatedAt: resolvedSession.updatedAt.getTime(),
+            meaningfulActivityAt: (resolvedSession.meaningfulActivityAt ?? resolvedSession.createdAt).getTime(),
+            lastMessage: null,
+            ...(origin ? { origin } : {}),
+        });
+        // The relation can change independently of creation metadata. Reuse
+        // the authorized current-row projector, including on tag rejoins.
+        const [organization] = await inTx((tx) => projectSessionReportsForRowsInTx(tx, {
+            accountId: userId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
+            sessions: [session],
+            accessMode: "effective_access_v1",
+            nowMs: Date.now(),
+        }));
         log({ module: "session-create", sessionId: resolvedSession.id, userId }, `Session resolved: ${resolvedSession.id}`);
         return reply.send({
             created: createdFresh,
@@ -393,26 +467,9 @@ export function registerSessionCreateOrLoadRoute(app: Fastify) {
                 ? { organizationPlacement: resolvedOrganizationPlacement }
                 : {}),
             session: {
-                id: resolvedSession.id,
-                seq: applySessionTranscriptPublicationCeiling(resolvedSession.seq, resolvedSession),
-                encryptionMode: resolvedSession.encryptionMode,
-                ...metadataProjection,
-                ...(metadataProjection.metadataLayoutVersion
-                    === SESSION_METADATA_LAYOUT_VERSION_V1
-                    ? { share: null }
-                    : {}),
-                dataEncryptionKey: viewerDataEncryptionKey,
-                pendingCount: resolvedSession.pendingCount,
-                pendingBlockedCount: resolvedSession.pendingBlockedCount,
-                pendingVersion: resolvedSession.pendingVersion,
-                pendingActivationAuthorization: mapPendingActivationAuthorization(resolvedSession),
-                active: resolvedSession.active,
-                activeAt: resolvedSession.lastActiveAt.getTime(),
-                createdAt: resolvedSession.createdAt.getTime(),
-                updatedAt: resolvedSession.updatedAt.getTime(),
-                meaningfulActivityAt: (resolvedSession.meaningfulActivityAt ?? resolvedSession.createdAt).getTime(),
-                lastMessage: null
-            }
+                ...session,
+                ...(organization?.reportsTo ? { reportsTo: organization.reportsTo } : {}),
+            },
         });
     });
 }

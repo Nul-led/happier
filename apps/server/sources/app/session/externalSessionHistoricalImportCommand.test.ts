@@ -319,7 +319,6 @@ describe("external Session historical import create-race settlement", () => {
             },
             expectedSessionMetadataVersion: 0,
             expectedSessionSeq: 0,
-            expectedPending: { version: 0, count: 0, blockedCount: 0 },
             expectedPriorStableStorage: { state: "machine_only" as const },
         };
         const update = vi.fn();

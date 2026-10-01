@@ -14,6 +14,7 @@ import {
     createLightSqliteHarness,
     type LightSqliteHarness,
 } from "@/testkit/lightSqliteHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import {
     createProviderAccountUsageRecordKey,
     createUsageSnapshot,
@@ -145,6 +146,79 @@ describe("provider account usage record storage (integration)", () => {
         await expect(db.providerAccountUsageRecord.count({
             where: { accountId: account.id },
         })).resolves.toBe(0);
+    });
+
+    it("preserves a sealed predecessor subscription when a newer quota write omits it", async () => {
+        const account = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+            },
+            select: { id: true },
+        });
+        const recordKey = createProviderAccountUsageRecordKey();
+        const recordId = buildProviderAccountUsageRecordId(recordKey);
+        const fetchedAt = Date.now() - 2_000;
+        const subscription = { observedAtMs: fetchedAt - 1_000, ciphertext: "predecessor-subscription" };
+        await writeProviderAccountUsageRecordWithPolicy({
+            accountId: account.id, recordId, recordKey,
+            payloadMode: "sealed_account_scoped_v1", status: "ok",
+            fetchedAt, staleAfterMs: 60_000,
+            sealedPayload: { format: "account_scoped_v1", ciphertext: "old-quota", subscription },
+        });
+
+        await expect(writeProviderAccountUsageRecordWithPolicy({
+            accountId: account.id, recordId, recordKey,
+            payloadMode: "sealed_account_scoped_v1", status: "ok",
+            fetchedAt: fetchedAt + 1_000, staleAfterMs: 60_000,
+            sealedPayload: { format: "account_scoped_v1", ciphertext: "new-quota" },
+        })).resolves.toBe("written");
+        await expect(readProviderAccountUsageRecord({ accountId: account.id, recordId }))
+            .resolves.toMatchObject({
+                fetchedAt: fetchedAt + 1_000,
+                sealedPayload: { ciphertext: "new-quota", subscription },
+            });
+    });
+
+    it("preserves a plain subscription when a newer quota write omits it", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const fetchedAt = Date.now() - 2_000;
+        const subscription = {
+            status: "subscribed" as const,
+            renewal: "off" as const,
+            observedAtMs: fetchedAt - 1_000,
+            staleAfterMs: 60_000,
+        };
+        const previous = { ...createUsageSnapshot({ fetchedAt, planLabel: "old-quota" }), subscription };
+        await writeProviderAccountUsageRecordWithPolicy({
+            accountId: account.id,
+            recordId: previous.recordId,
+            recordKey: previous.recordKey,
+            payloadMode: "plain_json_v1",
+            status: "ok",
+            fetchedAt,
+            staleAfterMs: previous.staleAfterMs,
+            snapshot: previous,
+        });
+        const incoming = createUsageSnapshot({ fetchedAt: fetchedAt + 1_000, planLabel: "new-quota" });
+        await expect(writeProviderAccountUsageRecordWithPolicy({
+            accountId: account.id,
+            recordId: incoming.recordId,
+            recordKey: incoming.recordKey,
+            payloadMode: "plain_json_v1",
+            status: "ok",
+            fetchedAt: incoming.fetchedAtMs,
+            staleAfterMs: incoming.staleAfterMs,
+            snapshot: incoming,
+        })).resolves.toBe("written");
+        await expect(readProviderAccountUsageRecord({ accountId: account.id, recordId: incoming.recordId }))
+            .resolves.toMatchObject({
+                fetchedAt: incoming.fetchedAtMs,
+                snapshot: { planLabel: "new-quota", subscription },
+            });
     });
 
     it("preserves refresh state and fences stale guarded updates", async () => {

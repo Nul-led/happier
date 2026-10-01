@@ -5,10 +5,11 @@ import {
   MACHINE_LIVE_STREAM_RELAY_AUTHORIZATION_AUDIENCE_V1,
   PeerMediationObservabilityEventV1Schema,
   createMachineLiveStreamRelayAuthorizationSigningInputV1,
-  type MachineLiveStreamFrameV1,
+  type MachineLiveStreamWireFrameV1 as MachineLiveStreamFrameV1,
   type PeerMediationObservabilityEventV1,
 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
+import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 
 import { createFakeSocket, getSocketHandler } from '../testkit/socketHarness';
 import type { machineLiveStreamRelayHandler } from './machineLiveStreamRelayHandler';
@@ -28,7 +29,7 @@ function frame(overrides: Partial<MachineLiveStreamFrameV1> = {}): MachineLiveSt
     timestampMs: 1_000,
     payloadKind: 'image_keyframe',
     payloadEncoding: 'binary_base64',
-    payloadBase64: payloadBase64ForBytes(payloadSizeBytes),
+    payload: { t: 'plain', v: payloadBase64ForBytes(payloadSizeBytes) },
     payloadSizeBytes,
     ...overrides,
   };
@@ -143,6 +144,64 @@ describe('machineLiveStreamRelayHandler observability', () => {
     vi.resetModules();
   });
 
+  it('refuses an invalid receipt before reading its routing data', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'invalid-receipt-source' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const emit = vi.fn();
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: () => ({ emit }) },
+      resolveAccountEncryptionMode: async () => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots, nowMs: () => 1_000,
+    });
+    const handle = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await expect(handle({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'receipt', receipt: null },
+    })).resolves.toBeUndefined();
+    expect(socket.emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR,
+      expect.objectContaining({ error: 'invalid_live_stream_payload' }));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not route start responses through consumer control admission', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'start-response-source' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const emit = vi.fn();
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: () => ({ emit }) },
+      resolveAccountEncryptionMode: async () => 'plain',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots, nowMs: () => 1_000,
+    });
+    await expect(getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT)({
+      v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'start_response', startResponse: { v: 1, streamId: 'stream_1', accepted: false, disabledReason: 'unavailable' } },
+    })).resolves.toBeUndefined();
+    expect(emit).not.toHaveBeenCalled();
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  it('rejects raw pixels on an E2EE Account relay before forwarding', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const socket = createFakeSocket({ emit: vi.fn(), id: 'e2ee-source' });
+    socket.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const emit = vi.fn();
+    machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
+      io: { to: () => ({ emit }) },
+      resolveAccountEncryptionMode: async () => 'e2ee',
+      serverRoutedLiveStreamEnabled: true, relayCaps, relayAuthorizationTrustRoots, nowMs: () => 1_000,
+    });
+    const handle = getSocketHandler(socket, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handle(startMessage());
+    await handle({ v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: {
+        v: 1, streamId: 'stream_1', sequence: 1, timestampMs: 1_000,
+        payloadKind: 'image_keyframe', payloadEncoding: 'binary_base64', payloadBase64: 'AQID', payloadSizeBytes: 3,
+      } } });
+    expect(emit.mock.calls.filter(([event]) => event === MACHINE_LIVE_STREAM_SOCKET_EVENT)).toEqual([]);
+    expect(socket.emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, expect.objectContaining({ error: 'invalid_live_stream_payload' }));
+  });
+
   it('publishes flow.started then flow.ready when a server relay start is accepted', async () => {
     const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
     const emitted: PeerMediationObservabilityEventV1[] = [];
@@ -151,6 +210,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -168,6 +228,44 @@ describe('machineLiveStreamRelayHandler observability', () => {
     }
   });
 
+  it('routes opaque E2EE frame/input bytes and refuses a plain payload on the admitted Account mode', async () => {
+    const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
+    const emitted: PeerMediationObservabilityEventV1[] = [];
+    const emit = vi.fn();
+    const source = createFakeSocket({ emit: vi.fn(), id: 'source-e2ee' });
+    source.data = { clientType: 'machine-scoped', machineId: 'machine-source' };
+    const target = createFakeSocket({ emit: vi.fn(), id: 'target-e2ee' });
+    target.data = { clientType: 'machine-scoped', machineId: 'machine-target' };
+    const ctx = { io: { to: () => ({ emit }) },
+      resolveAccountEncryptionMode: async (): Promise<'e2ee'> => 'e2ee',
+      serverRoutedLiveStreamEnabled: true, relayCaps: { ...relayCaps, maxTotalBytes: 4096 },
+      relayAuthorizationTrustRoots, nowMs: () => 1_000,
+      observability: { emit: (event: PeerMediationObservabilityEventV1) => emitted.push(event) },
+    };
+    machineLiveStreamRelayHandler('user-1', source as unknown as LiveStreamRelaySocket, ctx);
+    machineLiveStreamRelayHandler('user-1', target as unknown as LiveStreamRelaySocket, ctx);
+    const handle = getSocketHandler(source, MACHINE_LIVE_STREAM_SOCKET_EVENT);
+    await handle(startMessage('stream_1', undefined, { maxTotalBytes: 4096 }));
+    const c = payloadBase64ForBytes(32);
+    const wire = { v: 1, sourceMachineId: 'machine-source', targetMachineId: 'machine-target',
+      message: { kind: 'frame', frame: frame({ payload: { t: 'encrypted', c }, payloadSizeBytes: 32 }) } };
+    await handle(wire);
+    expect(emit).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, wire);
+    const input = { ...wire, message: { kind: 'sideband_control', control: {
+      v: 1, streamId: 'stream_1', payload: { t: 'encrypted', c },
+    } } };
+    await getSocketHandler(target, MACHINE_LIVE_STREAM_SOCKET_EVENT)(input);
+    expect(emit).toHaveBeenCalledWith(MACHINE_LIVE_STREAM_SOCKET_EVENT, input);
+    emit.mockClear();
+    await handle({ ...wire, message: { kind: 'frame', frame: frame({ sequence: 2 }) } });
+    expect(emit).not.toHaveBeenCalled();
+    expect(source.emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.ERROR, expect.objectContaining({ error: 'stream_payload_mode_mismatch' }));
+    await handle({ ...wire, message: { kind: 'control', control: {
+      v: 1, streamId: 'stream_1', kind: 'stop', reasonCode: 'done',
+    } } });
+    expect(emitted.find((event) => event.kind === 'flow.closed')?.data).toMatchObject({ bytesRelayed: 32 });
+  });
+
   it('publishes a flow.denied event with the reason code when authorization is forged', async () => {
     const { machineLiveStreamRelayHandler } = await import('./machineLiveStreamRelayHandler');
     const emitted: PeerMediationObservabilityEventV1[] = [];
@@ -176,6 +274,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -210,6 +309,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -255,6 +355,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps: { ...relayCaps, maxTotalBytes: 1_000 },
       relayAuthorizationTrustRoots,
@@ -297,6 +398,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -320,6 +422,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -340,6 +443,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
 
     machineLiveStreamRelayHandler('user-1', socket as unknown as LiveStreamRelaySocket, {
       io: { to: vi.fn(() => ({ emit: vi.fn() })) },
+      resolveAccountEncryptionMode: async () => 'plain',
       serverRoutedLiveStreamEnabled: true,
       relayCaps,
       relayAuthorizationTrustRoots,
@@ -355,7 +459,7 @@ describe('machineLiveStreamRelayHandler observability', () => {
       targetMachineId: 'machine-target',
       message: {
         kind: 'frame',
-        frame: frame({ sequence: 1, payloadBase64: 'c2VudGluZWw=', payloadSizeBytes: 8 }),
+        frame: frame({ sequence: 1, payload: { t: 'plain', v: 'c2VudGluZWw=' }, payloadSizeBytes: 8 }),
       },
     });
 

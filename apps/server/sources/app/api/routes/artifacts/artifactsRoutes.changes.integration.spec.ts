@@ -2,7 +2,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { db } from "@/storage/db";
 import {
-    ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
     encodePlainArtifactStoredContent,
@@ -12,37 +11,19 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { artifactsRoutes } from "./artifactsRoutes";
 
-const { emitUpdate, buildNewArtifactUpdate, buildUpdateArtifactUpdate, buildDeleteArtifactUpdate, randomKeyNaked, markAccountChanged } =
+const { emitUpdate, randomKeyNaked } =
     vi.hoisted(() => ({
         emitUpdate: vi.fn(),
-        buildNewArtifactUpdate: vi.fn((_artifact: any, updSeq: number, updId: string) => ({
-            id: updId,
-            seq: updSeq,
-            body: { t: "new-artifact" },
-        })),
-        buildUpdateArtifactUpdate: vi.fn((_artifactId: string, updSeq: number, updId: string) => ({
-            id: updId,
-            seq: updSeq,
-            body: { t: "update-artifact" },
-        })),
-        buildDeleteArtifactUpdate: vi.fn((_artifactId: string, updSeq: number, updId: string) => ({
-            id: updId,
-            seq: updSeq,
-            body: { t: "delete-artifact" },
-        })),
         randomKeyNaked: vi.fn(() => "upd-id"),
-        markAccountChanged: vi.fn(async () => 700),
     }));
 
-vi.mock("@/app/events/eventRouter", () => ({
+vi.mock("@/app/events/eventRouter", async () => ({
+    ...await import("@/app/events/eventPayloadBuilders"),
     eventRouter: { emitUpdate },
-    buildNewArtifactUpdate,
-    buildUpdateArtifactUpdate,
-    buildDeleteArtifactUpdate,
 }));
+vi.mock("@/app/events/connectionEventRouter", () => ({ eventRouter: { emitUpdate } }));
 
 vi.mock("@/utils/keys/randomKeyNaked", () => ({ randomKeyNaked }));
-vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
 vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
 
 describe("artifactsRoutes (AccountChange integration)", () => {
@@ -92,6 +73,23 @@ describe("artifactsRoutes (AccountChange integration)", () => {
             },
             select: { id: true },
         });
+    }
+
+    async function assertArtifactChange(accountId: string, artifactId: string, deleted = false) {
+        const [account, change] = await Promise.all([
+            db.account.findUniqueOrThrow({ where: { id: accountId }, select: { seq: true } }),
+            db.accountChange.findUniqueOrThrow({ where: {
+                accountId_kind_entityId: { accountId, kind: "artifact", entityId: artifactId },
+            } }),
+        ]);
+        expect(change).toMatchObject({ accountId, kind: "artifact", entityId: artifactId,
+            artifactId: deleted ? null : artifactId, cursor: account.seq });
+        expect(account.seq).toBeGreaterThan(0);
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({ userId: accountId,
+            payload: expect.objectContaining({ seq: account.seq, body: { t: "account-change" } }),
+            recipientFilter: { type: "account-stored-content-v3" },
+        }));
+        return account.seq;
     }
 
     it("bounds artifact listing with an explicit limit query", async () => {
@@ -317,16 +315,13 @@ describe("artifactsRoutes (AccountChange integration)", () => {
             headerVersion: 1,
             bodyVersion: 1,
         });
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: account.id, kind: "artifact", entityId: artifactId }),
-        );
+        const cursor = await assertArtifactChange(account.id, artifactId);
         expect(emitUpdate).toHaveBeenCalledWith(
             expect.objectContaining({
                 userId: account.id,
                 payload: expect.objectContaining({
-                    seq: 700,
-                    body: expect.objectContaining({ t: "new-artifact" }),
+                    seq: cursor,
+                    body: expect.objectContaining({ t: "new-artifact", artifactId }),
                 }),
             }),
         );
@@ -360,7 +355,7 @@ describe("artifactsRoutes (AccountChange integration)", () => {
         );
 
         await expect(db.artifact.findUnique({ where: { id: artifactId } })).resolves.toBeNull();
-        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(0);
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 
@@ -601,124 +596,38 @@ describe("artifactsRoutes (AccountChange integration)", () => {
         );
     });
 
-    it("requires the current declaration for marked create/list/detail/idempotent return and stale-current exposure", async () => {
+    it("serves the current plain Artifact lifecycle without a component-version declaration", async () => {
         process.env.HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST = "none";
-        const account = await db.account.create({
-            data: { publicKey: null, encryptionMode: "plain" },
-            select: { id: true },
-        });
-        const artifactId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const account = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         const header = encodePlainArtifactStoredContent({ title: "plain" });
         const body = encodePlainArtifactStoredContent({ body: "value" });
-
-        await withAuthenticatedTestApp(
-            (app) => artifactsRoutes(app as any),
-            async (app) => {
-                const legacyCreate = await app.inject({
-                    method: "POST",
-                    url: "/v1/artifacts",
-                    headers: {
-                        "x-test-user-id": account.id,
-                        "content-type": "application/json",
-                    },
-                    payload: {
-                        id: artifactId,
-                        header,
-                        body,
-                        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    },
-                });
-                expect(legacyCreate.statusCode).toBe(426);
-                expect(legacyCreate.json()).toEqual({
-                    error: "client-upgrade-required",
-                    requirement: {
-                        v: 1,
-                        kind: "account-stored-content",
-                        minimumProtocolVersion:
-                            ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
-                    },
-                });
-                await expect(
-                    db.artifact.findUnique({ where: { id: artifactId } }),
-                ).resolves.toBeNull();
-
-                const created = await app.inject({
-                    method: "POST",
-                    url: "/v1/artifacts",
-                    headers: {
-                        "x-test-user-id": account.id,
-                        "content-type": "application/json",
-                        ...currentStoredContentHeaders,
-                    },
-                    payload: {
-                        id: artifactId,
-                        header,
-                        body,
-                        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    },
-                });
+        const headers = { "x-test-user-id": account.id };
+        const payload = { id, header, body, dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER };
+        await withAuthenticatedTestApp(artifactsRoutes, async app => {
+            for (let invocation = 0; invocation < 2; invocation += 1) {
+                const created = await app.inject({ method: "POST", url: "/v1/artifacts", headers, payload });
                 expect(created.statusCode).toBe(200);
-
-                const legacyList = await app.inject({
-                    method: "GET",
-                    url: "/v1/artifacts",
-                    headers: { "x-test-user-id": account.id },
-                });
-                expect(legacyList.statusCode).toBe(426);
-
-                const legacyDetail = await app.inject({
-                    method: "GET",
-                    url: `/v1/artifacts/${artifactId}`,
-                    headers: { "x-test-user-id": account.id },
-                });
-                expect(legacyDetail.statusCode).toBe(426);
-
-                const legacyIdempotentCreate = await app.inject({
-                    method: "POST",
-                    url: "/v1/artifacts",
-                    headers: {
-                        "x-test-user-id": account.id,
-                        "content-type": "application/json",
-                    },
-                    payload: {
-                        id: artifactId,
-                        header,
-                        body,
-                        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    },
-                });
-                expect(legacyIdempotentCreate.statusCode).toBe(426);
-
-                const legacyStaleUpdate = await app.inject({
-                    method: "POST",
-                    url: `/v1/artifacts/${artifactId}`,
-                    headers: {
-                        "x-test-user-id": account.id,
-                        "content-type": "application/json",
-                    },
-                    payload: {
-                        header,
-                        expectedHeaderVersion: 0,
-                    },
-                });
-                expect(legacyStaleUpdate.statusCode).toBe(426);
-                expect(JSON.stringify(legacyStaleUpdate.json())).not.toContain(header);
-            },
-        );
-
-        const stored = await db.artifact.findUniqueOrThrow({
-            where: { id: artifactId },
-            select: {
-                headerVersion: true,
-                bodyVersion: true,
-                seq: true,
-            },
+                expect(created.json()).toMatchObject({ id, header, body, ownerAccountId: account.id,
+                    access: "owner", encryptionMode: "plain" });
+            }
+            const list = await app.inject({ method: "GET", url: "/v1/artifacts", headers });
+            expect(list.statusCode).toBe(200);
+            expect(list.json()).toEqual([expect.objectContaining({ id, header, encryptionMode: "plain" })]);
+            const detail = await app.inject({ method: "GET", url: "/v1/artifacts/" + id, headers });
+            expect(detail.statusCode).toBe(200);
+            expect(detail.json()).toMatchObject({ id, header, body });
+            const stale = await app.inject({ method: "POST", url: "/v1/artifacts/" + id, headers,
+                payload: { header, expectedHeaderVersion: 0 } });
+            expect(stale.statusCode).toBe(200);
+            expect(stale.json()).toMatchObject({ success: false, error: "version-mismatch", currentHeaderVersion: 1 });
+            const updated = await app.inject({ method: "POST", url: "/v1/artifacts/" + id, headers,
+                payload: { header, expectedHeaderVersion: 1 } });
+            expect(updated.statusCode).toBe(200);
+            const deleted = await app.inject({ method: "DELETE", url: "/v1/artifacts/" + id + "/revision/2/1", headers });
+            expect(deleted.statusCode).toBe(200);
         });
-        expect(stored).toEqual({
-            headerVersion: 1,
-            bodyVersion: 1,
-            seq: 0,
-        });
+        expect(await db.artifact.findUnique({ where: { id } })).toBeNull();
     });
 
     it("marks artifact update and emits update-artifact using returned cursor", async () => {
@@ -762,19 +671,40 @@ describe("artifactsRoutes (AccountChange integration)", () => {
         expect(stored?.headerVersion).toBe(2);
         expect(stored?.seq).toBe(8);
         expect(stored?.header).toEqual(Uint8Array.from(Buffer.from("head-new")));
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: account.id, kind: "artifact", entityId: artifactId }),
-        );
+        const cursor = await assertArtifactChange(account.id, artifactId);
         expect(emitUpdate).toHaveBeenCalledWith(
             expect.objectContaining({
                 userId: account.id,
                 payload: expect.objectContaining({
-                    seq: 700,
-                    body: expect.objectContaining({ t: "update-artifact" }),
+                    seq: cursor,
+                    body: expect.objectContaining({ t: "update-artifact", artifactId,
+                        header: { value: Buffer.from("head-new").toString("base64"), version: 2 } }),
                 }),
             }),
         );
+    });
+
+    it("atomically refuses stale deletion revisions and deletes at the matching revision", async () => {
+        const account = await seedAccount();
+        const id = "77777777-7777-4777-8777-777777777777";
+        await db.artifact.create({ data: { id, accountId: account.id, header: Buffer.from("header"), headerVersion: 2,
+            body: Buffer.from("body"), bodyVersion: 4, dataEncryptionKey: Buffer.from("key"), seq: 1 } });
+        const beforeCursor = await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { seq: true } });
+        await withAuthenticatedTestApp((app) => artifactsRoutes(app as any), async (app) => {
+            const stale = await app.inject({ method: "DELETE", url: `/v1/artifacts/${id}/revision/2/3`,
+                headers: { "x-test-user-id": account.id } });
+            expect(stale.statusCode).toBe(409);
+            expect(await db.artifact.findUnique({ where: { id } })).not.toBeNull();
+            expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(0);
+            expect(await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { seq: true } })).toEqual(beforeCursor);
+            expect(emitUpdate).not.toHaveBeenCalled();
+            const deleted = await app.inject({ method: "DELETE", url: `/v1/artifacts/${id}/revision/2/4`,
+                headers: { "x-test-user-id": account.id } });
+            expect(deleted.statusCode).toBe(200);
+            expect(await db.artifact.findUnique({ where: { id } })).toBeNull();
+            const cursor = await assertArtifactChange(account.id, id, true);
+            expect(cursor).toBe(beforeCursor.seq + 1);
+        });
     });
 
     it("marks artifact delete and emits delete-artifact using returned cursor", async () => {
@@ -812,16 +742,13 @@ describe("artifactsRoutes (AccountChange integration)", () => {
             select: { id: true },
         });
         expect(stored).toBeNull();
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: account.id, kind: "artifact", entityId: artifactId }),
-        );
+        const cursor = await assertArtifactChange(account.id, artifactId, true);
         expect(emitUpdate).toHaveBeenCalledWith(
             expect.objectContaining({
                 userId: account.id,
                 payload: expect.objectContaining({
-                    seq: 700,
-                    body: expect.objectContaining({ t: "delete-artifact" }),
+                    seq: cursor,
+                    body: { t: "delete-artifact", artifactId },
                 }),
             }),
         );
@@ -872,79 +799,8 @@ describe("artifactsRoutes (AccountChange integration)", () => {
 
         await expect(db.artifact.findUnique({ where: { id: artifactId } }))
             .resolves.toMatchObject({ id: artifactId });
-        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(await db.accountChange.count({ where: { accountId: account.id } })).toBe(0);
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 
-    it("requires current stored-content support before deleting a marked row", async () => {
-        const account = await db.account.create({
-            data: { publicKey: null, encryptionMode: "plain" },
-            select: { id: true },
-        });
-        const artifactId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        await db.artifact.create({
-            data: {
-                id: artifactId,
-                accountId: account.id,
-                header: Buffer.from(
-                    encodePlainArtifactStoredContent({ title: "plain" }),
-                    "base64",
-                ),
-                headerVersion: 4,
-                body: Buffer.from(
-                    encodePlainArtifactStoredContent({ body: "value" }),
-                    "base64",
-                ),
-                bodyVersion: 7,
-                dataEncryptionKey: Buffer.from(
-                    ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                    "base64",
-                ),
-                seq: 9,
-            },
-        });
-
-        await withAuthenticatedTestApp(
-            (app) => artifactsRoutes(app as any),
-            async (app) => {
-                const legacyDelete = await app.inject({
-                    method: "DELETE",
-                    url: `/v1/artifacts/${artifactId}`,
-                    headers: { "x-test-user-id": account.id },
-                });
-                expect(legacyDelete.statusCode).toBe(426);
-                expect(legacyDelete.json()).toEqual({
-                    error: "client-upgrade-required",
-                    requirement: {
-                        v: 1,
-                        kind: "account-stored-content",
-                        minimumProtocolVersion:
-                            ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
-                    },
-                });
-                await expect(
-                    db.artifact.findUnique({ where: { id: artifactId } }),
-                ).resolves.toMatchObject({ id: artifactId });
-                expect(markAccountChanged).not.toHaveBeenCalled();
-                expect(emitUpdate).not.toHaveBeenCalled();
-
-                const currentDelete = await app.inject({
-                    method: "DELETE",
-                    url: `/v1/artifacts/${artifactId}`,
-                    headers: {
-                        "x-test-user-id": account.id,
-                        ...currentStoredContentHeaders,
-                    },
-                });
-                expect(currentDelete.statusCode).toBe(200);
-                expect(currentDelete.json()).toEqual({ success: true });
-            },
-        );
-
-        await expect(
-            db.artifact.findUnique({ where: { id: artifactId } }),
-        ).resolves.toBeNull();
-        expect(markAccountChanged).toHaveBeenCalledOnce();
-        expect(emitUpdate).toHaveBeenCalledOnce();
-    });
 });

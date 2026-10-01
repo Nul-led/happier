@@ -1,6 +1,10 @@
 import type { FeatureId } from "@happier-dev/protocol";
 import {
-    AccountStoredContentUpgradeRequiredV1Schema,
+    AnyClientUpgradeRequiredV1Schema,
+    CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
+    CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
+    SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION,
+    SESSION_ORGANIZATION_LEGACY_MAX_ATTENTION_STANDINGS,
     CreateOrUpdateSessionOrganizationFolderRequestSchema,
     CreateOrUpdateSessionOrganizationFolderResponseSchema,
     CreateOrUpdateSessionOrganizationTagRequestSchema,
@@ -100,6 +104,10 @@ function buildSnapshotRequestFromQuery(query: unknown) {
     const record = query && typeof query === "object" ? query as Record<string, unknown> : {};
     const orderScopes = parseOrderScopesQuery(record.orderScopes);
     return {
+        ...(record.projectionVersion !== undefined
+            ? { projectionVersion: record.projectionVersion === String(SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION)
+                ? SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION : record.projectionVersion }
+            : {}),
         ...(parseOptionalBoolean(record.includeFolders) !== undefined ? { includeFolders: parseOptionalBoolean(record.includeFolders) } : {}),
         ...(parseOptionalBoolean(record.includeTags) !== undefined ? { includeTags: parseOptionalBoolean(record.includeTags) } : {}),
         ...(parseOptionalBoolean(record.includeLabels) !== undefined ? { includeLabels: parseOptionalBoolean(record.includeLabels) } : {}),
@@ -129,7 +137,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             response: {
                 200: SessionOrganizationSnapshotResponseSchema,
                 400: z.object({ error: z.literal("invalid-session-organization-snapshot-request") }),
-                426: AccountStoredContentUpgradeRequiredV1Schema,
+                426: AnyClientUpgradeRequiredV1Schema,
             },
         },
     }, async (request, reply) => {
@@ -143,6 +151,22 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             request: parsedRequest.data,
             authentication: readSessionAccessAuthenticationFromRequest(request),
         });
+
+        // Released strict readers cannot parse more than 500 standings. Keep all data and
+        // writes intact; only this incompatible read requires an updated projection reader.
+        if (
+            parsedRequest.data.projectionVersion !== SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION
+            && (snapshot.attentionStandings?.length ?? 0) > SESSION_ORGANIZATION_LEGACY_MAX_ATTENTION_STANDINGS
+        ) {
+            return reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send({
+                error: CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
+                requirement: {
+                    v: 1,
+                    kind: "session-organization",
+                    minimumProtocolVersion: SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION,
+                },
+            });
+        }
 
         const includesCurrentOnlyDisplayState = [
             ...snapshot.folders,

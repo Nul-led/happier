@@ -4,25 +4,9 @@ import { PeerRouteNonceProofV1Schema } from './directRouteGrantNonceV1.js';
 import { SignedDirectRouteGrantV1Schema } from './directRouteGrantV1.js';
 import { PeerFlowKindV1Schema } from './flowKind.js';
 import { PEER_MEDIATION_RECEIPTS } from './receipts.js';
+import { isLiteralLoopbackHostname } from '../../../server/urls/loopbackHostname.js';
 
 const MAX_LOOPBACK_ENDPOINT_URL_LENGTH = 2048;
-const PEER_LOOPBACK_PROBE_PATH_V1 = '/peer-mediation/v1/probe';
-
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  if (normalized === 'localhost') return true;
-  if (normalized === '::1' || normalized === '[::1]') return true;
-
-  const ipv4Parts = normalized.split('.');
-  if (ipv4Parts.length !== 4) return false;
-  const [firstPart, ...remainingParts] = ipv4Parts;
-  if (firstPart !== '127') return false;
-  return remainingParts.every((part) => {
-    if (!/^\d+$/.test(part)) return false;
-    const value = Number(part);
-    return Number.isInteger(value) && value >= 0 && value <= 255;
-  });
-}
 
 export const PeerLoopbackEndpointCandidateV1Schema = z
   .object({
@@ -31,7 +15,6 @@ export const PeerLoopbackEndpointCandidateV1Schema = z
     url: z.string().min(1).max(MAX_LOOPBACK_ENDPOINT_URL_LENGTH),
     endpointFingerprint: z.string().min(1),
     expiresAt: z.number().int().nonnegative(),
-    directRouteGrantProofVerifierVersions: z.array(z.literal(2)).max(1).optional().default([]),
   })
   .superRefine((candidate, ctx) => {
     let parsedUrl: URL;
@@ -53,7 +36,7 @@ export const PeerLoopbackEndpointCandidateV1Schema = z
         message: 'Loopback endpoint candidates must use http:',
       });
     }
-    if (!isLoopbackHostname(parsedUrl.hostname)) {
+    if (!isLiteralLoopbackHostname(parsedUrl.hostname)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['url'],
@@ -67,11 +50,11 @@ export const PeerLoopbackEndpointCandidateV1Schema = z
         message: 'Loopback endpoint candidates must not include URL secrets, query strings, or fragments',
       });
     }
-    if (parsedUrl.pathname !== PEER_LOOPBACK_PROBE_PATH_V1) {
+    if (parsedUrl.pathname !== '/') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['url'],
-        message: 'Loopback endpoint candidates must target the peer mediation probe endpoint',
+        message: 'Loopback endpoint candidates must publish the listener base URL',
       });
     }
   })
@@ -123,10 +106,7 @@ export const PeerLoopbackProbeResponseV1Schema = z.discriminatedUnion('ok', [
     .strict(),
 ]);
 
-export type PeerLoopbackEndpointCandidateV1 = Omit<
-  z.output<typeof PeerLoopbackEndpointCandidateV1Schema>,
-  'directRouteGrantProofVerifierVersions'
-> & Readonly<{ directRouteGrantProofVerifierVersions?: readonly 2[] }>;
+export type PeerLoopbackEndpointCandidateV1 = z.output<typeof PeerLoopbackEndpointCandidateV1Schema>;
 export type PeerLoopbackProbeRequestV1 = z.infer<typeof PeerLoopbackProbeRequestV1Schema>;
 export type PeerLoopbackProbeFallbackReasonCodeV1 = z.infer<typeof PeerLoopbackProbeFallbackReasonCodeV1Schema>;
 export type PeerLoopbackProbeResponseV1 = z.infer<typeof PeerLoopbackProbeResponseV1Schema>;

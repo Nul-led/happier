@@ -285,7 +285,6 @@ describe("startSocket account revocation with the configured Redis adapter", () 
             HAPPIER_SOCKET_ADAPTER: "redis-streams",
             REDIS_URL: resolvedRedis.redisUrl,
             HAPPY_SERVER_FLAVOR: "full",
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
         });
 

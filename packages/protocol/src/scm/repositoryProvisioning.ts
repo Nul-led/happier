@@ -8,6 +8,7 @@ import {
   ScmWorkingSnapshotSchema,
 } from './workingSnapshot.js';
 import { ScmOperationErrorCodeSchema } from './operationError.js';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
 import { ScmRequestBaseSchema } from './requestBase.js';
 import {
   ScmHostingProviderKindSchema,
@@ -81,6 +82,7 @@ export type ScmRepositoryProvisioningRemediation =
 export const ScmRepositoryProvisioningFailureResponseSchema = z
   .object({
     success: z.literal(false),
+    outcome: ScmOperationOutcomeSchema.optional(),
     error: z.string().min(1),
     errorCode: ScmOperationErrorCodeSchema.optional(),
     remediation: ScmRepositoryProvisioningRemediationSchema.optional(),
@@ -103,6 +105,7 @@ export const ScmRepositoryInitResponseSchema = z.union([
     .object({
       success: z.literal(true),
       alreadyInitialized: z.boolean(),
+      outcome: ScmOperationOutcomeSchema.optional(),
       snapshot: ScmWorkingSnapshotSchema.optional(),
       stdout: z.string().optional(),
       stderr: z.string().optional(),
@@ -139,6 +142,7 @@ export const ScmRepositoryRemoveIndexLockResponseSchema = z.union([
     .object({
       success: z.literal(true),
       removed: z.boolean(),
+      outcome: ScmOperationOutcomeSchema.optional(),
       lockPath: z.string().min(1).nullable(),
       reason: ScmRepositoryRemoveIndexLockReasonSchema.optional(),
       snapshot: ScmWorkingSnapshotSchema.optional(),
@@ -239,6 +243,7 @@ export const ScmHostingRepositoryPublishResponseSchema = z.union([
       repository: ScmHostingRepositorySummarySchema,
       remote: ScmRemoteInfoSchema,
       pushed: z.boolean(),
+      outcome: ScmOperationOutcomeSchema.optional(),
       snapshot: ScmWorkingSnapshotSchema.optional(),
       stdout: z.string().optional(),
       stderr: z.string().optional(),

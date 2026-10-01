@@ -12,9 +12,10 @@ import type { JsonValue as StrictJsonValue } from '../../json/strictJsonValue.js
 import { z } from 'zod';
 import { isPluginError } from '../errors.js';
 import {
-  PluginContributionIdentityV1Schema,
   type PluginContributionIdentityV1,
 } from '../contributionIdentity.js';
+import { formatQualifiedPluginActionId } from './qualifiedActionId.js';
+export { formatQualifiedPluginActionId, parseQualifiedPluginActionId, type QualifiedPluginActionId } from './qualifiedActionId.js';
 import {
   compilePluginJsonSchema,
   isValidPluginJsonSchemaValue,
@@ -66,35 +67,6 @@ export function projectPluginActionFailureMessage(
   }
 }
 
-/** Canonical durable/settings key for one contributed Action. */
-export type QualifiedPluginActionId = `${string}/actions/${string}`;
-
-/**
- * Formats the only supported qualified contributed-Action identity. Settings,
- * discovery, and invocation share this owner instead of reconstructing the
- * slash grammar at each boundary.
- */
-export function formatQualifiedPluginActionId(
-  identity: PluginContributionIdentityV1,
-): QualifiedPluginActionId {
-  const parsed = PluginContributionIdentityV1Schema.parse(identity);
-  return `${parsed.pluginId}/actions/${parsed.localId}`;
-}
-
-/** Reads only the canonical qualified contributed-Action spelling. */
-export function parseQualifiedPluginActionId(value: unknown): PluginContributionIdentityV1 | null {
-  if (typeof value !== 'string') return null;
-  const separator = '/actions/';
-  const separatorIndex = value.indexOf(separator);
-  if (separatorIndex <= 0) return null;
-  const parsed = PluginContributionIdentityV1Schema.safeParse({
-    pluginId: value.slice(0, separatorIndex),
-    localId: value.slice(separatorIndex + separator.length),
-  });
-  if (!parsed.success || formatQualifiedPluginActionId(parsed.data) !== value) return null;
-  return parsed.data;
-}
-
 export type PluginActionInvocationResult = Readonly<
   | { status: 'executed'; value: StrictJsonValue }
   | {
@@ -138,7 +110,7 @@ export type PluginActionInputParserResult = Readonly<
   | { success: false; issues: readonly PluginActionInputParserIssue[] }
 >;
 
-/** Exact-generation executable semantics captured from a composable Action declaration. */
+/** Exact-occurrenceId executable semantics captured from a composable Action declaration. */
 export type PluginActionInputParser = (
   input: StrictJsonValue,
 ) => PluginActionInputParserResult;
@@ -287,16 +259,16 @@ function validates(validator: ReturnType<typeof compilePluginJsonSchema> | null,
   return isValidPluginJsonSchemaValue(validator, value);
 }
 
-type PluginActionAbortSource = 'caller' | 'generation';
+type PluginActionAbortSource = 'caller' | 'occurrenceId';
 
-function linkAbortSignals(generationSignal: AbortSignal, callerSignal?: AbortSignal): Readonly<{
+function linkAbortSignals(occurrenceSignal: AbortSignal, callerSignal?: AbortSignal): Readonly<{
   signal: AbortSignal;
   abortSource(): PluginActionAbortSource | null;
   dispose(): void;
 }> {
   const controller = new AbortController();
   const sources: readonly Readonly<{ source: PluginActionAbortSource; signal: AbortSignal }>[] = [
-    { source: 'generation', signal: generationSignal },
+    { source: 'occurrenceId', signal: occurrenceSignal },
     ...(callerSignal ? [{ source: 'caller' as const, signal: callerSignal }] : []),
   ];
   let firstAbortSource: PluginActionAbortSource | null = null;
@@ -541,7 +513,7 @@ export type PluginActionPresentUserAuthorizationFacts = Readonly<
  */
 export type PluginActionPresentUserGatePolicy = Readonly<{
   qualifiedId: string;
-  generation: string;
+  occurrenceId: string;
   dangerLevel: PluginActionDangerLevelV2;
   scopes: readonly string[];
   surfaces: readonly string[];
@@ -615,8 +587,14 @@ function isPresentUserResolutionCurrent<TAction>(
   }
 }
 
-function requiresPresentUserIntent(
-  policy: PluginActionPresentUserGatePolicy,
+/**
+ * Whether one invocation needs a live present-user decision. This is the one
+ * requirement rule: the gate applies it at admission, and a present-user host
+ * (the UI dispatcher) applies it to decide whether to confirm locally before
+ * sending a daemon Action.
+ */
+export function pluginActionRequiresPresentUserIntent(
+  policy: Pick<PluginActionPresentUserGatePolicy, 'dangerLevel' | 'confirmation' | 'approvalRequiredByActionSettings'>,
   invocationSurface: string,
 ): boolean {
   // A host-stamped Ask-first setting is explicit user policy and must not be
@@ -638,7 +616,7 @@ function evaluatePresentUserPolicy(
   policy: PluginActionPresentUserGatePolicy,
   args: Readonly<{ surface: string; invocationSurface: string; sessionId?: string }>,
 ): Readonly<{ outcome: 'visible' | 'disabled' | 'denied' | 'unavailable'; code: string; requiresCurrentIntent: boolean }> {
-  const requiresCurrentIntent = requiresPresentUserIntent(policy, args.invocationSurface);
+  const requiresCurrentIntent = pluginActionRequiresPresentUserIntent(policy, args.invocationSurface);
   if (!policy.surfaces.includes(args.surface)) {
     return Object.freeze({
       outcome: 'unavailable',
@@ -671,7 +649,6 @@ export function fingerprintPluginActionCurrentIntent(params: Readonly<{
     'happier.plugin-action.current-intent.v1',
     [createCanonicalJsonSigningInput({
       qualifiedId: params.policy.qualifiedId,
-      generation: params.policy.generation,
       inputPresent: params.input !== undefined,
       ...(params.input === undefined ? {} : { input: params.input }),
       surface: params.surface,
@@ -824,7 +801,7 @@ export function createPluginActionInvocation(params: Readonly<{
   inputParser?: PluginActionInputParser;
   resultSchema?: object;
   resultParser?: PluginActionResultParser;
-  generationSignal: AbortSignal;
+  occurrenceSignal: AbortSignal;
   isCurrent(): boolean;
 }>): Readonly<{
   qualifiedId: string;
@@ -843,21 +820,41 @@ export function createPluginActionInvocation(params: Readonly<{
     pluginId: params.pluginId,
     localId: params.localId,
   });
-  const inputValidator = compileSchema(params.inputSchema);
-  const resultValidator = compileSchema(params.resultSchema);
-  const inputParser = params.inputParser ?? rehydrateActionParser(params.inputSchema);
-  const resultParser = params.resultParser ?? rehydrateActionParser(params.resultSchema);
+  // A registry creates one invocation per registered Action, and preparing a
+  // schema (AJV compile plus Zod rehydration) costs 0.1-0.7 s. Preparing every
+  // Action at registration blocked the daemon event loop for minutes, so each
+  // invocation prepares its own schemas on first invoke and keeps them.
+  let prepared: Readonly<{
+    inputValidator: ReturnType<typeof compileSchema>;
+    resultValidator: ReturnType<typeof compileSchema>;
+    inputParser: PluginActionInputParser | undefined;
+    resultParser: PluginActionResultParser | undefined;
+  }> | null = null;
+  const prepareSchemas = () => prepared ??= Object.freeze({
+    inputValidator: compileSchema(params.inputSchema),
+    resultValidator: compileSchema(params.resultSchema),
+    inputParser: params.inputParser ?? rehydrateActionParser(params.inputSchema),
+    resultParser: params.resultParser ?? rehydrateActionParser(params.resultSchema),
+  });
 
   return Object.freeze({
     qualifiedId,
     async invoke(input, options) {
-      if (!params.isCurrent() || params.generationSignal.aborted) {
-        return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action generation is no longer current');
+      if (!params.isCurrent() || params.occurrenceSignal.aborted) {
+        return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action occurrenceId is no longer current');
       }
       if (options.signal?.aborted) {
         return unavailableBeforeHandler('plugin_action_aborted', 'Plugin action invocation was aborted');
       }
-      const parsedInput = AgentRuntimeJsonValueV1Schema.safeParse(input);
+      const { inputValidator, resultValidator, inputParser, resultParser } = prepareSchemas();
+      // The public Action call accepts an omitted input for Actions that declare
+      // no input contract. Handlers still receive only canonical JSON, so the
+      // no-input value is `null`; a declared schema/parser continues to own and
+      // reject absence rather than having it reinterpreted as explicit null.
+      const canonicalInput = input === undefined && inputValidator === null && inputParser === undefined
+        ? null
+        : input;
+      const parsedInput = AgentRuntimeJsonValueV1Schema.safeParse(canonicalInput);
       if (!parsedInput.success) return invalidInput;
       let normalizedInput = parsedInput.data;
       if (inputParser) {
@@ -878,7 +875,7 @@ export function createPluginActionInvocation(params: Readonly<{
         return inputParser ? inputSchemaProjectionMismatch : invalidInput;
       }
 
-      const linked = linkAbortSignals(params.generationSignal, options.signal);
+      const linked = linkAbortSignals(params.occurrenceSignal, options.signal);
       try {
         const handlerInput = Object.freeze({
           input: normalizedInput,
@@ -896,14 +893,14 @@ export function createPluginActionInvocation(params: Readonly<{
             if (abortSource === 'caller') {
               return unavailableBeforeHandler('plugin_action_aborted', 'Plugin action invocation was aborted');
             }
-            if (abortSource === 'generation' || !params.isCurrent() || params.generationSignal.aborted) {
-              return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action generation retired before dispatch');
+            if (abortSource === 'occurrenceId' || !params.isCurrent() || params.occurrenceSignal.aborted) {
+              return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action occurrenceId retired before dispatch');
             }
             return unavailableBeforeHandler('plugin_action_aborted', 'Plugin action invocation was aborted');
           }
           if (settlement.kind === 'rejected') {
-            if (!params.isCurrent() || params.generationSignal.aborted) {
-              return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action generation retired before dispatch');
+            if (!params.isCurrent() || params.occurrenceSignal.aborted) {
+              return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action occurrenceId retired before dispatch');
             }
             if (linked.signal.aborted) {
               return unavailableBeforeHandler('plugin_action_aborted', 'Plugin action invocation was aborted');
@@ -913,8 +910,8 @@ export function createPluginActionInvocation(params: Readonly<{
               'Plugin action invocation could not be admitted',
             );
           }
-          if (!params.isCurrent() || params.generationSignal.aborted) {
-            return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action generation retired before dispatch');
+          if (!params.isCurrent() || params.occurrenceSignal.aborted) {
+            return unavailableBeforeHandler('plugin_action_generation_retired', 'Plugin action occurrenceId retired before dispatch');
           }
           const result = readPreDispatchUnavailableResult(settlement.value);
           if (result) return unavailableBeforeHandler(result.code, result.message);
@@ -941,8 +938,8 @@ export function createPluginActionInvocation(params: Readonly<{
           if (abortSource === 'caller') {
             return unavailableAfterCancellation('plugin_action_aborted', 'Plugin action invocation was aborted');
           }
-          if (abortSource === 'generation' || !params.isCurrent() || params.generationSignal.aborted) {
-            return unavailableAfterCancellation('plugin_action_generation_retired', 'Plugin action generation retired during execution');
+          if (abortSource === 'occurrenceId' || !params.isCurrent() || params.occurrenceSignal.aborted) {
+            return unavailableAfterCancellation('plugin_action_generation_retired', 'Plugin action occurrenceId retired during execution');
           }
           return unavailableAfterCancellation('plugin_action_aborted', 'Plugin action invocation was aborted');
         }

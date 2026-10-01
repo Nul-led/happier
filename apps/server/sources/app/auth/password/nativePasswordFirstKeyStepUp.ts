@@ -23,14 +23,16 @@ export async function createNativePasswordFirstKeyStepUp(params: Readonly<{
         await acquireAccountSessionOwnerMetadataFenceInTx(tx, params.accountId);
         const current = await findNativePasswordAccount(candidate.normalizedEmail, tx);
         if (!current || current.account.id !== params.accountId || current.account.status !== "active"
-            || current.parsed.mode !== "plain" || current.revision !== candidate.revision) return null;
+            || current.parsed.mode !== "plain" || current.nativeIdentityId !== candidate.nativeIdentityId
+            || current.revision !== candidate.revision) return null;
         if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, { env: process.env, methodId: "email_password", actionId: "login" })) return null;
         const pending = `oauth_pending_${randomBytes(24).toString("hex")}`;
         const proof = randomBytes(32).toString("hex");
         await tx.repeatKey.create({ data: {
             key: pending, expiresAt: new Date(Date.now() + 10 * 60 * 1000),
             value: JSON.stringify({ v: 3, flow: "auth", purpose: "account_encryption_first_key", provider: "email_password",
-                userId: params.accountId, providerUserId: current.normalizedEmail, credentialRevision: current.revision,
+                userId: params.accountId, providerUserId: current.normalizedEmail,
+                nativeIdentityId: current.nativeIdentityId, credentialRevision: current.revision,
                 proofHash: createHash("sha256").update(proof, "utf8").digest("hex"), requestDigest: params.requestDigest }),
         } });
         return { provider: "email_password", pending, proof };

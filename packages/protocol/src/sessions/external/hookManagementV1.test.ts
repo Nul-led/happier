@@ -784,22 +784,22 @@ describe('plugin-generic session-hook management contracts', () => {
     expect(isFeatureId(PLUGIN_SESSION_HOOK_MANAGEMENT_FEATURE_ID)).toBe(true);
 
     const expected = [
-      ['plugins.sessionHooks.status.get', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_STATUS_GET, 'read'],
-      ['plugins.sessionHooks.install', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_INSTALL, 'write'],
-      ['plugins.sessionHooks.disable', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_DISABLE, 'write'],
-      ['plugins.sessionHooks.enable', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_ENABLE, 'write'],
-      ['plugins.sessionHooks.uninstall', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_UNINSTALL, 'danger'],
+      ['plugins.sessionHooks.status.get', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_STATUS_GET, 'read', true],
+      ['plugins.sessionHooks.install', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_INSTALL, 'write', false],
+      ['plugins.sessionHooks.disable', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_DISABLE, 'write', false],
+      ['plugins.sessionHooks.enable', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_ENABLE, 'write', false],
+      ['plugins.sessionHooks.uninstall', RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_UNINSTALL, 'danger', false],
     ] as const;
 
     expect(
       listActionSpecs().filter((spec) => spec.id.startsWith('plugins.sessionHooks.')).map((spec) => spec.id),
     ).toEqual(expected.map(([actionId]) => actionId));
 
-    for (const [actionId, rpcMethod, sideEffectClass] of expected) {
+    for (const [actionId, rpcMethod, sideEffectClass, api] of expected) {
       const spec = getActionSpec(actionId);
       expect(spec.bindings?.rpcMethod).toBe(rpcMethod);
       expect(spec.sideEffectClass).toBe(sideEffectClass);
-      expect(spec.surfaces).toMatchObject({ rpc: true, api: true, plugin: true });
+      expect(spec.surfaces).toMatchObject({ rpc: true, api, plugin: true });
       expect(resolveMachineRpcGovernance(rpcMethod)).toEqual({
         rpcClassification: 'action_spec_bound',
         actionSpecId: actionId,

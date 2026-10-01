@@ -7,6 +7,15 @@ describe('Session Board layout', () => {
     const layout = { v: 1, tabs: [tab, { ...tab, id: 'second' }] };
     expect(SessionBoardLayoutV1Schema.parse(layout)).toEqual(layout);
   });
+  it('retains an optional shared frame override and rejects noncanonical frame styles', () => {
+    const layout = { v: 1, tabs: [{ ...tab, items: [{ ...tab.items[0], frameStyle: 'plain' }] }] };
+    expect(SessionBoardLayoutV1Schema.parse(layout)).toEqual(layout);
+    for (const frameStyle of [null, 'full_bleed', true]) {
+      expect(SessionBoardLayoutV1Schema.safeParse({ v: 1, tabs: [{ ...tab,
+        items: [{ ...tab.items[0], frameStyle }],
+      }] }).success).toBe(false);
+    }
+  });
   it('rejects duplicate views and placements, pixels and viewer-local state', () => {
     for (const layout of [
       { v: 1, tabs: [tab, tab] },

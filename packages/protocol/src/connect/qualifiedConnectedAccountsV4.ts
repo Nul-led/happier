@@ -4,6 +4,7 @@ import type { PluginContributionIdentityV1 } from '../plugins/contributionIdenti
 
 import { StoredJsonContentEnvelopeSchema } from '../storage/storedJsonContentEnvelope.js';
 import type { AccountScopedCryptoMaterial } from '../crypto/accountScopedCipher.js';
+import { SealedProviderAccountSubscriptionV1Schema } from './accountSubscription.js';
 import {
   CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
   type PluginConnectedAccountAuthenticationV2,
@@ -23,7 +24,7 @@ import {
   ProviderAccountUsageRecordWriteFieldsV1Schema,
   ProviderAccountUsageRecordWriteV1Schema,
   ProviderAccountUsageSnapshotV1Schema,
-  openProviderAccountUsageSnapshotCiphertext,
+  openSealedProviderAccountUsageSnapshot,
   projectProviderAccountUsageSnapshotToQuotaFieldsV1,
   type ProviderAccountUsageSnapshotV1,
 } from './accountUsage.js';
@@ -389,6 +390,12 @@ export const QualifiedConnectedAccountQuotaSnapshotV4Schema =
     .extend({ ref: asProtocolZod(QualifiedConnectedAccountRefSchema) })
     .strict();
 
+const ProviderAccountUsageEncryptedContentV4Schema = z.object({
+  t: z.literal('encrypted'),
+  c: z.string().min(1),
+  subscription: SealedProviderAccountSubscriptionV1Schema.optional(),
+}).strict();
+
 export const QualifiedConnectedServiceUsageSourceResolutionV4Schema = z.object({
   source: QualifiedConnectedServiceUsageSourceV4Schema,
   recordId: ProviderAccountUsageRecordIdSchema,
@@ -406,10 +413,7 @@ export const QualifiedConnectedAccountQuotaResponseV4Schema = z.object({
       t: z.literal('plain'),
       v: QualifiedConnectedAccountQuotaSnapshotV4Schema,
     }).strict(),
-    z.object({
-      t: z.literal('encrypted'),
-      c: z.string().min(1),
-    }).strict(),
+    ProviderAccountUsageEncryptedContentV4Schema,
   ]),
   metadata: z.object({
     fetchedAt: z.number().int().nonnegative(),
@@ -507,27 +511,31 @@ export function openQualifiedConnectedAccountQuotaResponseV4(
     return response.data.content.v;
   }
   if (!params.material) return null;
-  const opened = openProviderAccountUsageSnapshotCiphertext({
+  const snapshot = openSealedProviderAccountUsageSnapshot({
     material: params.material,
-    ciphertext: response.data.content.c,
+    sealed: {
+      format: 'account_scoped_v1',
+      ciphertext: response.data.content.c,
+      ...(response.data.content.subscription
+        ? { subscription: response.data.content.subscription }
+        : {}),
+    },
   });
-  const snapshot =
-    ProviderAccountUsageSnapshotV1Schema.safeParse(opened?.value);
   if (
-    !snapshot.success
-    || snapshot.data.recordId
+    !snapshot
+    || snapshot.recordId
       !== response.data.sourceResolution.recordId
-    || snapshot.data.recordKey.accountSubjectId
+    || snapshot.recordKey.accountSubjectId
       !== response.data.sourceResolution.providerAccountId
-    || snapshot.data.fetchedAtMs
+    || snapshot.fetchedAtMs
       !== response.data.metadata.fetchedAt
-    || snapshot.data.staleAfterMs
+    || snapshot.staleAfterMs
       !== response.data.metadata.staleAfterMs
   ) {
     return null;
   }
   return projectProviderAccountUsageSnapshotToQualifiedConnectedAccountQuotaSnapshotV4({
-    snapshot: snapshot.data,
+    snapshot,
     ref: expectedRef.data,
   });
 }
@@ -553,7 +561,10 @@ export const QualifiedProviderAccountUsageWriteSuccessV4Schema = z.object({
  * bound here would make a stored record unreadable through its own routes.
  */
 export const QualifiedProviderAccountUsageRecordResponseV4Schema = z.object({
-  content: StoredJsonContentEnvelopeSchema,
+  content: z.discriminatedUnion('t', [
+    StoredJsonContentEnvelopeSchema.options[0],
+    ProviderAccountUsageEncryptedContentV4Schema,
+  ]),
   metadata: z.object({
     fetchedAt: z.number().int().nonnegative(),
     staleAfterMs: z.number().int().nonnegative(),

@@ -27,8 +27,8 @@ export const emailPasswordAuthMethodModule: AuthMethodModule = Object.freeze({
         // narrowed mode on `login`/`connect` would strand every Plain password
         // Account the moment the deployment turns keyless accounts off. This is
         // the same rule the persisted Home-policy narrowing already applies in
-        // `narrowAuthMethodDecisionForHomePolicy`; keyed password login keeps its
-        // own Key-Challenge dependency narrowing in that owner.
+        // `applyHomePolicyToAuthMethodDecision`. Keyed password login uses the
+        // shared challenge protocol but is admitted as this native method.
         const provisionMode: AuthMethodActionMode =
             allowedModes.length === 2 ? "either" : allowedModes[0] === "plain" ? "keyless" : "keyed";
         const existingAccountMode: AuthMethodActionMode = "either";

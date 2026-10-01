@@ -33,6 +33,7 @@ import { enforceSessionPublicLinkExternalSharingPolicyInTx } from "@/app/session
 import { isPublicSessionShareActive } from "@/app/share/publicSessionSharePublication";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import { removeUnsafeSessionFollowEdgesForAccessChangeInTx } from "@/app/session/follow/sessionFollowEdgeService";
+import { removeUnsafeSessionReportsToEdgesForAccessChangeInTx } from "@/app/session/relations/sessionReportsToService";
 
 function equalBytes(left: Uint8Array | null, right: Uint8Array | null): boolean {
     if (left === null || right === null) return left === right;
@@ -244,6 +245,7 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
 
             if (isPublicSessionShareActive(publicShare)) {
                 await removeUnsafeSessionFollowEdgesForAccessChangeInTx(tx, { sessionId });
+                await removeUnsafeSessionReportsToEdgesForAccessChangeInTx(tx, { sessionId });
             }
 
             const shareCursor = await markAccountChanged(tx, { accountId: userId, kind: 'share', entityId: sessionId });

@@ -3,67 +3,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { auth } from "@/app/auth/auth";
-import { db } from "@/storage/db";
+import { db, getActivePrismaRuntime } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import {
+    API_TOKEN_FULL_GRANT_V1,
     parseAccountApiTokenBearerV1,
-    type AuthTokenAuthenticationEvidenceV1,
 } from "@happier-dev/protocol";
 
-type ApiTokenAuth = typeof auth & {
-    createApiToken(params: Readonly<{
-        accountId: string;
-        tokenId: string;
-        label: string;
-        expiresAt?: Date | null;
-        authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
-    }>, now?: Date): Promise<Readonly<{
-        tokenId: string;
-        token: string;
-        label: string;
-        displayPrefix: string;
-        createdAt: Date;
-        expiresAt: Date | null;
-        hasEncryptionAccess: boolean;
-        hasUnattendedTeamAccess: boolean;
-    }>>;
-    listApiTokens(accountId: string): Promise<ReadonlyArray<Readonly<{
-        tokenId: string;
-        label: string;
-        displayPrefix: string;
-        createdAt: Date;
-        lastUsedAt: Date | null;
-        expiresAt: Date | null;
-        hasEncryptionAccess: boolean;
-        hasUnattendedTeamAccess: boolean;
-    }>>>;
-    revokeApiToken(params: Readonly<{ accountId: string; tokenId: string }>): Promise<boolean>;
-    verifyPat(token: string, signal?: AbortSignal): Promise<
-        | Readonly<{
-            ok: true;
-            accountId: string;
-            principalId: string;
-            credentialId: string;
-            expiresAt: Date | null;
-            authority: "account_automation";
-            authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
-        }>
-        | Readonly<{ ok: false; reason: "invalid_token" }>
-    >;
-};
-
-const apiTokenAuth = auth as ApiTokenAuth;
-
-type ApiTokenStore = {
-    findUnique(params: Readonly<{
-        where: Readonly<{ id: string }>;
-        select: Readonly<{ secretDigest: true; displayPrefix: true }>;
-    }>): Promise<Readonly<{ secretDigest: string; displayPrefix: string }> | null>;
-};
-
-function getApiTokenStore(): ApiTokenStore {
-    return (db as unknown as Readonly<{ accountApiToken: ApiTokenStore }>).accountApiToken;
-}
+const apiTokenAuth = auth;
+const fullGrantProjection = { grant: API_TOKEN_FULL_GRANT_V1, parentTokenId: null, embedConfig: null };
 
 const UNKNOWN_API_TOKEN = `hap_v1_550e8400-e29b-41d4-a716-446655440000_${"A".repeat(43)}`;
 
@@ -172,6 +120,7 @@ describe("auth (API tokens)", () => {
                 credentialId: minted.tokenId,
                 authority: "account_automation",
                 expiresAt: null,
+                ...fullGrantProjection,
             },
         });
 
@@ -191,11 +140,12 @@ describe("auth (API tokens)", () => {
                     credentialId: minted.tokenId,
                     authority: "account_automation",
                     expiresAt: null,
+                    ...fullGrantProjection,
                 },
             });
         });
 
-        const stored = await getApiTokenStore().findUnique({
+        const stored = await db.accountApiToken.findUnique({
             where: { id: minted.tokenId },
             select: { secretDigest: true, displayPrefix: true },
         });
@@ -221,7 +171,7 @@ describe("auth (API tokens)", () => {
         await expect(apiTokenAuth.revokeApiToken({
             accountId: account.id,
             tokenId: minted.tokenId,
-        })).resolves.toBe(true);
+        })).resolves.toEqual({ revoked: true, revokedTokenIds: [minted.tokenId] });
         await expect(auth.verifyToken(minted.token)).resolves.toBeNull();
 
         await withAuthenticatedApp(async (app) => {
@@ -278,11 +228,21 @@ describe("auth (API tokens)", () => {
             credentialId: minted.tokenId,
             expiresAt: new Date("2026-08-22T13:00:00.000Z"),
             authority: "account_automation",
+            ...fullGrantProjection,
         });
         await expect(apiTokenAuth.verifyPat(signedAccountToken)).resolves.toEqual({
             ok: false,
             reason: "invalid_token",
         });
+    });
+
+    it("reads predecessor NULL grants as full access and refuses malformed persisted grants", async () => {
+        const account = await db.account.create({ data: { publicKey: 'pre-grant-reader' } });
+        const token = await auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: 'Predecessor' });
+        await db.accountApiToken.update({ where: { id: token.tokenId }, data: { accessGrant: getActivePrismaRuntime().DbNull } });
+        expect(await auth.verifyPat(token.token)).toMatchObject({ ok: true, ...fullGrantProjection });
+        await db.accountApiToken.update({ where: { id: token.tokenId }, data: { accessGrant: { v: 99 } } });
+        expect(await auth.verifyPat(token.token)).toEqual({ ok: false, reason: 'invalid_token' });
     });
 
     it("copies only explicit server-verified evidence into the PAT row and fails malformed snapshots closed", async () => {

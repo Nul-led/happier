@@ -1,9 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
     LocalServicePreviewResourceV1Schema,
     type LocalServicePreviewResourceV1,
-} from "@happier-dev/protocol";
+    type LocalServicePreviewNativeDirectDescriptorV1,
+    localServicePreviewDirectBindingV1,
+    type LocalServicePreviewDirectBindingV1,
+} from "@happier-dev/protocol/local/services/preview/v1";
+import { LocalServicePreviewNativeDirectAccessV1Schema, type LocalServicePreviewNativeDirectAccessRequestV1, type LocalServicePreviewNativeDirectAccessV1 } from '@happier-dev/protocol/local/services/preview/nativeDirect';
+import type { MachineIrohEndpointAuthorityV1 } from '@happier-dev/protocol';
+import { mintDirectRouteGrantV2, resolvePeerMediationGrantSigningConfig } from '@/app/machines/peer/mediation/mintDirectRouteGrantV1';
 
 import {
     resolveLocalServicePreviewUrl,
@@ -11,6 +18,7 @@ import {
 } from "@/app/local/services/preview/origin";
 import {
     createLocalServicePreviewToken,
+    hashLocalServicePreviewToken,
     type LocalServicePreviewTokenRecord,
     validateLocalServicePreviewToken,
     type LocalServicePreviewTokenValidationResult,
@@ -30,8 +38,10 @@ export type LocalServicePreviewRuntimeRegistrationResult =
     | Readonly<{
           ok: true;
           resource: LocalServicePreviewResourceV1;
-          accessUrl: string;
-          expiresAt: number;
+          accessUrl: string | null;
+          expiresAt: number | null;
+          accessUnavailableReasonCode?: 'preview_private_route_unavailable';
+          nativeDirect?: LocalServicePreviewNativeDirectDescriptorV1;
       }>
     | Readonly<{
           ok: false;
@@ -46,6 +56,7 @@ export type LocalServicePreviewRuntimeRegistrationResult =
 export type LocalServicePreviewRuntimeRegistrationInput = Readonly<{
     resource: LocalServicePreviewResourceV1;
     accountId: string;
+    nativeDirectSupported?: boolean;
 }>;
 
 export type LocalServicePreviewRuntimeContext = Readonly<{
@@ -64,10 +75,13 @@ export type LocalServicePreviewRuntimeValidationResult =
       }>;
 
 export type LocalServicePreviewRuntimeExchangeResult =
-    | Readonly<{ ok: true; rawToken: string; expiresAt: number }>
+    | Readonly<{ ok: true; rawToken: string; expiresAt: number | null }>
     | Exclude<LocalServicePreviewRuntimeValidationResult, Readonly<{ ok: true }>>;
 
 export type LocalServicePreviewRuntime = Readonly<{
+    closeNativeRegistrations(): void;
+    openNativeRegistration(binding: LocalServicePreviewDirectBindingV1, grantId: string): Readonly<{ ok: true; signal: AbortSignal; close: () => void } | { ok: false; reasonCode: string }>;
+    mintNativeDirectAccess(input: Readonly<{ previewId: string; request: LocalServicePreviewNativeDirectAccessRequestV1; target: MachineIrohEndpointAuthorityV1 }>): Readonly<{ ok: true; access: LocalServicePreviewNativeDirectAccessV1 } | { ok: false; reasonCode: string }>;
     registerPreview(input: LocalServicePreviewRuntimeRegistrationInput): LocalServicePreviewRuntimeRegistrationResult;
     resolvePreview(previewId: string): LocalServicePreviewResourceV1 | null;
     resolvePreviewByHost(hostname: string): LocalServicePreviewResourceV1 | null;
@@ -75,13 +89,13 @@ export type LocalServicePreviewRuntime = Readonly<{
     validateAccess(input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>): LocalServicePreviewRuntimeValidationResult;
     exchangeAccessToken(input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>): LocalServicePreviewRuntimeExchangeResult;
     unregisterPreview(previewId: string): Readonly<{ ok: true } | { ok: false; reasonCode: "preview_not_found" }>;
@@ -95,12 +109,14 @@ export type CreateLocalServicePreviewRuntimeInput = Readonly<{
     nowMs?: () => number;
     generateTokenId?: () => string;
     generateRawToken?: () => string;
+    env?: NodeJS.ProcessEnv;
 }>;
 
 type PreviewRuntimeEntry = Readonly<{
     resource: LocalServicePreviewResourceV1;
     accountId: string;
-    tokenRecord: LocalServicePreviewTokenRecord;
+    tokenRecords: Map<string, LocalServicePreviewTokenRecord>;
+    nativeRegistrations: Map<string, { controller: AbortController; claimed: boolean }>;
 }>;
 
 function nonEmptyString(value: string | null | undefined): string | null {
@@ -155,6 +171,19 @@ export function createLocalServicePreviewRuntime(
         if (!accountId) {
             return { ok: false, reasonCode: "invalid_preview_resource" };
         }
+        // The server owns browser isolation, including older daemon/hosted-asset
+        // registrations that requested path mode. Never expose them on the API origin.
+        const resource: LocalServicePreviewResourceV1 = { ...parsed.data, originMode: "host" };
+        const nativeDirect: LocalServicePreviewNativeDirectDescriptorV1 | undefined = input.nativeDirectSupported
+            ? { v: 1, kind: 'iroh_preview', previewId: resource.previewId, machineId: resource.machineId } : undefined;
+        const previous = resources.get(parsed.data.previewId);
+        if (previous && (previous.accountId !== accountId
+            || previous.resource.machineId !== parsed.data.machineId
+            || previous.resource.sessionId !== parsed.data.sessionId
+            || !isDeepStrictEqual(previous.resource.owner, parsed.data.owner)
+            || !isDeepStrictEqual(previous.resource.target, parsed.data.target))) {
+            return { ok: false, reasonCode: "invalid_preview_resource" };
+        }
 
         const tokenSecret = nonEmptyString(runtimeInput.tokenSecret);
         if (!tokenSecret) {
@@ -181,7 +210,7 @@ export function createLocalServicePreviewRuntime(
         });
 
         const resolvedUrl = resolveLocalServicePreviewUrl({
-            originMode: parsed.data.originMode,
+            originMode: resource.originMode,
             publicBaseUrl,
             hostOriginBaseDomain: runtimeInput.hostOriginBaseDomain,
             previewId: parsed.data.previewId,
@@ -189,11 +218,20 @@ export function createLocalServicePreviewRuntime(
             token,
         });
         if (!resolvedUrl.ok) {
+            if (resolvedUrl.reasonCode === 'host_origin_unavailable') {
+                // Registration is still the scoped authority used by public-link actions.
+                // No access token or API-origin fallback is admitted without isolation.
+                if (previous && !isDeepStrictEqual(previous.resource.policy, resource.policy)) {
+                    for (const { controller } of previous.nativeRegistrations.values()) controller.abort();
+                }
+                resources.set(resource.previewId, { resource, accountId, tokenRecords: new Map(), nativeRegistrations: previous?.nativeRegistrations ?? new Map() });
+                return { ok: true, resource, accessUrl: null, expiresAt: null, ...(nativeDirect ? { nativeDirect } : {}), accessUnavailableReasonCode: 'preview_private_route_unavailable' };
+            }
             return resolvedUrl;
         }
 
         const previousHostname = hostnameByPreviewId.get(parsed.data.previewId);
-        const hostname = parsed.data.originMode === "host" ? hostnameFromOrigin(resolvedUrl.origin) : null;
+        const hostname = hostnameFromOrigin(resolvedUrl.origin);
         const hostnameOwner = hostname ? previewIdByHostname.get(hostname) : null;
         if (hostname && hostnameOwner && hostnameOwner !== parsed.data.previewId) {
             return { ok: false, reasonCode: "preview_hostname_collision" };
@@ -209,17 +247,27 @@ export function createLocalServicePreviewRuntime(
             hostnameByPreviewId.set(parsed.data.previewId, hostname);
         }
 
+        const tokenRecords = previous?.tokenRecords ?? new Map<string, LocalServicePreviewTokenRecord>();
+        for (const [hash, existing] of tokenRecords) {
+            if (existing.expiresAt !== null && existing.expiresAt <= issuedAt) tokenRecords.delete(hash);
+        }
+        tokenRecords.set(record.tokenHash, record);
+        if (previous && !isDeepStrictEqual(previous.resource.policy, resource.policy)) {
+            for (const { controller } of previous.nativeRegistrations.values()) controller.abort();
+        }
         resources.set(parsed.data.previewId, {
-            resource: parsed.data,
+            resource,
             accountId,
-            tokenRecord: record,
+            tokenRecords,
+            nativeRegistrations: previous?.nativeRegistrations ?? new Map(),
         });
 
         return {
             ok: true,
-            resource: parsed.data,
+            resource,
             accessUrl: resolvedUrl.url,
             expiresAt,
+            ...(nativeDirect ? { nativeDirect } : {}),
         };
     }
 
@@ -247,7 +295,7 @@ export function createLocalServicePreviewRuntime(
     function validateAccess(input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>): LocalServicePreviewRuntimeValidationResult {
         const entry = resources.get(input.previewId);
@@ -263,10 +311,12 @@ export function createLocalServicePreviewRuntime(
             return { ok: false, reasonCode: "token_mismatch" };
         }
 
+        const record = entry.tokenRecords.get(hashLocalServicePreviewToken(tokenSecret, input.rawToken));
+        if (!record) return { ok: false, reasonCode: "token_mismatch" };
         return validateLocalServicePreviewToken({
             secret: tokenSecret,
             rawToken: input.rawToken,
-            record: entry.tokenRecord,
+            record,
             previewId: input.previewId,
             sessionId: input.sessionId,
             machineId: input.machineId,
@@ -278,7 +328,7 @@ export function createLocalServicePreviewRuntime(
     function exchangeAccessToken(input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>): LocalServicePreviewRuntimeExchangeResult {
         const entry = resources.get(input.previewId);
@@ -294,10 +344,12 @@ export function createLocalServicePreviewRuntime(
             return { ok: false, reasonCode: "token_mismatch" };
         }
 
+        const urlRecord = entry.tokenRecords.get(hashLocalServicePreviewToken(tokenSecret, input.rawToken));
+        if (!urlRecord) return { ok: false, reasonCode: "token_mismatch" };
         const tokenValidation = validateLocalServicePreviewToken({
             secret: tokenSecret,
             rawToken: input.rawToken,
-            record: entry.tokenRecord,
+            record: urlRecord,
             previewId: input.previewId,
             sessionId: input.sessionId,
             machineId: input.machineId,
@@ -316,13 +368,13 @@ export function createLocalServicePreviewRuntime(
             sessionId: entry.resource.sessionId,
             machineId: entry.resource.machineId,
             issuedAt: nowMs(),
-            expiresAt: entry.tokenRecord.expiresAt,
+            // Admission is short-lived and one-use; an admitted viewer remains authorized
+            // by this registration until it is explicitly unregistered.
+            expiresAt: null,
             exchangeMode: "cookie",
         });
-        resources.set(entry.resource.previewId, {
-            ...entry,
-            tokenRecord: record,
-        });
+        entry.tokenRecords.delete(urlRecord.tokenHash);
+        entry.tokenRecords.set(record.tokenHash, record);
         return {
             ok: true,
             rawToken: token,
@@ -334,6 +386,7 @@ export function createLocalServicePreviewRuntime(
         if (!resources.has(previewId)) {
             return { ok: false, reasonCode: "preview_not_found" };
         }
+        for (const { controller } of resources.get(previewId)!.nativeRegistrations.values()) controller.abort();
         resources.delete(previewId);
         const hostname = hostnameByPreviewId.get(previewId);
         if (hostname) {
@@ -344,6 +397,50 @@ export function createLocalServicePreviewRuntime(
     }
 
     return {
+        closeNativeRegistrations() {
+            for (const entry of resources.values()) {
+                for (const { controller } of entry.nativeRegistrations.values()) controller.abort();
+            }
+        },
+        openNativeRegistration(binding, grantId) {
+            const entry = resources.get(binding.previewId);
+            if (!entry || !isDeepStrictEqual(localServicePreviewDirectBindingV1(entry.resource), binding)) return { ok: false, reasonCode: 'preview_registration_mismatch' };
+            const registration = entry.nativeRegistrations.get(grantId);
+            if (!registration || registration.claimed || registration.controller.signal.aborted) return { ok: false, reasonCode: 'preview_grant_unavailable' };
+            registration.claimed = true;
+            const controller = registration.controller;
+            const close = () => controller.abort();
+            return { ok: true, signal: controller.signal, close };
+        },
+        mintNativeDirectAccess(input) {
+            const entry = resources.get(input.previewId);
+            if (!entry) return { ok: false, reasonCode: 'preview_not_found' };
+            const signing = resolvePeerMediationGrantSigningConfig(runtimeInput.env ?? process.env, nowMs());
+            if (!signing.ok) return { ok: false, reasonCode: 'grant_signing_unavailable' };
+            const resource = entry.resource;
+            const { previewId, machineId, target } = resource;
+            const minted = mintDirectRouteGrantV2({
+                accountId: entry.accountId, machineId, flowKind: 'tcp_tunnel', routeKind: 'iroh_peer',
+                endpointFingerprint: input.target.endpointId, nowMs: nowMs(), ttlMs: null, serverGateEnabled: true,
+                signingKey: { keyId: signing.keyId, secretKey: signing.secretKey, expiresAt: signing.capability.expiresAt },
+                ephemeralPublicKeyBase64Url: input.request.ephemeralPublicKeyBase64Url,
+                iroh: { initiator: input.request.initiator, target: { machineId, endpointId: input.target.endpointId }, operationKind: 'tcp_tunnel' },
+                scope: { kind: 'tcp_tunnel', tunnelId: randomUUID(), allowedPorts: [target.port],
+                    preview: localServicePreviewDirectBindingV1(resource) },
+            });
+            if (!minted.ok) return minted;
+            const access = LocalServicePreviewNativeDirectAccessV1Schema.parse({
+                v: 1, kind: 'iroh_preview', previewId, machineId, initialPath: resource.initialPath,
+                destination: { host: target.host, port: target.port }, grant: minted.grant, target: input.target,
+            });
+            // The existing signed operation identity belongs to this registration,
+            // including while its viewer has not yet claimed the control stream.
+            const controller = new AbortController();
+            const grantId = minted.grant.payload.grantId;
+            entry.nativeRegistrations.set(grantId, { controller, claimed: false });
+            controller.signal.addEventListener('abort', () => entry.nativeRegistrations.delete(grantId), { once: true });
+            return { ok: true, access };
+        },
         registerPreview,
         resolvePreview,
         resolvePreviewByHost,

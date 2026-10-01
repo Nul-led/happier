@@ -11,6 +11,8 @@ import {
     readServerEnabledBit,
 } from "@happier-dev/protocol";
 
+import { readHomeEffectiveEnv, resolveServerFeaturesForGating } from "@/app/features/catalog/serverFeatureGate";
+
 import type {
     PeerMediationObservabilityScope,
     PeerMediationObservabilityStore,
@@ -39,7 +41,7 @@ export type PeerMediationObservabilityUnsubscribeResponse =
     | Readonly<{ ok: true }>
     | PeerMediationObservabilityAuthorizationDenied;
 
-type PeerMediationObservabilityFeaturePayloadProvider = unknown | (() => unknown);
+type PeerMediationObservabilityFeaturePayloadProvider = unknown | (() => unknown | Promise<unknown>);
 
 type PeerMediationObservabilitySocket = Readonly<{
     on: (event: string, handler: (payload?: unknown, callback?: (response: unknown) => void) => unknown) => unknown;
@@ -54,9 +56,9 @@ export function isPeerMediationObservabilityReadAvailable(payload: unknown): boo
         && readServerEnabledBit(parsed.data, "machines.peerMediation.observability") === true;
 }
 
-function readFeaturePayload(provider: PeerMediationObservabilityFeaturePayloadProvider): unknown {
+async function readFeaturePayload(provider: PeerMediationObservabilityFeaturePayloadProvider): Promise<unknown> {
     try {
-        return typeof provider === "function" ? provider() : provider;
+        return typeof provider === "function" ? await provider() : provider;
     } catch {
         return {};
     }
@@ -105,12 +107,12 @@ export function authorizePeerMediationObservabilityRead(input: Readonly<{
     return { ok: false, reasonCode: "observability_scope_forbidden" };
 }
 
-function authorizeAvailableRead(input: Readonly<{
+async function authorizeAvailableRead(input: Readonly<{
     featurePayload: PeerMediationObservabilityFeaturePayloadProvider;
     principal: PeerMediationObservabilityPrincipal;
     scope: PeerMediationObservabilityScope;
-}>): PeerMediationObservabilityAuthorizationResult {
-    if (!isPeerMediationObservabilityReadAvailable(readFeaturePayload(input.featurePayload))) {
+}>): Promise<PeerMediationObservabilityAuthorizationResult> {
+    if (!isPeerMediationObservabilityReadAvailable(await readFeaturePayload(input.featurePayload))) {
         return { ok: false, reasonCode: "observability_unavailable" };
     }
     return authorizePeerMediationObservabilityRead({
@@ -131,7 +133,7 @@ export function registerPeerMediationObservabilitySocketRoutes(
     socket: PeerMediationObservabilitySocket,
     options: Readonly<{
         store: PeerMediationObservabilityStore;
-        featurePayload: PeerMediationObservabilityFeaturePayloadProvider;
+        featurePayload?: PeerMediationObservabilityFeaturePayloadProvider;
         principal: PeerMediationObservabilityPrincipal;
     }>,
 ): void {
@@ -142,6 +144,9 @@ export function registerPeerMediationObservabilitySocketRoutes(
     registeredSockets.add(socketObject);
 
     const subscriptions = new Map<string, () => void>();
+    const featurePayload = options.featurePayload === undefined
+        ? async () => resolveServerFeaturesForGating(await readHomeEffectiveEnv())
+        : options.featurePayload;
 
     function closeSubscription(key: string): void {
         const unsubscribe = subscriptions.get(key);
@@ -154,28 +159,36 @@ export function registerPeerMediationObservabilitySocketRoutes(
         for (const key of [...subscriptions.keys()]) closeSubscription(key);
     }
 
-    socket.on(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, (raw, callback) => {
+    socket.on(PEER_MEDIATION_OBSERVABILITY_SUBSCRIBE_SOCKET_EVENT, async (raw, callback) => {
         const parsed = PeerMediationObservabilitySubscribeRequestV1Schema.safeParse(raw);
         if (!parsed.success) {
             callback?.({ ok: false, reasonCode: "observability_scope_forbidden" });
             return;
         }
         const scope = parsed.data.scope;
-        const authorization = authorizeAvailableRead({
-            featurePayload: options.featurePayload,
+        const key = scopeKey(scope);
+        closeSubscription(key);
+        let active = true;
+        // The existing cleanup slot covers pending admission as well as a live subscription.
+        subscriptions.set(key, () => { active = false; });
+        const authorization = await authorizeAvailableRead({
+            featurePayload,
             principal: options.principal,
             scope,
         });
+        if (!active) {
+            callback?.({ ok: false, reasonCode: "observability_unavailable" });
+            return;
+        }
         if (!authorization.ok) {
+            closeSubscription(key);
             callback?.(authorization);
             return;
         }
 
-        const key = scopeKey(scope);
-        closeSubscription(key);
         const unsubscribe = options.store.subscribe(scope, (delta) => {
-            const nextAuthorization = authorizeAvailableRead({
-                featurePayload: options.featurePayload,
+            // Collection already made the live Home decision before publishing this delta.
+            const nextAuthorization = authorizePeerMediationObservabilityRead({
                 principal: options.principal,
                 scope,
             });
@@ -188,7 +201,10 @@ export function registerPeerMediationObservabilitySocketRoutes(
                 PeerMediationObservabilityDeltaV1Schema.parse(delta),
             );
         });
-        subscriptions.set(key, unsubscribe);
+        subscriptions.set(key, () => {
+            active = false;
+            unsubscribe();
+        });
 
         const snapshot = PeerMediationObservabilitySnapshotV1Schema.parse(options.store.snapshot(scope));
         socket.emit(PEER_MEDIATION_OBSERVABILITY_SNAPSHOT_SOCKET_EVENT, snapshot);

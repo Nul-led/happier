@@ -51,7 +51,7 @@ describe("Team route AccountChange feed (SQLite integration)", () => {
             email: {
                 isDeliveryReady: () => true,
                 delivery: {
-                    isReady: true,
+                    isReady: async () => true,
                     deliver: async () => ({ status: "sent" }),
                 },
             },

@@ -22,7 +22,7 @@ import {
   composerRefsV1Equal,
   type ComposerRefV1,
 } from './composerRef.js';
-import { PluginUiImmutableGenerationIdV1Schema } from './targetedContributions.js';
+import { PluginUiRuntimeOccurrenceIdV1Schema } from './targetedContributions.js';
 import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
 /** Type-only public projection; Composer schemas keep their plain JSON runtime values. */
@@ -371,7 +371,7 @@ function sameContributionIdentityV1(
 export const ComposerSurfaceMountBindingV1Schema = z.object({
   kind: z.literal('composer'),
   contribution: asProtocolZod(PluginContributionIdentityV1Schema),
-  immutableGenerationId: asProtocolZod(PluginUiImmutableGenerationIdV1Schema),
+  occurrenceId: asProtocolZod(PluginUiRuntimeOccurrenceIdV1Schema),
   projectionGeneration: z.number().int().nonnegative(),
   role: ComposerSurfaceRoleV1Schema,
   selectedRenderer: asProtocolZod(PluginContributionIdentityV1Schema),

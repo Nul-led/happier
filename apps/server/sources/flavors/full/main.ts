@@ -1,4 +1,4 @@
-import { readHomeOwnerClaimRequest } from '@/app/home/governance/claimHomeOwnerCommand';
+import { readHomeOwnerClaimRequest, readPrintHomeClaimCodeRequest } from '@/app/home/governance/claimHomeOwnerCommand';
 import { initializeServerSentry } from '@/app/monitoring/sentry';
 import { registerProcessHandlers } from '@/utils/process/processHandlers';
 
@@ -17,11 +17,14 @@ export async function runFullServerMain(argv: readonly string[] = process.argv.s
     process.env.HAPPIER_SERVER_FLAVOR = 'full';
 
     const claimHomeOwner = readHomeOwnerClaimRequest(argv);
+    const printHomeClaimCode = !claimHomeOwner && readPrintHomeClaimCodeRequest(argv);
 
     // Initialize Sentry before importing the server runtime so auto-instrumentation can patch dependencies (Fastify, etc).
     initializeServerSentry(process.env);
     registerProcessHandlers();
 
     const { startServer } = await import('@/startServer');
-    await startServer('full', claimHomeOwner ? { claimHomeOwner } : undefined);
+    await startServer('full', claimHomeOwner
+        ? { claimHomeOwner }
+        : printHomeClaimCode ? { printHomeClaimCode: true } : undefined);
 }

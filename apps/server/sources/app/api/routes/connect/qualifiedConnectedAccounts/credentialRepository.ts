@@ -69,6 +69,7 @@ import {
 import {
     settleQualifiedConnectedAccountCredentialMetadata,
 } from "./credentialMetadataSettlement";
+import { encodeQualifiedGroupStateForActiveAccount } from "./groupRepository";
 import {
     clearQualifiedConnectedAccountUsageForAccountInTx,
 } from "./usageRepository";
@@ -185,6 +186,7 @@ export async function clearQualifiedConnectedAccountsForAccountInTx(
             runtimeStateRevision: true,
             activeProfileId: true,
             activeConnectedAccountId: true,
+            stateJson: true,
             members: {
                 take: 1,
                 select: { id: true },
@@ -218,6 +220,11 @@ export async function clearQualifiedConnectedAccountsForAccountInTx(
             data: {
                 activeConnectedAccountId: null,
                 activeProfileId: null,
+                stateJson: encodeQualifiedGroupStateForActiveAccount({
+                    currentStateJson: group.stateJson,
+                    previousActiveAccountId: group.activeConnectedAccountId,
+                    nextActiveAccountId: null,
+                }),
                 generation: { increment: 1 },
             },
         });
@@ -2545,6 +2552,7 @@ export async function deleteQualifiedConnectedServiceCredential(
                         select: {
                             vendor: true,
                             activeConnectedAccountId: true,
+                            stateJson: true,
                             generation: true,
                             runtimeStateRevision: true,
                             members: {
@@ -2669,6 +2677,7 @@ export async function deleteQualifiedConnectedServiceCredential(
                         fallback: string | null;
                         generation: number;
                         runtimeStateRevision: number;
+                        stateJson: string | null;
                     }
                 >();
                 for (const membership of memberships) {
@@ -2683,6 +2692,7 @@ export async function deleteQualifiedConnectedServiceCredential(
                         generation: membership.group.generation,
                         runtimeStateRevision:
                             membership.group.runtimeStateRevision,
+                        stateJson: membership.group.stateJson,
                     });
                 }
                 for (const [groupDbId, group] of groups) {
@@ -2702,6 +2712,11 @@ export async function deleteQualifiedConnectedServiceCredential(
                                     ? {
                                         activeConnectedAccountId:
                                             group.fallback,
+                                        stateJson: encodeQualifiedGroupStateForActiveAccount({
+                                            currentStateJson: group.stateJson,
+                                            previousActiveAccountId: group.activeConnectedAccountId,
+                                            nextActiveAccountId: group.fallback,
+                                        }),
                                         activeProfileId:
                                             group.vendor === null
                                                 ? null

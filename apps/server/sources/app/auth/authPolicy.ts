@@ -1,8 +1,11 @@
-import { parseBooleanEnv, parseIntEnv, parseOptionalBooleanEnv } from "@/config/env";
+import { parseOptionalBooleanEnv } from "@/config/env";
 import { resolveDeploymentProviderSnapshot } from "@/app/auth/providers/providerModules";
 import {
     AccountServicePresentationV1Schema,
     HomeSignInServicePolicyV1Schema,
+    SERVER_CONFIG,
+    readServerConfig,
+    readServerConfigRaw,
     type AccountServicePresentationV1,
     type HomeSignInServicePolicyV1,
 } from "@happier-dev/protocol";
@@ -16,9 +19,8 @@ export type AuthKeyChallengeV2Policy = Readonly<{
 export function resolveAuthKeyChallengeV2Policy(
     env: NodeJS.ProcessEnv,
 ): AuthKeyChallengeV2Policy {
-    const configured = env.HAPPIER_AUTH_REQUIRE_KEY_CHALLENGE_V2;
     return Object.freeze({
-        ordinaryHomeRequired: parseBooleanEnv(configured, false),
+        ordinaryHomeRequired: readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_REQUIRE_KEY_CHALLENGE_V2),
     });
 }
 
@@ -49,7 +51,9 @@ function readTrimmedEnv(env: NodeJS.ProcessEnv, key: string): string {
 }
 
 function resolveSignInServicePolicy(env: NodeJS.ProcessEnv, errors: string[]): HomeSignInServicePolicyV1 | null {
-    const mode = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_MODE").toLowerCase() || "disabled";
+    // Read raw: an unknown mode is a configuration error the policy reports, not a silent default.
+    const mode = readServerConfigRaw(env, SERVER_CONFIG.HAPPIER_AUTH_SIGN_IN_SERVICE_MODE)?.raw.trim().toLowerCase()
+        || SERVER_CONFIG.HAPPIER_AUTH_SIGN_IN_SERVICE_MODE.default;
     const endpoint = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_URL");
     const expectedServerIdentityId = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID");
     const hasExternalFields = Boolean(endpoint || expectedServerIdentityId);
@@ -157,15 +161,15 @@ export function isAuthSignupProviderEnabled(
 
 export function resolveAuthPolicyFromEnv(env: NodeJS.ProcessEnv): AuthPolicy {
     const configurationErrors: string[] = [];
-    const anonymousSignupEnabled = parseBooleanEnv(env.AUTH_ANONYMOUS_SIGNUP_ENABLED, true);
+    const anonymousSignupEnabled = readServerConfig(env, SERVER_CONFIG.AUTH_ANONYMOUS_SIGNUP_ENABLED);
     const signupProviders = Object.freeze(parseProvidersList(env.AUTH_SIGNUP_PROVIDERS));
     const requiredLoginProviders = Object.freeze(parseProvidersList(env.AUTH_REQUIRED_LOGIN_PROVIDERS));
 
     const restrictionsExist = hasAnyOffboardingRestrictionsConfigured(env);
     const defaultOffboardingEnabled = restrictionsExist;
-    const offboardingEnabled = parseBooleanEnv(env.AUTH_OFFBOARDING_ENABLED, defaultOffboardingEnabled);
-    const offboardingStrict = parseBooleanEnv(env.AUTH_OFFBOARDING_STRICT, false);
-    const intervalSeconds = parseIntEnv(env.AUTH_OFFBOARDING_INTERVAL_SECONDS, 86400, { min: 60, max: 86400 });
+    const offboardingEnabled = readServerConfig(env, SERVER_CONFIG.AUTH_OFFBOARDING_ENABLED) ?? defaultOffboardingEnabled;
+    const offboardingStrict = readServerConfig(env, SERVER_CONFIG.AUTH_OFFBOARDING_STRICT);
+    const intervalSeconds = readServerConfig(env, SERVER_CONFIG.AUTH_OFFBOARDING_INTERVAL_SECONDS);
     const mode: AuthOffboardingMode = "per-request-cache";
     const signInService = resolveSignInServicePolicy(env, configurationErrors);
     const accountServicePresentation = resolveAccountServicePresentation(env, configurationErrors);

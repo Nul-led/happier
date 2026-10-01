@@ -32,7 +32,10 @@ import {
     type ProviderAccountUsageSnapshotV1,
     type ProviderAccountUsageSourceV1,
 } from './providerAccountUsagePrimitives.js';
-import { SealedProviderAccountSubscriptionV1Schema } from './accountSubscription.js';
+import {
+    ProviderAccountSubscriptionV1Schema,
+    SealedProviderAccountSubscriptionV1Schema,
+} from './accountSubscription.js';
 
 export * from './providerAccountUsagePrimitives.js';
 
@@ -166,6 +169,7 @@ export function projectProviderAccountUsageSnapshotToQuotaFieldsV1(
         source: mapUsageSourceToQuotaSource(parsed.source),
         confidence: mapUsageConfidenceToQuotaConfidence(parsed.confidence),
         ...(parsed.recoveryCredits ? { recoveryCredits: parsed.recoveryCredits satisfies ConnectedServiceQuotaRecoveryCreditsV1 } : {}),
+        ...(parsed.subscription ? { subscription: parsed.subscription } : {}),
         meters: parsed.meters,
     };
 }
@@ -216,4 +220,58 @@ export function openProviderAccountUsageSnapshotCiphertext(params: Readonly<{
         material: params.material,
         ciphertext: params.ciphertext,
     });
+}
+
+const ProviderAccountUsageSubscriptionFacetV1Schema = z.object({
+    v: z.literal(1),
+    recordId: ProviderAccountUsageRecordIdSchema,
+    subscription: ProviderAccountSubscriptionV1Schema,
+}).strict();
+
+export function sealProviderAccountUsageSnapshot(params: Readonly<{
+    material: AccountScopedCryptoMaterial;
+    snapshot: ProviderAccountUsageSnapshotV1;
+    randomBytes: (length: number) => Uint8Array;
+}>): SealedProviderAccountUsageSnapshotV1 {
+    const { subscription, ...snapshot } = ProviderAccountUsageSnapshotV1Schema.parse(params.snapshot);
+    return {
+        format: 'account_scoped_v1',
+        ciphertext: sealProviderAccountUsageSnapshotCiphertext({ ...params, payload: snapshot }),
+        ...(subscription ? {
+            subscription: {
+                observedAtMs: Math.max(subscription.observedAtMs, subscription.lastRefreshError?.observedAtMs ?? 0),
+                ciphertext: sealProviderAccountUsageSnapshotCiphertext({
+                    ...params,
+                    payload: { v: 1, recordId: snapshot.recordId, subscription },
+                }),
+            },
+        } : {}),
+    };
+}
+
+export function openSealedProviderAccountUsageSnapshot(params: Readonly<{
+    material: AccountScopedCryptoMaterial;
+    sealed: SealedProviderAccountUsageSnapshotV1;
+}>): ProviderAccountUsageSnapshotV1 | null {
+    const sealed = SealedProviderAccountUsageSnapshotV1Schema.safeParse(params.sealed);
+    if (!sealed.success) return null;
+    const opened = openProviderAccountUsageSnapshotCiphertext({
+        material: params.material,
+        ciphertext: sealed.data.ciphertext,
+    });
+    const snapshot = ProviderAccountUsageSnapshotV1Schema.safeParse(opened?.value);
+    if (!snapshot.success) return null;
+    if (!sealed.data.subscription) return snapshot.data;
+    const facet = openProviderAccountUsageSnapshotCiphertext({
+        material: params.material,
+        ciphertext: sealed.data.subscription.ciphertext,
+    });
+    const parsedFacet = ProviderAccountUsageSubscriptionFacetV1Schema.safeParse(facet?.value);
+    if (!parsedFacet.success || parsedFacet.data.recordId !== snapshot.data.recordId) return null;
+    const subscription = parsedFacet.data.subscription;
+    if (
+        Math.max(subscription.observedAtMs, subscription.lastRefreshError?.observedAtMs ?? 0)
+        !== sealed.data.subscription.observedAtMs
+    ) return null;
+    return { ...snapshot.data, subscription };
 }

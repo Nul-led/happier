@@ -33,7 +33,11 @@ export function resolveActionSessionListAccessFailure(
   if (hasPresentUserPluginOrigin(context)) return null;
 
   const defaultSessionId = context?.defaultSessionId?.trim() ?? '';
-  return context?.sessionListAccess === 'current_session' && defaultSessionId.length > 0
+  return context?.sessionListAccess !== 'unavailable'
+    && defaultSessionId.length > 0
+    && (context?.sessionListAccess === 'current_session'
+      || context?.sessionListAccess === 'led_subtree'
+      || context?.surface === 'agent')
     ? null
     : { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:session.list' };
 }

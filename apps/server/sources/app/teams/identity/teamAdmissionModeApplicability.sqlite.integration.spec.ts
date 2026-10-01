@@ -123,6 +123,17 @@ describe("Team admission-mode applicability", () => {
             },
         });
 
+        // Completed rows cannot keep a disabled provider applicable. The Home
+        // still allows WorkOS, so recovery belongs to this Team's connection.
+        await db.identityProviderInstance.update({ where: { id: current.provider.id }, data: { enabled: false } });
+        await expect(resolve(team.id)).resolves.toMatchObject({
+            modes: {
+                provisioned: { status: "unavailable", reason: "team_connection_unavailable" },
+                jit: { status: "unavailable", reason: "team_connection_unavailable" },
+            },
+        });
+        await db.identityProviderInstance.update({ where: { id: current.provider.id }, data: { enabled: true } });
+
         await db.teamDirectorySource.update({
             where: { id: source.id },
             data: {

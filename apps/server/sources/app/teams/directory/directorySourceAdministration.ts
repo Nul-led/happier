@@ -27,6 +27,7 @@ import {
 } from "@happier-dev/protocol/teams";
 
 import { inTx, type Tx } from "@/storage/inTx";
+import { getDbProviderFromEnv, prismaRuntime } from "@/storage/prisma";
 import { resolveTeamWorkosConnectionRuntimeInTx } from "@/app/auth/providers/workos/teamWorkosConnectionRuntime";
 import {
     resolveWorkosPlatformRequestPolicy,
@@ -45,7 +46,7 @@ import {
 } from "./directorySourceService";
 import { deriveWorkosDirectoryExternalSourceKey } from "./directorySourceBinding";
 import { requestEnterpriseIdentitySyncNudge } from "./runtime/directorySyncWake";
-import { isDirectorySourceKindAllowedInTx } from "./directorySourcePolicy";
+import { isDirectorySourceKindAllowedInTx, isDirectorySourceProjectionComplete } from "./directorySourcePolicy";
 
 type WorkosSetupDirectory = Readonly<{
     id: string;
@@ -629,11 +630,16 @@ export async function listDirectoryPeopleForActor(
                 externalLogin: true,
                 state: true,
                 boundAccountId: true,
-                teamMembershipId: true,
                 createdAt: true,
             },
         });
         const pageRows = rows.slice(0, limit);
+        const boundAccountIds = [...new Set(pageRows.flatMap((row) => row.boundAccountId ?? []))];
+        const memberships = boundAccountIds.length === 0 ? [] : await tx.teamMembership.findMany({
+            where: { teamId: input.teamId, accountId: { in: boundAccountIds } },
+            select: { id: true, accountId: true },
+        });
+        const membershipByAccountId = new Map(memberships.map((membership) => [membership.accountId, membership.id]));
         const last = pageRows.at(-1);
         return {
             ok: true,
@@ -652,7 +658,7 @@ export async function listDirectoryPeopleForActor(
                         : {
                             state: "bound" as const,
                             accountId: row.boundAccountId,
-                            teamMembershipId: row.teamMembershipId,
+                            teamMembershipId: membershipByAccountId.get(row.boundAccountId) ?? null,
                         },
                     sourceLabel: source.displayName,
                 })),
@@ -710,24 +716,49 @@ export async function listDirectoryGroupsForActor(
                 externalGroupId: true,
                 externalDisplayName: true,
                 state: true,
-                _count: { select: { members: true } },
             },
         });
-        const bindings = rows.length === 0 ? [] : await tx.teamExternalGroupBinding.findMany({
+        const pageRows = rows.slice(0, limit);
+        const externalGroupIds = pageRows.map((row) => row.externalGroupId);
+        const bindings = pageRows.length === 0 ? [] : await tx.teamExternalGroupBinding.findMany({
             where: {
                 directorySourceId: source.id,
-                externalGroupId: { in: rows.map((row) => row.externalGroupId) },
+                externalGroupId: { in: externalGroupIds },
             },
             select: { id: true, externalGroupId: true, bindingMode: true, teamGroupId: true },
         });
         const bindingByExternalGroupId = new Map(bindings.map((binding) => [binding.externalGroupId, binding]));
-        const pageRows = rows.slice(0, limit);
+        const complete = source.lastFullReconcileAt !== null && isDirectorySourceProjectionComplete(source);
+        // Count in the database across this bounded Group page: several people
+        // can bind the same Account, and loading their full rosters is unbounded.
+        const quote = getDbProviderFromEnv(process.env, "postgres") === "mysql" ? "`" : '"';
+        const identifier = (name: string) => prismaRuntime.raw(`${quote}${name}${quote}`);
+        const counts = complete && pageRows.length > 0 ? await tx.$queryRaw<Array<{
+            externalGroupId: string;
+            memberCount: bigint | number;
+            boundAccountCount: bigint | number;
+            unboundPeopleCount: bigint | number;
+        }>>(prismaRuntime.sql`
+            SELECT directory_member.${identifier("externalGroupId")} AS ${identifier("externalGroupId")},
+                COUNT(*) AS ${identifier("memberCount")},
+                COUNT(DISTINCT person.${identifier("boundAccountId")}) AS ${identifier("boundAccountCount")},
+                COUNT(CASE WHEN person.${identifier("boundAccountId")} IS NULL THEN 1 END) AS ${identifier("unboundPeopleCount")}
+            FROM ${identifier("TeamDirectoryGroupMember")} directory_member
+            JOIN ${identifier("TeamProvisionedIdentity")} person
+                ON person.${identifier("directorySourceId")} = directory_member.${identifier("directorySourceId")}
+                AND person.${identifier("externalUserId")} = directory_member.${identifier("externalUserId")}
+            WHERE directory_member.${identifier("directorySourceId")} = ${source.id}
+                AND directory_member.${identifier("externalGroupId")} IN (${prismaRuntime.join(externalGroupIds)})
+            GROUP BY directory_member.${identifier("externalGroupId")}
+        `) : [];
+        const countsByExternalGroupId = new Map(counts.map((row) => [row.externalGroupId, row]));
         const last = pageRows.at(-1);
         return {
             ok: true,
             value: {
                 items: pageRows.map((row) => {
                     const binding = bindingByExternalGroupId.get(row.externalGroupId);
+                    const count = countsByExternalGroupId.get(row.externalGroupId);
                     return {
                         v: 1,
                         id: row.id,
@@ -735,11 +766,9 @@ export async function listDirectoryGroupsForActor(
                         externalGroupId: row.externalGroupId,
                         displayName: row.externalDisplayName,
                         state: row.state,
-                        memberCount: source.lastFullReconcileAt !== null
-                            && source.state === "active"
-                            && source.activeReconcileRunId === null
-                            ? row._count.members
-                            : null,
+                        memberCount: complete ? Number(count?.memberCount ?? 0) : null,
+                        boundAccountCount: complete ? Number(count?.boundAccountCount ?? 0) : null,
+                        unboundPeopleCount: complete ? Number(count?.unboundPeopleCount ?? 0) : null,
                         mapping: binding
                             ? {
                                 state: "bound" as const,

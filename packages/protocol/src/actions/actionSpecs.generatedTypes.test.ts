@@ -25,7 +25,12 @@ import {
 import type {
   BrowserCommandDispatchResultV1,
 } from '../browser/control/v1.js';
-import { BrowserNavigateCommandV1Schema } from '../browser/control/v1.js';
+import {
+  BrowserHandBackCommandV1Schema,
+  BrowserNavigateCommandV1Schema,
+  BrowserTakeControlCommandV1Schema,
+} from '../browser/control/v1.js';
+import { ComputerTargetSelectRequestV1Schema, type ComputerTargetV1 } from '../computer/v1.js';
 import type {
   ExternalSessionMaterializeActionResultV1,
 } from '../sessions/external/operationActionSchemasV1.js';
@@ -56,6 +61,8 @@ import {
 } from '../workflows/actionsV1.js';
 import { RuntimeActionIdV1Schema } from './actionIds.js';
 import type { ActionExecutorDeps } from './executor/types.js';
+import { ROLE_ACTION_IDS_V1 } from '../prompts/roles/roleActionIdsV1.js';
+import { RoleActionInputSchemasV1, RoleActionOutputSchemasV1 } from '../prompts/roles/roleActionsV1.js';
 
 type BrowserNavigateCommandV1 = z.infer<typeof BrowserNavigateCommandV1Schema>;
 
@@ -176,6 +183,20 @@ describe('ActionSpec-generated plugin action types', () => {
 
     expectTypeOf<PluginActionInputById['browser.navigate']>().toEqualTypeOf<BrowserNavigateCommandV1>();
     expectTypeOf<PluginActionResultById['browser.navigate']>().toEqualTypeOf<BrowserCommandDispatchResultV1>();
+    expectTypeOf<PluginActionInputById['browser.control.takeControl']>()
+      .toEqualTypeOf<z.input<typeof BrowserTakeControlCommandV1Schema>>();
+    expectTypeOf<PluginActionInputById['browser.control.handBack']>()
+      .toEqualTypeOf<z.input<typeof BrowserHandBackCommandV1Schema>>();
+    expectTypeOf<PluginActionResultById['browser.control.takeControl']>()
+      .toEqualTypeOf<BrowserCommandDispatchResultV1>();
+    expectTypeOf<PluginActionResultById['browser.control.handBack']>()
+      .toEqualTypeOf<BrowserCommandDispatchResultV1>();
+    expectTypeOf<PluginActionInputById['computer.target.select']>()
+      .toEqualTypeOf<z.input<typeof ComputerTargetSelectRequestV1Schema>>();
+    expectTypeOf<PublicActionInputById['computer.target.select']>()
+      .toEqualTypeOf<PluginActionInputById['computer.target.select']>();
+    expectTypeOf<PluginActionInputById['approval.request.decide']['computerTarget']>()
+      .toEqualTypeOf<ComputerTargetV1 | undefined>();
     expectTypeOf<PluginActionResultById['execution.run.start']>().toEqualTypeOf<ExecutionRunStartResponse>();
     expectTypeOf<PluginActionResultById['execution.run.list']>().toEqualTypeOf<ExecutionRunListResponse>();
     expectTypeOf<PluginActionResultById['execution.run.get']>().toEqualTypeOf<ExecutionRunGetResponse>();
@@ -492,12 +513,15 @@ describe('ActionSpec-generated plugin action types', () => {
     const readActionIds = new Set<WorkflowActionIdV1>([
       'workflow.validate',
       'workflow.run.list',
+      'workflow.run.summaries',
       'workflow.run.get',
       'workflow.run.wait',
       'workflow.run.invocations.list',
       'workflow.run.invocations.get',
       'workflow.definition.list',
       'workflow.definition.get',
+      'workflow.trigger.list',
+      'session.trigger.list',
     ]);
     const directMcpActionIds = new Set<WorkflowActionIdV1>([
       'workflow.run.start',
@@ -508,13 +532,17 @@ describe('ActionSpec-generated plugin action types', () => {
     const dangerActionIds = new Set<WorkflowActionIdV1>([
       'workflow.run.delete',
       'workflow.definition.delete',
+      'workflow.trigger.add',
+      'workflow.trigger.update',
+      'workflow.trigger.remove',
+      'session.trigger.remove',
     ]);
 
     for (const actionId of WORKFLOW_ACTION_IDS_V1) {
       const spec = getActionSpec(actionId);
       expect(spec).toMatchObject({
         executionPlacement: actionId === 'workflow.run.start' ? 'machine' : 'account',
-        requiredAuthority: 'account_automation',
+        requiredAuthority: actionId === 'workflow.run.invocations.complete_review' ? 'present_user' : 'account_automation',
         safety: dangerActionIds.has(actionId) ? 'danger' : 'safe',
         sideEffectClass: dangerActionIds.has(actionId)
           ? 'danger'
@@ -526,12 +554,12 @@ describe('ActionSpec-generated plugin action types', () => {
           : { result: 'optional', flow: 'deferred' },
         surfaces: {
           ui: true,
-          voice: false,
+          voice: actionId.startsWith('workflow.trigger.') || actionId.startsWith('session.trigger.'),
           agent: true,
           mcp: true,
           cli: true,
           rpc: true,
-          api: true,
+          api: actionId !== 'workflow.run.invocations.complete_review',
           plugin: true,
         },
       });
@@ -650,6 +678,19 @@ describe('ActionSpec-generated plugin action types', () => {
     expectTypeOf<Extract<PublicActionId, 'ui.current_context.command.invoke'>>()
       .toEqualTypeOf<'ui.current_context.command.invoke'>();
     expectTypeOf<Extract<PublicActionId, 'voice_agent.start'>>().toEqualTypeOf<'voice_agent.start'>();
+  });
+
+  it('keeps role Actions loadable and their author maps exact', () => {
+    expectTypeOf<PluginActionInputById['session.role.set']>().toEqualTypeOf<{ sessionId: string; roleId: string }>();
+    expectTypeOf<PluginActionInputById['roles.create']>().toEqualTypeOf<z.input<typeof RoleActionInputSchemasV1['roles.create']>>();
+    expectTypeOf<PluginActionResultById['roles.create']>().toEqualTypeOf<z.output<typeof RoleActionOutputSchemasV1['roles.create']>>();
+    for (const actionId of ROLE_ACTION_IDS_V1) {
+      const spec = getActionSpec(actionId);
+      expect(spec.executionPlacement).toBe(actionId.startsWith('roles.') ? 'account' : 'session');
+      expect(spec.approval.result).toBe('required');
+      expect(PLUGIN_ACTION_INPUT_SCHEMAS[actionId].safeParse({ unexpected: true }).success).toBe(false);
+      expect(PLUGIN_ACTION_OUTPUT_SCHEMAS[actionId]).toBeDefined();
+    }
   });
 
   it('retains every exact action schema in its single runtime projection map', () => {

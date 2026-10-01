@@ -211,7 +211,7 @@ describe('createActionExecutor (plugin permission grants)', () => {
         kind: 'plugin',
         pluginId: 'acme.voice',
         contributionLocalId: 'permission-grants',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'voice-root-1' },
       },
     })).resolves.toMatchObject({
       ok: true,
@@ -243,7 +243,7 @@ describe('createActionExecutor (plugin permission grants)', () => {
         kind: 'plugin',
         pluginId: 'acme.voice',
         contributionLocalId: 'permission-grants',
-        immutableGenerationId: 'generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'voice-root-1' },
       },
     });
   });

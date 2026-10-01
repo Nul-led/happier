@@ -48,7 +48,7 @@ describe("Team directory routes", () => {
             { teamId: team.id, accountId: member.id, role: "member" },
         ] });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: {
@@ -151,7 +151,7 @@ describe("Team directory routes", () => {
         const team = await db.team.create({ data: { name: `Mapping route ${crypto.randomUUID()}` } });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: {
@@ -233,7 +233,7 @@ describe("Team directory routes", () => {
         });
         await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
         const provider = await db.identityProviderInstance.create({
-            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1 } },
+            data: { ownerTeamId: team.id, kind: "workos_sso", displayName: "WorkOS", config: { v: 1, kind: "workos_sso" } },
         });
         const connection = await db.teamIdentityConnection.create({
             data: {

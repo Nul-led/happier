@@ -13,6 +13,7 @@ describe('portable plugin brand projection (wire)', () => {
       width: 64,
       height: 64,
       digest: `sha256:${'a'.repeat(64)}`,
+      monochrome: true,
     } as const;
 
     expect(PluginProjectionBrandAssetV2Schema.parse(available)).toEqual(available);

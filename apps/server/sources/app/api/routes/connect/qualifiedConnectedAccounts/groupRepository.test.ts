@@ -7,6 +7,7 @@ import {
 } from "./identity";
 import {
     createQualifiedConnectedAccountGroup,
+    encodeQualifiedGroupStateForActiveAccount,
     listAllQualifiedConnectedAccountGroupsInTx,
     toQualifiedConnectedAccountGroup,
 } from "./groupRepository";
@@ -131,6 +132,95 @@ describe("qualified Connected Account group repository", () => {
                 connectedAccountId: accountRef.accountId,
             }],
         });
+    });
+
+    it("exposes an active-since timestamp only for the active member it describes", () => {
+        const current = row();
+        current.stateJson = JSON.stringify({
+            lastSwitchAt: 999,
+            activeSince: { accountId: accountRef.accountId, atMs: 123 },
+        });
+        expect(toQualifiedConnectedAccountGroup(current).state.activeSince).toEqual({
+            accountId: accountRef.accountId,
+            atMs: 123,
+        });
+        expect(toQualifiedConnectedAccountGroup(current).state.lastSwitchAt).toBe(123);
+
+        const divergentIdentityDigest = createQualifiedConnectedAccountIdentityDigest({
+            service,
+            accountId: "another-account",
+        });
+        const divergent = {
+            ...current,
+            activeConnectedAccountId: "another-account",
+            members: current.members.map((member) => ({
+                ...member,
+                qualifiedIdentityDigest: divergentIdentityDigest,
+                credential: {
+                    ...member.credential,
+                    connectedAccountId: "another-account",
+                    qualifiedIdentityDigest: divergentIdentityDigest,
+                },
+            })),
+        };
+        expect(toQualifiedConnectedAccountGroup(divergent).state.activeSince).toBeNull();
+        expect(toQualifiedConnectedAccountGroup(divergent).state.lastSwitchAt).toBeUndefined();
+        expect(toQualifiedConnectedAccountGroup(row()).state.activeSince).toBeNull();
+        // ../0.2 at 17ba05df68d4d3d4cad1c1241b58e63805db37ed permits this
+        // state shape, but carries no identity-bound selection clock.
+        const predecessor = row();
+        predecessor.stateJson = JSON.stringify({ status: "ready", lastSwitchAt: 123 });
+        expect(toQualifiedConnectedAccountGroup(predecessor).state).toMatchObject({
+            status: "ready",
+            activeSince: null,
+        });
+        expect(toQualifiedConnectedAccountGroup(predecessor).state.lastSwitchAt).toBeUndefined();
+    });
+
+    it("keeps the server-owned active time across runtime state writes and replaces it on switch", () => {
+        expect(encodeQualifiedGroupStateForActiveAccount({
+            currentStateJson: "{}",
+            previousActiveAccountId: null,
+            nextActiveAccountId: null,
+        })).toBe("{}");
+        const currentStateJson = JSON.stringify({
+            status: "ready",
+            lastSwitchAt: 10,
+            activeSince: { accountId: "first", atMs: 10 },
+        });
+        const runtimeWrite = encodeQualifiedGroupStateForActiveAccount({
+            currentStateJson,
+            nextState: {
+                status: "switching",
+                lastSwitchAt: 999,
+                activeSince: { accountId: "forged", atMs: 999 },
+            },
+            previousActiveAccountId: "first",
+            nextActiveAccountId: "first",
+            nowMs: 20,
+        });
+        expect(JSON.parse(runtimeWrite)).toMatchObject({
+            status: "switching",
+            lastSwitchAt: 10,
+            activeSince: { accountId: "first", atMs: 10 },
+        });
+        const switched = encodeQualifiedGroupStateForActiveAccount({
+            currentStateJson: runtimeWrite,
+            previousActiveAccountId: "first",
+            nextActiveAccountId: "second",
+            nowMs: 30,
+        });
+        expect(JSON.parse(switched)).toMatchObject({
+            lastSwitchAt: 30,
+            activeSince: { accountId: "second", atMs: 30 },
+        });
+        const cleared = JSON.parse(encodeQualifiedGroupStateForActiveAccount({
+            currentStateJson: switched,
+            previousActiveAccountId: "second",
+            nextActiveAccountId: null,
+        }));
+        expect(cleared.activeSince).toBeUndefined();
+        expect(cleared.lastSwitchAt).toBeUndefined();
     });
 
     it("rejects a member linked across services even if local ids match", () => {

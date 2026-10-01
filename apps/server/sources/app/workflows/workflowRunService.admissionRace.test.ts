@@ -22,7 +22,7 @@ vi.mock("@/storage/inTx", () => ({
             attempt: 0,
             claimedByMachineId: null,
             workflowCustodyState: "pending",
-            workflowResultDeliveryState: null,
+            originDeliveryAckRevision: null,
             workflowAcceptedSnapshotEnvelope: "accepted-envelope",
             executionInputEnvelope: "accepted-envelope",
             workflowCheckpointEnvelope: null,
@@ -102,10 +102,7 @@ it("selects exact-machine terminal custody and nonterminal cancellation recovery
                     "missed",
                     "outcome_uncertain",
                 ] },
-                OR: [
-                    { workflowCustodyState: "pending" },
-                    { workflowResultDeliveryState: "pending" },
-                ],
+                workflowCustodyState: "pending",
             },
             {
                 state: { notIn: [

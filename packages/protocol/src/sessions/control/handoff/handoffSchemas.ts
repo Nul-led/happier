@@ -32,7 +32,6 @@ const MAX_JOB_ID_LENGTH = 256;
 const MAX_PATH_LENGTH = 4096;
 const MAX_TRANSFER_ID_LENGTH = 512;
 const MAX_MANIFEST_HASH_LENGTH = 256;
-const MAX_ENDPOINT_CANDIDATES = 20;
 const MAX_PREFERRED_TRANSPORT_STRATEGIES = 4;
 const MAX_ATTEMPT_ID_LENGTH = 256;
 
@@ -76,7 +75,8 @@ const SessionHandoffAgentBundleTransferPublicationSchema = z
     transferId: z.string().min(1).max(MAX_TRANSFER_ID_LENGTH),
     sizeBytes: z.number().int().min(0),
     manifestHash: z.string().min(1).max(MAX_MANIFEST_HASH_LENGTH),
-    endpointCandidates: z.array(TransferEndpointCandidateSchema).max(MAX_ENDPOINT_CANDIDATES).readonly().optional(),
+    // Preserve all routes, including those advertised by supported predecessor daemons.
+    endpointCandidates: z.array(TransferEndpointCandidateSchema).readonly().optional(),
   })
   .passthrough();
 export type SessionHandoffAgentBundleTransferPublication = z.infer<
@@ -131,6 +131,7 @@ function areEquivalentHandoffPublicationValues(
 export const SessionHandoffMetadataV2Schema = z
   .object({
     agentBundleTransferPublication: SessionHandoffAgentBundleTransferPublicationSchema.optional(),
+    workspaceSeedTransferPublication: SessionHandoffAgentBundleTransferPublicationSchema.strict().optional(),
     // Prospective remote-dev persisted prepare-target records used the Provider-era field.
     // Remove this reader only after no supported predecessor produces it and retained jobs are reconciled.
     providerBundleTransferPublication: SessionHandoffAgentBundleTransferPublicationSchema.optional(),
@@ -172,6 +173,7 @@ export type SessionHandoffMetadataV2 = z.infer<typeof SessionHandoffMetadataV2Sc
 const SessionHandoffResumePlanSchema = z
   .object({
     directory: z.string().min(1).max(MAX_PATH_LENGTH),
+    directoryKind: z.enum(['path', 'managed']).optional(),
     agent: ExternalSessionAgentIdSchema,
     /** Canonical current target; absent only on supported predecessor responses. */
     agentTarget: AgentExecutionTargetV1Schema.optional(),
@@ -198,6 +200,8 @@ export const SessionHandoffStartRequestSchema = z
     sessionId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     sourceMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
     targetMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
+    operationId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
+    targetDirectory: z.object({ kind: z.literal('managed') }).strict().optional(),
     /** Host-derived Account Home scope for daemon-owned relationship creation. */
     accountServerId: z.string().trim().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
     sessionStorageMode: SessionHandoffStorageModeSchema,
@@ -210,6 +214,11 @@ export const SessionHandoffStartRequestSchema = z
     workspaceAction: HandoffWorkspaceActionV1Schema.optional(),
   })
   .passthrough()
+  .superRefine((value, context) => {
+    if (value.targetDirectory?.kind === 'managed' && !value.operationId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['operationId'], message: 'Managed handoff requires operation identity' });
+    }
+  })
   .superRefine(rejectLegacyInlineTransferFields)
   .superRefine(rejectRetiredWorkspaceActionFields);
 export type SessionHandoffStartRequest = z.infer<typeof SessionHandoffStartRequestSchema>;
@@ -219,18 +228,20 @@ export const SessionHandoffPrepareTargetRequestSchema = z
     handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     sourceMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
     targetMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
+    operationId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
+    sessionId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
+    targetDirectory: z.object({ kind: z.literal('managed') }).strict().optional(),
     negotiatedTransportStrategy: SessionHandoffTransportStrategySchema,
     allowServerRoutedFallback: z.boolean().optional(),
     sourceSessionStorageMode: SessionHandoffStorageModeSchema,
     targetSessionStorageMode: SessionHandoffStorageModeSchema.optional(),
-    targetPath: z.string().min(1).max(MAX_PATH_LENGTH),
+    targetPath: z.string().max(MAX_PATH_LENGTH).default(''),
     /** Repository materialization root for a git_worktree handoff. */
     workspaceRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
     /** Safe repository-relative cwd; empty means the repository root. */
     workspaceSessionRelativeCwd: z.string().max(MAX_PATH_LENGTH).optional(),
     endpointCandidates: z
       .array(TransferEndpointCandidateSchema)
-      .max(MAX_ENDPOINT_CANDIDATES)
       .readonly()
       .default(() => []),
     handoffMetadataV2: SessionHandoffMetadataV2Schema.optional(),
@@ -238,6 +249,16 @@ export const SessionHandoffPrepareTargetRequestSchema = z
   })
   .passthrough()
   .superRefine((value, context) => {
+    if (value.targetDirectory?.kind === 'managed') {
+      for (const field of ['operationId', 'sessionId'] as const) {
+        if (!value[field]) context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: 'Managed handoff requires target allocation identity' });
+      }
+      if (value.workspaceAction && value.workspaceAction.kind !== 'none') {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['workspaceAction'], message: 'Managed handoff cannot enroll workspace relationships' });
+      }
+    } else if (!value.targetPath.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['targetPath'], message: 'Path handoff requires a target path' });
+    }
     if ((value.workspaceRootPath === undefined) !== (value.workspaceSessionRelativeCwd === undefined)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -291,7 +312,6 @@ export const SessionHandoffStartResponseSchema = z
     status: SessionHandoffStatusSchema,
     endpointCandidates: z
       .array(TransferEndpointCandidateSchema)
-      .max(MAX_ENDPOINT_CANDIDATES)
       .readonly()
       .default(() => []),
     targetPath: z.string().min(1).max(MAX_PATH_LENGTH),

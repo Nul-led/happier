@@ -24,6 +24,7 @@ const RUNTIME_ACTION_ENABLED_SURFACES = Object.freeze({
 // projection contracts; a runtime action is surfaced only where a real executor routes through the
 // ActionExecutor front door.
 const RUNTIME_ACTION_REAL_EXECUTOR_FAMILY_IDS: readonly RuntimeActionIdV1[] = [
+  ...ACTION_ID_FAMILIES_V1.computer,
   ...ACTION_ID_FAMILIES_V1.local_services_inventory,
   ...ACTION_ID_FAMILIES_V1.local_services_launcher,
   ...ACTION_ID_FAMILIES_V1.local_services_actions,
@@ -87,6 +88,9 @@ export function isRuntimeActionExecutorReal(actionId: RuntimeActionIdV1): boolea
 }
 
 export function resolveRuntimeActionSurfaces(actionId: RuntimeActionIdV1): PreNormalizedActionSurfaces {
+  if (actionId === 'computer.permissions.openSettings') {
+    return { ...RUNTIME_ACTION_ENABLED_SURFACES, agent: false };
+  }
   return isRuntimeActionExecutorReal(actionId)
     ? RUNTIME_ACTION_ENABLED_SURFACES
     : RUNTIME_ACTION_DISABLED_SURFACES;

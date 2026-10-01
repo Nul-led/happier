@@ -1263,15 +1263,27 @@ describe("qualified Connected Account credential repository", () => {
             status: "written",
             group: { runtimeStateRevision: 0 },
         });
-        expect(await setQualifiedConnectedAccountGroupActiveAccount({
+        const switched = await setQualifiedConnectedAccountGroupActiveAccount({
             accountId: account.id,
             mutation: {
                 group: groupRef,
                 connectedAccountId: activeRef.accountId,
                 expectedGeneration: 2,
             },
-        })).toMatchObject({ status: "written" });
+        });
+        expect(switched).toMatchObject({
+            status: "written",
+            group: {
+                state: {
+                    activeSince: {
+                        accountId: activeRef.accountId,
+                        atMs: expect.any(Number),
+                    },
+                },
+            },
+        });
 
+        const beforeCleanupMs = Date.now();
         await expect(deleteQualifiedConnectedServiceCredential({
             accountId: account.id,
             ref: activeRef,
@@ -1284,12 +1296,25 @@ describe("qualified Connected Account credential repository", () => {
                 vendor: true,
                 activeProfileId: true,
                 activeConnectedAccountId: true,
+                stateJson: true,
             },
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             vendor: null,
             activeProfileId: null,
             activeConnectedAccountId: fallbackRef.accountId,
         });
+        const promoted = await db.connectedServiceAuthGroup.findFirstOrThrow({
+            where: { accountId: account.id },
+            select: { stateJson: true },
+        });
+        const promotedState = JSON.parse(promoted.stateJson ?? "{}");
+        expect(promotedState.activeSince).toMatchObject({
+            accountId: fallbackRef.accountId,
+            atMs: expect.any(Number),
+        });
+        expect(promotedState.lastSwitchAt).toBe(promotedState.activeSince.atMs);
+        expect(promotedState.lastSwitchAt).toBeGreaterThanOrEqual(beforeCleanupMs);
+        expect(promotedState.lastSwitchAt).toBeLessThanOrEqual(Date.now());
     });
 
     it("rolls back credential cleanup when an affected group CAS loses", async () => {

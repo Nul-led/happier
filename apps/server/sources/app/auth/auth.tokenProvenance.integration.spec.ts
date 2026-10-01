@@ -55,6 +55,17 @@ describe("auth token provenance (integration)", () => {
         await harness.close();
     });
 
+    it("applies the current Account terminal policy to the same signed bearer, including cache hits", async () => {
+        const account = await db.account.create({ data: { publicKey: "terminal-policy-currentness" } });
+        const token = await auth.createToken(account.id, undefined, { kind: "terminal", authority: "account_automation" });
+        expect(decodeJwtPayload(token)).toMatchObject({ provenance: { kind: "terminal", authority: "account_automation" } });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({ authTokenKind: "terminal", authority: "present_user" });
+        await db.account.update({ where: { id: account.id }, data: { terminalPresentUserPolicy: "disallowed" } });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({ authTokenKind: "terminal", authority: "account_automation" });
+        await db.account.update({ where: { id: account.id }, data: { terminalPresentUserPolicy: "allowed" } });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({ authTokenKind: "terminal", authority: "present_user" });
+    });
+
     it("mints provenance as a signed top-level claim and projects every closed kind", async () => {
         const account = await db.account.create({
             data: { publicKey: "auth-provenance-all-kinds" },
@@ -84,7 +95,7 @@ describe("auth token provenance (integration)", () => {
             await expect(auth.verifyToken(token)).resolves.toMatchObject({
                 userId: account.id,
                 authTokenKind: expected.kind,
-                authority: expected.authority,
+                authority: expected.kind === "terminal" ? "present_user" : expected.authority,
                 authenticationEvidence: expected.authenticationEvidence,
                 extras: { source: expected.kind },
                 legacy: false,
@@ -109,13 +120,13 @@ describe("auth token provenance (integration)", () => {
             userId: accountId,
             extras: { session: "terminal-auth-request-released-0.2.11" },
             authTokenKind: "terminal",
-            authority: "account_automation",
+            authority: "present_user",
             legacy: true,
         });
         await expect(auth.verifyTokenForRoute(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toMatchObject({
             userId: accountId,
             authTokenKind: "terminal",
-            authority: "account_automation",
+            authority: "present_user",
             legacy: true,
         });
 

@@ -54,6 +54,23 @@ export function projectAccountDisplayProfileV1(row: AccountDisplayProfileRow): A
 }
 
 /**
+ * The one short human label for an Account: the person's name when they gave
+ * one, otherwise their username, otherwise nothing.
+ *
+ * Callers that need a label must consume this rather than re-deriving the rule,
+ * so a Home never names the same person two different ways.
+ */
+export function resolveAccountDisplayLabelV1(
+    row: Readonly<{ firstName: string | null; lastName: string | null; username: string | null }>,
+): string | null {
+    const name = [row.firstName, row.lastName]
+        .map((part) => part?.trim())
+        .filter((part): part is string => Boolean(part))
+        .join(" ");
+    return name || row.username?.trim() || null;
+}
+
+/**
  * Released direct-share/public-owner wire shape. It is the same projection with
  * the Account id and the historical `avatar` field name that those APIs
  * already publish; keep it thin rather than reintroducing a second projector.

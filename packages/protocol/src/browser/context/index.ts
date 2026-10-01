@@ -1,3 +1,9 @@
+export { buildBrowserContextAnnotationStructuredBlock } from './annotationStructuredBlock.js';
+export {
+  resolveBrowserContextPrivacyDenial,
+  type BrowserContextPrivacyDenial,
+  type BrowserContextPrivacyState,
+} from './privacy.js';
 export {
   resolveAnnotationCropClip,
   strokeViewportBounds,
@@ -17,6 +23,8 @@ export {
   BrowserContextCommandV1Schema,
   BrowserContextEventV1Schema,
   BrowserContextItemV1Schema,
+  BrowserContextMessagePayloadV1Schema,
+  BrowserContextMessageMetaV1Schema,
   BrowserContextKindV1Schema,
   BrowserContextLifecycleStateV1Schema,
   BrowserContextRedactionLevelV1Schema,
@@ -41,6 +49,7 @@ export {
   type BrowserContextCommandV1,
   type BrowserContextEventV1,
   type BrowserContextItemV1,
+  type BrowserContextMessagePayloadV1,
   type BrowserContextKindV1,
   type BrowserContextLifecycleStateV1,
   type BrowserContextRedactionLevelV1,

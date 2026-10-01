@@ -68,7 +68,7 @@ describe('daemonVoiceInference schemas', () => {
             .toEqual(review.artifactBinding);
         const materializationBinding = {
             kind: 'materialization' as const,
-            immutableGenerationId: 'generation-local-1',
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'voice-root-1' },
         };
         expect(DaemonVoiceModelPackLicenseReviewV1Schema.parse({
             ...review,
@@ -92,7 +92,7 @@ describe('daemonVoiceInference schemas', () => {
             ...review,
             artifactBinding: {
                 kind: 'materialization',
-                immutableGenerationId: 'generation-local-1',
+                sourceCustody: { kind: 'development', registeredRootId: 'voice-root-1' },
                 integrity: 'not-permitted',
             },
         }).success).toBe(false);

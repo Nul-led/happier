@@ -6,6 +6,10 @@ import {
 
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 
+vi.mock("@/app/api/socket/socketCredentialCurrentness", async () => (
+    await import("../testkit/socketHarness")
+).createCurrentSocketCredentialModuleMock());
+
 const log = vi.fn();
 const emitEphemeral = vi.fn();
 const buildMachineActivityEphemeral = vi.fn((machineId: string, active: boolean, activeAt: number) => ({

@@ -98,6 +98,7 @@ export function resolveTeamMembershipCapabilities(
 
 const NO_TARGET_CAPABILITIES: TeamMembershipCapabilitiesV1 = {
     setRole: false,
+    assignableRoles: [],
     suspend: false,
     reactivate: false,
     remove: false,
@@ -217,7 +218,7 @@ export function resolveTeamMemberTargetCapabilities(
 
     const recoverable = isHomeOwnerRecoveryPromotion(input);
     if (!input.actor.manageMembers) {
-        return recoverable ? { ...NO_TARGET_CAPABILITIES, setRole: true } : NO_TARGET_CAPABILITIES;
+        return recoverable ? { ...NO_TARGET_CAPABILITIES, setRole: true, assignableRoles: [TeamRole.owner] } : NO_TARGET_CAPABILITIES;
     }
 
     if (input.target.role === TeamRole.owner && !input.actor.manageOwners) {
@@ -232,6 +233,10 @@ export function resolveTeamMemberTargetCapabilities(
         // demotion that would strand the Team, so the control is withdrawn
         // instead of being offered and then refused after submission.
         setRole: !lastActiveOwner,
+        assignableRoles: lastActiveOwner ? [] : [
+            ...((input.actor.manageOwners && admitsNewTeamOwner(input.target)) || recoverable ? [TeamRole.owner] : []),
+            TeamRole.admin, TeamRole.member, TeamRole.guest,
+        ],
         suspend: nativeLifecycle
             && input.target.status === TeamMembershipStatus.active
             && !lastActiveOwner,

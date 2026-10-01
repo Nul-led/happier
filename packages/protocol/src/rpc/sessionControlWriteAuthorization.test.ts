@@ -21,6 +21,18 @@ import {
  * "run mutation" family, or read projection may inherit write authority.
  */
 describe('Session-control RPC write classification', () => {
+  it('requires input authority for role configuration writes on the owner daemon', () => {
+    expect(resolveSocketRpcSessionWriteAuthorization('session-1:session.roles.configuration.set')).toMatchObject({
+      authority: 'submitAgentInput', routeToSessionOwnerDaemon: true,
+    });
+  });
+  it('keeps workflow-step withdrawal on the Session owner daemon under owner authority', () => {
+    expect(resolveSocketRpcSessionWriteAuthorization('session-1:session.workflowStep.withdraw')).toEqual({
+      method: 'session.workflowStep.withdraw',
+      authority: 'sessionOwner',
+      routeToSessionOwnerDaemon: true,
+    });
+  });
   it('classifies every declared Session RPC through the one closed map', () => {
     for (const method of Object.values(SESSION_RPC_METHODS)) {
       expect(resolveSocketRpcSessionAuthorization(`session-1:${method}`)).toMatchObject({

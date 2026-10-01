@@ -41,7 +41,7 @@ describe("directory provisioned identity binding", () => {
                 ownerTeamId: params.teamId,
                 kind: "workos_sso",
                 displayName: "WorkOS",
-                config: { v: 1 },
+                config: { v: 1, kind: "workos_sso" },
             },
         });
         const connection = await db.teamIdentityConnection.create({

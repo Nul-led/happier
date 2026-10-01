@@ -324,17 +324,16 @@ describe('readMachineTransferFeatureEnv', () => {
 });
 
 describe('readMachineLiveStreamFeatureEnv', () => {
-  it('defaults direct peer enabled but server relay disabled until relay caps are configured', () => {
+  it('defaults direct peer and server relay enabled without imposing quality or lifetime caps', () => {
     const env: NodeJS.ProcessEnv = {};
     const res = readMachineLiveStreamFeatureEnv(env);
 
     expect(res.directPeerEnabled).toBe(true);
-    expect(res.serverRoutedEnabled).toBe(false);
-    expect(res.serverRoutedCaps).toBeNull();
-    expect(res.serverRoutedDisabledReason).toBe('relay_not_enabled');
+    expect(res.serverRoutedEnabled).toBe(true);
+    expect(res.serverRoutedCaps).toEqual({});
   });
 
-  it('enables server relay only when the operator provides all required positive caps', () => {
+  it('honors explicit Home resource policy caps', () => {
     const env: NodeJS.ProcessEnv = {
       HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__ENABLED: 'true',
       HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__MAX_BITRATE_BPS: '64000',
@@ -358,16 +357,18 @@ describe('readMachineLiveStreamFeatureEnv', () => {
     });
   });
 
-  it('keeps server relay disabled when enabled is true but a required cap is missing', () => {
+  it('accepts an individual optional Home cap and honors the relay toggle', () => {
     const env: NodeJS.ProcessEnv = {
       HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__ENABLED: 'true',
       HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__MAX_BITRATE_BPS: '64000',
     };
     const res = readMachineLiveStreamFeatureEnv(env);
 
-    expect(res.serverRoutedEnabled).toBe(false);
-    expect(res.serverRoutedCaps).toBeNull();
-    expect(res.serverRoutedDisabledReason).toBe('relay_caps_missing');
+    expect(res.serverRoutedEnabled).toBe(true);
+    expect(res.serverRoutedCaps).toEqual({ maxBitrateBps: 64_000 });
+    expect(readMachineLiveStreamFeatureEnv({
+      HAPPIER_FEATURE_MACHINES_LIVE_STREAM_SERVER_ROUTED__ENABLED: 'false',
+    }).serverRoutedEnabled).toBe(false);
   });
 });
 
@@ -389,7 +390,6 @@ describe('readMachineTunnelFeatureEnv', () => {
     expect(mod.readMachineTunnelFeatureEnv).toBeTypeOf('function');
     const res = mod.readMachineTunnelFeatureEnv({
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ENABLED: '1',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BYTES: '4096',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_ACTIVE_TUNNELS_PER_SOCKET: '2',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAME_BYTES: '1024',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__SUPPORTED_ENCODINGS: 'binary_frame_v2',
@@ -398,16 +398,10 @@ describe('readMachineTunnelFeatureEnv', () => {
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_RAW_PAYLOAD_BYTES: '2048',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAMED_MESSAGE_BYTES: '4096',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_CONCURRENT_SUBSTREAMS: '8',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_TOTAL_SUBSTREAMS: '64',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BYTES_PER_SUBSTREAM: '8192',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_AGGREGATE_BYTES: '16384',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_SUBSTREAM_IDLE_MS: '5000',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_SESSION_IDLE_MS: '10000',
       HAPPIER_FEATURE_MACHINES_TUNNEL_ALLOWED_PORTS: '3000,5173',
     });
 
     expect(res.serverRoutedEnabled).toBe(true);
-    expect(res.serverRoutedMaxBytes).toBe(4096);
     expect(res.serverRoutedMaxActiveTunnelsPerSocket).toBe(2);
     expect(res.serverRoutedMaxFrameBytes).toBe(1024);
     expect(res.serverRoutedSupportedEncodings).toEqual(['binary_frame_v2']);
@@ -417,11 +411,6 @@ describe('readMachineTunnelFeatureEnv', () => {
     expect(res.serverRoutedMaxFramedMessageBytes).toBe(4096);
     expect(res.serverRoutedSubstreams).toMatchObject({
       maxConcurrentSubstreams: 8,
-      maxTotalSubstreams: 64,
-      maxBytesPerSubstream: 8192,
-      maxAggregateBytes: 16_384,
-      maxSubstreamIdleMs: 5000,
-      maxSessionIdleMs: 10_000,
     });
     expect(res.allowedPorts).toEqual([3000, 5173]);
   });
@@ -520,6 +509,53 @@ describe('readLocalServicesFeatureEnv', () => {
       kind: 'fixed_window',
       maxRequests: 120,
       windowMs: 60_000,
+    });
+  });
+});
+
+describe('feature reader defaults come from FEATURE_READER_DEFAULTS', () => {
+  it('produces the declared default of every parse style for an empty env, and for values outside the declared bounds', async () => {
+    const mod = await loadFeatureEnvModule();
+    const d = mod.FEATURE_READER_DEFAULTS;
+    const empty = {} as NodeJS.ProcessEnv;
+
+    expect(mod.readAutomationsFeatureEnv(empty).enabled).toBe(d.automationsEnabled.default);
+    expect(mod.readPetsFeatureEnv(empty).syncEnabled).toBe(d.petsSyncEnabled.default);
+    expect(mod.readPetsFeatureEnv(empty).maxManifestBytes).toBe(d.petsSyncMaxManifestBytes.default);
+    expect(mod.readBugReportsFeatureEnv(empty).contextWindowMs).toBe(d.bugReportsContextWindowMs.default);
+    expect(
+      mod.readBugReportsFeatureEnv({ HAPPIER_FEATURE_BUG_REPORTS__CONTEXT_WINDOW_MS: String(d.bugReportsContextWindowMs.bounds.max + 1) })
+        .contextWindowMs,
+    ).toBe(d.bugReportsContextWindowMs.default);
+    expect(mod.readSocialFriendsFeatureEnv(empty).identityProvider).toBe(d.socialFriendsIdentityProvider.default);
+    expect(mod.readAuthMtlsFeatureEnv(empty)).toMatchObject({
+      mode: d.authMtlsMode.default,
+      identitySource: d.authMtlsIdentitySource.default,
+      forwardedEmailHeader: d.authMtlsForwardedEmailHeader.default,
+      claimTtlSeconds: d.authMtlsClaimTtlSeconds.default,
+    });
+    expect(mod.readEncryptionFeatureEnv(empty)).toEqual({
+      storagePolicy: d.encryptionStoragePolicy.default,
+      allowAccountOptOut: d.encryptionAllowAccountOptOut.default,
+      defaultAccountMode: d.encryptionDefaultAccountMode.default,
+      plainAccountSettingsAtRest: d.encryptionPlainAccountSettingsAtRest.default,
+      plainAccountCredentialsAtRest: d.encryptionPlainAccountCredentialsAtRest.default,
+      plainAccountArtifactsAtRest: d.encryptionPlainAccountArtifactsAtRest.default,
+    });
+    expect(mod.readMachineTransferFeatureEnv(empty).serverRoutedMaxBytes).toBe(d.machinesTransferServerRoutedMaxBytes.default);
+    expect(mod.readMachineTunnelFeatureEnv(empty).serverRoutedMaxFrameBytes).toBe(d.machinesTunnelServerRoutedMaxFrameBytes.default);
+    expect(mod.readLocalServicesFeatureEnv(empty).previewTokenTtlMs).toBe(d.localServicesPreviewTokenTtlMs.default);
+    const plugins = mod.readPluginsFeatureEnv(empty);
+    expect(plugins.webhookIngressPolicy.route.ratePerMinute).toBe(d.pluginsWebhooksRouteRatePerMinute.default);
+    expect(plugins.collectionLimits.maxBatchRows).toBe(d.collectionMaxBatchRows.default);
+  });
+
+  it('keeps the exact-case encryption policy parse and the legacy auth aliases', async () => {
+    const mod = await loadFeatureEnvModule();
+    expect(mod.readEncryptionFeatureEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'Optional' }).storagePolicy).toBe('required_e2ee');
+    expect(readAuthFeatureEnv({ AUTH_UI_AUTO_REDIRECT: '1', AUTH_UI_AUTO_REDIRECT_PROVIDER_ID: ' GitHub ' } as NodeJS.ProcessEnv)).toMatchObject({
+      uiAutoRedirectEnabled: true,
+      uiAutoRedirectProviderId: 'github',
     });
   });
 });

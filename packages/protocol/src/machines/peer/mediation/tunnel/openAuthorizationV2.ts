@@ -12,7 +12,7 @@ export const PeerTcpTunnelOpenV2Schema = z.object({
   kind: z.literal('open'),
   tunnelId: z.string().min(1),
   targetMachineId: z.string().min(1),
-  routeKind: z.literal('loopback_direct'),
+  routeKind: z.enum(['loopback_direct', 'iroh_peer']),
   destination: PeerTcpTunnelDestinationV1Schema,
   grant: SignedDirectRouteGrantV2Schema,
   proof: PeerRouteEphemeralProofV2Schema,

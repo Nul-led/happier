@@ -120,10 +120,7 @@ function plainAutomationTemplate(payload: unknown): string {
     });
 }
 
-const WORKFLOW_TRANSITION_MATERIAL = {
-    type: "dataKey" as const,
-    machineKey: new Uint8Array(32).fill(91),
-};
+const WORKFLOW_TRANSITION_RUN_DATA_KEY = new Uint8Array(32).fill(91);
 
 const WORKFLOW_TRANSITION_DEFINITION = {
     version: 1 as const,
@@ -147,7 +144,7 @@ function workflowSealMode(mode: "plain" | "e2ee") {
         ? { mode } as const
         : {
             mode,
-            material: WORKFLOW_TRANSITION_MATERIAL,
+            runDataKey: WORKFLOW_TRANSITION_RUN_DATA_KEY,
             randomBytes: (length: number) => new Uint8Array(length).fill(37),
         } as const;
 }

@@ -2950,11 +2950,6 @@ describe("canonical transcript sequence writer on SQLite", () => {
             },
             expectedSessionMetadataVersion: 7,
             expectedSessionSeq: 0,
-            expectedPending: {
-                version: 4,
-                count: 2,
-                blockedCount: 1,
-            },
             expectedPriorStableStorage: { state: "machine_only" },
         } as const;
         const execute = async (candidate: unknown) =>
@@ -3294,11 +3289,6 @@ describe("canonical transcript sequence writer on SQLite", () => {
                 },
             },
             expectedSessionSeq: 1,
-            expectedPending: {
-                version: 4,
-                count: 2,
-                blockedCount: 1,
-            },
             expectedPublication: {
                 materializationPublicationId: before.materializationPublicationId,
                 materializedThroughSourceAt: Number(before.materializedThroughSourceAt),
@@ -3317,7 +3307,7 @@ describe("canonical transcript sequence writer on SQLite", () => {
                 },
             },
             { ...command, expectedSessionSeq: 2 },
-            { ...command, expectedPending: { ...command.expectedPending, version: 5 } },
+            { ...command, publisherPrecondition: { ...command.publisherPrecondition, committedFenceMs: publisherFence.getTime() + 1 } },
             {
                 ...command,
                 expectedPublication: {
@@ -3346,6 +3336,19 @@ describe("canonical transcript sequence writer on SQLite", () => {
             })).resolves.toEqual(before);
         }
 
+        // A published viewer prefix cannot authorize exposing private later rows.
+        await db.session.update({ where: { id: session.id }, data: { seq: 2 } });
+        await expect(execute(command)).resolves.toMatchObject({ kind: "error", errorCode: "invalid_state" });
+        await expect(db.session.findUniqueOrThrow({ where: { id: session.id } }))
+            .resolves.toMatchObject({ currentStorageState: "snapshot_complete", metadataVersion: 7, seq: 2 });
+        await db.session.update({ where: { id: session.id }, data: { seq: 1 } });
+
+        // Pending is server-owned live state, absent from the snapshot viewer
+        // projection. Queue changes after preparing the request must be retained.
+        await db.session.update({
+            where: { id: session.id },
+            data: { pendingVersion: 5, pendingCount: 3, pendingBlockedCount: 2 },
+        });
         await expect(execute(command)).resolves.toEqual({
             v: 1,
             kind: "takeover_admitted",
@@ -3431,9 +3434,9 @@ describe("canonical transcript sequence writer on SQLite", () => {
             materializationPublicationId: null,
             materializedThroughSourceAt: null,
             publishedThroughServerSeq: null,
-            pendingVersion: 4,
-            pendingCount: 2,
-            pendingBlockedCount: 1,
+            pendingVersion: 5,
+            pendingCount: 3,
+            pendingBlockedCount: 2,
             active: true,
             thinking: false,
         });
@@ -3578,11 +3581,6 @@ describe("canonical transcript sequence writer on SQLite", () => {
                 },
             },
             expectedSessionSeq: 1,
-            expectedPending: {
-                version: 4,
-                count: 2,
-                blockedCount: 1,
-            },
             expectedPublication: {
                 materializationPublicationId: before.materializationPublicationId,
                 materializedThroughSourceAt: Number(before.materializedThroughSourceAt),

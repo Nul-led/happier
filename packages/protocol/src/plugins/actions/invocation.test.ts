@@ -4,6 +4,7 @@ import {
   PLUGIN_ACTION_OUTCOME_UNKNOWN_CODE,
   createPluginActionInvocation,
   createPluginActionPresentUserGate,
+  fingerprintPluginActionCurrentIntent,
   projectPluginActionUnavailableOutcomeCode,
 } from './invocation.js';
 import {
@@ -26,18 +27,18 @@ function currentIntentAuthorizationFacts(generation = '7') {
   } as const;
 }
 
-function currentIntentResolution(generation = '7') {
+function currentIntentResolution(occurrenceId = 'acme-action-occurrence-7') {
   return {
     status: 'resolved' as const,
-    action: Object.freeze({ generation }),
+    action: Object.freeze({ occurrenceId }),
     policy: Object.freeze({
       qualifiedId: 'acme.action/actions/commit',
-      generation,
+      occurrenceId,
       dangerLevel: 'writesRemote' as const,
       scopes: Object.freeze(['global']),
       surfaces: Object.freeze(['ui']),
       confirmation: Object.freeze({ title: 'Commit action' }),
-      authorization: currentIntentAuthorizationFacts(generation),
+      authorization: currentIntentAuthorizationFacts('7'),
       fingerprintContext: Object.freeze({ accountId: 'account-1' }),
     }),
   };
@@ -56,7 +57,7 @@ type TestProtocolParser = (input: unknown) => Readonly<
 >;
 
 function createInvocation(params: Readonly<{
-  generationSignal?: AbortSignal;
+  occurrenceSignal?: AbortSignal;
   isCurrent?: () => boolean;
   inputSchema?: object;
   inputParser?: TestProtocolParser;
@@ -66,7 +67,7 @@ function createInvocation(params: Readonly<{
   return createPluginActionInvocation({
     pluginId: 'acme.action',
     localId: 'commit',
-    generationSignal: params.generationSignal ?? new AbortController().signal,
+    occurrenceSignal: params.occurrenceSignal ?? new AbortController().signal,
     isCurrent: params.isCurrent ?? (() => true),
     ...(params.inputSchema === undefined ? {} : { inputSchema: params.inputSchema }),
     ...(params.inputParser === undefined ? {} : { inputParser: params.inputParser }),
@@ -76,6 +77,38 @@ function createInvocation(params: Readonly<{
 }
 
 describe('createPluginActionInvocation', () => {
+  it('uses null as the canonical handler input only when an input-less Action omits input', async () => {
+    const inputlessHandler = vi.fn(() => ({ accepted: true }));
+    await expect(createInvocation().invoke(undefined, {
+      handler: inputlessHandler,
+    })).resolves.toEqual({ status: 'executed', value: { accepted: true } });
+    expect(inputlessHandler).toHaveBeenCalledWith(expect.objectContaining({ input: null }));
+
+    const nullSchemaHandler = vi.fn(() => ({ accepted: true }));
+    await expect(createInvocation({ inputSchema: { type: 'null' } }).invoke(undefined, {
+      handler: nullSchemaHandler,
+    })).resolves.toMatchObject({
+      status: 'invalid',
+      code: 'plugin_action_input_schema_invalid',
+    });
+    expect(nullSchemaHandler).not.toHaveBeenCalled();
+  });
+
+  it('keeps durable current-intent identity independent of the process-local occurrence', () => {
+    const input = {
+      input: { title: 'ship it' },
+      surface: 'ui',
+      invocationSurface: 'ui',
+    } as const;
+    expect(fingerprintPluginActionCurrentIntent({
+      ...input,
+      policy: currentIntentResolution('occurrence-a').policy,
+    })).toBe(fingerprintPluginActionCurrentIntent({
+      ...input,
+      policy: currentIntentResolution('occurrence-b').policy,
+    }));
+  });
+
   it('projects only an unproved unavailable cancellation or retirement to outcome unknown', () => {
     expect(projectPluginActionUnavailableOutcomeCode(
       'plugin_action_aborted',
@@ -113,7 +146,7 @@ describe('createPluginActionInvocation', () => {
       invocationSurface: 'ui',
     })).resolves.toMatchObject({
       status: 'admitted',
-      action: { generation: '7' },
+      action: { occurrenceId: 'acme-action-occurrence-7' },
     });
 
     expect(present).toHaveBeenCalledOnce();
@@ -133,10 +166,10 @@ describe('createPluginActionInvocation', () => {
     const gate = createPluginActionPresentUserGate({
       resolve: () => ({
         status: 'resolved' as const,
-        action: Object.freeze({ generation: '7' }),
+        action: Object.freeze({ occurrenceId: 'acme-action-occurrence-7' }),
         policy: Object.freeze({
           qualifiedId: 'acme.action/actions/commit',
-          generation: '7',
+          occurrenceId: 'acme-action-occurrence-7',
           dangerLevel: 'safe' as const,
           scopes: Object.freeze(['global']),
           surfaces: Object.freeze(['cli']),
@@ -153,7 +186,7 @@ describe('createPluginActionInvocation', () => {
       invocationSurface: 'cli',
     })).resolves.toMatchObject({
       status: 'admitted',
-      action: { generation: '7' },
+      action: { occurrenceId: 'acme-action-occurrence-7' },
     });
 
     expect(present).toHaveBeenCalledOnce();
@@ -166,10 +199,10 @@ describe('createPluginActionInvocation', () => {
     } as never));
     const resolve = vi.fn(() => ({
       status: 'resolved' as const,
-      action: Object.freeze({ generation: '7' }),
+      action: Object.freeze({ occurrenceId: 'acme-action-occurrence-7' }),
       policy: Object.freeze({
         qualifiedId: 'acme.action/actions/commit',
-        generation: '7',
+        occurrenceId: 'acme-action-occurrence-7',
         dangerLevel: 'safe' as const,
         scopes: Object.freeze(['global']),
         surfaces: Object.freeze(['api']),
@@ -196,10 +229,10 @@ describe('createPluginActionInvocation', () => {
     const gate = createPluginActionPresentUserGate({
       resolve: () => ({
         status: 'resolved' as const,
-        action: Object.freeze({ generation: '7' }),
+        action: Object.freeze({ occurrenceId: 'acme-action-occurrence-7' }),
         policy: Object.freeze({
           qualifiedId: 'acme.action/actions/commit',
-          generation: '7',
+          occurrenceId: 'acme-action-occurrence-7',
           dangerLevel: 'safe' as const,
           scopes: Object.freeze(['global']),
           surfaces: Object.freeze(['plugin']),
@@ -232,10 +265,10 @@ describe('createPluginActionInvocation', () => {
     const gate = createPluginActionPresentUserGate({
       resolve: () => ({
         status: 'resolved' as const,
-        action: Object.freeze({ generation: '7' }),
+        action: Object.freeze({ occurrenceId: 'acme-action-occurrence-7' }),
         policy: Object.freeze({
           qualifiedId: 'acme.action/actions/commit',
-          generation: '7',
+          occurrenceId: 'acme-action-occurrence-7',
           dangerLevel: 'safe' as const,
           scopes: Object.freeze(['global']),
           surfaces: Object.freeze(['plugin']),
@@ -491,6 +524,42 @@ describe('createPluginActionInvocation', () => {
     }));
   });
 
+  it('prepares schema validation on first invoke, once, rather than when the Action is registered', async () => {
+    // A registry builds one invocation per registered Action; compiling and
+    // rehydrating every schema up front blocked the daemon for minutes.
+    let schemaReads = 0;
+    const observed = <T extends object>(schema: T): T => new Proxy(schema, {
+      get(target, key, receiver) {
+        schemaReads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      ownKeys(target) {
+        schemaReads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const inputSchema = observed(defineProtocolObject({
+      title: defineProtocolString({ minLength: 1 }),
+    }, { policy: 'additive-open/drop' }).jsonSchema);
+    const resultSchema = observed(defineProtocolObject({
+      accepted: defineProtocolLiteral(true),
+    }, { policy: 'additive-open/drop' }).jsonSchema);
+    const handler = vi.fn(() => ({ accepted: true }));
+
+    const invocation = createInvocation({ inputSchema, resultSchema });
+    expect(schemaReads).toBe(0);
+
+    await expect(invocation.invoke({ title: '' }, { handler }))
+      .resolves.toMatchObject({ status: 'invalid', code: 'plugin_action_input_schema_invalid' });
+    expect(handler).not.toHaveBeenCalled();
+    const readsAfterFirstInvoke = schemaReads;
+    expect(readsAfterFirstInvoke).toBeGreaterThan(0);
+
+    await expect(invocation.invoke({ title: 'Release' }, { handler }))
+      .resolves.toEqual({ status: 'executed', value: { accepted: true } });
+    expect(schemaReads).toBe(readsAfterFirstInvoke);
+  });
+
   it('runs host pre-dispatch only after input-schema admission and preserves its unavailable result', async () => {
     const invocation = createInvocation({
       inputSchema: {
@@ -609,7 +678,7 @@ describe('createPluginActionInvocation', () => {
       resolveHandler = resolve;
     }));
     const pending = createInvocation({
-      generationSignal: generation.signal,
+      occurrenceSignal: generation.signal,
       isCurrent: () => current,
     }).invoke(null, { handler });
     expect(handler).toHaveBeenCalledOnce();
@@ -638,7 +707,7 @@ describe('createPluginActionInvocation', () => {
       },
     });
     const pending = createInvocation({
-      generationSignal: generation.signal,
+      occurrenceSignal: generation.signal,
       isCurrent: () => current,
     }).invoke(null, {
       handler: () => {
@@ -724,7 +793,7 @@ describe('createPluginActionInvocation', () => {
     const caller = new AbortController();
     const generation = new AbortController();
     const handler = vi.fn(() => new Promise<never>(() => {}));
-    const pending = createInvocation({ generationSignal: generation.signal }).invoke(null, {
+    const pending = createInvocation({ occurrenceSignal: generation.signal }).invoke(null, {
       signal: caller.signal,
       handler,
     });
@@ -743,7 +812,7 @@ describe('createPluginActionInvocation', () => {
     const caller = new AbortController();
     const generation = new AbortController();
     const handler = vi.fn(() => new Promise<never>(() => {}));
-    const pending = createInvocation({ generationSignal: generation.signal }).invoke(null, {
+    const pending = createInvocation({ occurrenceSignal: generation.signal }).invoke(null, {
       signal: caller.signal,
       handler,
     });

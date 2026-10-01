@@ -59,7 +59,6 @@ export type PluginContributionRegistrationTarget =
   | Readonly<{
       realm: 'client';
       artifactId: string;
-      modulePath: string;
       exportName: string;
       platforms: readonly PluginContributionClientPlatform[];
     }>;
@@ -201,6 +200,7 @@ const FAMILY_POLICIES = {
   settings: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'settings-service', platforms: ALL_PLATFORMS },
   events: { identityField: 'id', disposition: 'reshaped', activationDemand: 'conditional', projectionFamily: null, allowedRuntimeRegistration: 'events', consumer: 'event-broker', platforms: CLI_PLATFORMS },
   executionRunProfiles: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'execution-run-host', platforms: CLI_PLATFORMS },
+  roles: { identityField: 'id', disposition: 'retained', activationDemand: 'none', projectionFamily: 'roles', allowedRuntimeRegistration: null, consumer: 'role-catalog', platforms: ALL_PLATFORMS },
   notifications: { identityField: 'id', disposition: 'reshaped', activationDemand: 'none', projectionFamily: null, allowedRuntimeRegistration: null, consumer: 'notification-service', platforms: ALL_PLATFORMS },
   notificationChannels: { identityField: 'id', disposition: 'reshaped', activationDemand: 'registration', projectionFamily: null, allowedRuntimeRegistration: 'notifications', consumer: 'notification-service', platforms: CLI_PLATFORMS },
   scmHostingProviders: { identityField: 'id', disposition: 'reshaped', activationDemand: 'registration', projectionFamily: 'scmHostingProviders', allowedRuntimeRegistration: 'scm', consumer: 'scm-host', platforms: CLI_PLATFORMS },
@@ -425,14 +425,19 @@ function extractNestedReferences(family: string, value: Readonly<Record<string, 
   }
   if (family === 'ui.views') {
     const headerActions = Array.isArray(value.headerActions) ? value.headerActions : [];
-    return headerActions.flatMap((headerAction, index) => (
+    return [
+      ...(value.container === 'appPage'
+        ? rendererChainReferences(value.column, ['column'])
+        : []),
+      ...headerActions.flatMap((headerAction, index) => (
       headerAction && typeof headerAction === 'object'
         ? semanticActionReferences(
             (headerAction as Readonly<Record<string, unknown>>).command,
             ['headerActions', index, 'command'],
           )
         : []
-    ));
+      )),
+    ];
   }
   if (family === 'providers') {
     const managedRuntime = value.managedRuntime && typeof value.managedRuntime === 'object'
@@ -902,7 +907,6 @@ export const PLUGIN_CONTRIBUTION_CATALOG_V2: readonly PluginContributionCatalogE
               return Object.freeze({
                 realm: 'client' as const,
                 artifactId: parsed.data.client.artifactId,
-                modulePath: parsed.data.client.modulePath,
                 exportName: parsed.data.client.exportName,
                 platforms: Object.freeze([...parsed.data.platforms]),
               });
@@ -917,7 +921,6 @@ export const PLUGIN_CONTRIBUTION_CATALOG_V2: readonly PluginContributionCatalogE
               if (!client || typeof client !== 'object' || Array.isArray(client) || !Array.isArray(platforms)) return null;
               const clientRecord = client as Readonly<Record<string, unknown>>;
               if (typeof clientRecord.artifactId !== 'string'
-                || typeof clientRecord.modulePath !== 'string'
                 || typeof clientRecord.exportName !== 'string'
                 || !platforms.every((platform): platform is PluginContributionClientPlatform => (
                   platform === 'web' || platform === 'ios' || platform === 'android'
@@ -925,7 +928,6 @@ export const PLUGIN_CONTRIBUTION_CATALOG_V2: readonly PluginContributionCatalogE
               return Object.freeze({
                 realm: 'client' as const,
                 artifactId: clientRecord.artifactId,
-                modulePath: clientRecord.modulePath,
                 exportName: clientRecord.exportName,
                 platforms: Object.freeze([...platforms]),
               });
@@ -1031,7 +1033,6 @@ function derivePluginContributionRegistrationRightsForHost(
   host?: Exclude<PluginContributionCatalogEntryV2['registrationHost'], null>,
   clientTarget?: Readonly<{
     artifactId: string;
-    modulePath: string;
     exportName: string;
     platform: PluginContributionClientPlatform;
   }>,
@@ -1045,7 +1046,6 @@ function derivePluginContributionRegistrationRightsForHost(
       if (clientTarget !== undefined && (
         target.realm !== 'client'
         || target.artifactId !== clientTarget.artifactId
-        || target.modulePath !== clientTarget.modulePath
         || target.exportName !== clientTarget.exportName
         || !target.platforms.includes(clientTarget.platform)
       )) return [];
@@ -1126,7 +1126,6 @@ export function derivePluginClientContributionRegistrationRights(
   contributes: Readonly<Record<string, unknown>>,
   target: Readonly<{
     artifactId: string;
-    modulePath: string;
     exportName: string;
     platform: PluginContributionClientPlatform;
   }>,

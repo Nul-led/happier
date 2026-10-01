@@ -621,14 +621,36 @@ describe("Membership session data-key envelope history (SQLite)", () => {
         })).toEqual({ ok: true, appliedCount: 1 });
     });
 
-    it("writes nothing when the membership disappears between the page and the apply", async () => {
-        const { manager, target, team, subject, targetMembershipId } = await history();
+    it.each(["team", "group"] as const)("writes nothing when the %s membership disappears between the page and the apply", async (kind) => {
+        const { manager, target, team, subject: teamSubject, targetMembershipId } = await history();
         const granted = await grantedSession(team, manager);
+        let subject: MembershipSessionDataKeyEnvelopeSubject = teamSubject;
+        if (kind === "group") {
+            const group = await db.teamGroup.create({ data: {
+                teamId: team.id, name: crypto.randomUUID(), nameKey: crypto.randomUUID(),
+            } });
+            await db.teamGroupMembership.create({ data: {
+                teamId: team.id,
+                teamGroupId: group.id,
+                teamMembershipId: targetMembershipId,
+                sessionAccessStartsAt: null,
+            } });
+            await db.sessionGroupGrant.create({ data: {
+                sessionId: granted.sessionId,
+                teamGroupId: group.id,
+                accessLevel: "view",
+                effectiveAt: new Date(),
+            } });
+            subject = { kind: "group", teamId: team.id, groupId: group.id, accountId: target.id };
+        }
+
         const page = readyPage(await readPage(manager.id, subject));
+        expect(page.items.map(item => item.sessionId)).toEqual([granted.sessionId]);
         const openedByCaller = openEncryptedDataKeyEnvelopeV1({
             envelope: decodeBase64(page.items[0]!.callerDataKeyEnvelope),
             recipientSecretKeyOrSeed: manager.keys.contentSecretKey,
         });
+        expect(openedByCaller).toEqual(granted.dataKey);
         const entries = [{
             sessionId: granted.sessionId,
             encryptedDataKey: encodeBase64(seal(openedByCaller!, decodeBase64(
@@ -636,8 +658,19 @@ describe("Membership session data-key envelope history (SQLite)", () => {
             ))),
         }];
 
-        // The target leaves the Team after the caller read its work.
-        await db.teamMembership.delete({ where: { id: targetMembershipId } });
+        // Only the subject membership disappears after the caller read its work.
+        if (subject.kind === "group") {
+            expect(await db.teamGroupMembership.deleteMany({ where: {
+                teamGroupId: subject.groupId,
+                teamMembershipId: targetMembershipId,
+            } })).toEqual({ count: 1 });
+            expect(await db.teamMembership.findUnique({
+                where: { id: targetMembershipId },
+                select: { accountId: true },
+            })).toEqual({ accountId: target.id });
+        } else {
+            await db.teamMembership.delete({ where: { id: targetMembershipId } });
+        }
         const changesBefore = await db.accountChange.count({ where: { accountId: target.id } });
 
         expect(await applyMembershipSessionDataKeyEnvelopes({
@@ -647,16 +680,20 @@ describe("Membership session data-key envelope history (SQLite)", () => {
         expect(await db.sessionDataKeyEnvelope.count({ where: { recipientAccountId: target.id } })).toBe(0);
         expect(await db.accountChange.count({ where: { accountId: target.id } })).toBe(changesBefore);
 
-        // A Group subject whose Group membership disappeared answers the same way.
-        const group = await db.teamGroup.create({ data: {
-            teamId: team.id, name: crypto.randomUUID(), nameKey: crypto.randomUUID(),
-        } });
-        expect(await applyMembershipSessionDataKeyEnvelopes({
-            actorAccountId: manager.id, authentication,
-            subject: { kind: "group", teamId: team.id, groupId: group.id, accountId: target.id },
-            request: { recipientAccountId: target.id, entries },
-        })).toEqual({ ok: false, error: "membership_not_found" });
-        expect(await db.sessionDataKeyEnvelope.count({ where: { recipientAccountId: target.id } })).toBe(0);
+        if (subject.kind === "group") {
+            // The Group membership disappeared, but the containing Team lifetime
+            // is still current. The nested Group resource must be gone while the
+            // same Session remains actionable through the surviving Team grant.
+            expect(await readPage(manager.id, subject)).toEqual({
+                ok: false,
+                error: "membership_not_found",
+            });
+            const survivingTeamPage = readyPage(await readPage(manager.id, teamSubject));
+            expect(survivingTeamPage.items.map(item => item.sessionId)).toEqual([granted.sessionId]);
+            expect(survivingTeamPage.recipientAccountId).toBe(target.id);
+            expect(await db.sessionDataKeyEnvelope.count({ where: { recipientAccountId: target.id } })).toBe(0);
+            expect(await db.accountChange.count({ where: { accountId: target.id } })).toBe(changesBefore);
+        }
     });
 
     it("conceals the membership from an Account that cannot view the Team", async () => {

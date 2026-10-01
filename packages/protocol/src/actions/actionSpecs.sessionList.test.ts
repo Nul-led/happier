@@ -21,6 +21,14 @@ describe('session.list Action input', () => {
       .toEqual({ query: { ...query, tagIds: ['a', 'z'] }, view: 'summary' });
   });
 
+  it('preserves a server-proved subtree selector in canonical and CLI queries', () => {
+    expect(schema.parse({ underSessionId: ' lead ' })).toEqual({ underSessionId: 'lead' });
+    expect(schema.parse({ query: { ...query, underSessionId: 'lead' } })).toEqual({ query: { ...query, underSessionId: 'lead' } });
+    expect(schema.safeParse({ query, underSessionId: 'other' }).success).toBe(false);
+    const cli = SessionListCliInputSchema.parse({ underSessionId: 'lead' });
+    expect(bindSessionListCliInput(cli)).toMatchObject({ query: { underSessionId: 'lead', scope: 'all_accessible', includeInactive: true } });
+  });
+
   it.each(['limit', 'cursor', 'activeOnly', 'archivedOnly', 'resumableOnly'])(
     'rejects a duplicated or incompatible legacy %s field in the query arm', (field) => {
       const value = field === 'limit' ? 20 : field === 'cursor' ? null : false;

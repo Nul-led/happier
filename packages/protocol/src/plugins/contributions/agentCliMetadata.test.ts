@@ -63,6 +63,28 @@ describe('native Agent CLI/auth metadata', () => {
     expect(parsed.cli).toEqual(validCliMetadata());
   });
 
+  it('accepts a host-owned ACP login target without accepting arbitrary commands', () => {
+    const cli = validCliMetadata();
+    const parsed = PluginAgentContributionV2Schema.parse(nativeAgent({
+      ...cli,
+      auth: {
+        ...cli.auth,
+        loginLaunches: [{ kind: 'primary', target: 'agent_acp', args: [] }],
+      },
+    }));
+
+    expect(parsed.cli?.auth.loginLaunches).toEqual([
+      { kind: 'primary', target: 'agent_acp', args: [] },
+    ]);
+    expect(PluginAgentContributionV2Schema.safeParse(nativeAgent({
+      ...cli,
+      auth: {
+        ...cli.auth,
+        loginLaunches: [{ kind: 'primary', target: 'agent_acp', args: ['untrusted'] }],
+      },
+    })).success).toBe(false);
+  });
+
   it('rejects retired host-owned auth parser metadata', () => {
     const cli = validCliMetadata();
     expect(PluginAgentContributionV2Schema.safeParse(nativeAgent({
@@ -232,6 +254,28 @@ describe('native Agent CLI/auth metadata', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.manifest.contributes.agents?.[0]?.cli?.install.managed).toEqual(managed);
+  });
+
+  it('accepts declared update facts (npm package, vendor updater under its install paths) and rejects unbounded ones', () => {
+    const cli = validCliMetadata();
+    const update = {
+      npmPackageName: '@x-ai/grok-cli',
+      nativeUpdate: { args: ['update'], installPaths: ['.grok/bin'] },
+    };
+    const parsed = PluginAgentContributionV2Schema.parse(nativeAgent({ ...cli, install: { ...cli.install, ...update } }));
+    expect(parsed.cli?.install).toMatchObject(update);
+
+    // An updater with no install path would be run against any executable; an empty argv is not an updater.
+    for (const nativeUpdate of [
+      { args: ['update'], installPaths: [] },
+      { args: [], installPaths: ['.grok/bin'] },
+      { args: ['update'], installPaths: ['.grok/bin'], command: '/tmp/grok' },
+    ]) {
+      expect(PluginAgentContributionV2Schema.safeParse(nativeAgent({
+        ...cli,
+        install: { ...cli.install, nativeUpdate },
+      })).success).toBe(false);
+    }
   });
 
   it('rejects unknown fields and plugin-authored login commands', () => {

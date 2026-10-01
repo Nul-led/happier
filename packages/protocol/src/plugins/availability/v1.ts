@@ -7,14 +7,10 @@ import { PluginCollectionContractRefV1Schema } from '../data/collectionContractR
 import { PluginManifestV2Schema } from '../manifest/v2.js';
 import { PluginIdSchema } from '../pluginId.js';
 import {
-  PluginUiArtifactsManifestV1Schema,
-  type PluginUiArtifactsManifestV1,
+  PluginUiArtifactIdV2Schema,
+  PluginUiArtifactsManifestV2Schema,
+  type PluginUiArtifactsManifestV2,
 } from '../ui/uiArtifactsManifest.js';
-import {
-  PluginUiArtifactCompatibilityKeyV1Schema,
-  PluginUiExactRuntimeVersionV1Schema,
-  type PluginUiArtifactCompatibilityKeyV1,
-} from '../ui/artifactCompatibility.js';
 import { PluginUiArtifactDigestV1Schema } from '../ui/artifactIntegrity.js';
 import {
   isPackageAssetArchiveDescriptorDeclaredByManifestV1,
@@ -78,7 +74,7 @@ export const MAX_PLUGIN_COMPATIBILITY_PROJECTION_UI_ARTIFACTS = 128;
 export const PluginCompatibilityProjectionV1Schema = z.object({
   version: z.literal(1),
   manifest: PluginPortableReleaseManifestV1Schema,
-  uiArtifacts: PluginUiArtifactsManifestV1Schema,
+  uiArtifacts: PluginUiArtifactsManifestV2Schema,
 }).strict().superRefine((value, context) => {
   if (value.uiArtifacts.entries.length > MAX_PLUGIN_COMPATIBILITY_PROJECTION_UI_ARTIFACTS) {
     context.addIssue({
@@ -102,7 +98,7 @@ export type PluginCompatibilityProjectionV1 = z.infer<typeof PluginCompatibility
  */
 export function createPluginCompatibilityProjectionV1(input: Readonly<{
   manifest: PluginPortableReleaseManifestV1;
-  uiArtifacts: PluginUiArtifactsManifestV1;
+  uiArtifacts: PluginUiArtifactsManifestV2;
 }>): PluginCompatibilityProjectionV1 {
   return PluginCompatibilityProjectionV1Schema.parse({
     version: 1,
@@ -124,21 +120,13 @@ export function pluginCompatibilityProjectionEqualV1(
  * generated UI artifact. Current host app/channel/capability facts are
  * transient adoption inputs and must not become portable release identity.
  */
-export const PluginUiReleaseSlotCompatibilityV1Schema = z.object({
-  hostUiApiVersion: PluginUiExactRuntimeVersionV1Schema,
-  reactVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-  reactNativeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-  expoRuntimeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-  hermesVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-}).strict();
-export type PluginUiReleaseSlotCompatibilityV1 = z.infer<typeof PluginUiReleaseSlotCompatibilityV1Schema>;
-
 export const PluginUiReleaseSlotV1Schema = z.object({
   contributionId: ContributionIdSchema,
+  artifactId: PluginUiArtifactIdV2Schema,
   tier: ArtifactTierSchema,
   platform: ArtifactPlatformSchema,
   artifactDigest: PluginUiArtifactDigestV1Schema,
-  compatibility: PluginUiReleaseSlotCompatibilityV1Schema,
+  hostUiApiRange: z.string().trim().min(1),
 }).strict().superRefine((value, context) => {
   if (value.tier === 'hostedWeb' && value.platform !== 'web') {
     context.addIssue({
@@ -147,32 +135,11 @@ export const PluginUiReleaseSlotV1Schema = z.object({
       message: 'Hosted-web UI slots are platform-web archives.',
     });
   }
-  if (value.tier === 'hostedWeb' && Object.keys(value.compatibility).some((key) => key !== 'hostUiApiVersion')) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['compatibility'],
-      message: 'Hosted-web UI slots must not declare framework compatibility.',
-    });
-  }
   if (value.tier === 'declarative' && value.platform !== 'web') {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['platform'],
       message: 'Declarative UI slots are platform-web archives.',
-    });
-  }
-  if (value.tier === 'reactNative' && value.compatibility.reactVersion === undefined) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['compatibility', 'reactVersion'],
-      message: 'React Native UI slots must declare generated React compatibility.',
-    });
-  }
-  if (value.tier === 'reactNative' && value.compatibility.reactNativeVersion === undefined) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['compatibility', 'reactNativeVersion'],
-      message: 'React Native UI slots must declare generated React Native compatibility.',
     });
   }
 });
@@ -184,10 +151,11 @@ function collectionContractKey(value: z.infer<typeof PluginCollectionContractRef
 
 function uiSlotKey(value: Readonly<{
   contributionId: string;
+  artifactId: string;
   tier: 'declarative' | 'hostedWeb' | 'reactNative';
   platform: 'web' | 'ios' | 'android';
 }>): string {
-  return `${value.contributionId}\u0000${value.tier}\u0000${value.platform}`;
+  return `${value.contributionId}\u0000${value.artifactId}\u0000${value.tier}\u0000${value.platform}`;
 }
 
 export const PluginReleaseFactsV1Schema = z.object({
@@ -300,10 +268,7 @@ export function normalizePluginReleaseFactsV1(input: unknown): PluginReleaseFact
       .map((contract) => ({ ...contract }))),
     uiSlots: Object.freeze([...parsed.uiSlots]
       .sort((left, right) => uiSlotKey(left).localeCompare(uiSlotKey(right)))
-      .map((slot) => ({
-        ...slot,
-        compatibility: { ...slot.compatibility },
-    }))),
+      .map((slot) => ({ ...slot }))),
     packageAssetArchive: normalizePackageAssetArchiveDescriptorV1(parsed.packageAssetArchive),
   });
 }
@@ -367,20 +332,13 @@ export type PluginUiArtifactHostingCapabilityV1 = z.infer<typeof PluginUiArtifac
 export const PluginAccountPluginUiArtifactLinkV1Schema = z.object({
   release: PluginReleaseRefV1Schema,
   contributionId: ContributionIdSchema,
+  artifactId: PluginUiArtifactIdV2Schema,
   tier: ArtifactTierSchema,
   platform: ArtifactPlatformSchema,
-  artifactId: z.string().uuid(),
+  accountArtifactId: z.string().uuid(),
   artifactDigest: PluginUiArtifactDigestV1Schema,
-  compatibility: PluginUiArtifactCompatibilityKeyV1Schema,
-}).strict().superRefine((value, context) => {
-  if (value.compatibility.platform !== value.platform) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['compatibility', 'platform'],
-      message: 'UI artifact link compatibility platform must match its slot platform.',
-    });
-  }
-});
+  hostUiApiRange: z.string().trim().min(1),
+}).strict();
 export type PluginAccountPluginUiArtifactLinkV1 = z.infer<typeof PluginAccountPluginUiArtifactLinkV1Schema>;
 
 /**
@@ -404,25 +362,23 @@ export type PluginAccountPluginPackageAssetLinkV1 =
  */
 export function isPluginUiReleaseSlotCompatibleWithArtifactLinkV1(
   slot: PluginUiReleaseSlotV1,
-  compatibility: PluginUiArtifactCompatibilityKeyV1,
+  link: PluginAccountPluginUiArtifactLinkV1,
 ): boolean {
-  const frameworkCompatibilityMatches = slot.tier === 'hostedWeb'
-    || (
-      compatibility.reactVersion === slot.compatibility.reactVersion
-      && compatibility.reactNativeVersion === slot.compatibility.reactNativeVersion
-      && compatibility.expoRuntimeVersion === slot.compatibility.expoRuntimeVersion
-      && compatibility.hermesVersion === slot.compatibility.hermesVersion
-    );
-  return compatibility.platform === slot.platform
-    && compatibility.hostUiApiVersion === slot.compatibility.hostUiApiVersion
-    && frameworkCompatibilityMatches;
+  return link.contributionId === slot.contributionId
+    && link.artifactId === slot.artifactId
+    && link.tier === slot.tier
+    && link.platform === slot.platform
+    && link.artifactDigest === slot.artifactDigest
+    && link.hostUiApiRange === slot.hostUiApiRange;
 }
 
 export const PluginMachineUiArtifactV1Schema = z.object({
   contributionId: ContributionIdSchema,
+  artifactId: PluginUiArtifactIdV2Schema,
   tier: ArtifactTierSchema,
   platform: ArtifactPlatformSchema,
   artifactDigest: PluginUiArtifactDigestV1Schema,
+  hostUiApiRange: z.string().trim().min(1),
 }).strict();
 export type PluginMachineUiArtifactV1 = z.infer<typeof PluginMachineUiArtifactV1Schema>;
 
@@ -432,7 +388,12 @@ export const PluginMachineMaterializationV1Schema = z.object({
   materializationId: PluginMachineMaterializationIdV1Schema,
   pluginId: asProtocolZod(PluginIdSchema),
   version: PluginReleaseVersionV1Schema,
-  sourceClass: z.enum(['bundledFirstParty', 'registryPackage', 'versionedArchive', 'localPath']),
+  /**
+   * `bundledFirstParty` and `localPath` are daemon-selected and machine-bound:
+   * they never claim a portable release. Their Account currentness comes from
+   * the release-less intent declaration their host claims.
+   */
+  sourceClass: z.enum(['registryPackage', 'versionedArchive', 'localPath', 'bundledFirstParty']),
   portableRelease: z.boolean(),
   archiveDigestSha256: PluginUiArtifactDigestV1Schema.optional(),
   uiArtifacts: z.array(PluginMachineUiArtifactV1Schema).readonly(),
@@ -440,11 +401,11 @@ export const PluginMachineMaterializationV1Schema = z.object({
   trustState: z.enum(['trusted', 'untrusted', 'revoked']),
   observedAt: TimestampMsSchema,
 }).strict().superRefine((value, context) => {
-  if (value.sourceClass === 'localPath' && value.portableRelease) {
+  if ((value.sourceClass === 'localPath' || value.sourceClass === 'bundledFirstParty') && value.portableRelease) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['portableRelease'],
-      message: 'Direct local paths are machine-bound and cannot claim a portable release.',
+      message: 'Daemon-selected local and bundled plugins are machine-bound and cannot claim a portable release.',
     });
   }
   const keys = new Set<string>();
@@ -485,7 +446,8 @@ export function isExactPluginMachineMaterializationReleaseCorrespondenceV1(
   if (materialization.uiArtifacts.length !== releaseSlotsByKey.size) return false;
   return materialization.uiArtifacts.every((artifact) => {
     const slot = releaseSlotsByKey.get(uiSlotKey(artifact));
-    return slot?.artifactDigest === artifact.artifactDigest;
+    return slot?.artifactDigest === artifact.artifactDigest
+      && slot.hostUiApiRange === artifact.hostUiApiRange;
   });
 }
 
@@ -496,7 +458,6 @@ export function isExactPluginMachineMaterializationReleaseCorrespondenceV1(
 export const PluginMachineMaterializationSnapshotV1Schema = z.object({
   serverIdentityId: ServerIdentityIdSchema,
   machineId: PluginMachineMaterializationMachineIdV1Schema,
-  revision: MachineMaterializationRevisionSchema,
   materializations: z.array(PluginMachineMaterializationV1Schema).readonly(),
 }).strict().superRefine((value, context) => {
   const ids = new Set<string>();
@@ -608,47 +569,6 @@ export function normalizePluginMachineMaterializationSnapshotV1(
       .sort((left, right) => left.materializationId.localeCompare(right.materializationId))
       .map(normalizePluginMachineMaterializationV1)),
   });
-}
-
-export type ReconcilePluginMachineMaterializationSnapshotV1Result =
-  | Readonly<{ kind: 'replace'; snapshot: PluginMachineMaterializationSnapshotV1 }>
-  | Readonly<{ kind: 'rejoin'; snapshot: PluginMachineMaterializationSnapshotV1 }>
-  | Readonly<{ kind: 'stale'; currentRevision: number }>
-  | Readonly<{ kind: 'conflict'; currentRevision: number }>;
-
-/**
- * Applies the full-snapshot correspondence contract without creating another
- * snapshot owner. Server storage supplies the current rows and the existing
- * Machine high-watermark; a newer report replaces those rows atomically.
- */
-export function reconcilePluginMachineMaterializationSnapshotV1(input: Readonly<{
-  currentRevision: number | null;
-  current: readonly PluginMachineMaterializationV1[];
-  report: unknown;
-}>): ReconcilePluginMachineMaterializationSnapshotV1Result {
-  const report = normalizePluginMachineMaterializationSnapshotV1(input.report);
-  if (input.currentRevision === null) {
-    return Object.freeze({ kind: 'replace', snapshot: report });
-  }
-
-  const currentRevision = MachineMaterializationRevisionSchema.parse(input.currentRevision);
-  if (report.revision < currentRevision) {
-    return Object.freeze({ kind: 'stale', currentRevision });
-  }
-  if (report.revision > currentRevision) {
-    return Object.freeze({ kind: 'replace', snapshot: report });
-  }
-
-  const current = normalizePluginMachineMaterializationSnapshotV1({
-    serverIdentityId: report.serverIdentityId,
-    machineId: report.machineId,
-    revision: currentRevision,
-    materializations: input.current,
-  });
-  if (createCanonicalJsonSigningInput(current) === createCanonicalJsonSigningInput(report)) {
-    return Object.freeze({ kind: 'rejoin', snapshot: report });
-  }
-  return Object.freeze({ kind: 'conflict', currentRevision });
 }
 
 export function isPluginMachineMaterializationOnServerIdentityV1(

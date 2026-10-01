@@ -29,6 +29,7 @@ function createPolicy(): RetentionPolicy {
             globalLocks: keepForever,
             automationRuns: keepForever,
             automationRunEvents: keepForever,
+            homeAdministrationEvents: keepForever,
         },
     };
 }

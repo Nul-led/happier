@@ -28,7 +28,7 @@ describe('Team credential Provider broker HTTP routes', () => {
         app = createAuthenticatedTestApp();
         app.addHook('onRoute', (route: RouteOptions) => {
             if (route.url === PROVIDER_BROKER_OPEN_HTTP_PATH_V1) {
-                openRouteRunnerBinding = route.config?.ephemeralSessionRunnerBinding;
+                openRouteRunnerBinding = route.config?.restrictedCredentialBinding;
             }
         });
         registerTeamCredentialProviderBrokerRoutes(app);
@@ -93,6 +93,8 @@ describe('Team credential Provider broker HTTP routes', () => {
                     resourceId: 'resource-1',
                     requestId: 'request-1',
                     externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+                    operationId: null,
+                    brokerPlacementFingerprint: 'a'.repeat(64),
                     assignedAccountId: 'account-1',
                     assignedTeamMembershipId: 'membership-1',
                 },
@@ -202,6 +204,7 @@ describe('Team credential Provider broker HTTP routes', () => {
         routeApp.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
             capturedRaw.request = request.raw;
             capturedRaw.reply = reply.raw;
+            request.authTokenEpoch = requester.tokenEpoch;
         });
         registerTeamCredentialProviderBrokerRoutes(routeApp);
         await routeApp.ready();
@@ -338,6 +341,9 @@ describe('Team credential Provider broker HTTP routes', () => {
         const presenceFetch = vi.fn(async () => []);
         const forwardRpcForUser = vi.fn(async () => ({ ok: false as const, reason: 'unavailable' }));
         const routeApp = createAuthenticatedTestApp();
+        routeApp.addHook('onRequest', async (request: FastifyRequest) => {
+            request.authTokenEpoch = requester.tokenEpoch;
+        });
         routeApp.decorate('machineDaemonPresence', {
             in: () => ({ fetchSockets: presenceFetch }),
         });

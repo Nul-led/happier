@@ -1,8 +1,18 @@
 export type SocketClientType = "session-scoped" | "user-scoped" | "machine-scoped";
 
+export function getApiTokenRevocationSocketRoom(tokenId: string): string {
+    if (!tokenId) throw new Error("getApiTokenRevocationSocketRoom: tokenId is required");
+    return `api-token-revocation:${tokenId}`;
+}
+
 export function getAccountRevocationSocketRoom(userId: string): string {
     if (!userId) throw new Error("getAccountRevocationSocketRoom: userId is required");
     return `account-revocation:${userId}`;
+}
+
+export function getAccountTerminalSocketRoom(accountId: string): string {
+    if (!accountId) throw new Error("getAccountTerminalSocketRoom: accountId is required");
+    return `account-terminal:${accountId}`;
 }
 
 export function getMachineSocketRoom(userId: string, machineId: string): string {

@@ -78,6 +78,7 @@ import {
     ConnectedServiceUsageSourceOwnershipError,
     ProviderAccountUsagePayloadInvariantError,
 } from "../providerAccountUsage/types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 type QualifiedConnectedAccountCredentialRouteDependencies = Readonly<{
     listQualifiedConnectedAccounts:
@@ -185,12 +186,14 @@ function parseOptionalQualifiedGroupIncarnation(
         : QualifiedConnectedAccountGroupIncarnationV4Schema.parse(value);
 }
 
+/** `requestHomeEnv` is the request's Home-effective configuration, so a Home feature switch applies. */
 function projectGroupPolicyForFeature(
     group: QualifiedConnectedAccountGroupV4,
-    autoQuotaResetEnabled = isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env),
-    autoDisablePlanInvalidEnabled = isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env),
-    poolQuotaLimitSelectionEnabled = isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env),
+    requestHomeEnv: NodeJS.ProcessEnv,
 ): QualifiedConnectedAccountGroupV4 {
+    const autoQuotaResetEnabled = isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", requestHomeEnv);
+    const autoDisablePlanInvalidEnabled = isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", requestHomeEnv);
+    const poolQuotaLimitSelectionEnabled = isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", requestHomeEnv);
     let policy = group.policy;
     if (!autoQuotaResetEnabled) {
         const { autoUseQuotaResetsWhenExhausted: _quotaReset, ...projected } = policy;
@@ -709,6 +712,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         let service;
         try {
             service = parseQualifiedConnectedAccountV4StructuredQueryValue(
@@ -718,19 +722,11 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
         } catch {
             return reply.code(400).send({ error: "invalid-params" });
         }
-        const autoQuotaResetEnabled = isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env);
-        const autoDisablePlanInvalidEnabled = isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env);
-        const poolQuotaLimitSelectionEnabled = isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env);
         return reply.send({
             groups: (await listQualifiedConnectedAccountGroups({
                 accountId: request.userId,
                 service,
-            })).map((group) => projectGroupPolicyForFeature(
-                group,
-                autoQuotaResetEnabled,
-                autoDisablePlanInvalidEnabled,
-                poolQuotaLimitSelectionEnabled,
-            )),
+            })).map((group) => projectGroupPolicyForFeature(group, requestHomeEnv)),
         });
     });
 
@@ -745,16 +741,17 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.body.group.policy?.autoUseQuotaResetsWhenExhausted === true
-            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         if (request.body.group.policy?.autoDisablePlanInvalidAccounts === true
-            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         if (request.body.group.policy?.quotaLimitSelection !== undefined
-            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         const result = await createQualifiedConnectedAccountGroup({
@@ -780,7 +777,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, requestHomeEnv) });
     });
 
     app.get("/v4/connect/qualified/group", {
@@ -828,7 +825,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                 runtimeStateRevision: stored.runtimeStateRevision,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(stored) });
+        return reply.send({ group: projectGroupPolicyForFeature(stored, await readRequestHomeEnv(request)) });
     });
 
     app.patch("/v4/connect/qualified/group", {
@@ -843,16 +840,17 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.body.policy?.autoUseQuotaResetsWhenExhausted === true
-            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         if (request.body.policy?.autoDisablePlanInvalidAccounts === true
-            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         if (request.body.policy?.quotaLimitSelection !== undefined
-            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env)) {
+            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", requestHomeEnv)) {
             return reply.code(400).send({ error: "invalid-params" });
         }
         const result = await patchQualifiedConnectedAccountGroup({
@@ -897,7 +895,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, requestHomeEnv) });
     });
 
     app.delete("/v4/connect/qualified/group", {
@@ -1019,7 +1017,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, await readRequestHomeEnv(request)) });
     });
 
     app.post("/v4/connect/qualified/group/members", {
@@ -1080,7 +1078,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, await readRequestHomeEnv(request)) });
     });
 
     app.patch("/v4/connect/qualified/group/member", {
@@ -1131,7 +1129,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, await readRequestHomeEnv(request)) });
     });
 
     app.delete("/v4/connect/qualified/group/member", {
@@ -1192,7 +1190,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, await readRequestHomeEnv(request)) });
     });
 
     app.post("/v4/connect/qualified/group/active-account", {
@@ -1259,7 +1257,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group, await readRequestHomeEnv(request)) });
     });
 
     app.get(
@@ -1453,6 +1451,9 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : {
                             t: "encrypted",
                             c: record.sealedPayload!.ciphertext,
+                            ...(record.sealedPayload!.subscription
+                                ? { subscription: record.sealedPayload!.subscription }
+                                : {}),
                         },
                 metadata: {
                     fetchedAt:

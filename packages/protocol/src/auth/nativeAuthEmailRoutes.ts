@@ -51,6 +51,7 @@ export const NativeEmailPasswordLoginRequestV1Schema = z.object({
      * redeeming their unlocked key at the Account Directory Key Challenge.
      */
     credentialTarget: z.literal('account_directory').optional(),
+    credentialKind: z.literal('terminal').optional(),
 }).strict();
 export type NativeEmailPasswordLoginRequestV1 = z.infer<typeof NativeEmailPasswordLoginRequestV1Schema>;
 export const NativeEmailPasswordLoginResponseV1Schema = z.object({ token: z.string().min(1) }).strict();
@@ -122,6 +123,7 @@ export const NativeEmailPasswordProvisionRequestV1Schema = z.object({
     account: NativeEmailPasswordProvisionAccountV1Schema,
     /** As on login: the new Account signs in to the account service rather than to the Home. */
     credentialTarget: z.literal('account_directory').optional(),
+    credentialKind: z.literal('terminal').optional(),
 }).strict();
 export type NativeEmailPasswordProvisionRequestV1 = z.infer<typeof NativeEmailPasswordProvisionRequestV1Schema>;
 
@@ -133,7 +135,7 @@ export const NativeEmailPasswordProvisionResponseV1Schema = z.object({
 export type NativeEmailPasswordProvisionResponseV1 = z.infer<typeof NativeEmailPasswordProvisionResponseV1Schema>;
 
 export const NativeEmailPasswordProvisionErrorResponseV1Schema = z.object({
-    error: z.enum(['authentication_failed', 'method_not_available', 'password_hash_overloaded']),
+    error: z.enum(['authentication_failed', 'method_not_available', 'password_hash_overloaded', 'email_mismatch']),
 }).strict();
 export type NativeEmailPasswordProvisionErrorResponseV1 = z.infer<typeof NativeEmailPasswordProvisionErrorResponseV1Schema>;
 

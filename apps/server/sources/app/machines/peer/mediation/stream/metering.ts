@@ -1,7 +1,7 @@
 import {
     PEER_MEDIATION_RECEIPTS,
     applyMachineLiveStreamDropPolicy,
-    type MachineLiveStreamFrameV1,
+    type MachineLiveStreamWireFrameV1 as MachineLiveStreamFrameV1,
     type MachineLiveStreamReceiptV1,
 } from '@happier-dev/protocol';
 

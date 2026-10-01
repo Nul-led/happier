@@ -12,6 +12,7 @@ import {
     resolveSessionAccessForOperation,
 } from "@/app/session/access/sessionAccess";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import type { CallerInputConstraintsV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 import type { PendingMessageRow, PendingMessageRowRaw } from "@/app/session/pending/mapPendingMessageRow";
 import { projectSessionMessageAccountActors } from "@/app/session/messages/projectSessionMessageAccountActors";
 import { db, getActivePrismaRuntime } from "@/storage/db";
@@ -582,6 +583,10 @@ async function enqueuePendingMessageWithAdmission(
         return { ok: false, error: "invalid-params" };
     }
     const requestedAction = requestedActionResult.data;
+    const directTokenInput = admission.kind === "account" && admission.authentication.apiTokenGrant !== undefined;
+    if (directTokenInput && params.messageRole !== undefined && params.messageRole !== null && params.messageRole !== "user") {
+        return { ok: false, error: "invalid-params" };
+    }
     if (targetExecutionRunId !== null && (deliveryMode !== undefined || admissionMode !== undefined)) {
         return { ok: false, error: "invalid-params" };
     }
@@ -618,7 +623,8 @@ async function enqueuePendingMessageWithAdmission(
                 : await assertSessionOwnerInTx({ tx, accountId: actorUserId, sessionId });
             if (!access.ok) return { ok: false, error: projectPendingSessionAccessError(access.reason) } as const;
             const inputAdmissionReceipt = admission.kind === "account"
-                ? buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access })
+                ? buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access,
+                    callerInputConstraints: admission.authentication.callerInputConstraints ?? admission.authentication.apiTokenGrant })
                 : admission.inputAdmissionReceipt;
             const session = await tx.session.findUnique({
                 where: { id: sessionId },
@@ -650,7 +656,7 @@ async function enqueuePendingMessageWithAdmission(
                 }
                 const targetMachineId = admission.kind === "machine" ? admission.targetMachineId : params.targetMachineId;
                 if (!targetMachineId) return {
-                    ok: false, error: "invalid-params", admissionRejectionCode: "session_input_target_update_required",
+                    ok: false, error: "session-not-found", admissionRejectionCode: "session_input_target_unavailable",
                 } as const;
                 const [sourceMachine, targetAccess] = await Promise.all([
                     admission.kind === "machine" ? tx.machine.findFirst({
@@ -698,8 +704,8 @@ async function enqueuePendingMessageWithAdmission(
                     if (targetExecutionRunId !== null) {
                         return {
                             ok: false,
-                            error: "invalid-params",
-                            admissionRejectionCode: "session_input_target_update_required",
+                            error: "session-not-found",
+                            admissionRejectionCode: "session_input_target_unavailable",
                         } as const;
                     }
                     return {
@@ -727,13 +733,14 @@ async function enqueuePendingMessageWithAdmission(
             const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
             const messageRole = resolveSessionMessageRole({
                 content,
-                suppliedRole: params.messageRole,
+                suppliedRole: directTokenInput ? (content.t === "encrypted" ? "user" : undefined) : params.messageRole,
                 telemetry: {
                     sessionId,
                     storageMode: sessionEncryptionMode,
                     source: "pending-message",
                 },
             }).messageRole;
+            if (directTokenInput && messageRole !== "user") return { ok: false, error: "invalid-params" } as const;
             const writeKind: SessionStoredContentKind = content.t === "plain" ? "plain" : "encrypted";
             const policy = readEncryptionFeatureEnv(process.env);
             if (!isStoredContentKindAllowedForSessionByStoragePolicy(policy.storagePolicy, sessionEncryptionMode, writeKind)) {
@@ -1163,8 +1170,11 @@ export async function enqueuePendingMessageByAuthenticatedMachine(params: Readon
     content: PrismaJson.SessionPendingMessageContent;
     requestedAction: PendingRequestedActionV1;
     requestEqualityEvidenceV1?: SessionInputRequestEqualityEvidenceV1;
+    /** Server-verified immutable invocation constraints; never read from encrypted content. */
+    callerInputConstraints?: CallerInputConstraintsV1;
 }>): Promise<SessionInputAdmissionResultV1> {
-    const inputAdmissionReceipt = buildSessionInputAdmissionReceipt({ issuer: "authenticatedMachine" });
+    const inputAdmissionReceipt = buildSessionInputAdmissionReceipt({ issuer: "authenticatedMachine",
+        callerInputConstraints: params.callerInputConstraints });
     if (inputAdmissionReceipt.issuer !== "authenticatedMachine") {
         throw new Error("Machine admission receipt parsed to the wrong issuer arm");
     }
@@ -1959,6 +1969,10 @@ export async function updatePendingMessage(params: {
     | Readonly<{ ciphertext: string; content?: never }>
     | Readonly<{ content: PrismaJson.SessionPendingMessageContent; ciphertext?: never }>
 )): Promise<UpdatePendingMessageResult> {
+    const directTokenInput = params.authentication.apiTokenGrant !== undefined;
+    if (directTokenInput && params.messageRole !== undefined && params.messageRole !== null && params.messageRole !== "user") {
+        return { ok: false, error: "invalid-params" };
+    }
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
     const target = parsePendingExecutionTarget(params.targetExecutionRunId);
@@ -2029,13 +2043,14 @@ export async function updatePendingMessage(params: {
             const sessionEncryptionMode: "e2ee" | "plain" = session.encryptionMode === "plain" ? "plain" : "e2ee";
             const messageRole = resolveSessionMessageRole({
                 content,
-                suppliedRole: params.messageRole,
+                suppliedRole: directTokenInput ? (content.t === "encrypted" ? "user" : undefined) : params.messageRole,
                 telemetry: {
                     sessionId,
                     storageMode: sessionEncryptionMode,
                     source: "pending-message",
                 },
             }).messageRole;
+            if (directTokenInput && messageRole !== "user") return { ok: false, error: "invalid-params" } as const;
             const writeKind: SessionStoredContentKind = content.t === "plain" ? "plain" : "encrypted";
             const policy = readEncryptionFeatureEnv(process.env);
             if (!isStoredContentKindAllowedForSessionByStoragePolicy(policy.storagePolicy, sessionEncryptionMode, writeKind)) {
@@ -2119,6 +2134,8 @@ export async function updatePendingMessage(params: {
                     content,
                     messageRole,
                     requestEqualityEvidenceV1: getActivePrismaRuntime().DbNull,
+                    inputAdmissionReceipt: buildSessionInputAdmissionReceipt({ issuer: "authenticatedAccount", access: access.access,
+                        callerInputConstraints: params.authentication.callerInputConstraints ?? params.authentication.apiTokenGrant }),
                     ...(replacementLocalId
                         ? {
                             localId: replacementLocalId,

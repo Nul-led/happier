@@ -456,14 +456,12 @@ export const PluginChangePendingReviewResultSchema = z.union([
     reason: z.enum(['firstInstall', 'authorityExpansion']),
     currentVersion: ReviewNonEmptyStringSchema.nullable(),
     authorityExpansion: z.array(z.enum([
-      'executableRealms',
       'requiredHostAccess',
       'selectedOptionalHostAccess',
       'connectedAccountPurpose',
-      'declaredIntegration',
       'requestInterceptor',
       'rawCredentialAccess',
-    ])).max(7).refine((values) => new Set(values).size === values.length),
+    ])).max(5).refine((values) => new Set(values).size === values.length),
     review: PluginInstallationReviewSchema,
   }).strict(),
 ]);

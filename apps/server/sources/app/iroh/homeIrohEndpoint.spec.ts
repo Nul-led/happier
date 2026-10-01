@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseIrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 import { IrohError } from '@happier-dev/iroh-native/node';
+import * as homeIrohEndpointOwner from './homeIrohEndpoint';
 
 vi.mock('@/utils/logging/log', () => ({ log: vi.fn() }));
 vi.mock('@/app/serverIdentity/serverIdentity', () => ({
@@ -54,8 +55,7 @@ function createNativeFake(overrides: Partial<NativeLifecycle> = {}): NativeLifec
 }
 
 async function loadOwnerModule() {
-    vi.resetModules();
-    return await import('./homeIrohEndpoint');
+    return homeIrohEndpointOwner;
 }
 
 function envFor(dataDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
@@ -102,6 +102,7 @@ describe('home Iroh endpoint composition', () => {
     });
 
     afterEach(async () => {
+        await homeIrohEndpointOwner.resetHomeIrohEndpointStateForTests();
         await rm(dataDir, { recursive: true, force: true });
     });
 

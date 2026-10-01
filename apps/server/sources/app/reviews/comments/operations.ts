@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-    buildReviewCommentEventRequestBindingV1,
     reviewCommentMutationInputWithoutEventEnvelopeV1,
-    ReviewCommentV1Schema,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
     ReviewCommentPublicationTransportRequestV1Schema,
     type ReviewCommentActorRefV1,
@@ -26,32 +24,26 @@ import {
     type ReviewCommentReplyResponseV1,
     type ReviewCommentSetDispositionRequestV1,
     type ReviewCommentSetDispositionResponseV1,
-    type ReviewCommentStateV1,
     type ReviewCommentTransitionRequestV1,
     type ReviewCommentTransitionResponseV1,
-    type ReviewCommentTransitionV1,
     type ReviewCommentV1,
-    StoredJsonContentEnvelopeSchema,
+    projectReviewCommentStructuralMutationV1,
+    type ReviewCommentStructuralMutationV1,
+    type ReviewCommentPrepareMutationRequestV1, type ReviewCommentPrepareMutationResponseV1,
+    type ReviewCommentCommitMutationRequestV1, type ReviewCommentCommitMutationResponseV1,
+    type ReviewCommentStoredSourceV1,
 } from "@happier-dev/protocol";
+import { createReviewCommentCanonicalMutations } from "./mutations";
 
 import { ReviewCommentOperationError } from "./errors";
-import { buildReviewCommentEvent } from "./events";
 import {
-    assertReviewCommentDirectWriteGrant,
-    assertReviewCommentRedactionActorAllowed,
-    assertReviewCommentTransitionActorAllowed,
-    assertReviewCommentUserOrOriginalAuthor,
-    formatReviewCommentActorDispositionKey,
-    isSameReviewCommentActor,
+    assertReviewCommentSessionScope,
+    reviewCommentPrincipalSessionId,
+    assertReviewCommentOrdinarySourceAdmission,
     type ReviewCommentPrincipal,
 } from "./permissions";
 import { validateReviewCommentSnapshot } from "./snapshots";
 import type { ReviewCommentStore } from "./store";
-import {
-    appendReviewCommentTransition,
-    assertReviewCommentTransitionAllowed,
-    assertReviewCommentTransitionEvidence,
-} from "./transitions";
 
 export type ReviewCommentOperationRuntime = Readonly<{
     now(): number;
@@ -62,12 +54,12 @@ export type ReviewCommentCreateOperationParams = ReviewCommentPrincipal & Readon
     input: ReviewCommentCreateRequestV1;
 }>;
 
-export type ReviewCommentGetOperationParams = Readonly<{
+export type ReviewCommentGetOperationParams = Pick<ReviewCommentPrincipal, "accountId"> & Partial<Pick<ReviewCommentPrincipal, "actor" | "workflowOriginSessionId" | "ledSubtreeSessionIds" | "storageMode">> & Readonly<{
     accountId: string;
     input: ReviewCommentGetRequestV1;
 }>;
 
-export type ReviewCommentListOperationParams = Readonly<{
+export type ReviewCommentListOperationParams = Pick<ReviewCommentPrincipal, "accountId"> & Partial<Pick<ReviewCommentPrincipal, "actor" | "workflowOriginSessionId" | "ledSubtreeSessionIds" | "storageMode">> & Readonly<{
     accountId: string;
     input: ReviewCommentListRequestV1;
 }>;
@@ -77,6 +69,10 @@ export type ReviewCommentMutationOperationParams<TInput> = ReviewCommentPrincipa
 }>;
 
 export interface ReviewCommentOperations {
+    prepareMutation(params: ReviewCommentPrincipal & Readonly<{ input: ReviewCommentPrepareMutationRequestV1 }>): Promise<ReviewCommentPrepareMutationResponseV1>;
+    commitMutation(params: ReviewCommentPrincipal & Readonly<{ input: ReviewCommentCommitMutationRequestV1 }>): Promise<ReviewCommentCommitMutationResponseV1>;
+    getStored(params: ReviewCommentGetOperationParams): Promise<{ comment: ReviewCommentStoredSourceV1 }>;
+    listStored(params: ReviewCommentListOperationParams): Promise<{ items: ReviewCommentStoredSourceV1[]; cursor: string | null }>;
     create(params: ReviewCommentCreateOperationParams): Promise<ReviewCommentCreateResponseV1>;
     list(params: ReviewCommentListOperationParams): Promise<ReviewCommentListResponseV1>;
     get(params: ReviewCommentGetOperationParams): Promise<ReviewCommentGetResponseV1>;
@@ -100,39 +96,10 @@ async function requireComment(store: ReviewCommentStore, accountId: string, comm
     return comment;
 }
 
-function assertReviewCommentEditActorAllowed(params: Readonly<{
-    actor: ReviewCommentActorRefV1;
-    comment: ReviewCommentV1;
-}>): void {
-    if (params.comment.flags.redacted) {
-        throw new ReviewCommentOperationError("review_comment_permission_denied", "Redacted review comments cannot be edited");
-    }
-    if (params.actor.kind === "user" || isSameReviewCommentActor(params.actor, params.comment.author)) {
-        return;
-    }
-    throw new ReviewCommentOperationError(
-        "review_comment_permission_denied",
-        "Only users and original authors may edit review comments",
-    );
+function assertPlainReadMode(mode: ReviewCommentPrincipal["storageMode"]): void {
+    if (mode === "e2ee") throw new ReviewCommentOperationError("review_comment_encryption_mode_mismatch", "Encrypted Review Comment reads require canonical stored transport");
 }
 
-function assertReviewCommentReplyAllowed(parent: ReviewCommentV1): void {
-    if (parent.flags.redacted || parent.state === "resolved" || parent.state === "dismissed") {
-        throw new ReviewCommentOperationError(
-            "review_comment_thread_closed",
-            "Review comment thread is closed",
-        );
-    }
-}
-
-function redactedBodyForStorage(current: ReviewCommentV1, redactBody: boolean | undefined): ReviewCommentV1["body"] {
-    if (redactBody === false) return current.body;
-    const envelope = StoredJsonContentEnvelopeSchema.safeParse(current.body);
-    if (envelope.success && envelope.data.t === "encrypted") {
-        return current.body;
-    }
-    return "";
-}
 
 function assertValidReviewCommentSnapshot(snapshot: ReviewCommentCreateRequestV1["snapshot"]): void {
     try {
@@ -172,24 +139,29 @@ function reviewCommentCreateRequestFingerprint(params: Readonly<{
         .digest("hex");
 }
 
-function assertReviewCommentCurrentIntent(params: ReviewCommentCreateOperationParams): void {
+export function assertReviewCommentCurrentIntent(params: Omit<ReviewCommentCreateOperationParams, "input"> & Readonly<{
+    input: ReviewCommentCreateRequestV1 | Extract<ReviewCommentStructuralMutationV1, { actionId: "reviews.comments.create" }>["input"];
+    contentCommitment?: string;
+}>): void {
     const intent = params.currentIntent;
     const actor = params.actor;
     const input = params.input;
     const logicalInput = reviewCommentMutationInputWithoutEventEnvelopeV1({ ...input });
-    const effectBodySha256Base64Url = createHash("sha256")
+    const effectBodySha256Base64Url = params.contentCommitment ?? createHash("sha256")
         .update(stringifyReviewCommentPrincipalCanonicalJsonV1(logicalInput))
         .digest("base64url");
     if (
         !intent
-        || actor.kind !== "agent"
-        || intent.agentId !== actor.agentId
-        || intent.sessionId !== actor.sessionId
+        || !(actor.kind === "agent" ? intent.agentId === actor.agentId && intent.sessionId === actor.sessionId
+            : actor.kind === "workflow" && intent.kind === "review_findings_materialization" && intent.workflowRunId === actor.runId)
         || intent.projectId !== input.projectId
-        || intent.workspaceId !== input.workspaceId
+        || (intent.kind === "execution_run_host_action" && intent.workspaceId !== input.workspaceId)
+        || (intent.kind === "review_findings_materialization"
+            && (intent.workspace?.machineId !== input.workspace?.machineId || intent.workspace?.path !== input.workspace?.path))
+        || (intent.kind === "review_findings_materialization" && (!input.findingIdentity || !input.engineId))
         || intent.sessionId !== input.sessionId
         || intent.runId !== input.runId
-        || intent.pluginId !== input.engineId
+        || (intent.kind === "execution_run_host_action" && intent.pluginId !== input.engineId)
         || intent.effectBodySha256Base64Url !== effectBodySha256Base64Url
     ) {
         throw new ReviewCommentOperationError(
@@ -203,524 +175,63 @@ export function createReviewCommentOperations(
     store: ReviewCommentStore,
     runtime: ReviewCommentOperationRuntime,
 ): ReviewCommentOperations {
-    async function transitionComment(params: ReviewCommentMutationOperationParams<ReviewCommentTransitionRequestV1> & Readonly<{
-        bulkActionId?: string;
-        bindingInput?: Record<string, unknown>;
-        bindingActionId?: "reviews.comments.transition" | "reviews.comments.bulkTransition";
-    }>): Promise<ReviewCommentTransitionResponseV1> {
-        const current = await requireComment(store, params.accountId, params.input.commentId);
-        if (params.input.projectId !== current.projectId) {
-            throw new ReviewCommentOperationError("review_comment_conflict", "Review comment project did not match projectId");
-        }
-        if (current.serverRevision !== params.input.expectedServerRevision) {
-            throw new ReviewCommentOperationError("review_comment_conflict", "Review comment serverRevision did not match expectedServerRevision");
-        }
-        if (current.state !== params.input.expectedState) {
-            throw new ReviewCommentOperationError("review_comment_conflict", "Review comment state did not match expectedState");
-        }
-        assertReviewCommentTransitionAllowed(current.state, params.input.toState);
-        assertReviewCommentTransitionActorAllowed({
-            actor: params.actor,
-            comment: current,
-            fromState: current.state,
-            toState: params.input.toState,
-        });
-        if (
-            params.actor.kind !== "user"
-            && current.state === "delegated"
-            && (params.input.toState === "pending_review" || params.input.toState === "resolved")
-            && (!params.input.evidence || params.input.evidence.length === 0)
-        ) {
-            throw new ReviewCommentOperationError(
-                "review_comment_invalid_transition",
-                `${params.input.toState} requires typed evidence for non-user delegated completion`,
-            );
-        }
-        assertReviewCommentTransitionEvidence(params.input.toState, params.input.evidence, params.input.reason);
-        const now = runtime.now();
-        const transition: ReviewCommentTransitionV1 = {
-            transitionId: runtime.createId("review-comment-transition"),
-            fromState: current.state,
-            toState: params.input.toState,
-            transitionedAt: now,
-            transitionedBy: params.actor,
-            reason: params.input.reason,
-            evidence: params.input.evidence,
-            bulkActionId: params.bulkActionId,
-            clientMutationId: params.input.clientMutationId,
-            authorDeviceId: params.input.authorDeviceId,
-            clientLamport: params.input.clientLamport,
-            serverRevision: current.serverRevision + 1,
-        };
-        const comment = appendReviewCommentTransition({ comment: current, transition, updatedAt: now });
-        const event = buildReviewCommentEvent({
-            runtime,
-            accountId: params.accountId,
-            projectId: comment.projectId,
-            commentId: comment.id,
-            actor: params.actor,
-            serverRevision: comment.serverRevision,
-            eventKind: "transitioned",
-            bulkActionId: params.bulkActionId,
-            clientMutationId: params.input.clientMutationId,
-            authorDeviceId: params.input.authorDeviceId,
-            clientLamport: params.input.clientLamport,
-            event: {
-                transition,
-                bulkActionId: params.bulkActionId,
-            },
-        });
-        await store.commit({
-            accountId: params.accountId,
-            comment,
-            event,
-            storageMode: params.storageMode,
-            accountVersion: params.accountVersion,
-            accountEncryptionCurrentness:
-                params.accountEncryptionCurrentness,
-            eventEnvelope: params.input.eventEnvelope,
-            requestBinding: buildReviewCommentEventRequestBindingV1({
-                accountId: params.accountId,
-                projectId: current.projectId,
-                actor: params.actor,
-                actionId: params.bindingActionId ?? "reviews.comments.transition",
-                input: params.bindingInput ?? params.input,
-            }),
-        });
-        return { comment };
-    }
-
+    const canonical = createReviewCommentCanonicalMutations(store, runtime);
+    const plain = async (params: ReviewCommentPrincipal & { input: Record<string, unknown> }, actionId: Parameters<typeof projectReviewCommentStructuralMutationV1>[0], fingerprint?: string) => canonical.applyPlain(params, projectReviewCommentStructuralMutationV1(actionId, params.input), params.input, fingerprint);
     return {
+        prepareMutation: (params) => canonical.prepare(params, params.input),
+        commitMutation: (params) => canonical.commit(params, params.input),
+        async getStored(params) {
+            const comment = await store.getSource({ accountId: params.accountId, commentId: params.input.commentId });
+            if (!comment) throw new ReviewCommentOperationError("review_comment_not_found", "Review comment not found");
+            assertReviewCommentOrdinarySourceAdmission(comment, params.storageMode ?? "plain");
+            if (params.actor) assertReviewCommentSessionScope({ ...params, actor: params.actor }, comment.structural.sessionId);
+            return { comment };
+        },
+        async listStored(params) {
+            const sessionId = params.actor ? reviewCommentPrincipalSessionId({ ...params, actor: params.actor }) : undefined;
+            if (params.actor && params.input.sessionId !== undefined) assertReviewCommentSessionScope({ ...params, actor: params.actor }, params.input.sessionId);
+            const result = await store.listSources({ accountId: params.accountId, filters: { ...params.input, ...(sessionId ? { sessionId: params.input.sessionId ?? sessionId } : {}) } });
+            for (const item of result.items) {
+                assertReviewCommentOrdinarySourceAdmission(item, params.storageMode ?? "plain");
+            }
+            return { items: [...result.items], cursor: result.cursor };
+        },
         async create(params) {
             assertValidReviewCommentSnapshot(params.input.snapshot);
-            const direct = params.input.authorIntent === "open";
-            if (params.actor.kind !== "user" && (direct || params.actor.kind === "agent")) {
-                assertReviewCommentCurrentIntent(params);
-                assertReviewCommentDirectWriteGrant(params);
-            }
-            const now = runtime.now();
-            const commentId = runtime.createId("review-comment");
-            const state: ReviewCommentStateV1 = direct ? "open" : "proposed";
-            const transition: ReviewCommentTransitionV1 = {
-                transitionId: runtime.createId("review-comment-transition"),
-                toState: state,
-                transitionedAt: now,
-                transitionedBy: params.actor,
-                evidence: params.input.evidence,
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                serverRevision: 1,
-            };
-            const comment = ReviewCommentV1Schema.parse({
-                v: 1,
-                id: commentId,
-                accountId: params.accountId,
-                projectId: params.input.projectId,
-                workspaceId: params.input.workspaceId,
-                sessionId: params.input.sessionId,
-                runId: params.input.runId,
-                engineId: params.input.engineId,
-                findingId: params.input.findingId,
-                anchor: params.input.anchor,
-                snapshot: params.input.snapshot,
-                body: params.input.body,
-                bodyVersion: 1,
-                edits: [],
-                author: params.actor,
-                state,
-                flags: {},
-                dispositions: {},
-                threadId: commentId,
-                evidence: params.input.evidence,
-                transitions: [transition],
-                fingerprint: params.input.fingerprint,
-                linkedRefs: params.input.linkedRefs,
-                suggestedFix: params.input.suggestedFix,
-                createdAt: now,
-                updatedAt: now,
-                serverRevision: 1,
-                metadata: params.input.metadata,
-            });
-            const event = buildReviewCommentEvent({
-                runtime,
-                accountId: params.accountId,
-                projectId: comment.projectId,
-                commentId,
-                actor: params.actor,
-                serverRevision: comment.serverRevision,
-                eventKind: "created",
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                event: { comment },
-            });
-            const stored = await store.create({
-                accountId: params.accountId,
-                comment,
-                event,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: params.input.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.create",
-                    input: params.input,
-                }),
-                createClientMutationId: params.input.clientMutationId,
-                createRequestFingerprint: reviewCommentCreateRequestFingerprint(params),
-            });
-            return stored;
+            if (params.actor.kind !== "user" && (params.input.authorIntent === "open" || params.actor.kind === "agent" || params.actor.kind === "workflow")) assertReviewCommentCurrentIntent(params);
+            const result = await plain(params, "reviews.comments.create", reviewCommentCreateRequestFingerprint(params));
+            return { comment: result.comments[0]!, replayed: result.replayed };
         },
         async list(params) {
-            const result = await store.list({ accountId: params.accountId, filters: params.input });
+            assertPlainReadMode(params.storageMode);
+            const sessionId = params.actor ? reviewCommentPrincipalSessionId({ ...params, actor: params.actor }) : undefined;
+            if (params.actor && params.input.sessionId !== undefined) assertReviewCommentSessionScope({ ...params, actor: params.actor }, params.input.sessionId);
+            const result = await store.list({ accountId: params.accountId, filters: { ...params.input, ...(sessionId ? { sessionId: params.input.sessionId ?? sessionId } : {}) } });
             return { items: [...result.items], cursor: result.cursor };
         },
         async get(params) {
-            return { comment: await requireComment(store, params.accountId, params.input.commentId) };
-        },
-        async transition(params) {
-            return await transitionComment(params);
-        },
-        async edit(params) {
-            const current = await requireComment(store, params.accountId, params.input.commentId);
-            if (params.input.projectId !== current.projectId
-                || params.input.expectedServerRevision !== current.serverRevision) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment currentness did not match");
-            }
-            assertReviewCommentEditActorAllowed({ actor: params.actor, comment: current });
-            if (current.bodyVersion !== params.input.expectedBodyVersion) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment bodyVersion did not match expectedBodyVersion");
-            }
-            const now = runtime.now();
-            const edit = {
-                editId: runtime.createId("review-comment-edit"),
-                editedAt: now,
-                editedBy: params.actor,
-                previousBody: current.body,
-                nextBody: params.input.nextBody,
-                reason: params.input.reason,
-            };
-            const comment = ReviewCommentV1Schema.parse({
-                ...current,
-                body: params.input.nextBody,
-                bodyVersion: current.bodyVersion + 1,
-                edits: [...current.edits, edit],
-                updatedAt: now,
-                serverRevision: current.serverRevision + 1,
-            });
-            const event = buildReviewCommentEvent({
-                runtime,
-                accountId: params.accountId,
-                projectId: comment.projectId,
-                commentId: comment.id,
-                actor: params.actor,
-                serverRevision: comment.serverRevision,
-                eventKind: "edited",
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                event: { edit },
-            });
-            await store.commit({
-                accountId: params.accountId,
-                comment,
-                event,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: current.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.edit",
-                    input: params.input,
-                }),
-            });
+            assertPlainReadMode(params.storageMode);
+            const comment = await requireComment(store, params.accountId, params.input.commentId);
+            if (params.actor) assertReviewCommentSessionScope({ ...params, actor: params.actor }, comment.sessionId);
             return { comment };
         },
-        async reply(params) {
-            const parent = await requireComment(store, params.accountId, params.input.parentCommentId);
-            if (params.input.projectId !== parent.projectId
-                || params.input.expectedParentServerRevision !== parent.serverRevision) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment parent currentness did not match");
-            }
-            assertReviewCommentReplyAllowed(parent);
-            const now = runtime.now();
-            const commentId = runtime.createId("review-comment");
-            const transition: ReviewCommentTransitionV1 = {
-                transitionId: runtime.createId("review-comment-transition"),
-                toState: "proposed",
-                transitionedAt: now,
-                transitionedBy: params.actor,
-                evidence: params.input.evidence,
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                serverRevision: 1,
-            };
-            const comment = ReviewCommentV1Schema.parse({
-                v: 1,
-                id: commentId,
-                accountId: params.accountId,
-                projectId: parent.projectId,
-                workspaceId: parent.workspaceId,
-                sessionId: parent.sessionId,
-                runId: parent.runId,
-                engineId: parent.engineId,
-                findingId: parent.findingId,
-                anchor: parent.anchor,
-                snapshot: parent.snapshot,
-                body: params.input.body,
-                bodyVersion: 1,
-                edits: [],
-                author: params.actor,
-                state: "proposed",
-                flags: {},
-                dispositions: {},
-                parentCommentId: parent.id,
-                threadId: parent.threadId,
-                evidence: params.input.evidence,
-                transitions: [transition],
-                linkedRefs: parent.linkedRefs,
-                createdAt: now,
-                updatedAt: now,
-                serverRevision: 1,
-            });
-            await store.commit({
-                accountId: params.accountId,
-                comment,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: parent.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.reply",
-                    input: params.input,
-                }),
-                event: buildReviewCommentEvent({
-                    runtime,
-                    accountId: params.accountId,
-                    projectId: comment.projectId,
-                    commentId: comment.id,
-                    actor: params.actor,
-                    serverRevision: comment.serverRevision,
-                    eventKind: "replied",
-                    clientMutationId: params.input.clientMutationId,
-                    authorDeviceId: params.input.authorDeviceId,
-                    clientLamport: params.input.clientLamport,
-                    event: { parentCommentId: parent.id },
-                }),
-            });
-            return { comment, parent };
-        },
-        async redact(params) {
-            assertReviewCommentRedactionActorAllowed(params.actor);
-            const current = await requireComment(store, params.accountId, params.input.commentId);
-            if (params.input.projectId !== current.projectId
-                || params.input.expectedServerRevision !== current.serverRevision) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment currentness did not match");
-            }
-            if (current.flags.redacted || current.tombstone) {
-                throw new ReviewCommentOperationError(
-                    "review_comment_already_redacted",
-                    "Review comment is already redacted",
-                );
-            }
-            const now = runtime.now();
-            const redactBody = params.input.redactBody !== false;
-            const comment = ReviewCommentV1Schema.parse({
-                ...current,
-                body: redactedBodyForStorage(current, params.input.redactBody),
-                edits: redactBody ? [] : current.edits,
-                flags: { ...current.flags, redacted: true },
-                tombstone: {
-                    deletedAt: now,
-                    deletedBy: params.actor,
-                    reason: params.input.reason,
-                    redacted: true,
-                },
-                updatedAt: now,
-                serverRevision: current.serverRevision + 1,
-            });
-            const event = buildReviewCommentEvent({
-                runtime,
-                accountId: params.accountId,
-                projectId: comment.projectId,
-                commentId: comment.id,
-                actor: params.actor,
-                serverRevision: comment.serverRevision,
-                eventKind: "redacted",
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                event: { reason: params.input.reason, redactBody: params.input.redactBody ?? true },
-            });
-            await store.commit({
-                accountId: params.accountId,
-                comment,
-                event,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: current.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.redact",
-                    input: params.input,
-                }),
-            });
-            return { comment };
-        },
-        async setDisposition(params) {
-            const current = await requireComment(store, params.accountId, params.input.commentId);
-            if (params.input.projectId !== current.projectId
-                || params.input.expectedServerRevision !== current.serverRevision) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment currentness did not match");
-            }
-            const actorKey = formatReviewCommentActorDispositionKey(params.actor);
-            const comment = ReviewCommentV1Schema.parse({
-                ...current,
-                dispositions: { ...current.dispositions, [actorKey]: params.input.disposition },
-                updatedAt: runtime.now(),
-                serverRevision: current.serverRevision + 1,
-            });
-            const event = buildReviewCommentEvent({
-                runtime,
-                accountId: params.accountId,
-                projectId: comment.projectId,
-                commentId: comment.id,
-                actor: params.actor,
-                serverRevision: comment.serverRevision,
-                eventKind: "disposition_set",
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                event: { actorKey, disposition: params.input.disposition },
-            });
-            await store.commit({
-                accountId: params.accountId,
-                comment,
-                event,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: current.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.setDisposition",
-                    input: params.input,
-                }),
-            });
-            return { comment };
-        },
-        async attachEvidence(params) {
-            const current = await requireComment(store, params.accountId, params.input.commentId);
-            if (params.input.projectId !== current.projectId
-                || params.input.expectedServerRevision !== current.serverRevision) {
-                throw new ReviewCommentOperationError("review_comment_conflict", "Review comment currentness did not match");
-            }
-            assertReviewCommentUserOrOriginalAuthor({ actor: params.actor, comment: current });
-            const comment = ReviewCommentV1Schema.parse({
-                ...current,
-                evidence: [...(current.evidence ?? []), ...params.input.evidence],
-                updatedAt: runtime.now(),
-                serverRevision: current.serverRevision + 1,
-            });
-            const event = buildReviewCommentEvent({
-                runtime,
-                accountId: params.accountId,
-                projectId: comment.projectId,
-                commentId: comment.id,
-                actor: params.actor,
-                serverRevision: comment.serverRevision,
-                eventKind: "evidence_attached",
-                clientMutationId: params.input.clientMutationId,
-                authorDeviceId: params.input.authorDeviceId,
-                clientLamport: params.input.clientLamport,
-                event: { evidence: params.input.evidence },
-            });
-            await store.commit({
-                accountId: params.accountId,
-                comment,
-                event,
-                storageMode: params.storageMode,
-                accountVersion: params.accountVersion,
-                accountEncryptionCurrentness:
-                    params.accountEncryptionCurrentness,
-                eventEnvelope: params.input.eventEnvelope,
-                requestBinding: buildReviewCommentEventRequestBindingV1({
-                    accountId: params.accountId,
-                    projectId: current.projectId,
-                    actor: params.actor,
-                    actionId: "reviews.comments.attachEvidence",
-                    input: params.input,
-                }),
-            });
-            return { comment };
-        },
-        async bulkTransition(params) {
-            const bulkActionId = params.input.bulkActionId ?? runtime.createId("review-comment-bulk");
-            const updated: ReviewCommentV1[] = [];
-            const failed: ReviewCommentBulkTransitionResponseV1["failed"] = [];
-            for (const commentId of params.input.commentIds) {
-                try {
-                    const transitioned = await transitionComment({
-                        accountId: params.accountId,
-                        actor: params.actor,
-                        grants: params.grants,
-                        storageMode: params.storageMode,
-                        bulkActionId,
-                        input: {
-                            commentId,
-                            projectId: params.input.projectId,
-                            toState: params.input.toState,
-                            expectedState: params.input.expectedState,
-                            expectedServerRevision: params.input.expectedServerRevisions[commentId] ?? 0,
-                            evidence: params.input.evidence,
-                            reason: params.input.reason,
-                            clientMutationId: params.input.clientMutationId,
-                            authorDeviceId: params.input.authorDeviceId,
-                            clientLamport: params.input.clientLamport,
-                            eventEnvelope: params.input.eventEnvelope,
-                        },
-                        bindingActionId: "reviews.comments.bulkTransition",
-                        bindingInput: params.input,
-                    });
-                    updated.push(transitioned.comment);
-                } catch (error) {
-                    if (!(error instanceof ReviewCommentOperationError)) {
-                        throw error;
-                    }
-                    failed.push({
-                        commentId,
-                        errorCode: error.code,
-                        error: error.message,
-                    });
-                }
-            }
-            return { bulkActionId, updated, failed };
-        },
+        async transition(params) { const result = await plain(params, "reviews.comments.transition"); return { comment: result.comments[0]! }; },
+        async edit(params) { const result = await plain(params, "reviews.comments.edit"); return { comment: result.comments[0]! }; },
+        async reply(params) { const result = await plain(params, "reviews.comments.reply"); return { comment: result.comments[0]!, parent: result.parent! }; },
+        async redact(params) { const result = await plain(params, "reviews.comments.redact"); return { comment: result.comments[0]! }; },
+        async setDisposition(params) { const result = await plain(params, "reviews.comments.setDisposition"); return { comment: result.comments[0]! }; },
+        async attachEvidence(params) { const result = await plain(params, "reviews.comments.attachEvidence"); return { comment: result.comments[0]! }; },
+        async bulkTransition(params) { const result = await plain(params, "reviews.comments.bulkTransition"); return { bulkActionId: result.bulkActionId!, updated: result.comments, failed: result.failed }; },
         async claimPublicationDispatch(
             params: ReviewCommentMutationOperationParams<ReviewCommentPublicationTransportRequestV1>,
         ): Promise<ReviewCommentPublicationTransportResponseV1> {
+            if (params.actor.kind === "workflow") throw new ReviewCommentOperationError("review_comment_permission_denied", "Workflow review authority does not include publication");
             const input = ReviewCommentPublicationTransportRequestV1Schema.parse(params.input);
+            for (const entry of input.entries) {
+                const comment = await store.getSource({ accountId: params.accountId, commentId: entry.happierCommentId });
+                if (!comment) throw new ReviewCommentOperationError("review_comment_not_found", "Review comment not found");
+                assertReviewCommentSessionScope(params, comment.structural.sessionId);
+            }
             const { publicationPlanId, targetKey, verdict, settlement } = input;
             const entries = input.entries.map((entry) => ({
                 happierCommentId: entry.happierCommentId,

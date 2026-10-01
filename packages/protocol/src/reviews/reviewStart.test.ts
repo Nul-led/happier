@@ -33,7 +33,7 @@ describe('ReviewStartInputSchema', () => {
       instructions: 'Review.',
       runLocation: 'current_session',
       teamCredentialModel,
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it('exports the canonical host-resolved SCM review scope key', () => {
@@ -81,11 +81,13 @@ describe('ReviewStartInputSchema', () => {
       engineIds: ['acme.review'],
       instructions: 'Review.',
       profileId: 'acme.plugin/review',
-      profileGenerationId: 'generation-7',
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'generation-7', installSource: 'archive' },
     });
 
     expect(parsed.profileId).toBe('acme.plugin/review');
-    expect(parsed.profileGenerationId).toBe('generation-7');
+    expect(parsed.profileSourceCustody).toEqual({
+      kind: 'managed', immutableGenerationId: 'generation-7', installSource: 'archive',
+    });
   });
 
   it('rejects a review profile without its committed generation', () => {
@@ -96,14 +98,14 @@ describe('ReviewStartInputSchema', () => {
     }).success).toBe(false);
   });
 
-  it('rejects execution-run profiles on the inline current-session path', () => {
+  it('accepts execution-run profiles for current-session reviews through the canonical Run owner', () => {
     expect(reviewStart.ReviewStartInputSchema.safeParse({
       engineIds: ['acme.review'],
       instructions: 'Review.',
       runLocation: 'current_session',
       profileId: 'acme.plugin/review',
-      profileGenerationId: 'generation-7',
-    }).success).toBe(false);
+      profileSourceCustody: { kind: 'managed', immutableGenerationId: 'generation-7', installSource: 'archive' },
+    }).success).toBe(true);
   });
 
   it('carries the strict selected pull request review scope under its own top-level key', () => {

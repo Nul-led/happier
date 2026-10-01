@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { io as ioClient } from "socket.io-client";
 
 import { startSocket } from "./socket";
+import { getAccountRevocationSocketRoom } from "./socketRooms";
 import type { Fastify as AppFastify } from "./types";
 import { auth } from "@/app/auth/auth";
 import { db } from "@/storage/db";
@@ -171,6 +172,51 @@ type PausedAdmissionBoundary = Readonly<{
     release: () => void;
     restore: () => void;
 }>;
+
+function pausePostConnectAccountCurrentnessRead(
+    server: Server,
+    accountId: string,
+): PausedAdmissionBoundary {
+    const reached = deferred();
+    const release = deferred();
+    const originalFindUnique = db.account.findUnique;
+    let paused = false;
+    // Intercept only the persistence boundary once the real socket has joined
+    // the revocation room. No verifier is mocked or selected by call count.
+    const findUniqueSpy = vi.spyOn(db.account, "findUnique").mockImplementation((...args) => {
+        const query = originalFindUnique(...args);
+        if (
+            paused
+            || args[0].where.id !== accountId
+            || args[0].select?.tokenEpoch !== true
+            || !server.sockets.adapter.rooms.has(getAccountRevocationSocketRoom(accountId))
+        ) return query;
+        paused = true;
+        return new Proxy(query, {
+            get(target, property, receiver) {
+                if (property !== "then") return Reflect.get(target, property, receiver);
+                return (...callbacks: unknown[]) => {
+                    const result = Promise.resolve(target).then(async (value) => {
+                        // Preserve the database's real result, including the old
+                        // epoch, while a lifecycle mutation commits concurrently.
+                        reached.resolve();
+                        await release.promise;
+                        return value;
+                    });
+                    return Reflect.apply(result.then, result, callbacks);
+                };
+            },
+        });
+    });
+    return {
+        reached: reached.promise,
+        release: release.resolve,
+        restore: () => {
+            findUniqueSpy.mockRestore();
+            Reflect.set(db.account, "findUnique", originalFindUnique);
+        },
+    };
+}
 
 describe("startSocket (auth policy enforcement)", () => {
     let harness: LightSqliteHarness;
@@ -371,11 +417,9 @@ describe("startSocket (auth policy enforcement)", () => {
                     const admissionReached = deferred();
                     const releaseAdmission = deferred();
                     const originalFindUnique = db.account.findUnique;
-                    let accountLookups = 0;
                     const findUniqueSpy = vi.spyOn(db.account, "findUnique").mockImplementation((...args) => {
-                        accountLookups += 1;
                         const query = originalFindUnique(...args);
-                        if (accountLookups === 2) {
+                        if (args[0].select?.id === true && args[0].select?.status === true) {
                             admissionReached.resolve();
                             return pausePrismaQuery(query, releaseAdmission.promise);
                         }
@@ -472,7 +516,6 @@ describe("startSocket (auth policy enforcement)", () => {
             });
             const socketAuth = await admission.configure(account.id);
             const pausedAdmission = admission.pauseAdmission();
-            const verifySpy = vi.spyOn(auth, "verifyToken");
 
             const app = Fastify({ logger: false }) as unknown as AppFastify;
             startSocket(app);
@@ -481,7 +524,6 @@ describe("startSocket (auth policy enforcement)", () => {
             const port = typeof address === "object" && address ? address.port : null;
             if (!port) {
                 pausedAdmission.restore();
-                verifySpy.mockRestore();
                 await app.close();
                 throw new Error("Failed to bind socket server");
             }
@@ -503,12 +545,10 @@ describe("startSocket (auth policy enforcement)", () => {
                 pausedAdmission.release();
 
                 await expect(outcome, admission.name).resolves.toBe("disconnected");
-                expect(verifySpy, admission.name).toHaveBeenCalledTimes(2);
             } finally {
                 pausedAdmission.release();
                 socket.close();
                 pausedAdmission.restore();
-                verifySpy.mockRestore();
                 await app.close();
             }
         }
@@ -566,28 +606,17 @@ describe("startSocket (auth policy enforcement)", () => {
                 authority: "present_user",
             });
             const socketAuth = await admission.configure(account.id);
-            const finalVerificationReached = deferred();
-            const releaseFinalVerification = deferred();
-            const originalVerifyToken = auth.verifyToken;
-            let verifyCalls = 0;
-            const verifySpy = vi.spyOn(auth, "verifyToken").mockImplementation(async (candidate) => {
-                const verified = await originalVerifyToken.call(auth, candidate);
-                verifyCalls += 1;
-                if (verifyCalls === 2) {
-                    finalVerificationReached.resolve();
-                    await releaseFinalVerification.promise;
-                }
-                return verified;
-            });
-
             const app = Fastify({ logger: false }) as unknown as AppFastify;
             startSocket(app);
+            const socketServer = app.machineDaemonPresence;
+            if (!(socketServer instanceof Server)) throw new Error("Expected the live Socket.IO server");
+            const pausedCurrentness = pausePostConnectAccountCurrentnessRead(socketServer, account.id);
             await app.listen({ port: 0, host: "127.0.0.1" });
             const address = app.server.address();
             const port = typeof address === "object" && address ? address.port : null;
             if (!port) {
-                releaseFinalVerification.resolve();
-                verifySpy.mockRestore();
+                pausedCurrentness.release();
+                pausedCurrentness.restore();
                 await app.close();
                 throw new Error("Failed to bind socket server");
             }
@@ -602,18 +631,17 @@ describe("startSocket (auth policy enforcement)", () => {
 
             try {
                 socket.connect();
-                await finalVerificationReached.promise;
+                await pausedCurrentness.reached;
                 const outcome = waitForHandlerUsabilityOrDisconnect(socket);
                 await auth.signOutEverywhere(account.id);
                 app.disconnectAccountSockets(account.id);
-                releaseFinalVerification.resolve();
+                pausedCurrentness.release();
 
                 await expect(outcome).resolves.toBe("disconnected");
-                expect(verifySpy).toHaveBeenCalledTimes(2);
             } finally {
-                releaseFinalVerification.resolve();
+                pausedCurrentness.release();
                 socket.close();
-                verifySpy.mockRestore();
+                pausedCurrentness.restore();
                 await app.close();
             }
         }
@@ -680,30 +708,17 @@ describe("startSocket (auth policy enforcement)", () => {
                 authority: "present_user",
             });
             const { socketAuth, protectedRoom } = await admission.configure(account.id);
-            const finalVerificationReached = deferred();
-            const releaseFinalVerification = deferred();
-            const originalVerifyToken = auth.verifyToken;
-            let verifyCalls = 0;
-            const verifySpy = vi.spyOn(auth, "verifyToken").mockImplementation(async (candidate) => {
-                const verified = await originalVerifyToken.call(auth, candidate);
-                verifyCalls += 1;
-                if (verifyCalls === 2) {
-                    finalVerificationReached.resolve();
-                    await releaseFinalVerification.promise;
-                }
-                return verified;
-            });
-
             const app = Fastify({ logger: false }) as unknown as AppFastify;
             startSocket(app);
             const socketServer = app.machineDaemonPresence;
             if (!(socketServer instanceof Server)) throw new Error("Expected the live Socket.IO server");
+            const pausedCurrentness = pausePostConnectAccountCurrentnessRead(socketServer, account.id);
             await app.listen({ port: 0, host: "127.0.0.1" });
             const address = app.server.address();
             const port = typeof address === "object" && address ? address.port : null;
             if (!port) {
-                releaseFinalVerification.resolve();
-                verifySpy.mockRestore();
+                pausedCurrentness.release();
+                pausedCurrentness.restore();
                 await app.close();
                 throw new Error("Failed to bind socket server");
             }
@@ -720,7 +735,7 @@ describe("startSocket (auth policy enforcement)", () => {
 
             try {
                 socket.connect();
-                await finalVerificationReached.promise;
+                await pausedCurrentness.reached;
 
                 expect(await socketServer.in(protectedRoom).fetchSockets(), admission.name)
                     .toHaveLength(0);
@@ -730,7 +745,7 @@ describe("startSocket (auth policy enforcement)", () => {
                 await new Promise<void>((resolve) => setTimeout(resolve, 50));
                 expect(protectedPayloads, admission.name).toEqual([]);
 
-                releaseFinalVerification.resolve();
+                pausedCurrentness.release();
                 await expect.poll(
                     async () => (await socketServer.in(protectedRoom).fetchSockets()).length,
                 ).toBe(1);
@@ -738,11 +753,10 @@ describe("startSocket (auth policy enforcement)", () => {
                     phase: "after-currentness",
                 });
                 await expect.poll(() => protectedPayloads).toEqual([{ phase: "after-currentness" }]);
-                expect(verifySpy, admission.name).toHaveBeenCalledTimes(2);
             } finally {
-                releaseFinalVerification.resolve();
+                pausedCurrentness.release();
                 socket.close();
-                verifySpy.mockRestore();
+                pausedCurrentness.restore();
                 await app.close();
             }
         }

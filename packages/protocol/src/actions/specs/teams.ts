@@ -112,42 +112,8 @@ function projectTeamCredentialExternalApiKeyCreateObservation(output: unknown): 
   return parsed.success ? { key: parsed.data.key } : { redacted: true };
 }
 
-function teamIdentityActionRow<
-  const TActionId extends TeamIdentityActionIdV1,
-  const TInputSchema extends z.ZodTypeAny,
-  const TOutputSchema extends z.ZodTypeAny,
->(input: Readonly<{
-  id: TActionId;
-  title: string;
-  description: string;
-  safety: 'safe' | 'danger';
-  sideEffectClass: 'read' | 'write' | 'danger';
-  cliPath: readonly string[];
-  presentUser?: boolean;
-  sdkMethod?: string;
-  inputSchema: TInputSchema;
-  outputSchema: TOutputSchema;
-  path: string;
-  projectObservationInput?: PreNormalizedActionSpec['projectObservationInput'];
-  projectObservationOutput?: PreNormalizedActionSpec['projectObservationOutput'];
-  approvalResultCustody?: PreNormalizedActionSpec['approvalResultCustody'];
-}>): HomeDomainActionRow<TActionId, TInputSchema, TOutputSchema> {
-  const row = homeDomainActionRow(input);
-  const presentUser = input.presentUser ?? input.sideEffectClass !== 'read';
-  if (!presentUser) return row;
-  return {
-    ...row,
-    requiredAuthority: 'present_user' as const,
-    surfaces: { ui: true, voice: false, agent: false, mcp: false, cli: true, rpc: false } as const,
-  };
-}
-
-function teamDirectoryActionRow<
-  const TActionId extends TeamDirectoryActionIdV1,
-  const TInputSchema extends z.ZodTypeAny,
-  const TOutputSchema extends z.ZodTypeAny,
->(input: Readonly<{
-  id: TActionId;
+type TeamProvisioningActionRowInput = Readonly<{
+  id: TeamIdentityActionIdV1 | TeamDirectoryActionIdV1;
   title: string;
   description: string;
   safety: 'safe' | 'danger';
@@ -156,11 +122,38 @@ function teamDirectoryActionRow<
   presentUser?: boolean;
   agent?: boolean;
   sdkMethod?: string;
-  inputSchema: TInputSchema;
-  outputSchema: TOutputSchema;
-  method: 'GET' | 'POST' | 'DELETE';
+  inputSchema: z.ZodTypeAny;
+  outputSchema: z.ZodTypeAny;
+  method?: 'GET' | 'POST' | 'DELETE';
   path: string;
-}>): HomeDomainActionRow<TActionId, TInputSchema, TOutputSchema> {
+  projectObservationInput?: PreNormalizedActionSpec['projectObservationInput'];
+  projectObservationOutput?: PreNormalizedActionSpec['projectObservationOutput'];
+  approvalResultCustody?: PreNormalizedActionSpec['approvalResultCustody'];
+}>;
+
+type TeamProvisioningActionAuthority<
+  TPresentUser extends boolean | undefined,
+  TSideEffectClass extends TeamProvisioningActionRowInput['sideEffectClass'],
+> = TPresentUser extends undefined
+  ? TSideEffectClass extends 'read' ? 'account_automation' : 'present_user'
+  : TPresentUser extends true ? 'present_user' : 'account_automation';
+
+// Preserve each row's declared authority in the schema projection, including
+// explicit automation mutations whose Agent surface is independently disabled.
+function teamProvisioningActionRow<const TInput extends TeamProvisioningActionRowInput>(
+  input: TInput,
+): HomeDomainActionRow<
+  TInput['id'],
+  TInput['inputSchema'],
+  TInput['outputSchema'],
+  TeamProvisioningActionAuthority<
+    'presentUser' extends keyof TInput ? TInput['presentUser'] : undefined,
+    TInput['sideEffectClass']
+  >
+>;
+function teamProvisioningActionRow<const TInput extends TeamProvisioningActionRowInput>(
+  input: TInput,
+): HomeDomainActionRow<TInput['id'], TInput['inputSchema'], TInput['outputSchema'], 'account_automation' | 'present_user'> {
   const row = homeDomainActionRow(input);
   const presentUser = input.presentUser ?? input.sideEffectClass !== 'read';
   if (!presentUser) return row;
@@ -250,6 +243,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
       'teams.credentials.limits.delete': 'Delete Team credential limit',
       'teams.credentials.usage.query': 'Query Team credential usage',
       'teams.credentials.externalKeys.create': 'Create external API key',
+      'teams.credentials.externalKeys.authorize': 'Authorize external API key',
       'teams.credentials.externalKeys.list': 'List external API keys',
       'teams.credentials.externalKeys.revoke': 'Revoke external API key',
       'teams.credentials.externalKeys.revokeAll': 'Revoke all external API keys',
@@ -272,6 +266,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
       'teams.credentials.limits.delete': 'Delete a usage limit for a Team credential resource.',
       'teams.credentials.usage.query': 'Query usage for a visible Team credential resource.',
       'teams.credentials.externalKeys.create': 'Create a one-time-reveal external API key for a Team credential resource.',
+      'teams.credentials.externalKeys.authorize': 'Authorize your assigned external API key using your current Team authentication.',
       'teams.credentials.externalKeys.list': 'List safe external API key metadata for a Team credential resource.',
       'teams.credentials.externalKeys.revoke': 'Revoke one external API key for a Team credential resource.',
       'teams.credentials.externalKeys.revokeAll': 'Revoke every external API key for a Team credential resource.',
@@ -799,7 +794,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     ] },
     projectObservationInput: redactObservationInputPaths('token', 'continuation.reference'),
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.list',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.list'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.list'],
@@ -810,7 +805,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'identity', 'connections', 'list'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.create',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.create'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.create'],
@@ -821,7 +816,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'write',
     cliPath: ['teams', 'identity', 'connections', 'create'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.settings.update',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.settings.update'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.settings.update'],
@@ -832,7 +827,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'write',
     cliPath: ['teams', 'identity', 'connections', 'settings', 'update'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.enable',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.enable'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.enable'],
@@ -843,7 +838,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'identity', 'connections', 'enable'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.disable',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.disable'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.disable'],
@@ -854,7 +849,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'identity', 'connections', 'disable'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.remove.preview',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.remove.preview'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.remove.preview'],
@@ -865,7 +860,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'identity', 'connections', 'remove', 'preview'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.remove',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.remove'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.connections.remove'],
@@ -877,7 +872,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     cliPath: ['teams', 'identity', 'connections', 'remove'],
     sdkMethod: 'teams.identity.connections.remove.execute',
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.test.start',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.test.start'],
     presentUser: false,
@@ -890,7 +885,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     cliPath: ['teams', 'identity', 'connections', 'test', 'start'],
     projectObservationOutput: () => ({ redacted: true }),
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.connections.test.consume',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.connections.test.consume'],
     presentUser: false,
@@ -903,7 +898,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     cliPath: ['teams', 'identity', 'connections', 'test', 'consume'],
     projectObservationInput: redactObservationInputPaths('resultHandle'),
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.workos.connection.create',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.workos.connection.create'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.workos.connection.create'],
@@ -914,7 +909,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'write',
     cliPath: ['teams', 'identity', 'workos', 'connection', 'create'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.workos.adminPortalLink.create',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.workos.adminPortalLink.create'],
     presentUser: false,
@@ -931,7 +926,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     // asked for it and never becomes durable Artifact result state.
     approvalResultCustody: 'live_only',
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.workos.reconcile',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.workos.reconcile'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.workos.reconcile'],
@@ -942,7 +937,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'write',
     cliPath: ['teams', 'identity', 'workos', 'reconcile'],
   }),
-  teamIdentityActionRow({
+  teamProvisioningActionRow({
     id: 'teams.identity.workos.connection.set',
     path: TEAM_IDENTITY_ACTION_PATHS_V1['teams.identity.workos.connection.set'],
     inputSchema: TEAM_IDENTITY_ACTION_INPUT_SCHEMAS_V1['teams.identity.workos.connection.set'],
@@ -989,7 +984,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'external-group-bindings', 'remove'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sourceSetup.list',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sourceSetup.list'],
@@ -1001,7 +996,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'source-setup', 'list'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.list',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.list'],
@@ -1013,7 +1008,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'sources', 'list'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.get',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.get'],
@@ -1025,7 +1020,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'sources', 'get'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.people.list',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.people.list'],
@@ -1037,7 +1032,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'people', 'list'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.groups.list',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.groups.list'],
@@ -1049,7 +1044,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'groups', 'list'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.create',
     method: 'POST',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.create'],
@@ -1061,7 +1056,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'directory', 'sources', 'create'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.sync',
     method: 'POST',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.sync'],
@@ -1073,7 +1068,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'directory', 'sources', 'sync'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.pause',
     method: 'POST',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.pause'],
@@ -1085,7 +1080,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'directory', 'sources', 'pause'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.resume',
     method: 'POST',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.resume'],
@@ -1097,7 +1092,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'danger',
     cliPath: ['teams', 'directory', 'sources', 'resume'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.remove.preview',
     method: 'GET',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.remove.preview'],
@@ -1109,7 +1104,7 @@ export const TEAM_ACTION_SPECS = Object.freeze([
     sideEffectClass: 'read',
     cliPath: ['teams', 'directory', 'sources', 'remove', 'preview'],
   }),
-  teamDirectoryActionRow({
+  teamProvisioningActionRow({
     id: 'teams.directory.sources.remove',
     method: 'DELETE',
     path: TEAM_DIRECTORY_ACTION_PATHS_V1['teams.directory.sources.remove'],

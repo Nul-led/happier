@@ -59,8 +59,8 @@ import {
   PluginReleaseRefV1Schema,
 } from '../plugins/availability/releaseRefV1.js';
 import { PluginUiArtifactDigestV1Schema } from '../plugins/ui/artifactIntegrity.js';
-import { PluginUiImmutableGenerationIdV1Schema } from '../plugins/ui/targetedContributions.js';
 import { PluginIdSchema } from '../plugins/pluginId.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 import {
   PluginWebhookEndpointIdV1Schema,
   type PluginWebhookEndpointIdV1,
@@ -1243,31 +1243,15 @@ export type AutomationReplyHandoffDispatchResultV1 = z.infer<
   typeof AutomationReplyHandoffDispatchResultV1Schema
 >;
 
-export const AutomationEventSourceStatusV1Schema = z.object({
-  automationId: asProtocolZod(AutomationIdV1Schema),
-  triggerId: AutomationTriggerIdSchema,
-  triggerRevision: AutomationTriggerRevisionSchema,
-  eventRef: asProtocolZod(AutomationQualifiedPluginContributionRefV1Schema),
-  sourceSelectorId: AutomationSourceSelectorIdV1Schema,
-  reporterMaterializationRef: PluginMachineMaterializationRefV1Schema,
-  reporterImmutableGenerationId: asProtocolZod(PluginUiImmutableGenerationIdV1Schema),
-  state: AutomationEventSourceStatusStateV1Schema,
-  code: AutomationEventSourceStatusCodeV1Schema.exclude(['none']).nullable(),
-  lastObservedAt: NONNEGATIVE_SAFE_INTEGER_SCHEMA.nullable(),
-  lastDispositionAt: NONNEGATIVE_SAFE_INTEGER_SCHEMA.nullable(),
-  nextRetryAt: NONNEGATIVE_SAFE_INTEGER_SCHEMA.nullable(),
-  observedCount: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
-  admittedCount: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
-  skippedCount: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
-  revision: NONNEGATIVE_SAFE_INTEGER_SCHEMA,
-}).strict();
-export type AutomationEventSourceStatusV1 = z.infer<typeof AutomationEventSourceStatusV1Schema>;
+import { AutomationEventSourceStatusV1Schema } from './automationEventSourceStatusV1.js';
+export { AutomationEventSourceStatusV1Schema } from './automationEventSourceStatusV1.js';
+export type { AutomationEventSourceStatusV1 } from './automationEventSourceStatusV1.js';
 
 export const AutomationEventSourceCatalogStatusV1Schema = z.object({
   accountId: asProtocolZod(HostIdentifierV1Schema),
   eventPluginId: z.string().min(1).max(256),
   reporterMaterializationRef: PluginMachineMaterializationRefV1Schema,
-  reporterImmutableGenerationId: asProtocolZod(PluginUiImmutableGenerationIdV1Schema),
+  reporterSourceCustody: PluginSourceCustodyV1Schema,
   scopeKey: AutomationEventSourceCatalogScopeKeyV1Schema,
   observedRevision: UNSIGNED_DECIMAL_BIGINT_SCHEMA,
   adoptedRevision: UNSIGNED_DECIMAL_BIGINT_SCHEMA.nullable(),
@@ -1294,7 +1278,8 @@ export const AutomationConversationActionHttpCallerV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   contributionLocalId: asProtocolZod(PluginContributionLocalIdSchema),
   materialization: PluginMachineMaterializationRefV1Schema,
-  immutableGenerationId: asProtocolZod(PluginUiImmutableGenerationIdV1Schema),
+  occurrenceId: z.string().trim().min(1).max(512),
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict().superRefine((caller, context) => {
   if (caller.pluginId !== caller.materialization.pluginId) {
     context.addIssue({
@@ -1475,9 +1460,10 @@ export const AutomationEventActionHttpCallerV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   contributionLocalId: asProtocolZod(PluginContributionLocalIdSchema).optional(),
   materialization: PluginMachineMaterializationRefV1Schema,
-  // The host derives this from the admitted immutable contribution generation;
+  // The host derives this from the admitted process-local plugin occurrence;
   // plugin Action input never supplies caller provenance.
-  immutableGenerationId: asProtocolZod(PluginUiImmutableGenerationIdV1Schema),
+  occurrenceId: z.string().trim().min(1).max(512),
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict().superRefine((caller, context) => {
   if (caller.pluginId !== caller.materialization.pluginId) {
     context.addIssue({

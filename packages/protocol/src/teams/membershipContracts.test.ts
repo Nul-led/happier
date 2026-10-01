@@ -40,6 +40,7 @@ const MEMBER = {
   management: { kind: 'native' as const },
   capabilities: {
     setRole: true,
+    assignableRoles: ['admin', 'member', 'guest'],
     suspend: true,
     reactivate: false,
     remove: true,

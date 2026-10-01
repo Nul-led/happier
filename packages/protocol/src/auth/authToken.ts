@@ -130,3 +130,33 @@ export const AuthTokenProvenanceAnySchema = z.union([
   AuthTokenProvenanceV2Schema,
 ]);
 export type AuthTokenProvenanceAny = z.infer<typeof AuthTokenProvenanceAnySchema>;
+
+/**
+ * Read credential provenance from a decoded signed-token payload, not a PAT.
+ * This does not verify its subject, epoch or signature: the caller owns those
+ * checks. Legacy admission is explicit and never rescues a malformed structured
+ * marker. Accept both privacy-kit's normalized extras and the released raw JWT
+ * session claim so UI, CLI and server readers share the same interpretation.
+ */
+export function readAuthTokenProvenance(
+  payload: unknown,
+  options: Readonly<{ allowLegacyHome: boolean }>,
+): Readonly<{ provenance: AuthTokenProvenanceAny; legacy: boolean }> | null {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  const claims = payload as Readonly<Record<string, unknown>>;
+  const extras = typeof claims.extras === 'object' && claims.extras !== null && !Array.isArray(claims.extras)
+    ? claims.extras as Readonly<Record<string, unknown>> : {};
+  const hasTopLevelProvenance = Object.prototype.hasOwnProperty.call(claims, 'provenance');
+  const hasNestedProvenance = Object.prototype.hasOwnProperty.call(extras, 'provenance');
+  const marker = hasTopLevelProvenance ? claims.provenance : extras.provenance;
+  if ((!hasTopLevelProvenance && !hasNestedProvenance) || typeof marker === 'string') {
+    if (!options.allowLegacyHome) return null;
+    const session = Object.prototype.hasOwnProperty.call(extras, 'session') ? extras.session : claims.session;
+    const kind = typeof session === 'string' && session.trim() ? 'terminal' : 'account';
+    return { provenance: { v: 1, kind, authority: AUTH_TOKEN_KIND_AUTHORITIES[kind] }, legacy: true };
+  }
+  const parsed = AuthTokenProvenanceAnySchema.safeParse(marker);
+  // PATs are database-backed direct bearers, never signed session tokens.
+  if (!parsed.success || parsed.data.kind === 'api_token') return null;
+  return { provenance: parsed.data, legacy: false };
+}

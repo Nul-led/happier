@@ -43,6 +43,7 @@ import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAc
 import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { listQueuedExecutionRunPendingTargetsForSessions } from "@/app/session/pending/pendingMessageService";
 import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
+import { projectSessionReportsForRowsInTx } from "@/app/session/awareness/sessionReportsProjection";
 
 const SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA = z.object({
     error: z.literal("Session metadata privacy upgrade required"),
@@ -272,8 +273,9 @@ export function registerSessionListingRoutes(app: Fastify) {
     app.get('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.detail"),
+            apiTokenSessionAction: "session.transcript.get",
         },
         schema: {
             params: z.object({
@@ -287,6 +289,7 @@ export function registerSessionListingRoutes(app: Fastify) {
                 403: z.union([
                     z.object({ error: z.literal("team_authentication_required") }).strict(),
                     z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                    z.object({ error: z.literal("credential_scope_denied") }).strict(),
                 ]),
                 404: V2SessionByIdNotFoundSchema,
                 409: SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA,
@@ -339,7 +342,7 @@ export function registerSessionListingRoutes(app: Fastify) {
                 const ownerAccountMode = requiresSessionMetadataOwnerAccountMode({ session })
                     ? await readSessionMetadataOwnerAccountMode(tx, session.accountId)
                     : undefined;
-                const mappedSession = mapV2SessionListRow({
+                const mappedSessionBase = mapV2SessionListRow({
                     row: session,
                     userId,
                     ownerAccountMode,
@@ -349,6 +352,14 @@ export function registerSessionListingRoutes(app: Fastify) {
                     hasOtherNamedCollaborator: (await readSessionListOtherNamedCollaboratorFacts([session], userId, tx)).get(session.id),
                     effectiveAccess: admission.access,
                     verifiedSessionRuntimePrincipal,
+                });
+                const [mappedSession] = await projectSessionReportsForRowsInTx(tx, {
+                    accountId: userId,
+                    authentication,
+                    sessions: [mappedSessionBase],
+                    accessMode: request.query?.accessProjectionVersion === 1
+                        ? "effective_access_v1" : "legacy_owner_or_direct",
+                    nowMs: Date.now(),
                 });
                 if (admission.access.level !== "owner") {
                     return {

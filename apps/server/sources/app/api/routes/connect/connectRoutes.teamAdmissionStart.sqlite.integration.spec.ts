@@ -158,8 +158,14 @@ describe("external OAuth Team-admission start (sqlite integration)", () => {
         connectionId?: string;
     }>) {
         const app = createTestApp();
-        app.decorate("authenticate", async (request: { userId: string }) => {
+        app.decorate("authenticate", async (request: {
+            userId: string;
+            authTokenKind: string;
+            authAuthority: string;
+        }) => {
             request.userId = input.accountId;
+            request.authTokenKind = "account";
+            request.authAuthority = "present_user";
         });
         connectConnectExternalRoutes(app);
         await app.ready();

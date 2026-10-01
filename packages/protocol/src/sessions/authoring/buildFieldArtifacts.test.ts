@@ -41,6 +41,14 @@ describe('sessionAuthoring field artifacts', () => {
       tmux: { sessionName: 'safe', tmpDir: '/private/local/path' },
     }).success).toBe(false);
   });
+  it('syncs the no-folder choice beside the remembered folder, for new sessions only', () => {
+    expect(SYNCED_SESSION_AUTHORING_FIELD_IDS_V2).toContain('directoryKind');
+    expect(SESSION_AUTHORING_FIELD_DESCRIPTORS.directoryKind.contexts).toEqual(['newSession']);
+    const directoryKind = SyncedSessionAuthoringValueV2Schema.shape.directoryKind;
+    expect(directoryKind.safeParse('managed').success).toBe(true);
+    expect(directoryKind.safeParse('path').success).toBe(true);
+    expect(directoryKind.safeParse('/tmp/project').success).toBe(false);
+  });
   it('derives stable field ids and descriptors from one catalog', () => {
     expect(SESSION_AUTHORING_FIELD_IDS).toContain('targetType');
     expect(SESSION_AUTHORING_FIELD_IDS).toEqual(expect.arrayContaining([

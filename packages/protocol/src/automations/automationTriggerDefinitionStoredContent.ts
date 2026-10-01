@@ -20,7 +20,13 @@ import {
 import {
   AutomationStoredContentEnvelopeV1Schema,
   type AutomationStoredContentEnvelopeV1,
+  type AutomationEventTriggerDefinitionStoredPayloadV1,
 } from './automationEventV1.js';
+import type {
+  AutomationPluginEventDefinitionTrigger,
+  AutomationPluginEventEncryptedDefinitionTrigger,
+  AutomationEncryptedTriggerDefinitionEnvelopeV1,
+} from './automationTriggerDefinition.js';
 import {
   AutomationTriggerIdSchema,
   AutomationTriggerRevisionSchema,
@@ -45,6 +51,38 @@ export const AutomationTriggerDefinitionBindingV1Schema = z.object({
 export type AutomationTriggerDefinitionBindingV1 = z.infer<
   typeof AutomationTriggerDefinitionBindingV1Schema
 >;
+
+/** Canonical mapping from caller-owned Event facts to a revision-bound private definition. */
+export function sealAutomationPluginEventTriggerInputV1(params: Readonly<{
+  binding: AutomationTriggerDefinitionBindingV1;
+  trigger: AutomationPluginEventDefinitionTrigger & Readonly<{ enabled: boolean }>;
+  seal: (params: Readonly<{
+    binding: AutomationTriggerDefinitionBindingV1;
+    definition: AutomationEventTriggerDefinitionStoredPayloadV1;
+  }>) => AutomationEncryptedTriggerDefinitionEnvelopeV1;
+}>): AutomationPluginEventEncryptedDefinitionTrigger & Readonly<{ enabled: boolean }> {
+  const definition = params.trigger;
+  const storedDefinition: AutomationEventTriggerDefinitionStoredPayloadV1 = {
+    v: 1,
+    sourceInstanceId: definition.sourceInstanceId,
+    ...(definition.observationTransport.kind === 'durablePush' ? {
+      webhookRoutingSourceInstanceId: definition.observationTransport.webhookRoutingSourceInstanceId,
+    } : {}),
+    sourceConfig: definition.sourceConfig,
+    displayLabel: definition.displayLabel,
+    filter: definition.filter,
+    maximumObservationAgeMs: definition.maximumObservationAgeMs,
+  };
+  return {
+    kind: 'pluginEvent',
+    enabled: definition.enabled,
+    eventRef: definition.eventRef,
+    sourceSelectorId: params.binding.sourceSelectorId,
+    sourceContractVersion: definition.sourceContractVersion,
+    observationTransport: definition.observationTransport,
+    triggerDefinitionEnvelope: params.seal({ binding: params.binding, definition: storedDefinition }),
+  };
+}
 
 /**
  * The outer stored-content envelope stays canonical. Its plain or encrypted

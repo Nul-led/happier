@@ -1,15 +1,14 @@
-import { parseBooleanEnv, parseIntEnv } from "./env";
+import { readServerConfig, SERVER_CONFIG } from "@happier-dev/protocol";
 
 type EnvLike = Record<string, string | undefined>;
 
-export const DEFAULT_METRICS_PORT = 9090;
-
+/** Metrics server settings; types, defaults and bounds are declared in the server configuration registry. */
 export function readMetricsServerConfigFromEnv(env: EnvLike): Readonly<{
     enabled: boolean;
     port: number;
 }> {
     return {
-        enabled: parseBooleanEnv(env.METRICS_ENABLED, true),
-        port: parseIntEnv(env.METRICS_PORT, DEFAULT_METRICS_PORT, { min: 0, max: 65_535 }),
+        enabled: readServerConfig(env, SERVER_CONFIG.METRICS_ENABLED),
+        port: readServerConfig(env, SERVER_CONFIG.METRICS_PORT),
     };
 }

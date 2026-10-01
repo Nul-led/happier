@@ -20,32 +20,48 @@ import {
 import { projectRunnerActivation, type ActivationRow } from "./activationService";
 import { readStoredRunnerBootstrap } from "./materializeEphemeralRunner";
 import { readRunnerBrokerReadinessProjectionInTx } from "@/app/teams/credentials/runnerBrokerReadinessAuthorization";
-import { verifyCurrentMaterializedRunnerPrincipalInTx } from "./materializedRunnerPrincipalCurrentness";
+import { readCurrentMaterializedRunnerPrincipalForActivationInTx } from "./materializedRunnerPrincipalCurrentness";
 import { readRunnerActivationAuthenticationEvidence } from "./activationAuthentication";
 import { resolveCurrentAuthenticationEvidenceInTx } from "@/app/auth/authenticationEvidence";
 
-function expectedProofPayload(row: ActivationRow) {
+/**
+ * The endpoint learns the reviewed launch-manifest commitment only by opening the
+ * sealed manifest carried inside the review disclosure itself, so the poll that
+ * discovers a freshly published review necessarily carries none. Review discovery
+ * therefore accepts the stored commitment *or* none; from the endpoint's own
+ * consent onwards it knows the commitment, so every later disclosure — readiness,
+ * the materialized bootstrap and the runtime token — keeps requiring the exact
+ * stored value. The proof itself stays dual-signed by the activation and
+ * installation keys in every phase.
+ */
+function expectedProofPayloads(row: ActivationRow) {
     const review = row.review === null ? null : RunnerActivationReviewV1Schema.safeParse(row.review);
-    return {
+    const stored = review === null || !review.success ? null : review.data.launchManifestCommitment;
+    const commitments = stored === null || row.consent !== null ? [stored] : [stored, null];
+    return commitments.map((launchManifestCommitment) => ({
         v: 1 as const,
         purpose: "happier.ephemeral-session-runner.endpoint-projection" as const,
         activationId: row.id,
         sessionId: row.sessionId,
         machineId: row.machineId,
-        launchManifestCommitment: review === null || !review.success ? null : review.data.launchManifestCommitment,
+        launchManifestCommitment,
         creatorTokenEpoch: row.creatorTokenEpoch,
-    };
+    }));
 }
 
 export function verifyRunnerEndpointProjectionProofAgainstRow(row: ActivationRow, request: unknown) {
     const claim = RunnerClaimV1Schema.safeParse(row.claim);
     if (!claim.success) return null;
-    return verifyRunnerEndpointProjectionProofV1({
-        request,
-        expectedPayload: expectedProofPayload(row),
-        activationSigningPublicKey: row.activationSigningPublicKey,
-        installationPublicKey: claim.data.payload.installation.publicKey,
-    });
+    for (const expectedPayload of expectedProofPayloads(row)) {
+        const verified = verifyRunnerEndpointProjectionProofV1({
+            request,
+            expectedPayload,
+            activationSigningPublicKey: row.activationSigningPublicKey,
+            installationPublicKey: claim.data.payload.installation.publicKey,
+        });
+        if (verified !== null) return verified;
+    }
+    return null;
 }
 
 /**
@@ -91,23 +107,12 @@ export async function readEphemeralRunnerEndpointProjection(params: Readonly<{
             return { status: "pending", activation, brokerReadiness };
         }
 
-        const claim = RunnerClaimV1Schema.parse(row.claim);
         const bootstrap = readStoredRunnerBootstrap(row.sealedBootstrap);
         if (bootstrap === null) {
             return { status: "unavailable", reason: "not_materialized" };
         }
-        const principal = {
-            kind: "ephemeral_session_runner" as const,
-            authority: "session_runtime" as const,
-            accountId: row.creatorAccountId,
-            activationId: row.id,
-            sessionId: row.sessionId,
-            machineId: row.machineId,
-            installationId: claim.payload.installation.installationId,
-            installationPublicKey: claim.payload.installation.publicKey,
-            creatorTokenEpoch: row.creatorTokenEpoch,
-        };
-        if (!await verifyCurrentMaterializedRunnerPrincipalInTx(tx, principal)) {
+        const principal = await readCurrentMaterializedRunnerPrincipalForActivationInTx(tx, row);
+        if (principal === null) {
             return { status: "unavailable", reason: "not_materialized" };
         }
         const storedAuthenticationEvidence = readRunnerActivationAuthenticationEvidence(row);

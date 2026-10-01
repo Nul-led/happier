@@ -18,10 +18,12 @@ export function homeDomainApprovalField(
  * lookup from the registered rows rather than from a parallel table, so a path
  * or codec can never disagree with the catalog.
  *
- * `mcp` stays off across the family. External MCP exposure needs its own
+ * This base row leaves `mcp` off. External MCP exposure needs its own
  * supported authority and approval contract; the in-session Agent surface is the
  * exposure the Home family is actually admitted on today, and adding a tool name
- * would enable the external bridge before that contract exists.
+ * would enable the external bridge before that contract exists. Explicit
+ * organization-resource rows override this default through their consumed
+ * Home transport and the canonical Action authority/approval policy.
  */
 type HomeDomainActionRowInput<
   TActionId extends PreNormalizedActionSpec['id'],
@@ -67,10 +69,13 @@ export type HomeDomainActionRow<
   TActionId extends PreNormalizedActionSpec['id'],
   TInputSchema extends z.ZodTypeAny,
   TOutputSchema extends z.ZodTypeAny,
-> = Omit<PreNormalizedActionSpec, 'id' | 'inputSchema' | 'outputSchema'> & Readonly<{
+  TRequiredAuthority extends NonNullable<PreNormalizedActionSpec['requiredAuthority']> = 'account_automation',
+> = Omit<PreNormalizedActionSpec, 'id' | 'inputSchema' | 'outputSchema' | 'requiredAuthority' | 'executionPlacement'> & Readonly<{
   id: TActionId;
   inputSchema: TInputSchema;
   outputSchema: TOutputSchema;
+  requiredAuthority: TRequiredAuthority;
+  executionPlacement: 'account';
 }>;
 
 export function homeDomainActionRow<
@@ -80,7 +85,8 @@ export function homeDomainActionRow<
 >(spec: HomeDomainActionRowInput<TActionId, TInputSchema, TOutputSchema>): HomeDomainActionRow<
   TActionId,
   TInputSchema,
-  TOutputSchema
+  TOutputSchema,
+  'account_automation'
 > {
   return {
     id: spec.id,

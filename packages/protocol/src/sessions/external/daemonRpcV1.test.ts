@@ -1015,3 +1015,42 @@ describe('external-session candidate deletion', () => {
     }).success).toBe(false);
   });
 });
+
+// An Agent's internal threads (an approval reviewer, a spawned sub-agent) are classified by the
+// Agent's own projection and hidden unless a caller asks for them.
+describe('external-session candidate threads', () => {
+  it('admits an opt-in to internal threads on candidates.list and keeps the default request unchanged', () => {
+    const base = {
+      machineId: 'machine-1',
+      agentId: 'codex',
+      source: { kind: 'codexHome', home: 'user' },
+    };
+    expect(ExternalSessionsCandidatesListRequestSchema.parse({ ...base, includeThreads: true }))
+      .toMatchObject({ includeThreads: true });
+    expect(ExternalSessionsCandidatesListRequestSchema.parse(base)).not.toHaveProperty('includeThreads');
+    expect(ExternalSessionsCandidatesListRequestSchema.safeParse({ ...base, includeThreads: 'yes' }).success).toBe(false);
+  });
+
+  it('carries a typed thread classification with its parent on a candidate', () => {
+    const parsed = ExternalSessionsCandidatesListResponseSchema.parse({
+      ok: true,
+      nextCursor: null,
+      candidates: [
+        { remoteSessionId: 'top', updatedAtMs: 1 },
+        {
+          remoteSessionId: 'reviewer-thread',
+          updatedAtMs: 2,
+          thread: { kind: 'reviewer', parentRemoteSessionId: 'top', parentTitle: 'Fix the parser' },
+        },
+        { remoteSessionId: 'worker', updatedAtMs: 3, thread: { kind: 'subagent', parentRemoteSessionId: null } },
+      ],
+    });
+    if (!parsed.ok) throw new Error('expected ok');
+    expect(parsed.candidates.map((candidate) => candidate.thread?.kind ?? null)).toEqual([null, 'reviewer', 'subagent']);
+    expect(ExternalSessionsCandidatesListResponseSchema.safeParse({
+      ok: true,
+      nextCursor: null,
+      candidates: [{ remoteSessionId: 'x', updatedAtMs: 1, thread: { kind: 'other', parentRemoteSessionId: null } }],
+    }).success).toBe(false);
+  });
+});

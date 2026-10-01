@@ -78,6 +78,17 @@ const VERSION = "0.0.0";
 const CHANNELS_PLUGIN_ID = "happier.channels";
 const CHANNELS_GENERATION = "channels-provider-composed-generation";
 const PROVIDER_GENERATION = "provider-channels-composed-generation";
+const CHANNELS_OCCURRENCE_ID = "channels-provider-composed-occurrence";
+const PROVIDER_OCCURRENCE_ID = "provider-channels-composed-occurrence";
+const CHANNELS_SOURCE_CUSTODY = {
+    kind: "bundled_first_party" as const,
+    packagedRuntime: { kind: "cli_version_root" as const, versionRootId: "channels-provider-composed-cli-root" },
+};
+const PROVIDER_SOURCE_CUSTODY = {
+    kind: "managed" as const,
+    immutableGenerationId: PROVIDER_GENERATION,
+    installSource: "archive" as const,
+};
 
 type JsonRecord = Readonly<Record<string, unknown>>;
 type StoredRow = Readonly<{
@@ -807,12 +818,13 @@ describe("Channels first-party provider Automation Event composition", () => {
                 const adoptedSet = createAdoptedSet({
                     credentials,
                     caller: materialization,
-                    immutableGenerationId: PROVIDER_GENERATION,
+                    occurrenceId: PROVIDER_OCCURRENCE_ID,
+                    sourceCustody: PROVIDER_SOURCE_CUSTODY,
                     transport: scenario.connectionTransport,
                     generationSignal: new AbortController().signal,
                     isGenerationCurrent: () => true,
                     revalidateCallerMaterialization: async () => true,
-                    revalidateCallerImmutableGeneration: async () => true,
+                    revalidateCallerOccurrence: async () => true,
                     readStoredDefinitions: async (params: JsonRecord) => {
                         if (!isRecord(params.caller) || !isRecord(params.input)) {
                             throw new Error("stored definition request is invalid");
@@ -839,11 +851,11 @@ describe("Channels first-party provider Automation Event composition", () => {
                 const executor = createExecutor({
                     credentials,
                     revalidateCallerMaterialization: async () => true,
-                    revalidateCallerImmutableGeneration: async () => true,
+                    revalidateCallerOccurrence: async () => true,
                     resolveAccountId: async () => ACCOUNT_ID,
                     resolveAdoptedDefinitionSet: (
                         _caller: unknown,
-                        _generation: string,
+                        _occurrenceId: string,
                         transport: Readonly<{ kind: string }>,
                     ) => transport.kind === scenario.connectionTransport.kind ? adoptedSet : null,
                     transport: {
@@ -932,7 +944,8 @@ describe("Channels first-party provider Automation Event composition", () => {
                                     kind: "plugin",
                                     pluginId: scenario.pluginId,
                                     contributionLocalId: scenario.admitActionLocalId,
-                                    immutableGenerationId: PROVIDER_GENERATION,
+                                    occurrenceId: PROVIDER_OCCURRENCE_ID,
+                                    sourceCustody: PROVIDER_SOURCE_CUSTODY,
                                     materialization,
                                 },
                             }),
@@ -1353,12 +1366,13 @@ describe("Channels first-party provider Automation Event composition", () => {
             const adoptedSet = createAdoptedSet({
                 credentials,
                 caller: materialization,
-                immutableGenerationId: PROVIDER_GENERATION,
+                occurrenceId: PROVIDER_OCCURRENCE_ID,
+                sourceCustody: PROVIDER_SOURCE_CUSTODY,
                 transport: { kind: "checkpointedPull" },
                 generationSignal: new AbortController().signal,
                 isGenerationCurrent: () => true,
                 revalidateCallerMaterialization: async () => true,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 readStoredDefinitions: async (storedParams: JsonRecord) => {
                     if (!isRecord(storedParams.caller) || !isRecord(storedParams.input)) {
                         throw new Error("stored definition request is invalid");
@@ -1383,7 +1397,7 @@ describe("Channels first-party provider Automation Event composition", () => {
             const executor = createExecutor({
                 credentials,
                 revalidateCallerMaterialization: async () => true,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
                 resolveAdoptedDefinitionSet: (
                     _caller: unknown,
@@ -1538,7 +1552,8 @@ describe("Channels first-party provider Automation Event composition", () => {
                                                     kind: "plugin",
                                                     pluginId: scenario.pluginId,
                                                     contributionLocalId: scenario.admitActionLocalId,
-                                                    immutableGenerationId: PROVIDER_GENERATION,
+                                                    occurrenceId: PROVIDER_OCCURRENCE_ID,
+                                                    sourceCustody: PROVIDER_SOURCE_CUSTODY,
                                                     materialization,
                                                 },
                                             }),
@@ -1802,7 +1817,8 @@ describe("Channels first-party provider Automation Event composition", () => {
                         machineId: MACHINE_ID,
                         materializationId: CHANNELS_MATERIALIZATION_ID,
                     },
-                    immutableGenerationId: CHANNELS_GENERATION,
+                    occurrenceId: CHANNELS_OCCURRENCE_ID,
+                    sourceCustody: CHANNELS_SOURCE_CUSTODY,
                 };
                 // CHAN-16: the direct Conversation binding target verifies
                 // through the real plugin-only verifier before final-result
@@ -2149,12 +2165,13 @@ describe("Channels first-party provider Automation Event composition", () => {
             const adoptedSet = createAdoptedSet({
                 credentials,
                 caller: materialization,
-                immutableGenerationId: PROVIDER_GENERATION,
+                occurrenceId: PROVIDER_OCCURRENCE_ID,
+                sourceCustody: PROVIDER_SOURCE_CUSTODY,
                 transport: { kind: "socket" },
                 generationSignal: new AbortController().signal,
                 isGenerationCurrent: () => true,
                 revalidateCallerMaterialization: async () => true,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 readStoredDefinitions: async (params: JsonRecord) => {
                     if (!isRecord(params.caller) || !isRecord(params.input)) {
                         throw new Error("stored definition request is invalid");
@@ -2178,7 +2195,7 @@ describe("Channels first-party provider Automation Event composition", () => {
             const executor = createExecutor({
                 credentials,
                 revalidateCallerMaterialization: async () => true,
-                revalidateCallerImmutableGeneration: async () => true,
+                revalidateCallerOccurrence: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
                 resolveAdoptedDefinitionSet: (
                     _caller: unknown,
@@ -2315,7 +2332,8 @@ describe("Channels first-party provider Automation Event composition", () => {
                                                     kind: "plugin",
                                                     pluginId: scenario.pluginId,
                                                     contributionLocalId: scenario.admitActionLocalId,
-                                                    immutableGenerationId: PROVIDER_GENERATION,
+                                                    occurrenceId: PROVIDER_OCCURRENCE_ID,
+                                                    sourceCustody: PROVIDER_SOURCE_CUSTODY,
                                                     materialization,
                                                 },
                                             }),
@@ -2454,7 +2472,8 @@ describe("Channels first-party provider Automation Event composition", () => {
                         machineId: MACHINE_ID,
                         materializationId: CHANNELS_MATERIALIZATION_ID,
                     },
-                    immutableGenerationId: CHANNELS_GENERATION,
+                    occurrenceId: CHANNELS_OCCURRENCE_ID,
+                    sourceCustody: CHANNELS_SOURCE_CUSTODY,
                 };
                 const occurredAt = Date.now() - 500;
                 const resultDelivery = {

@@ -52,3 +52,8 @@ export function resolveActivityTurnEventIdentityV1(turnId: string): string {
 export function resolveActivityRequestEventIdentityV1(requestId: string): string {
   return `request:${requestId}`;
 }
+
+/** The existing transcript transport correlation, available before its server ACK. */
+export function resolveActivityTranscriptLocalIdEventIdentityV1(localId: string): string {
+  return `message-local-id:session_transcript:${localId}`;
+}

@@ -267,7 +267,7 @@ describe('Team credential resource-test broker admission', () => {
             enabled: true,
         } });
         const dispatch = createTeamCredentialResourceTestBrokerDispatcher({
-            enabled: false,
+            enabled: () => false,
             env: {},
             createRelayTransport: vi.fn(() => {
                 throw new Error('disabled carrier must not open transport');

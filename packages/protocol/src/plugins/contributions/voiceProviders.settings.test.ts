@@ -13,7 +13,6 @@ const baseContribution = Object.freeze({
   },
   client: {
     artifactId: 'voice-runtime-web',
-    modulePath: './voiceRuntime',
     exportName: 'activate' as const,
   },
 });

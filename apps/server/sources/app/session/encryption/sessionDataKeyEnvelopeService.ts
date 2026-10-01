@@ -21,7 +21,7 @@ import {
 } from "./sessionDataKeyRecipientProjection";
 import {
     listCurrentSessionAudienceAccountsInTx,
-    resolveEffectiveSessionAccess,
+    resolveSessionAccessForOperation,
     resolveStructuralSessionAccessForAccountsInTx,
 } from "@/app/session/access/sessionAccess";
 import { inTx, type Tx } from "@/storage/inTx";
@@ -55,6 +55,7 @@ const AUDIENCE_SCAN_CHUNK = 100;
 export type SessionDataKeyEnvelopePageError = Extract<
     SessionDataKeyEnvelopeErrorCodeV1,
     "session_not_found" | "forbidden" | "invalid_cursor" | "session_data_key_unavailable"
+    | "session_access_authentication_required" | "session_access_authentication_unavailable"
 >;
 
 export type SessionDataKeyEnvelopePageResult =
@@ -66,6 +67,8 @@ export type SessionDataKeyEnvelopePatchError = Extract<
     | "invalid_request"
     | "session_not_found"
     | "forbidden"
+    | "session_access_authentication_required"
+    | "session_access_authentication_unavailable"
     | "data_key_not_required"
     | "recipient_changed"
     | "recipient_key_unavailable"
@@ -91,7 +94,7 @@ function projectEnvelopeState(stored: Uint8Array | null): SessionDataKeyEnvelope
 type CollectionAuthorization =
     | Readonly<{ ok: true; encryptionMode: "e2ee" | "plain" }>
     | Readonly<{ ok: false; error: Extract<SessionDataKeyEnvelopeErrorCodeV1, "session_data_key_unavailable"> }>
-    | Readonly<{ ok: false; error: Extract<SessionDataKeyEnvelopeErrorCodeV1, "session_not_found" | "forbidden"> }>;
+    | Readonly<{ ok: false; error: Extract<SessionDataKeyEnvelopeErrorCodeV1, "session_not_found" | "forbidden" | "session_access_authentication_required" | "session_access_authentication_unavailable"> }>;
 
 /**
  * Visibility and management are separate answers on purpose: a Session the
@@ -102,13 +105,28 @@ async function authorizeCollection(
     tx: Tx,
     input: Readonly<{ actorAccountId: string; sessionId: string; authentication: SessionAccessAuthentication }>,
 ): Promise<CollectionAuthorization> {
-    const access = await resolveEffectiveSessionAccess(tx, {
+    const decision = await resolveSessionAccessForOperation(tx, {
         accountId: input.actorAccountId,
         sessionId: input.sessionId,
         authentication: input.authentication,
+        capability: "manageAccess",
     });
-    if (!access?.capabilities.readTranscript) return { ok: false, error: "session_not_found" };
-    if (!access.capabilities.manageAccess) return { ok: false, error: "forbidden" };
+    if (decision.status === "authentication_required") {
+        return { ok: false, error: "session_access_authentication_required" };
+    }
+    if (decision.status === "authentication_unavailable") {
+        return { ok: false, error: "session_access_authentication_unavailable" };
+    }
+    if (decision.status !== "allowed") {
+        const readable = await resolveSessionAccessForOperation(tx, {
+            accountId: input.actorAccountId,
+            sessionId: input.sessionId,
+            authentication: input.authentication,
+            capability: "readTranscript",
+        });
+        if (readable.status === "allowed") return { ok: false, error: "forbidden" };
+        return { ok: false, error: "session_not_found" };
+    }
 
     const session = await tx.session.findUnique({
         where: { id: input.sessionId },

@@ -28,7 +28,7 @@ import {
   ExecutionRunActionPermissionModeSchema,
   type ExecutionRunActionPermissionMode,
 } from '../executionRunActionPermissionMode.js';
-import type { ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliProjection } from '../actionCliProjection.js';
 
 const SessionSelectorSchema = z.string().trim().min(1);
 const RunIdSchema = z.string().trim().min(1);
@@ -114,19 +114,32 @@ export const ExecutionRunStartCliInputSchema = z.object({
 export type ExecutionRunStartCliInput = z.infer<typeof ExecutionRunStartCliInputSchema>;
 
 export function bindExecutionRunStartCliInput(
-  input: ExecutionRunStartCliInput,
+  input: Readonly<Partial<ExecutionRunStartCliInput>>,
 ): Readonly<Record<string, unknown>> {
+  // Over canonical whole-input JSON the caller shape reaches this binder as an
+  // overlay, so a field the caller did not type is absent. Every projection
+  // below is therefore conditional on the caller field it reads, and the
+  // intent-derived run-shape defaults exist only when `intent` itself does.
+  const intent = input.intent;
   return {
-    sessionId: input.sessionId,
-    intent: input.intent,
-    backendTarget: readExecutionRunCliBackendTarget(input.agent)!,
+    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+    ...(intent === undefined ? {} : { intent }),
+    ...(input.agent === undefined
+      ? {}
+      : { backendTarget: readExecutionRunCliBackendTarget(input.agent)! }),
     ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
-    permissionMode: input.permissionMode === undefined
-      ? defaultExecutionRunPermissionMode(input.intent)
-      : ExecutionRunActionPermissionModeSchema.parse(input.permissionMode),
-    retentionPolicy: input.retention ?? defaultExecutionRunRetention(input.intent),
-    runClass: input.runClass ?? defaultExecutionRunClass(input.intent),
-    ioMode: input.ioMode ?? defaultExecutionRunIoMode(input.intent),
+    ...(input.permissionMode !== undefined
+      ? { permissionMode: ExecutionRunActionPermissionModeSchema.parse(input.permissionMode) }
+      : intent === undefined ? {} : { permissionMode: actionCliDerivedDefault(defaultExecutionRunPermissionMode(intent)) }),
+    ...(input.retention !== undefined
+      ? { retentionPolicy: input.retention }
+      : intent === undefined ? {} : { retentionPolicy: actionCliDerivedDefault(defaultExecutionRunRetention(intent)) }),
+    ...(input.runClass !== undefined
+      ? { runClass: input.runClass }
+      : intent === undefined ? {} : { runClass: actionCliDerivedDefault(defaultExecutionRunClass(intent)) }),
+    ...(input.ioMode !== undefined
+      ? { ioMode: input.ioMode }
+      : intent === undefined ? {} : { ioMode: actionCliDerivedDefault(defaultExecutionRunIoMode(intent)) }),
   };
 }
 
@@ -182,7 +195,7 @@ export const EXECUTION_RUN_START_CLI_PROJECTION: ActionCliProjection = {
       },
     ],
   },
-  bindInput: (value) => bindExecutionRunStartCliInput(value as ExecutionRunStartCliInput),
+  bindInput: (value) => bindExecutionRunStartCliInput(value as Partial<ExecutionRunStartCliInput>),
 };
 
 export const ExecutionRunListCliInputSchema = z.object({

@@ -1,3 +1,4 @@
+import { SERVER_CONFIG, readServerConfig } from '@happier-dev/protocol';
 import { startApi } from '@/app/api/api';
 import { startMetricsServer } from '@/app/monitoring/metrics';
 import { startDatabaseMetricsUpdater, setSocketAdapterModeInfo } from '@/app/monitoring/metrics/index';
@@ -20,6 +21,7 @@ import {
 } from '@/storage/db';
 import {
     runHomeOwnerClaimCommand,
+    runPrintHomeClaimCodeCommand,
     type HomeOwnerClaimRequestV1,
 } from '@/app/home/governance/claimHomeOwnerCommand';
 import { initializeSessionSystemRecordsProtocolV1Activation } from '@/app/session/systemRecords/sessionSystemRecordProtocolContract';
@@ -34,6 +36,7 @@ import {
 } from '@/storage/sqliteWalCheckpoint';
 import { log } from '@/utils/logging/log';
 import { awaitShutdown, onShutdown } from '@/utils/process/shutdown';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 import {
     applyLightDefaultEnv,
     applyPackagedLightRuntimeSqliteDefaults,
@@ -54,7 +57,7 @@ import { getRedisClient } from '@/storage/redis/redis';
 import { shouldConsumePresenceFromRedis, shouldEnableLocalPresenceDbFlush } from '@/app/presence/presenceMode';
 import { startPresenceRedisWorker } from '@/app/presence/presenceRedisQueue';
 import { initializeServerSentry } from '@/app/monitoring/sentry';
-import { resolveCachedPublicServerUrl } from '@/app/integrations/publicUrl/publicServerUrlInference';
+import { resolveInferredPublicServerAccess } from '@/app/integrations/publicUrl/publicServerUrlInference';
 import { startRetentionWorker } from '@/app/retention/runtime/startRetentionWorker';
 import { startPluginWebhookCredentialRetirementWorker } from '@/app/plugins/webhooks/credentialRetirementWorker';
 import { startVoiceProviderIdentityBackfillWorker } from '@/app/voice/providerIdentityBackfill/worker';
@@ -69,10 +72,14 @@ import { initializeServerIdentityCache } from '@/app/serverIdentity/serverIdenti
 import { stat } from 'node:fs/promises';
 import { resolveBoundServerListener, writeStartupReceiptFromEnvironment } from '@/app/runtime/startupReceipt';
 import { readPluginsFeatureEnv } from '@/app/features/catalog/readFeatureEnv';
+import { readHomeConfigEnv, readStoredHomeSettingsForStartup } from '@/app/home/settings/homeSettings';
+import { applyStartupHomeEnvToProcess, loadStartupHomeEnv } from '@/app/home/settings/startupHomeEnv';
 import {
     beginHomeIrohEndpointStartup,
     ensureHomeIrohEndpoint,
+    markHomeIrohEndpointRetired,
     markHomeIrohEndpointStartupUnavailable,
+    registerHomeIrohComposition,
     stopHomeIrohEndpoint,
 } from '@/app/iroh/homeIrohEndpoint';
 import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
@@ -159,28 +166,24 @@ async function warnIfSqliteDatabaseFilesExceedThreshold(env: NodeJS.ProcessEnv):
  */
 export type StartServerOptions = Readonly<{
     claimHomeOwner?: HomeOwnerClaimRequestV1;
+    /** `--print-home-claim-code`: mint the one-time code the app redeems for the same claim. */
+    printHomeClaimCode?: true;
 }>;
 
 export async function startServer(flavor: ServerFlavor, options?: StartServerOptions): Promise<void> {
+    // The environment the deployment gave this process, before startup composition writes resolved
+    // defaults or applied Home settings into `process.env`: explicit values here are the lock (D-1).
+    const deploymentEnv: Readonly<NodeJS.ProcessEnv> = Object.freeze({ ...process.env });
     process.env.HAPPY_SERVER_FLAVOR = flavor;
     process.env.HAPPIER_SERVER_FLAVOR = flavor;
     initializeServerSentry(process.env);
     const role = getServerRoleFromEnv(process.env);
-    const shouldEnableRedisAdapter = shouldEnableRedisAdapterFromEnv(process.env, flavor);
     const dbProvider = getDbProviderFromEnv(process.env, flavor === 'light' ? 'sqlite' : 'postgres');
     process.env.HAPPY_DB_PROVIDER = dbProvider;
     process.env.HAPPIER_DB_PROVIDER = dbProvider;
 
-    const filesBackend = getFilesBackendFromEnv(process.env, resolveDefaultFilesBackend(flavor));
-    process.env.HAPPY_FILES_BACKEND = filesBackend;
-    process.env.HAPPIER_FILES_BACKEND = filesBackend;
 
-    const socketAdapterConfig = readSocketAdapterRuntimeConfigFromEnv(process.env, resolveDefaultSocketAdapter(flavor));
-    const socketAdapter = socketAdapterConfig.adapter;
-    process.env.HAPPY_SOCKET_ADAPTER = socketAdapter;
-    process.env.HAPPIER_SOCKET_ADAPTER = socketAdapter;
-
-    if (flavor === 'light' && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home') {
+    if (flavor === 'light' && isPersonalHomeRuntimePurpose(process.env.HAPPIER_MANAGED_RELAY_PURPOSE)) {
         // Admission is independent of database/files backends. A retained operation marker must
         // block PostgreSQL/S3 configurations before any backend, listener, or Iroh owner opens.
         await assertPersonalHomeBootAdmission(
@@ -189,7 +192,12 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
         );
     }
 
-    const shouldApplyLocalDefaults = filesBackend === 'local' || dbProvider === 'pglite' || dbProvider === 'sqlite';
+    // Light defaults locate the database and the local files directory before the database opens, so
+    // this decision reads the deployment's files backend; the backend itself is resolved after the
+    // Home settings startup overlay below.
+    const shouldApplyLocalDefaults = getFilesBackendFromEnv(process.env, resolveDefaultFilesBackend(flavor)) === 'local'
+        || dbProvider === 'pglite'
+        || dbProvider === 'sqlite';
     if (shouldApplyLocalDefaults) {
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
@@ -238,13 +246,12 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
         await shutdownDbClient();
         return;
     }
-
-    if (filesBackend === 'local') {
-        initFilesLocalFromEnv(process.env);
-    } else if (filesBackend === 's3') {
-        await initFilesS3FromEnv(process.env);
-    } else {
-        throw new Error(`Unsupported HAPPY_FILES_BACKEND/HAPPIER_FILES_BACKEND: ${String(filesBackend)}`);
+    if (options?.printHomeClaimCode) {
+        const printed = await runPrintHomeClaimCodeCommand();
+        process.stdout.write(`${JSON.stringify(printed.output)}\n`);
+        process.exitCode = printed.exitCode;
+        await shutdownDbClient();
+        return;
     }
 
     const sqliteWalCheckpointIntervalMs = dbProvider === 'sqlite'
@@ -322,6 +329,33 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
         // Storage
         await db.$connect();
         dbConnected = true;
+
+        // Home settings startup overlay (plan 2026-09-26-home-owner-console §3.14): stored
+        // `apply: 'restart'` values fill the keys the deployment left unset, once, before any reader
+        // of those keys below. An invalid stored value is ignored with a logged reason.
+        // Stored restart secrets are sealed with the at-rest key, so it is ready before they are read.
+        await initEncrypt();
+        applyStartupHomeEnvToProcess(await loadStartupHomeEnv({
+            env: deploymentEnv,
+            readStored: () => readStoredHomeSettingsForStartup(),
+            log: (line) => log({ module: 'home-settings' }, line),
+        }), process.env);
+
+        const filesBackend = getFilesBackendFromEnv(process.env, resolveDefaultFilesBackend(flavor));
+        process.env.HAPPY_FILES_BACKEND = filesBackend;
+        process.env.HAPPIER_FILES_BACKEND = filesBackend;
+        const socketAdapterConfig = readSocketAdapterRuntimeConfigFromEnv(process.env, resolveDefaultSocketAdapter(flavor));
+        const socketAdapter = socketAdapterConfig.adapter;
+        process.env.HAPPY_SOCKET_ADAPTER = socketAdapter;
+        process.env.HAPPIER_SOCKET_ADAPTER = socketAdapter;
+        const shouldEnableRedisAdapter = shouldEnableRedisAdapterFromEnv(process.env, flavor);
+        if (filesBackend === 'local') {
+            initFilesLocalFromEnv(process.env);
+        } else if (filesBackend === 's3') {
+            await initFilesS3FromEnv(process.env);
+        } else {
+            throw new Error(`Unsupported HAPPY_FILES_BACKEND/HAPPIER_FILES_BACKEND: ${String(filesBackend)}`);
+        }
         await initializeSessionSystemRecordsProtocolV1Activation(db);
         await initializeSessionTurnTranscriptAnchorProjectionProtocolActivation(db);
         if (shouldStartSqliteMaintenanceClient) {
@@ -398,8 +432,7 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
             role,
         });
 
-        // Initialize auth module
-        await initEncrypt();
+        // Initialize auth module (the at-rest key was initialized before the Home settings overlay)
         await loadFiles();
         await auth.init();
 
@@ -436,12 +469,17 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
 
         let apiListenerOwner: Awaited<ReturnType<typeof startApi>> | null = null;
         if (role === 'all' || role === 'api') {
-            // Best-effort: infer a canonical public URL so capabilities.server can advertise it.
-            // This is cached and single-flight so startup does not spawn redundant inference processes.
-            void resolveCachedPublicServerUrl(process.env).catch(() => null);
+            // Best-effort: warm the read-only public-address inference so the first requests' overlay
+            // can publish an inferred address. Cached and single-flight; it never writes the env.
+            void resolveInferredPublicServerAccess(process.env).catch(() => null);
             const shouldPreparePersonalHomeIroh = flavor === 'light'
-                && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home';
-            if (shouldPreparePersonalHomeIroh) {
+                && isPersonalHomeRuntimePurpose(process.env.HAPPIER_MANAGED_RELAY_PURPOSE);
+            // The owner's direct-connection choice (plan 2026-09-26-home-owner-console §3.2, AM-2) is
+            // the source of truth at every start: off means nothing is composed and the retirement
+            // is (re)published, which also completes a turn-off an earlier process did not finish.
+            const personalHomeIrohRetired = shouldPreparePersonalHomeIroh
+                && readServerConfig(await readHomeConfigEnv(), SERVER_CONFIG.HAPPIER_HOME_IROH_MODE) === 'disabled';
+            if (shouldPreparePersonalHomeIroh && !personalHomeIrohRetired) {
                 // Close the descriptor-publication retirement window before
                 // HTTP can answer its first features request.
                 beginHomeIrohEndpointStartup();
@@ -470,18 +508,28 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
                 && homeConnectionDescriptorContinuityStore
             ) {
                 onShutdown('iroh', () => stopHomeIrohEndpoint());
-                const irohState = await ensureHomeIrohEndpoint({
+                registerHomeIrohComposition({
                     env: process.env,
                     apiPort: listener?.port ?? null,
                     continuityStore: homeConnectionDescriptorContinuityStore,
                 });
-                if (irohState.status === 'active') {
+                if (personalHomeIrohRetired) markHomeIrohEndpointRetired();
+                const irohState = personalHomeIrohRetired
+                    ? null
+                    : await ensureHomeIrohEndpoint({
+                        env: process.env,
+                        apiPort: listener?.port ?? null,
+                        continuityStore: homeConnectionDescriptorContinuityStore,
+                    });
+                if (personalHomeIrohRetired || irohState?.status === 'active') {
                     // The public features route only projects a committed
                     // generation. A restarted acceptor may have new direct
-                    // addresses, so commit through the canonical publisher
-                    // before the startup receipt makes this Home discoverable.
+                    // addresses (or the owner retired Iroh), so commit through
+                    // the canonical publisher, over the same configuration
+                    // overlay requests read, before the startup receipt makes
+                    // this Home discoverable.
                     await readHomeConnectionDescriptor({
-                        env: process.env,
+                        env: await readHomeConfigEnv(),
                         continuityStore: homeConnectionDescriptorContinuityStore,
                         visibility: 'authenticated',
                     });
@@ -507,7 +555,7 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
                     await voiceProviderIdentityBackfillWorker.stop();
                 });
             }
-            const retentionWorker = startRetentionWorker();
+            const retentionWorker = startRetentionWorker({ readEnv: () => readHomeConfigEnv(process.env) });
             if (retentionWorker) {
                 onShutdown('retention-worker', async () => {
                     retentionWorker.stop();
@@ -533,7 +581,7 @@ export async function startServer(flavor: ServerFlavor, options?: StartServerOpt
         //
 
         const personalHomeReadiness = flavor === 'light'
-            && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
+            && isPersonalHomeRuntimePurpose(process.env.HAPPIER_MANAGED_RELAY_PURPOSE)
             ? await createPersonalHomeAuthenticatedReadiness(process.env)
             : null;
         await writeStartupReceiptFromEnvironment(process.env, apiListenerOwner, personalHomeReadiness);

@@ -21,9 +21,9 @@ import {
     VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
 } from "@happier-dev/protocol";
 
-import { resolveEffectiveSessionAccess, resolveStructuralSessionAccessForAccountsInTx } from "@/app/session/access/sessionAccess";
-import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { resolveEffectiveSessionAccess, resolveSessionAccessForAccountsInTx, resolveStructuralSessionAccessForAccountsInTx } from "@/app/session/access/sessionAccess";
+import { backgroundDeliveryAuthentication, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import {
     beginViewerReadTrackingOnFollowEntriesInTx,
     beginViewerReadTrackingOnFollowEntryInTx,
@@ -185,7 +185,7 @@ export async function setAccountSessionFollow(input: Readonly<{
                 ...(!preferences.includeInVoice || !existing?.includeInVoice ? { voiceDeliveredFrontier: null } : {}) },
             select: FOLLOW_SELECT,
         });
-        await beginViewerReadTrackingOnFollowEntryInTx({ tx, ...key, wasTracked });
+        await beginViewerReadTrackingOnFollowEntryInTx({ tx, ...key, wasTracked, authentication: input.authentication });
         await markSessionFollowsChangedInTx(tx, { accountId: input.accountId });
         return { ok: true, value: {
             changed: true,
@@ -259,7 +259,7 @@ export async function replaceAccountSessionVoiceInclusions(input: Readonly<{
                     ...(row?.following ? {} : { notificationLevel: 'none' }),
                 },
             });
-            await beginViewerReadTrackingOnFollowEntryInTx({ tx, ...key, wasTracked });
+            await beginViewerReadTrackingOnFollowEntryInTx({ tx, ...key, wasTracked, authentication: input.authentication });
             changed = true;
         }
         if (changed) await markSessionFollowsChangedInTx(tx, { accountId: input.accountId });
@@ -369,7 +369,7 @@ async function insertAutomaticSessionFollowsIfAbsentInTx(
 export async function applySessionAutoFollowForRelationshipChangeInTx(tx: Tx, input: Readonly<{
     sessionId: string; accountIds: readonly string[]; relationship: keyof SessionAutoFollowPreferencesV1;
 }>): Promise<number> {
-    if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) return 0;
+    if (!await isServerFeatureEnabledForHome("sessions.following", { tx })) return 0;
     const requested = [...new Set(input.accountIds)];
     if (requested.length === 0) return 0;
     const session = await tx.session.findUnique({ where: { id: input.sessionId }, select: { accountId: true, archivedAt: true } });
@@ -393,7 +393,11 @@ export async function applySessionAutoFollowForRelationshipChangeInTx(tx: Tx, in
     if (eligible.length === 0) return 0;
 
     const [access, tracked] = await Promise.all([
-        resolveStructuralSessionAccessForAccountsInTx(tx, { sessionId: input.sessionId, accountIds: eligible }),
+        resolveSessionAccessForAccountsInTx(tx, {
+            sessionId: input.sessionId,
+            accountIds: eligible,
+            authentication: backgroundDeliveryAuthentication(),
+        }),
         filterPersonallyTrackedSessionsForAccountsInTx(tx, { accountIds: eligible, sessionIds: [input.sessionId] }),
     ]);
     const readableEligible = eligible.filter(accountId => access.get(accountId)?.capabilities.readTranscript === true);
@@ -418,6 +422,7 @@ export async function applySessionAutoFollowForRelationshipChangeInTx(tx: Tx, in
         sessionId: input.sessionId,
         accountIds: insertedAccountIds,
         wasTrackedByAccountId,
+        authentication: backgroundDeliveryAuthentication(),
     });
     await markSessionFollowsChangedForAccountsInTx(tx, insertedAccountIds);
     return insertedAccountIds.length;

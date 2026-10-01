@@ -17,6 +17,7 @@ import {
 import {
     RunnerEndpointProjectionRequestV1Schema,
     RunnerEndpointProjectionResponseV1Schema,
+    RunnerEndpointDeclineResponseV1Schema,
 } from '@happier-dev/protocol/ephemeralRunner/endpointProjection';
 import { RunnerArtifactAvailabilityProjectionV1Schema } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
 import { RunnerServerErrorV1Schema } from '@happier-dev/protocol/ephemeralRunner/errors';
@@ -54,11 +55,6 @@ import { normalizePublicReleaseRingId } from '@happier-dev/release-runtime/relea
 // One Runner error vocabulary: the Protocol owner types every failure reply on
 // this family, so a new literal here is a compile error until it is added there.
 const ErrorSchema = RunnerServerErrorV1Schema;
-const RunnerEndpointDeclineResponseSchema = z.discriminatedUnion('status', [
-    z.object({ status: z.literal('declined') }).strict(),
-    z.object({ status: z.literal('unavailable'), reason: z.enum(['activation_closed', 'activation_expired', 'creator_unavailable', 'recipient_mismatch', 'already_materialized']) }).strict(),
-    z.object({ status: z.literal('conflict'), reason: z.literal('proof_mismatch') }).strict(),
-]);
 
 /** Creator operations share one feature gate and the activation transaction owner. */
 export function registerEphemeralRunnerRoutes(rawApp: Fastify, env: NodeJS.ProcessEnv = process.env): void {
@@ -261,7 +257,7 @@ export function registerEphemeralRunnerRoutes(rawApp: Fastify, env: NodeJS.Proce
         schema: {
             params: z.object({ activationId: z.string().uuid() }).strict(),
             body: RunnerEndpointProjectionRequestV1Schema,
-            response: { 200: RunnerEndpointDeclineResponseSchema },
+            response: { 200: RunnerEndpointDeclineResponseV1Schema },
         },
     }, async (request, reply) => {
         reply.header('Cache-Control', 'no-store');

@@ -10,6 +10,7 @@ import {
 } from '../sessions/creation/sessionCreationTargetPreparationV1.js';
 import { HandoffTargetReplacementApprovalV1Schema } from '../sessions/control/handoff/handoffTargetReplacementApprovalV1.js';
 import { ActionRequiredAuthoritySchema } from '../actions/metadata.js';
+import { isAgentApprovalRequestSurface, isAgentRequestablePresentUserActionId } from '../actions/decisionAuthority.js';
 import {
   ExternalActionTargetV1Schema,
   ExternalActionExecutionAuthorizationV1Schema,
@@ -164,7 +165,7 @@ export const ApprovalExecutionOriginV1Schema = z.object({
   externalActionInputSignature: z.string().regex(/^[A-Za-z0-9_-]{86}$/u).optional(),
   sessionId: z.string().trim().min(1).optional(),
   /** Original host corpus binding; current resource admission remains mandatory. */
-  sessionListAccess: z.enum(['current_session', 'unavailable']).optional(),
+  sessionListAccess: z.enum(['current_session', 'led_subtree', 'unavailable']).optional(),
   machineId: z.string().trim().min(1).optional(),
   runId: z.string().trim().min(1).optional(),
   runOccurrenceId: z.string().trim().min(1).optional(),
@@ -177,7 +178,7 @@ export const ApprovalExecutionOriginV1Schema = z.object({
   actionId: ActionIdSchema,
   requestId: z.string().trim().min(1),
 }).strict().superRefine((value, ctx) => {
-  if (value.sessionListAccess === 'current_session' && !value.sessionId) {
+  if ((value.sessionListAccess === 'current_session' || value.sessionListAccess === 'led_subtree') && !value.sessionId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sessionListAccess'],
       message: 'Current-Session list scope requires an exact Session binding' });
   }
@@ -185,6 +186,7 @@ export const ApprovalExecutionOriginV1Schema = z.object({
     value.actionId === 'session.list'
     && (value.surface === 'agent' || value.surface === 'mcp' || value.surface === 'plugin')
     && value.sessionListAccess !== 'current_session'
+    && value.sessionListAccess !== 'led_subtree'
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -416,6 +418,12 @@ const SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD = {
 export function requiresExactDaemonApprovalReplay(approval: ApprovalRequest): boolean {
   if (approval.v !== 2) return false;
   const origin = approval.executionOriginV1;
+  // These Account effects run through the deciding app's authenticated Home
+  // adapter, so a daemon's disallowed terminal policy cannot veto human consent.
+  // External and plugin provenance still belongs to its original executor.
+  if (isAgentApprovalRequestSurface(origin.surface) && origin.caller.kind === 'host'
+    && !origin.externalActionExecutionAuthorization
+    && isAgentRequestablePresentUserActionId(approval.actionId)) return false;
   return SURFACE_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.surface]
     || CALLER_REQUIRES_EXACT_DAEMON_REPLAY_RECORD[origin.caller.kind];
 }

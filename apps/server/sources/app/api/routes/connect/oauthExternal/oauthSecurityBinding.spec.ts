@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
-import { resolveOAuthSecurityBinding } from "./oauthSecurityBinding";
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { OAuthProviderConfigurationChangedError } from "./oauthExternalErrors";
+import {
+    requireCurrentOAuthPendingRuntime,
+    requireCurrentOAuthPendingRuntimeInTx,
+    resolveOAuthSecurityBinding,
+} from "./oauthSecurityBinding";
 
 let harness: LightSqliteHarness;
 
@@ -23,6 +30,29 @@ const instance = {
 const env = { AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([instance]) };
 
 describe("OAuth security binding resolution", () => {
+    it("rechecks pending runtime against the request Home environment in and outside a transaction", async () => {
+        const runtime = (await resolveOAuthRuntimeById(env, "acme"))!;
+        const binding = { provider: runtime.reference, connection: null, admission: null, purpose: null } as const;
+        const input = { env, providerId: "acme", pendingKey: "pending-acme", binding, purpose: null } as const;
+        const identitiesBefore = await db.accountIdentity.count();
+        try {
+            harness.resetEnv({ AUTH_PROVIDERS_CONFIG_JSON: "[]" });
+            await expect(requireCurrentOAuthPendingRuntime(input)).resolves.toMatchObject({ id: "acme" });
+            await expect(inTx((tx) => requireCurrentOAuthPendingRuntimeInTx(tx, input)))
+                .resolves.toMatchObject({ id: "acme" });
+
+            harness.resetEnv({ AUTH_PROVIDERS_CONFIG_JSON: env.AUTH_PROVIDERS_CONFIG_JSON });
+            const changedEnv = { AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([{ ...instance, clientSecret: "rotated" }]) };
+            const staleInput = { ...input, env: changedEnv };
+            await expect(requireCurrentOAuthPendingRuntime(staleInput)).rejects.toBeInstanceOf(OAuthProviderConfigurationChangedError);
+            await expect(inTx((tx) => requireCurrentOAuthPendingRuntimeInTx(tx, staleInput)))
+                .rejects.toBeInstanceOf(OAuthProviderConfigurationChangedError);
+            await expect(db.accountIdentity.count()).resolves.toBe(identitiesBefore);
+        } finally {
+            harness.resetEnv();
+        }
+    });
+
     it.each(["oauth_callback", "oauth_finalize"] as const)("rejects changed or removed deployment configuration at %s", async (stage) => {
         const runtime = (await resolveOAuthRuntimeById(env, "acme"))!;
         const binding = { provider: runtime.reference, connection: null, admission: null, purpose: null } as const;

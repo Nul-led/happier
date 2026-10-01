@@ -25,7 +25,7 @@ export const AuthMethodSchema = z.object({
 });
 
 export const AuthCapabilitiesSchema = z.object({
-  methods: z.array(AuthMethodSchema).optional().default([]),
+  methods: z.array(AuthMethodSchema).optional(),
   keyChallenge: KeyChallengeCapabilitiesSchema.optional().default(
     DEFAULT_KEY_CHALLENGE_CAPABILITIES,
   ),
@@ -118,7 +118,6 @@ export const AuthCapabilitiesSchema = z.object({
 export type AuthCapabilities = z.infer<typeof AuthCapabilitiesSchema>;
 
 export const DEFAULT_AUTH_CAPABILITIES: AuthCapabilities = {
-  methods: [],
   keyChallenge: DEFAULT_KEY_CHALLENGE_CAPABILITIES,
   signup: { methods: [] },
   login: { methods: [], requiredProviders: [] },

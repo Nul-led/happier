@@ -196,6 +196,8 @@ describe("ephemeral Runner socket admission", () => {
                 resourceId: "runner-relay-resource",
                 requestId: `request-${input.tunnelId}`,
                 externalApiKeyId: "550e8400-e29b-41d4-a716-446655440000",
+                operationId: "550e8400-e29b-41d4-a716-446655440001",
+                brokerPlacementFingerprint: "a".repeat(64),
                 assignedAccountId: input.accountId,
                 assignedTeamMembershipId: "runner-relay-membership",
             },

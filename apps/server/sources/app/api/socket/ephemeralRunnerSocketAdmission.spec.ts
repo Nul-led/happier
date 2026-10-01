@@ -4,8 +4,8 @@ import { RPC_METHODS } from "@happier-dev/protocol/rpc";
 
 import {
     canEphemeralRunnerMachineRegisterRpcMethod,
-    resolveEphemeralRunnerSocketAdmission,
-} from "./ephemeralRunnerSocketAdmission";
+    resolveRestrictedSocketAdmission,
+} from "./restrictedSocketAdmission";
 
 const principal = {
     kind: "ephemeral_session_runner" as const,
@@ -19,16 +19,36 @@ const principal = {
     creatorTokenEpoch: 3,
 };
 
-describe("resolveEphemeralRunnerSocketAdmission", () => {
+describe("resolveRestrictedSocketAdmission", () => {
+    it("admits a token only as a Session viewer without a Machine publisher binding", () => {
+        const apiTokenPrincipal = {
+            accountId: "account-13", principalId: "token-13", credentialId: "token-13",
+            authority: "account_automation" as const, expiresAt: null, parentTokenId: "parent-13",
+            embedConfig: null,
+            grant: { v: 1 as const, actions: null, targets: null, approve: false,
+                origins: [], models: null, permissionModes: null, create: null },
+        };
+        const viewer = { principal: null, apiTokenPrincipal,
+            clientType: "session-scoped" as const, sessionId: "session-13" };
+        expect(resolveRestrictedSocketAdmission(viewer)).toEqual({
+            kind: "api-token-session-viewer", principal: apiTokenPrincipal, sessionId: "session-13",
+        });
+        for (const shape of [
+            { ...viewer, clientType: "user-scoped" as const },
+            { ...viewer, clientType: "machine-scoped" as const, machineId: "machine-13" },
+            { ...viewer, machineId: "machine-13" },
+            { ...viewer, sessionId: undefined },
+        ]) expect(resolveRestrictedSocketAdmission(shape)).toBeNull();
+    });
     it("admits only the exact bound Session and Machine socket identities", () => {
-        expect(resolveEphemeralRunnerSocketAdmission({
+        expect(resolveRestrictedSocketAdmission({
             principal,
             clientType: "session-scoped",
             sessionId: principal.sessionId,
             machineId: principal.machineId,
         })).toEqual({ kind: "session-runtime", principal });
 
-        expect(resolveEphemeralRunnerSocketAdmission({
+        expect(resolveRestrictedSocketAdmission({
             principal,
             clientType: "machine-scoped",
             machineId: principal.machineId,
@@ -43,11 +63,11 @@ describe("resolveEphemeralRunnerSocketAdmission", () => {
         { clientType: "machine-scoped", machineId: "other" },
         { clientType: "machine-scoped", machineId: principal.machineId, sessionId: principal.sessionId },
     ] as const)("rejects an unbound socket shape %#", (input) => {
-        expect(resolveEphemeralRunnerSocketAdmission({ principal, ...input })).toBeNull();
+        expect(resolveRestrictedSocketAdmission({ principal, ...input })).toBeNull();
     });
 
     it("does not turn a missing principal into ordinary authority", () => {
-        expect(resolveEphemeralRunnerSocketAdmission({
+        expect(resolveRestrictedSocketAdmission({
             principal: null,
             clientType: "session-scoped",
             sessionId: principal.sessionId,
@@ -56,12 +76,12 @@ describe("resolveEphemeralRunnerSocketAdmission", () => {
     });
 
     it("allows the exact restricted Machine services and rejects broader registrations", () => {
-        const machineAdmission = resolveEphemeralRunnerSocketAdmission({
+        const machineAdmission = resolveRestrictedSocketAdmission({
             principal,
             clientType: "machine-scoped",
             machineId: principal.machineId,
         })!;
-        const sessionAdmission = resolveEphemeralRunnerSocketAdmission({
+        const sessionAdmission = resolveRestrictedSocketAdmission({
             principal,
             clientType: "session-scoped",
             sessionId: principal.sessionId,

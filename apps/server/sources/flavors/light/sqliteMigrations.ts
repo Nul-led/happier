@@ -355,7 +355,16 @@ export async function applySqliteMigrations(params: Readonly<{
           migration.sql,
           params.executor,
         );
-        await params.executor.exec(migrationSql);
+        // Compatibility-marker migrations may intentionally contain only comments.
+        // Record those markers in the ledger, but never pass an empty string to
+        // Bun's SQLite executor (which rejects it as an invalid SQL statement).
+        const executableMigrationSql = migrationSql
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/^\s*--.*$/gm, '')
+          .trim();
+        if (executableMigrationSql) {
+          await params.executor.exec(migrationSql);
+        }
         await params.executor.insertAppliedMigration({ name: migration.name, checksum: migration.checksum });
         await params.executor.exec('COMMIT');
         appliedNow.push(migration.name);

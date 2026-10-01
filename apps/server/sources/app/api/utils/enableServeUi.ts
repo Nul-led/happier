@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { UiConfig } from "@/app/api/uiConfig";
 import { extname, isAbsolute, relative, resolve } from "node:path";
 import { readFile, stat } from "node:fs/promises";
@@ -41,6 +41,14 @@ function isSensitivePublicEntryPathname(pathname: string): boolean {
     return /^\/join\/[^/]+\/?$/.test(pathname)
         || /^\/auth\/email\/verify\/[^/]+\/?$/.test(pathname)
         || /^\/auth\/password\/reset\/[^/]+\/?$/.test(pathname);
+}
+
+function setUiFramingHeaders(reply: FastifyReply, request: FastifyRequest): void {
+    const pathname = new URL(request.url, 'http://localhost').pathname;
+    // Match the browser's embed-context boundary, not a decoded or mount-relative path.
+    if (!pathname.startsWith('/embed/')) {
+        reply.header('content-security-policy', "frame-ancestors 'none'");
+    }
 }
 
 async function statFile(path: string) {
@@ -148,6 +156,9 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
         const sidecar = await selectPrecompressedSidecar(candidate, request);
 
         setUiFileHeaders(reply, ext);
+        if (ext === '.html') {
+            setUiFramingHeaders(reply, request);
+        }
         reply.header('vary', 'Accept-Encoding');
         if (sidecar) {
             reply.header('content-encoding', sidecar.encoding);
@@ -159,7 +170,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
         return reply.send(createReadStream(candidate));
     }
 
-    async function sendIndexHtml(reply: any, pathname = '/') {
+    async function sendIndexHtml(reply: any, request: FastifyRequest, pathname = '/') {
         const indexPath = resolve(root, 'index.html');
         let html: string;
         try {
@@ -198,6 +209,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
         }
         reply.header('content-type', 'text/html; charset=utf-8');
         reply.header('cache-control', 'no-cache');
+        setUiFramingHeaders(reply, request);
         if (isSensitivePublicEntryPathname(pathname)) {
             reply.header('referrer-policy', 'no-referrer');
         }
@@ -213,7 +225,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
     });
 
     if (ui.mountRoot) {
-        app.get('/', async (_request, reply) => await sendIndexHtml(reply));
+        app.get('/', async (request, reply) => await sendIndexHtml(reply, request));
         // SPA deep links (e.g. /terminal/connect) should render the same index.html bundle.
         // Exact API/static routes should still win routing precedence.
         app.get('/*', async (request, reply) => {
@@ -225,7 +237,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
                 }
                 const decoded = decodeURIComponent(pathname || '/').replace(/^\/+/, '');
                 if (!decoded) {
-                    return await sendIndexHtml(reply);
+                    return await sendIndexHtml(reply, request);
                 }
                 // Best-effort: if it looks like a UI asset request, try serving the file.
                 // (Avoid treating dot-containing SPA routes like "/user.profile" as static files.)
@@ -251,7 +263,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
                 if (isStaticAsset) {
                     return await sendUiFile(decoded, request, reply);
                 }
-                return await sendIndexHtml(reply, pathname);
+                return await sendIndexHtml(reply, request, pathname);
             } catch {
                 return reply.code(404).send({ error: 'Not found' });
             }
@@ -289,7 +301,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
 
                 const relPath = filePath.slice(root.length + 1);
                 if (relPath === 'index.html') {
-                    return await sendIndexHtml(reply, `/${rel}`);
+                    return await sendIndexHtml(reply, request, `/${rel}`);
                 }
                 return await sendUiFile(relPath, request, reply);
             } catch {

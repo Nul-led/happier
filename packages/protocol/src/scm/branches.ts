@@ -4,6 +4,7 @@ import {
   ScmRemoteResponseSchema,
 } from './remoteResponse.js';
 import { ScmOperationErrorCodeSchema } from './operationError.js';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
 import { ScmRequestBaseSchema } from './requestBase.js';
 
 export const ScmBranchTypeSchema = z.enum(['local', 'remote']);
@@ -39,6 +40,7 @@ export type ScmBranchCreateRequest = z.infer<typeof ScmBranchCreateRequestSchema
 
 export const ScmBranchCreateResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -58,11 +60,13 @@ export type ScmBranchCheckoutRequest = z.infer<typeof ScmBranchCheckoutRequestSc
 
 export const ScmBranchCheckoutResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   didCreateStash: z.boolean().optional(),
   didPopStash: z.boolean().optional(),
   stashRef: z.string().nullable().optional(),
+  stashOid: z.string().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
 });

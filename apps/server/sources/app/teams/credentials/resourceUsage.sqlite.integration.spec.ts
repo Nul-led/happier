@@ -747,7 +747,11 @@ describe('Team credential resource usage query', () => {
     expect(invoiceView.totals.cost.effectiveUsd).toBe(3);
   });
 
-  it('pages a breakdown whose keys and resource id have realistic widths', async () => {
+  it.each([
+    ['vendor-prefixed', 'anthropic/claude-sonnet-4-2025051'],
+    ['maximum catalog width', 'm'.repeat(510)],
+    ['multibyte catalog width', '模'.repeat(510)],
+  ])('pages a breakdown with %s model keys without bounding the model identity', async (_label, modelPrefix) => {
     const manager = await db.account.create({ data: { encryptionMode: 'plain' } });
     const team = await db.team.create({ data: { name: 'Wide cursor team' } });
     await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: 'admin' } });
@@ -768,7 +772,7 @@ describe('Team credential resource usage query', () => {
       teamCredentialResourceId: resource.id,
       teamCredentialActorAccountId: manager.id,
       credentialDeliveryMode: 'brokered',
-      modelId: `anthropic/claude-sonnet-4-2025051${String(index).padStart(2, '0')}`,
+      modelId: `${modelPrefix}${String(index).padStart(2, '0')}`,
     })) });
     const input = {
       resourceId: resource.id,

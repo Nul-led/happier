@@ -12,11 +12,35 @@ import {
   buildQualifiedPluginContributionKey,
   resolveAgentIdFromPersistedContributionIdentityV1,
   resolvePersistedContributionIdentityV1FromAgentId,
+  type PluginContributionIdentityV1,
 } from '../../plugins/contributionIdentity.js';
 import {
   AgentExecutionTargetV1Schema,
   type AgentExecutionTargetV1,
 } from '../../agents/executionTargetV1.js';
+import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES_V1 } from '../../generated/agents/bundledAgentIdentitiesV1.js';
+
+/**
+ * A bundled Agent's contribution identity from its routing id. This is what
+ * gives a bundled Agent exactly one target key: a writer holding the routing
+ * ref (`{ kind: 'backend', backendId: 'claude' }`) and one holding the Agent
+ * execution target both key it `agent:<pluginId>/<localId>`.
+ */
+function resolveBundledAgentIdentityV1(backendId: string): PluginContributionIdentityV1 | null {
+  if (!Object.hasOwn(BUNDLED_AGENT_CONTRIBUTION_IDENTITIES_V1, backendId)) return null;
+  const identity = BUNDLED_AGENT_CONTRIBUTION_IDENTITIES_V1[backendId]!;
+  return { pluginId: identity.pluginId, localId: identity.localId };
+}
+
+/** The bundled routing id a canonical Agent key names, for callers that route by it. */
+function resolveBundledAgentRoutingIdV1(identity: PluginContributionIdentityV1): string | null {
+  const persistedAgentId = resolveAgentIdFromPersistedContributionIdentityV1(identity);
+  if (persistedAgentId) return persistedAgentId;
+  for (const [agentId, candidate] of Object.entries(BUNDLED_AGENT_CONTRIBUTION_IDENTITIES_V1)) {
+    if (candidate.pluginId === identity.pluginId && candidate.localId === identity.localId) return agentId;
+  }
+  return null;
+}
 
 export const BackendTargetSourceKindV2Schema = z.enum(['built_in', 'configured']);
 export type BackendTargetSourceKindV2 = z.infer<typeof BackendTargetSourceKindV2Schema>;
@@ -89,7 +113,7 @@ export function buildBackendTargetKeyV2(target: BackendTargetRefV2 | AgentExecut
   }
   const parsedTarget = BackendTargetRefV2Schema.parse(target);
   if (!parsedTarget.configuredBackendId && parsedTarget.sourceKind !== 'configured') {
-    const identity = resolvePersistedContributionIdentityV1FromAgentId(parsedTarget.backendId);
+    const identity = resolveBundledAgentIdentityV1(parsedTarget.backendId);
     if (identity) {
       return BackendTargetKeyV2Schema.parse(
         `agent:${buildQualifiedPluginContributionKey(identity)}`,
@@ -165,7 +189,7 @@ export function readBackendTargetRefV2(input: BackendTargetRefV2Input): BackendT
       if (parsedTarget.kind === 'backend') {
         return parsedTarget;
       }
-      const agentId = resolveAgentIdFromPersistedContributionIdentityV1(parsedTarget.identity);
+      const agentId = resolveBundledAgentRoutingIdV1(parsedTarget.identity);
       if (!agentId) {
         throw new Error('Qualified Agent identity requires host catalog resolution');
       }
@@ -184,7 +208,7 @@ export function readBackendTargetRefV2(input: BackendTargetRefV2Input): BackendT
 
   if (input.kind === 'agent' && 'identity' in input) {
     const persisted = PersistedAgentTargetRefV1Schema.parse(input);
-    const agentId = resolveAgentIdFromPersistedContributionIdentityV1(persisted.identity);
+    const agentId = resolveBundledAgentRoutingIdV1(persisted.identity);
     if (!agentId) {
       throw new Error('Unknown persisted Agent contribution identity');
     }

@@ -1,12 +1,5 @@
 import { z } from 'zod';
 
-/**
- * Measured r1.5.2 global Voice plan: 1,104 UTF-8 bytes; complete V1 carrier:
- * 1,194 UTF-8 bytes (90 bytes of carrier overhead). A 2 KiB instruction ceiling
- * leaves 944 bytes of text growth plus native `developerInstructions`
- * field overhead.
- */
-export const AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES = 2_048;
 export const AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_ID_CODE_UNITS = 128;
 export const AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_REVISION = 2_147_483_647;
 
@@ -35,13 +28,6 @@ export const AgentSessionStartupInstructionsTextV1Schema = z.string()
   .refine(
     (value) => value.normalize('NFC') === value,
     'Instructions must be NFC-normalized',
-  )
-  .refine(
-    (value) => (
-      new TextEncoder().encode(value).byteLength
-      <= AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES
-    ),
-    'Instructions exceed the UTF-8 byte limit',
   );
 
 const AgentSessionStartupInstructionsMarkerV1Shape = {

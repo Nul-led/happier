@@ -170,6 +170,25 @@ export function reviewCommentPublicationContentKeyFingerprintV1(material: Accoun
   return computeContentPublicKeyFingerprint(tweetnacl.box.keyPair.fromSecretKey(resolveMachineKey(material)).publicKey);
 }
 
+/** Closed host-owned CRUD commitment; plaintext equality never leaves an E2EE Account unkeyed. */
+export function deriveReviewCommentMutationCommitmentV1(params: Readonly<{
+  accountId: string;
+  mode: 'plain' | 'e2ee';
+  material: AccountScopedCryptoMaterial | null;
+  purpose: 'effect' | 'create-equivalence' | 'list-filters';
+  components: readonly string[];
+}>): string {
+  const domain = 'happier:review-comment-mutation-commitment:v1';
+  const parts = [params.accountId, params.purpose, ...params.components];
+  if (params.mode === 'plain') {
+    if (params.material !== null) throw new Error('review_comment_encryption_mode_mismatch');
+    return computeCanonicalDomainSeparatedDigest(domain, parts);
+  }
+  if (!params.material) throw new Error('review_comment_encryption_material_unavailable');
+  return encodeBase64(hmacSha512(resolveMachineKey(params.material),
+    encodeCanonicalLengthDelimited([domain, ...parts])).slice(0, 32), 'base64url');
+}
+
 /**
  * Narrow host-only derivation for Automation Event occurrence equality. It is
  * deliberately separate from every Account-scoped ciphertext key and does not

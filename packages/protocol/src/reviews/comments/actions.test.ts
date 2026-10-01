@@ -15,8 +15,39 @@ import {
   stringifyReviewCommentPrincipalCanonicalJsonV1,
 } from './actions.js';
 import { getActionSpec } from '../../actions/actionSpecs.js';
+import { zodSchemaToJsonSchemaObject } from '../../actions/actionInputJsonSchema.js';
+import Ajv from 'ajv';
 
 describe('review comment operation contracts', () => {
+  it('advertises the optional taxonomy filter without refusing a session-only list', () => {
+    const schema = zodSchemaToJsonSchemaObject(ReviewCommentListRequestV1Schema, { target: 'draft-7' });
+    const validate = new Ajv({ strict: false }).compile(schema);
+    expect(validate({ sessionId: 'origin' }), JSON.stringify(validate.errors)).toBe(true);
+    for (const taxonomyIds of ['correctness', ['correctness']]) {
+      expect(ReviewCommentListRequestV1Schema.parse({ sessionId: 'origin', taxonomyIds }).taxonomyIds).toEqual(['correctness']);
+    }
+  });
+  it('exposes scoped review reads and CAS moderation to agents and MCP', () => {
+    for (const actionId of ['reviews.comments.list', 'reviews.comments.transition', 'reviews.comments.setDisposition'] as const) {
+      const spec = getActionSpec(actionId);
+      expect(spec.surfaces.agent).toBe(true);
+      expect(spec.surfaces.mcp).toBe(true);
+      expect(spec.bindings?.mcpToolName).toBe(actionId.replaceAll('.', '_'));
+    }
+    expect(getActionSpec('reviews.comments.create').surfaces.agent).toBe(false);
+    const transition = {
+      commentId: 'comment-1', projectId: 'project-1', toState: 'dismissed', reason: 'Evidence disproves this finding.',
+      expectedState: 'open', expectedServerRevision: 3, clientMutationId: 'stable-mutation-1',
+    };
+    expect(ReviewCommentActionInputSchemasV1['reviews.comments.transition'].safeParse(transition).success).toBe(true);
+    const { expectedState: _state, ...missingState } = transition;
+    const { expectedServerRevision: _revision, ...missingRevision } = transition;
+    const { clientMutationId: _mutation, ...missingMutation } = transition;
+    for (const input of [missingState, missingRevision, missingMutation]) {
+      expect(ReviewCommentActionInputSchemasV1['reviews.comments.transition'].safeParse(input).success).toBe(false);
+    }
+  });
+
   it('bounds create mutation identity to the cross-provider storage contract', () => {
     const base = {
       projectId: 'project-1',
@@ -159,7 +190,11 @@ describe('review comment operation contracts', () => {
       agentId: 'claude',
       projectId: 'project-1',
       workspaceId: 'workspace-1',
-      immutableGenerationId: 'generation-1',
+      sourceCustody: {
+        kind: 'managed' as const,
+        immutableGenerationId: 'generation-1',
+        installSource: 'npm' as const,
+      },
     };
     const parsed = ReviewCommentPrincipalHeaderV1Schema.parse({
       actor: { kind: 'agent', agentId: 'claude', sessionId: 'session-1' },
@@ -186,6 +221,10 @@ describe('review comment operation contracts', () => {
     expect(() => ReviewCommentPrincipalHeaderV1Schema.parse({
       actor: parsed.actor,
       currentIntent: { ...currentIntent, extraAuthority: true },
+    })).toThrow();
+    expect(() => ReviewCommentPrincipalHeaderV1Schema.parse({
+      actor: parsed.actor,
+      currentIntent: { ...currentIntent, occurrenceId: 'process-local' },
     })).toThrow();
   });
 

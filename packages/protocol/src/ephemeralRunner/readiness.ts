@@ -13,7 +13,8 @@ import { RunnerBrokerReadinessRequestV1Schema } from './brokerReadinessRequestV1
 
 export const RunnerManagedAgentInstallationV1Schema = z.object({
   agentTarget: AgentExecutionTargetV1Schema,
-  managedInstallationId: RunnerResourceIdSchema,
+  // Canonical Agent runtime descriptor, not an installer-issued attestation.
+  agentRuntimeId: RunnerResourceIdSchema,
   executablePath: z.string().min(1).max(16 * 1024),
   authoritativeVersion: z.string().min(1).max(512).nullable(),
 }).strict();

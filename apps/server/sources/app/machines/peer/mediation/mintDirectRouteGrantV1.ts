@@ -22,6 +22,13 @@ import {
 } from "@happier-dev/protocol";
 
 import { FEATURE_ENV_KEYS } from "@/app/features/catalog/featureEnvSchema";
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
+import {
+    createEd25519PublicKeyId,
+    deriveEd25519SigningSeed,
+} from "@/app/crypto/derivedEd25519SigningKey";
+
+const PEER_MEDIATION_ROUTE_GRANT_SIGNING_DOMAIN = "happier.machine-route-grant.v1";
 
 export type PeerMediationGrantSigningConfig =
     | Readonly<{
@@ -41,7 +48,8 @@ export type PeerMediationGrantSigningConfig =
         | "missing_private_key"
         | "invalid_private_key"
         | "invalid_public_key"
-        | "invalid_expiry";
+        | "invalid_expiry"
+        | "signing_key_expired";
     }>;
 
 export type MintDirectRouteGrantV1Result =
@@ -82,8 +90,9 @@ export type MintDirectRouteGrantV1Input = Readonly<{
     }>;
 }>;
 
-export type MintDirectRouteGrantV2Input = Omit<MintDirectRouteGrantV1Input, "scope"> & Readonly<{
+export type MintDirectRouteGrantV2Input = Omit<MintDirectRouteGrantV1Input, "scope" | "ttlMs"> & Readonly<{
     scope: DirectRouteGrantScopeV2;
+    ttlMs: number | null;
     /** Required for `iroh_peer` grants: the signed machine/1 initiator/target relationship. */
     iroh?: IrohPeerRouteBindingV2;
     ephemeralPublicKeyBase64Url: string;
@@ -140,7 +149,35 @@ function parseOptionalPositiveInt(raw: string | undefined):
 
 export function resolvePeerMediationGrantSigningConfig(
     env: NodeJS.ProcessEnv,
+    nowMs: number = Date.now(),
 ): PeerMediationGrantSigningConfig {
+    const explicitFields = [
+        env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId],
+        env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey],
+        env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPublicKey],
+        env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningExpiresAt],
+    ];
+    if (explicitFields.every((value) => value === undefined)
+        && isPersonalHomeRuntimePurpose(env.HAPPIER_MANAGED_RELAY_PURPOSE)) {
+        const masterSecret = (env.HANDY_MASTER_SECRET ?? "").trim();
+        if (masterSecret) {
+            const keyPair = tweetnacl.sign.keyPair.fromSeed(
+                deriveEd25519SigningSeed(masterSecret, PEER_MEDIATION_ROUTE_GRANT_SIGNING_DOMAIN),
+            );
+            const keyId = createEd25519PublicKeyId(keyPair.publicKey);
+            return {
+                ok: true,
+                keyId,
+                secretKey: keyPair.secretKey,
+                capability: {
+                    keyId,
+                    publicKey: toBase64Url(keyPair.publicKey),
+                    expiresAt: null,
+                },
+            };
+        }
+    }
+
     const keyId = env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]?.trim() ?? "";
     if (!keyId) return { ok: false, reasonCode: "missing_key_id" };
 
@@ -164,6 +201,9 @@ export function resolvePeerMediationGrantSigningConfig(
     }
     const expiresAt = parseOptionalPositiveInt(env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningExpiresAt]);
     if (!expiresAt.ok) return { ok: false, reasonCode: "invalid_expiry" };
+    if (expiresAt.value !== null && nowMs >= expiresAt.value) {
+        return { ok: false, reasonCode: "signing_key_expired" };
+    }
 
     return {
         ok: true,
@@ -232,14 +272,20 @@ function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
 }
 
 function validateDirectRouteGrantV2MintInput(input: MintDirectRouteGrantV2Input):
-    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV2; grantExpiresAt: number }>
+    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV2; grantExpiresAt: number | null }>
     | MintDirectRouteGrantFailure {
-    const envelope = validateDirectRouteGrantMintEnvelope(input);
-    if (!envelope.ok) return envelope;
     const scope = DirectRouteGrantScopeV2Schema.safeParse(input.scope);
     if (!scope.success || scope.data.kind !== input.flowKind) {
         return rejectMint("invalid_scope");
     }
+    if (input.ttlMs === null) {
+        if (scope.data.kind !== 'tcp_tunnel' || !scope.data.preview || input.routeKind !== 'iroh_peer') return rejectMint('invalid_ttl');
+        if (!input.serverGateEnabled) return rejectMint('blocked_by_server_policy');
+        if (input.signingKey.expiresAt != null && input.nowMs >= input.signingKey.expiresAt) return rejectMint('signing_key_expired');
+        return { ok: true, scope: scope.data, grantExpiresAt: null };
+    }
+    const envelope = validateDirectRouteGrantMintEnvelope({ ...input, ttlMs: input.ttlMs });
+    if (!envelope.ok) return envelope;
     if (scope.data.kind === "machine_rpc") {
         const methods = validateMachineRpcGrantAllowedMethods(scope.data.allowedMethods);
         if (!methods.ok) {

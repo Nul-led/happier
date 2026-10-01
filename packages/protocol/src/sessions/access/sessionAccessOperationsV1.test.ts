@@ -18,6 +18,19 @@ const grantRow = {
 };
 
 describe('Session access operation contracts', () => {
+  it('carries the same strict credential condition through logical and physical Team grants', () => {
+    const request = {
+      sessionId: 'session', subject: { kind: 'team', teamId: 'team' },
+      accessLevel: 'edit', canApprovePermissions: false,
+      requiredTeamCredential: { resourceId: 'resource', expectedResourceRevision: 7, deliveryMode: 'brokered' },
+    };
+    for (const schema of [access.SessionAccessGrantSetActionInputV1Schema, access.SetSessionAccessGrantRequestV1Schema]) {
+      expect(schema.parse(request)).toEqual(request);
+      expect(schema.safeParse({ ...request, requiredTeamCredential: { ...request.requiredTeamCredential, trusted: true } }).success).toBe(false);
+      expect(schema.safeParse({ ...request, requiredTeamCredential: { ...request.requiredTeamCredential, deliveryMode: 'both' } }).success).toBe(false);
+    }
+  });
+
   it('distinguishes redacted inspection from a complete roster and rejects topology in inspection', () => {
     const inspection = {
       visibility: 'self', owner, primaryTeamId: null, grants: [],

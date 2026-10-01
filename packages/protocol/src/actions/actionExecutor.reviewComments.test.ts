@@ -37,6 +37,65 @@ function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutor
 }
 
 describe('createActionExecutor (review comments)', () => {
+  it('drains explicitly requested pages under the same host-stamped principal without forwarding the Action-only flag', async () => {
+    const signal = new AbortController().signal;
+    const requests: unknown[] = [];
+    const executor = createActionExecutor(createDeps({ reviewCommentAction: async (request) => {
+      requests.push(request);
+      return { items: [], cursor: requests.length === 1 ? 'second-page' : null };
+    } }));
+    await expect(executor.execute('reviews.comments.list', { sessionId: 'origin', allPages: true }, {
+      surface: 'rpc', serverId: 'server', signal, actionCaller: { kind: 'workflowRun', runId: 'run' },
+    })).resolves.toEqual({ ok: true, result: { items: [], cursor: null } });
+    expect(requests).toEqual([undefined, 'second-page'].map((cursor) => ({
+      actionId: 'reviews.comments.list', serverId: 'server', signal,
+      reviewCommentPrincipal: { actor: { kind: 'workflow', runId: 'run' } },
+      input: { sessionId: 'origin', states: [], includeHistory: false, limit: 50, ...(cursor ? { cursor } : {}) },
+    })));
+  });
+
+  it('does not publish a partial all-pages result when a later page fails', async () => {
+    let page = 0;
+    const executor = createActionExecutor(createDeps({ reviewCommentAction: async () => ++page === 1
+      ? { items: [], cursor: 'next' }
+      : { ok: false, errorCode: 'review_comment_permission_denied', error: 'review_comment_permission_denied' },
+    }));
+    await expect(executor.execute('reviews.comments.list', { sessionId: 'origin', allPages: true }, { surface: 'ui' }))
+      .resolves.toEqual({ ok: false, errorCode: 'review_comment_permission_denied', error: 'review_comment_permission_denied' });
+  });
+
+  it('retains ordinary single-page reads and their continuation cursor', async () => {
+    const executor = createActionExecutor(createDeps({ reviewCommentAction: async () => ({ items: [], cursor: 'next' }) }));
+    await expect(executor.execute('reviews.comments.list', { sessionId: 'origin' }, { surface: 'ui' }))
+      .resolves.toEqual({ ok: true, result: { items: [], cursor: 'next' } });
+  });
+
+  it('binds an agent read to its host-stamped review scope and defaults the own session', async () => {
+    const reviewCommentAction = vi.fn(async () => ({ items: [], cursor: null }));
+    const executor = createActionExecutor(createDeps({ reviewCommentAction }));
+    const reviewCommentPrincipal = {
+      actor: { kind: 'agent' as const, agentId: 'codex', sessionId: 'session-1' },
+    };
+
+    await expect(executor.execute('reviews.comments.list', { runId: 'review-1' }, {
+      surface: 'agent', defaultSessionId: 'session-1', reviewCommentPrincipal,
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(reviewCommentAction).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.objectContaining({ sessionId: 'session-1', runId: 'review-1' }),
+      reviewCommentPrincipal,
+    }));
+  });
+
+  it('refuses an agent review operation when the caller scope cannot be established', async () => {
+    const reviewCommentAction = vi.fn();
+    const executor = createActionExecutor(createDeps({ reviewCommentAction }));
+    await expect(executor.execute('reviews.comments.list', { projectId: 'project-1' }, {
+      surface: 'agent',
+    })).resolves.toMatchObject({ ok: false, errorCode: 'review_comment_permission_denied' });
+    expect(reviewCommentAction).not.toHaveBeenCalled();
+  });
+
   it('routes durable review-comment actions through the host review-comment executor', async () => {
     const reviewCommentAction = vi.fn(async () => ({ items: [], cursor: null }));
     const executor = createActionExecutor(createDeps({ reviewCommentAction }));

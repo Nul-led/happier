@@ -109,6 +109,12 @@ export function createOidcIdentityProvider(
             providerLogin: normalized.value.login,
             profile: createOidcIdentityProfile(normalized.value, instance.claims),
             token: tokenToPersist,
+            eligibility: {
+                eligibilityStatus: "eligible",
+                eligibilityReason: null,
+                eligibilityCheckedAt: new Date(),
+                eligibilityNextCheckAt: null,
+            },
             presentation: { username: preferredUsername },
             transferFromAccountId: params.transferFromAccountId,
         });

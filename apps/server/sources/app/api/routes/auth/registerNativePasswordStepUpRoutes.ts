@@ -6,6 +6,7 @@ import { isEffectiveHomeAuthMethodActionEnabled } from "@/app/auth/methods/effec
 import { PasswordHashOverloadedError } from "@/app/auth/password/passwordHashAdmission";
 import { createNativePasswordFirstKeyStepUp } from "@/app/auth/password/nativePasswordFirstKeyStepUp";
 import { requirePresentUser, PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerNativePasswordStepUpRoutes(app: Fastify): void {
     app.post("/v1/auth/email/step-up", {
@@ -22,7 +23,8 @@ export function registerNativePasswordStepUpRoutes(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        if (!await isEffectiveHomeAuthMethodActionEnabled({ env: process.env, methodId: "email_password", actionId: "login" })) {
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        if (!await isEffectiveHomeAuthMethodActionEnabled({ env: requestHomeEnv, methodId: "email_password", actionId: "login" })) {
             return reply.code(403).send({ error: "method_not_available" });
         }
         try {

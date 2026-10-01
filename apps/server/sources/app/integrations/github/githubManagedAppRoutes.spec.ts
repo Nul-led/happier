@@ -1,8 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { projectManagedGitHubAppRegistrationV1, registerManagedGitHubAppRoutes } from "./githubManagedAppRoutes";
+import {
+    managedGitHubAppRefusalCode,
+    projectManagedGitHubAppRegistrationV1,
+    registerManagedGitHubAppRoutes,
+} from "./githubManagedAppRoutes";
 
 describe("managed GitHub App routes", () => {
+    it("normalizes domain refusals through the single route error vocabulary", () => {
+        expect(managedGitHubAppRefusalCode("forbidden", "forbidden")).toBe("github_app_forbidden");
+        expect(managedGitHubAppRefusalCode("team_authentication_required", "forbidden"))
+            .toBe("team_authentication_required");
+        expect(managedGitHubAppRefusalCode("team_authentication_unavailable", "forbidden"))
+            .toBe("team_authentication_unavailable");
+        expect(managedGitHubAppRefusalCode("registration_revision_conflict", "github_app_revision_conflict"))
+            .toBe("github_app_revision_conflict");
+    });
+
     it("registers every public Action transport on the canonical paths", () => {
         const post = vi.fn();
         const get = vi.fn();

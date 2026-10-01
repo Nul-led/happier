@@ -30,6 +30,26 @@ function awareness(
 }
 
 describe('session.list awareness marked result', () => {
+  it('preserves historical metadata omissions without inventing more pages in either result view', () => {
+    const page = {
+      sessions: [awareness()],
+      nextCursor: null,
+      hasNext: false,
+      attentionNextCursor: null,
+      attentionHasNext: false,
+      metadataUpgradeRequiredCount: 2,
+    };
+    const payload = buildSessionAwarenessListResultV1(page);
+    expect(payload).toMatchObject({ metadataUpgradeRequiredCount: 2, hasNext: false, attentionHasNext: false });
+    expect(parseSessionAwarenessListResultV1(payload)).toEqual(payload);
+    expect(parseSessionListQueryActionResultV1(payload)).toEqual(payload);
+
+    const summary = markSessionListQueryResultV1({ ...page, sessions: [] });
+    expect(parseSessionListQueryActionResultV1(summary)).toEqual(summary);
+    expect(parseSessionListQueryActionResultV1({ ...summary, metadataUpgradeRequiredCount: -1 })).toBeNull();
+    expect(parseSessionAwarenessListResultV1({ ...payload, metadataUpgradeRequiredCount: 1.5 })).toBeNull();
+  });
+
   it('parses only the exact marked awareness payload inside the Action success envelope', () => {
     const payload = buildSessionAwarenessListResultV1({
       sessions: [awareness()],

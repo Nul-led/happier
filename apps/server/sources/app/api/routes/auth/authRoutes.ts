@@ -14,7 +14,8 @@ import { registerHomeLoginRoute } from "@/app/accountDirectory/accountDirectoryR
 import type { HomeConnectionDescriptorResolver } from "@/app/accountDirectory/accountDirectoryService";
 import { registerHomeLoginApprovalRoutes } from "./homeApprovalGate";
 import { registerAuthEntryRoute } from "./registerAuthEntryRoute";
-import { resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { createHomeAuthEmailDelivery } from "@/app/auth/email/homeAuthEmailDelivery";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import type { ResolveAuthEmailApplicationLinkTarget } from "@/app/auth/email/nativeAuthEmailOperations";
 
@@ -24,12 +25,12 @@ export function authRoutes(app: Fastify, params: Readonly<{
     authEmailDelivery?: AuthEmailDelivery;
     resolveApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
-    const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
+    const authEmailDelivery = params.authEmailDelivery ?? createHomeAuthEmailDelivery();
     const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
         ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
     // One readiness owner: mail can be sent and its link can be built from these same facts.
     const isEmailDeliveryReady = params.isEmailDeliveryReady
-        ?? (() => resolveAuthEmailReadiness({ transportReady: authEmailDelivery.isReady, resolveApplicationLinkTarget }));
+        ?? (async () => await resolveAuthEmailReadiness({ transportReady: await authEmailDelivery.isReady(), resolveApplicationLinkTarget }));
     app.get(
         "/v1/auth/ping",
         {

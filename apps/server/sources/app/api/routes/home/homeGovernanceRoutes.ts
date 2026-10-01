@@ -1,5 +1,6 @@
 import {
     HomeAccountDeleteResultV1Schema,
+    HomeAccountDetailV1Schema,
     HomeAccountListInputV1Schema,
     HomeAccountListResultV1Schema,
     HomeAccountRoleSetInputV1Schema,
@@ -7,6 +8,8 @@ import {
     HomeAccountSearchInputV1Schema,
     HomeAccountSearchResultV1Schema,
     HomeAccountTargetInputV1Schema,
+    HomeGovernanceClaimInputV1Schema,
+    HomeGovernanceClaimResultV1Schema,
     HomeGovernanceErrorV1Schema,
     HomeGovernanceEligibilityGetInputV1Schema,
     HomeGovernanceEligibilityV1Schema,
@@ -17,29 +20,36 @@ import {
     homeGovernanceErrorHttpStatusV1,
     type AccountStatusV1,
 } from "@happier-dev/protocol";
+import { HomeEmptinessGetInputV1Schema, HomeEmptinessV1Schema } from "@happier-dev/protocol/home/governance";
 
 import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import { setHomeGovernancePolicy } from "@/app/home/governance/governancePolicy";
+import { redeemHomeClaimCode } from "@/app/home/governance/homeClaimCode";
 import {
     listHomeAccountsInTx,
     projectHomeGovernancePolicyV1,
+    readHomeAccountDetailInTx,
     readHomeAccountRowInTx,
     readHomeGovernanceEligibilityInTx,
+    readHomeEmptinessInTx,
     readHomeGovernanceProjectionInTx,
     searchHomeAccountsInTx,
     setHomeRoleInTx,
 } from "@/app/home/governance/homeGovernanceService";
+import { signOutHomeAccountEverywhereInTx } from "@/app/home/governance/homeAccountSignOutEverywhere";
 import { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
 import { readTeamOperationAuthenticationFromRequest } from "@/app/teams/actorContext";
 import { inTx } from "@/storage/inTx";
 
 import type { Fastify } from "../../types";
 import { registerHomeManagedIdentityProviderRoutes } from "./homeManagedIdentityProviderRoutes";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 const GOVERNANCE_RATE_LIMIT = { rateLimit: resolveApiHotEndpointRateLimit(process.env, "account.settings") };
+const CLAIM_RATE_LIMIT = { rateLimit: resolveApiHotEndpointRateLimit(process.env, "home.governance.claim") };
 
 const ERROR_RESPONSES = {
     400: HomeGovernanceErrorV1Schema,
@@ -64,7 +74,28 @@ export function homeGovernanceRoutes(app: Fastify): void {
     // the Team route gate. Reading the raw env here would bypass build-policy
     // denies and dependency closure, allowing Home Administration to advertise
     // Team capability while every Team endpoint correctly returns 404.
-    const teamsEnabled = (): boolean => isServerFeatureEnabledForRequest("teams", process.env);
+    const teamsEnabled = (requestHomeEnv: NodeJS.ProcessEnv): boolean => isServerFeatureEnabledForRequest("teams", requestHomeEnv);
+
+    app.post(
+        homeDomainActionPathForMethod('home.emptiness.get', 'POST'),
+        {
+            preHandler: [app.authenticate],
+            attachValidation: true,
+            schema: {
+                body: HomeEmptinessGetInputV1Schema,
+                response: { 200: HomeEmptinessV1Schema, ...ERROR_RESPONSES },
+            },
+            config: GOVERNANCE_RATE_LIMIT,
+        },
+        async (request, reply) => {
+            if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
+            const result = await inTx(async (tx) => await readHomeEmptinessInTx(tx, { actorAccountId: request.userId }));
+            if (result.status === "forbidden") {
+                return await reply.code(403).send({ error: "home_governance_forbidden" as const });
+            }
+            return await reply.send({ isEmpty: result.isEmpty });
+        },
+    );
 
     app.post(
         homeDomainActionPathForMethod('home.governance.get', 'POST'),
@@ -78,11 +109,12 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const projection = await inTx(async (tx) => await readHomeGovernanceProjectionInTx(tx, {
                 viewerAccountId: request.userId,
-                teamsEnabled: teamsEnabled(),
-                env: process.env,
+                teamsEnabled: teamsEnabled(requestHomeEnv),
+                env: requestHomeEnv,
             }));
             if (projection.status === "rejected") {
                 const status = projection.code === "home_governance_forbidden"
@@ -108,10 +140,11 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const eligibility = await inTx(async (tx) => await readHomeGovernanceEligibilityInTx(tx, {
                 viewerAccountId: request.userId,
-                teamsEnabled: teamsEnabled(),
+                teamsEnabled: teamsEnabled(requestHomeEnv),
             }));
             if (!eligibility) return await reply
                 .code(404)
@@ -132,10 +165,11 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const listing = await inTx(async (tx) => await listHomeAccountsInTx(tx, {
                 actorAccountId: request.userId,
-                env: process.env,
+                env: requestHomeEnv,
                 ...(request.body.cursor !== undefined ? { cursor: request.body.cursor } : {}),
                 ...(request.body.limit !== undefined ? { limit: request.body.limit } : {}),
             }));
@@ -158,19 +192,74 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const search = await inTx(async (tx) => await searchHomeAccountsInTx(tx, {
                 actorAccountId: request.userId,
                 query: request.body.query,
                 scope: request.body.scope,
-                teamsEnabled: teamsEnabled(),
-                env: process.env,
+                teamsEnabled: teamsEnabled(requestHomeEnv),
+                env: requestHomeEnv,
                 authentication: readTeamOperationAuthenticationFromRequest(request),
             }));
             if (search.status === "rejected") {
                 return await reply.code(homeGovernanceErrorHttpStatusV1(search.code)).send({ error: search.code });
             }
             return await reply.send({ accounts: [...search.result] });
+        },
+    );
+
+    /** One person for the People detail, in one read (plan §3.12). */
+    app.post(
+        homeDomainActionPathForMethod('home.accounts.get', 'POST'),
+        {
+            preHandler: [app.authenticate],
+            attachValidation: true,
+            schema: {
+                body: HomeAccountTargetInputV1Schema,
+                response: { 200: HomeAccountDetailV1Schema, ...ERROR_RESPONSES },
+            },
+            config: GOVERNANCE_RATE_LIMIT,
+        },
+        async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
+            if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
+            const outcome = await inTx(async (tx) => await readHomeAccountDetailInTx(tx, {
+                actorAccountId: request.userId,
+                accountId: request.body.accountId,
+                env: requestHomeEnv,
+            }));
+            if (outcome.status === "rejected") {
+                return await reply.code(homeGovernanceErrorHttpStatusV1(outcome.code)).send({ error: outcome.code });
+            }
+            return await reply.send(outcome.result);
+        },
+    );
+
+    /** An administrator ends every signed-in session of one person (D-9); API tokens stay valid. */
+    app.post(
+        homeDomainActionPathForMethod('home.accounts.signOutEverywhere', 'POST'),
+        {
+            preHandler: [app.authenticate],
+            attachValidation: true,
+            schema: {
+                body: HomeAccountTargetInputV1Schema,
+                response: { 200: HomeAccountRowV1Schema, ...ERROR_RESPONSES },
+            },
+            config: GOVERNANCE_RATE_LIMIT,
+        },
+        async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
+            if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
+            const outcome = await inTx(async (tx) => await signOutHomeAccountEverywhereInTx(tx, {
+                actorAccountId: request.userId,
+                targetAccountId: request.body.accountId,
+                env: requestHomeEnv,
+            }), { isolationLevel: "Serializable" });
+            if (outcome.status === "rejected") {
+                return await reply.code(homeGovernanceErrorHttpStatusV1(outcome.code)).send({ error: outcome.code });
+            }
+            return await reply.send(outcome.result);
         },
     );
 
@@ -186,12 +275,13 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const outcome = await inTx(async (tx) => await setHomeRoleInTx(tx, {
                 actorAccountId: request.userId,
                 targetAccountId: request.body.accountId,
                 homeRole: request.body.homeRole,
-                env: process.env,
+                env: requestHomeEnv,
             }), { isolationLevel: "Serializable" });
             if (outcome.status === "rejected") {
                 return await reply.code(homeGovernanceErrorHttpStatusV1(outcome.code)).send({ error: outcome.code });
@@ -286,6 +376,7 @@ export function homeGovernanceRoutes(app: Fastify): void {
                 // case this is refused before any irreversible work, so the
                 // administrator transfers Team ownership and reissues.
                 case "team_owner_transfer_required":
+                case "account_erasure_transition_cleanup_pending":
                     return await reply.code(homeGovernanceErrorHttpStatusV1(result.code)).send({ error: result.code });
                 case "account_erasure_not_retired":
                     // The Account is active again, so it is not "disabled
@@ -315,11 +406,12 @@ export function homeGovernanceRoutes(app: Fastify): void {
             config: GOVERNANCE_RATE_LIMIT,
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             if (request.validationError) return await reply.code(400).send({ error: "invalid_home_input" as const });
             const outcome = await setHomeGovernancePolicy({
                 actorAccountId: request.userId,
                 patch: request.body,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (outcome.status === "forbidden") {
                 return await reply
@@ -338,7 +430,40 @@ export function homeGovernanceRoutes(app: Fastify): void {
                     .code(homeGovernanceErrorHttpStatusV1("home_policy_invalid"))
                     .send({ error: "home_policy_invalid" as const });
             }
+            if (outcome.status === "widening_unconfirmed") {
+                return await reply
+                    .code(homeGovernanceErrorHttpStatusV1("home_policy_widening_unconfirmed"))
+                    .send({ error: "home_policy_widening_unconfirmed" as const });
+            }
             return await reply.send(projectHomeGovernancePolicyV1(outcome.policy));
+        },
+    );
+
+    /**
+     * Claiming an ownerless Home with the one-time code a deployment-local command printed
+     * (§3.5, AM-1). Any signed-in Account may try — there is no owner to authorize it — so the
+     * answer to every refusal is the same status and body, the input is never logged, and the
+     * route has its own per-address budget.
+     */
+    app.post(
+        homeDomainActionPathForMethod('home.governance.claim', 'POST'),
+        {
+            preHandler: [app.authenticate],
+            attachValidation: true,
+            schema: {
+                body: HomeGovernanceClaimInputV1Schema,
+                response: { 200: HomeGovernanceClaimResultV1Schema, ...ERROR_RESPONSES },
+            },
+            config: CLAIM_RATE_LIMIT,
+        },
+        async (request, reply) => {
+            const refused = async () => await reply
+                .code(homeGovernanceErrorHttpStatusV1("home_claim_refused"))
+                .send({ error: "home_claim_refused" as const });
+            if (request.validationError) return await refused();
+            const outcome = await redeemHomeClaimCode({ accountId: request.userId, code: request.body.code });
+            if (outcome.status !== "claimed") return await refused();
+            return await reply.send({ status: "claimed" as const });
         },
     );
 }

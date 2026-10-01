@@ -22,14 +22,15 @@ import {
     type AutomationV3WorkerClaimedRun,
 } from "@happier-dev/protocol";
 
-import { emitAutomationRunTransition } from "./automationChangePublisher";
+import { emitAutomationRunTransition, emitAutomationRunUpdatedToMachineOnly } from "./automationChangePublisher";
+import { lockScopedAutomationTriggerInTx } from "./automationScopedTrigger";
+import { AUTOMATION_RUN_TERMINAL_STATES } from "./automationTypes";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
 import {
     automationRunCauseSelect,
     automationRunWithAutomationSelect,
 } from "./automationPersistenceSelect";
 import {
-    RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX,
     validateAutomationStoredContentEnvelopeOuterForMode,
     validateRetainedAutomationRunExecutionInputV2OuterForMode,
 } from "./automationStoredContentRead";
@@ -52,7 +53,7 @@ import {
     type AutomationRecipeFeaturePolicy,
 } from "./automationRecipeFeaturePolicy";
 
-type ClaimCandidateState = "queued" | "claimed" | "running";
+type ClaimCandidateState = "queued" | "claimed" | "running" | "pause_requested";
 
 type AutomationClaimResult = Readonly<{
     run: AutomationClaimRun | null;
@@ -66,7 +67,8 @@ type AutomationClaimResult = Readonly<{
 
 type AutomationClaimRun = Prisma.AutomationRunGetPayload<{
     select: typeof automationRunWithAutomationSelect;
-}> & Readonly<{ triggerRetired?: boolean; recipeKind?: "legacy" | "workflow-v2" }>;
+}> & Readonly<{ triggerRetired?: boolean; recipeKind?: "legacy" | "workflow-v2"; causeWorkDepth?: number;
+    lastSucceededRun?: Readonly<{ runId: string; checkpointEnvelope: string }> }>;
 
 function recipeKindForClaimRun(run: Pick<AutomationClaimRun, "workflowCustodyState">): "legacy" | "workflow-v2" {
     return run.workflowCustodyState !== null ? "workflow-v2" : "legacy";
@@ -77,7 +79,6 @@ function assertAutomationClaimRun(
 ): asserts run is AutomationClaimRun & AutomationRunWithAutomation {
     if (
         !isAutomationCauseRow(run)
-        || run.originSessionId !== null
         || run.automation === null
     ) {
         throw new TypeError("Automation-origin claim has invalid origin correspondence");
@@ -117,7 +118,7 @@ type AutomationClaimReceiptResultV2 = Readonly<{
 function projectAutomationV3ClaimReceiptResult(
     result: AutomationClaimResult,
     accountId?: string,
-): AutomationClaimReceiptResultV2 {
+): Readonly<{ v: 2; run: AutomationV3WorkerClaimedRun | null; automation: AutomationV3WorkerClaimedAutomation | null }> {
     if (result.receiptReplay) {
         return {
             v: 2,
@@ -134,6 +135,9 @@ function projectAutomationV3ClaimReceiptResult(
                 automationId: null,
                 attempt: result.run.attempt,
                 revision: result.run.revision,
+                ...(result.run.workflowResumeRequestedRevision === null ? {} : {
+                    workflowResumeRequestedRevision: result.run.workflowResumeRequestedRevision,
+                }),
                 recipeKind: "workflow-v2",
                 origin: {
                     kind: "direct",
@@ -157,12 +161,17 @@ function projectAutomationV3ClaimReceiptResult(
             triggerRetired: result.run.triggerRetired ?? false,
             attempt: result.run.attempt,
             revision: result.run.revision,
+            ...(result.run.workflowResumeRequestedRevision === null ? {} : {
+                workflowResumeRequestedRevision: result.run.workflowResumeRequestedRevision,
+            }),
             recipeKind: result.run.recipeKind ?? recipeKindForClaimRun(result.run),
             executionInputEnvelope: result.run.executionInputEnvelope,
             ...(result.run.workflowCustodyState !== null
                 ? { automationEvidenceEnvelope: result.run.triggerEvidenceEnvelope }
                 : {}),
             cause,
+            causeWorkDepth: result.run.causeWorkDepth,
+            ...(result.run.lastSucceededRun ? { lastSucceededRun: result.run.lastSucceededRun } : {}),
             ...(cause.kind === "conversation"
                 && result.run.replyHandoffState === "awaitingResult"
                 && typeof result.run.replyHandoffId === "string"
@@ -180,6 +189,8 @@ function projectAutomationV3ClaimReceiptResult(
             id: result.run.automation.id,
             name: result.run.automation.name,
             enabled: result.run.automation.enabled,
+            workflowDefinitionId: result.run.automation.workflowDefinitionId,
+            scopeSessionId: result.run.automation.scopeSessionId,
         }),
     };
 }
@@ -209,6 +220,9 @@ function serializeAutomationClaimReceiptResultV2(result: AutomationClaimResult):
         run: {
             ...receiptRun,
             executionInputEnvelope: null,
+            ...(receiptRun.lastSucceededRun ? { lastSucceededRun: {
+                runId: receiptRun.lastSucceededRun.runId, checkpointEnvelope: null,
+            } } : {}),
         },
     });
 }
@@ -260,13 +274,13 @@ export function toAutomationV3WorkerClaimResponse(
 }
 
 function isClaimCandidateState(state: string): state is ClaimCandidateState {
-    return state === "queued" || state === "claimed" || state === "running";
+    return state === "queued" || state === "claimed" || state === "running" || state === "pause_requested";
 }
 
 /**
  * Current recipe bytes are admitted only through Protocol. The retained V2
- * parser is a read-only compatibility boundary while released V2 workers can
- * still surface their frozen bytes; it never produces or rewrites a recipe.
+ * parser reads frozen Run data created by 0.2 for current V3 claims; it never
+ * grants predecessor worker authority or produces or rewrites a recipe.
  */
 function hasClaimableFrozenRecipe(params: {
     accountId: string;
@@ -277,10 +291,10 @@ function hasClaimableFrozenRecipe(params: {
     workflowCustodyState?: string | null;
     retainedV2OriginKind?: "scheduled" | "manual";
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
-    requireV2RunRepresentability?: boolean;
+
 }): boolean {
     if (params.originKind === "direct") {
-        if (params.requireV2RunRepresentability || params.workflowAcceptedSnapshotEnvelope === null) return false;
+        if (params.workflowAcceptedSnapshotEnvelope === null) return false;
         const envelope = parseWorkflowStoredContentEnvelopeV1(params.workflowAcceptedSnapshotEnvelope);
         return envelope !== null && validateWorkflowStoredEnvelopeOuterForModeV1({
             mode: params.accountCurrentness.mode,
@@ -293,14 +307,7 @@ function hasClaimableFrozenRecipe(params: {
             envelope,
         }).kind === "available";
     }
-    if (params.requireV2RunRepresentability) {
-        if (params.executionInputEnvelope === null) return false;
-        return validateRetainedAutomationRunExecutionInputV2OuterForMode({
-            raw: params.executionInputEnvelope,
-            mode: params.accountCurrentness.mode,
-            retainedV2OriginKind: params.retainedV2OriginKind,
-        })?.kind === "available";
-    }
+
     if (params.workflowCustodyState === "pending") {
         if (params.executionInputEnvelope === null) return false;
         return validateAutomationStoredContentEnvelopeOuterForMode({
@@ -338,7 +345,7 @@ export function isRunClaimableState(params: {
     now: Date;
 }): boolean {
     if (params.state === "queued") return true;
-    if (params.state !== "claimed" && params.state !== "running") return false;
+    if (params.state !== "claimed" && params.state !== "running" && params.state !== "pause_requested") return false;
     if (!params.leaseExpiresAt) return false;
     return params.leaseExpiresAt.getTime() < params.now.getTime();
 }
@@ -382,6 +389,7 @@ const automationClaimCandidateSelect = {
     automationId: true,
     originKind: true,
     workflowAcceptedSnapshotEnvelope: true,
+    workflowResumeRequestedRevision: true,
     state: true,
     revision: true,
     attempt: true,
@@ -389,6 +397,7 @@ const automationClaimCandidateSelect = {
     executionAttempt: true,
     executionInputEnvelope: true,
     workflowCustodyState: true,
+    automation: { select: { scopeSessionId: true } },
     leaseExpiresAt: true,
     dueAt: true,
     assignments: { select: { machineId: true } },
@@ -402,22 +411,23 @@ async function findClaimCandidates(params: {
     now: Date;
     limit: number;
     expectedTriggerKind?: AutomationTriggerKind;
-    requireV2RunRepresentability?: boolean;
+
     recipeFeaturePolicy: AutomationRecipeFeaturePolicy;
+    scope?: "session_scoped";
 }) {
+    const activeScoped = await params.tx.automationRun.findMany({
+        where: { accountId: params.accountId, triggerId: { not: null },
+            automation: { is: { scopeSessionId: { not: null } } },
+            state: { notIn: ["queued", ...AUTOMATION_RUN_TERMINAL_STATES] } },
+        select: { triggerId: true }, distinct: ["triggerId"],
+    });
+    const activeTriggerIds = activeScoped.flatMap((run) => run.triggerId ? [run.triggerId] : []);
     return await params.tx.automationRun.findMany({
         where: {
             accountId: params.accountId,
+            ...(params.scope === "session_scoped" ? { automation: { is: { scopeSessionId: { not: null } } } } : {}),
             dueAt: { lte: params.now },
             ...expectedRunTriggerCauseWhere(params.expectedTriggerKind),
-            // A released V2 claimant can only ever claim retained V2 frozen
-            // bytes. The persisted-bytes discriminator bounds the scan to one
-            // query instead of paging past current-recipe Runs; the parsed
-            // retained-V2 predicate at claim time remains the admission
-            // decision.
-            ...(params.requireV2RunRepresentability
-                ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
-                : {}),
             ...(!params.recipeFeaturePolicy.workflowsEnabled
                 ? { workflowCustodyState: null }
                 : {}),
@@ -425,6 +435,7 @@ async function findClaimCandidates(params: {
                 {
                     state: "queued",
                     assignments: runAssignmentClaimWhere(params.machineId),
+                    ...(activeTriggerIds.length ? { OR: [{ triggerId: null }, { triggerId: { notIn: activeTriggerIds } }] } : {}),
                 },
                 {
                     state: "claimed",
@@ -433,6 +444,12 @@ async function findClaimCandidates(params: {
                 },
                 {
                     state: "running",
+                    leaseExpiresAt: { lt: params.now },
+                    assignments: runAssignmentClaimWhere(params.machineId),
+                },
+                {
+                    state: "pause_requested",
+                    workflowCustodyState: "pending",
                     leaseExpiresAt: { lt: params.now },
                     assignments: runAssignmentClaimWhere(params.machineId),
                 },
@@ -468,6 +485,7 @@ async function tryClaimRun(params: {
             },
             data: {
                 state: "claimed",
+                workflowResumeRequestedRevision: null,
                 claimedAt: params.now,
                 claimedByMachineId: params.machineId,
                 leaseExpiresAt: params.leaseExpiresAt,
@@ -477,7 +495,9 @@ async function tryClaimRun(params: {
         });
     }
 
-    const previousState = params.previousState === "running" ? "running" : "claimed";
+    const previousState = params.previousState === "pause_requested"
+        ? "pause_requested"
+        : params.previousState === "running" ? "running" : "claimed";
     return await params.tx.automationRun.updateMany({
         where: {
             id: params.runId,
@@ -492,7 +512,8 @@ async function tryClaimRun(params: {
             assignments: runAssignmentClaimWhere(params.machineId),
         },
         data: {
-            state: "claimed",
+            state: previousState === "pause_requested" ? "pause_requested" : "claimed",
+            workflowResumeRequestedRevision: null,
             claimedAt: params.now,
             claimedByMachineId: params.machineId,
             leaseExpiresAt: params.leaseExpiresAt,
@@ -534,7 +555,74 @@ async function projectClaimedRunWithTriggerCurrentness(
     return {
         ...run,
         triggerRetired: run.triggerId !== null && currentTrigger === null,
+        ...await readLastSucceededTriggerRunTx(tx, run),
     };
+}
+
+/** Private checkpoint bytes always come from their transition-managed Run owner. */
+async function readSucceededCheckpointTx(tx: Tx, params: Readonly<{
+    accountId: string; runId: string; triggerId: string;
+}>): Promise<Readonly<{ runId: string; checkpointEnvelope: string }> | undefined> {
+    const previous = await tx.automationRun.findFirst({
+        where: { id: params.runId, accountId: params.accountId, triggerId: params.triggerId, state: "succeeded" },
+        select: { id: true, workflowCheckpointEnvelope: true },
+    });
+    if (!previous?.workflowCheckpointEnvelope) return undefined;
+    const witness = await fetchAutomationAccountCurrentnessWitnessTx(tx, params.accountId);
+    const parsed = parseWorkflowStoredContentEnvelopeV1(previous.workflowCheckpointEnvelope);
+    if (!witness || parsed === null
+        || validateWorkflowStoredEnvelopeOuterForModeV1({ mode: witness.mode,
+            binding: { v: 1, purpose: "checkpoint", accountId: params.accountId, runId: previous.id },
+            envelope: parsed,
+        }).kind !== "available") return undefined;
+    return { runId: previous.id, checkpointEnvelope: previous.workflowCheckpointEnvelope };
+}
+
+async function readLastSucceededTriggerRunTx(tx: Tx, run: AutomationClaimRun) {
+    if (run.triggerId === null || run.automation?.scopeSessionId == null) return {};
+    // Do not filter missing checkpoints: an uncertified latest success means always review.
+    const previous = await tx.automationRun.findFirst({
+        where: { accountId: run.accountId, triggerId: run.triggerId, state: "succeeded" },
+        orderBy: [{ finishedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }], select: { id: true },
+    });
+    if (!previous) return {};
+    const lastSucceededRun = await readSucceededCheckpointTx(tx, {
+        accountId: run.accountId, runId: previous.id, triggerId: run.triggerId,
+    });
+    return lastSucceededRun ? { lastSucceededRun } : {};
+}
+
+/** Reads the host-stamped firing fact and scoped source; missing facts never imply depth zero. */
+async function readAutomationCauseWorkDepthTx(tx: Tx, run: Readonly<{
+    accountId: string;
+    causeKind: string | null;
+    causeTriggerKind: string | null;
+    causeSourceSessionId: string | null;
+    causeSourceTurnId: string | null;
+    automation: Readonly<{ scopeSessionId: string | null }> | null;
+}>): Promise<Readonly<{ kind: "available"; workDepth: number }>
+    | Readonly<{ kind: "unavailable"; errorCode: "source_unavailable" }>> {
+    const isLifecycleCause = run.causeKind === "trigger" && run.causeTriggerKind === "sessionLifecycle";
+    const scopeSessionId = run.automation?.scopeSessionId;
+    // A lifecycle source read below also proves its identical scoped Session.
+    if (scopeSessionId && (!isLifecycleCause || scopeSessionId !== run.causeSourceSessionId)
+        && !await tx.session.findFirst({ where: { id: scopeSessionId, accountId: run.accountId }, select: { id: true } })) {
+        return { kind: "unavailable", errorCode: "source_unavailable" };
+    }
+    if (!isLifecycleCause) return { kind: "available", workDepth: 0 };
+    if (run.causeSourceSessionId === null) return { kind: "unavailable", errorCode: "source_unavailable" };
+    const source = run.causeSourceTurnId === null
+        ? await tx.session.findFirst({
+            where: { id: run.causeSourceSessionId, accountId: run.accountId }, select: { workDepth: true },
+        })
+        : await tx.sessionTurn.findFirst({
+            where: { sessionId: run.causeSourceSessionId, turnId: run.causeSourceTurnId,
+                session: { accountId: run.accountId } }, select: { workDepth: true },
+        });
+    if (!source || !Number.isSafeInteger(source.workDepth) || source.workDepth < 0) {
+        return { kind: "unavailable", errorCode: "source_unavailable" };
+    }
+    return { kind: "available", workDepth: source.workDepth };
 }
 
 /**
@@ -641,6 +729,10 @@ async function resolveClaimReceiptTx(params: Readonly<{
         retainedV2OriginKind,
         accountCurrentness: replayWitness,
     })) return { run: null, accountCurrentness: null };
+    const lastSucceededRun = run.automationId !== null && run.lastSucceededRun && run.triggerId !== null
+        ? await readSucceededCheckpointTx(params.tx, {
+            accountId: params.accountId, runId: run.lastSucceededRun.runId, triggerId: run.triggerId,
+        }) : undefined;
     return {
         run: null,
         accountCurrentness: replayWitness,
@@ -653,6 +745,7 @@ async function resolveClaimReceiptTx(params: Readonly<{
                 : {
                     ...run,
                     executionInputEnvelope: currentAttempt.executionInputEnvelope,
+                    lastSucceededRun,
                     ...(currentAttempt.workflowCustodyState !== null
                         ? { automationEvidenceEnvelope: currentAttempt.triggerEvidenceEnvelope }
                         : {}),
@@ -696,12 +789,13 @@ export async function claimAutomationRun(params: {
     machineId: string;
     leaseDurationMs: number;
     expectedTriggerKind?: AutomationTriggerKind;
-    requireV2RunRepresentability?: boolean;
-    /** Exact V3 signed request identity; omitted only by the released V2 seam. */
+
+    /** Exact signed HTTP claim identity; direct service callers may omit a receipt. */
     claimRequest?: AutomationClaimRequest;
     recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
+    scope?: "session_scoped";
 }): Promise<AutomationClaimResult> {
-    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? resolveAutomationRecipeFeaturePolicy();
+    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? await resolveAutomationRecipeFeaturePolicy();
     const execute = async (): Promise<AutomationClaimResult> => await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status === "account_not_found") {
@@ -769,9 +863,8 @@ export async function claimAutomationRun(params: {
         const leaseExpiresAt = resolveClaimLeaseExpiresAt({ now, leaseDurationMs: params.leaseDurationMs });
 
         const candidatePageSize = 25;
-        // One bounded candidate page per claim attempt. The released-V2
-        // discriminator keeps that page free of current-recipe Runs, so no
-        // claim path pages through incompatible work.
+        // One bounded candidate page per claim attempt; frozen input validation
+        // decides admission for both current recipes and retained 0.2 data.
         const candidates = await findClaimCandidates({
             tx,
             accountId: params.accountId,
@@ -779,11 +872,21 @@ export async function claimAutomationRun(params: {
             now,
             limit: candidatePageSize,
             expectedTriggerKind: params.expectedTriggerKind,
-            requireV2RunRepresentability: params.requireV2RunRepresentability,
             recipeFeaturePolicy,
+            scope: params.scope,
         });
 
         for (const candidate of candidates) {
+            if (candidate.triggerId) {
+                const scoped = await lockScopedAutomationTriggerInTx(tx, params.accountId, candidate.triggerId);
+                if (scoped && candidate.state === "queued") {
+                    const active = await tx.automationRun.findFirst({ where: {
+                        accountId: params.accountId, triggerId: candidate.triggerId,
+                        state: { notIn: ["queued", ...AUTOMATION_RUN_TERMINAL_STATES] },
+                    }, select: { id: true } });
+                    if (active) continue;
+                }
+            }
             if (!isClaimCandidateState(candidate.state)) {
                 continue;
             }
@@ -797,6 +900,21 @@ export async function claimAutomationRun(params: {
             const preclaimCurrentness = await fetchAutomationAccountCurrentnessWitnessTx(tx, params.accountId);
             if (!preclaimCurrentness) {
                 return await settleClaimRequest({ run: null, accountCurrentness: null });
+            }
+            const causeWorkDepth = await readAutomationCauseWorkDepthTx(tx, { ...candidate, accountId: params.accountId });
+            if (causeWorkDepth.kind === "unavailable") {
+                if (candidate.state === "queued" && candidate.automationId !== null
+                    && (candidate.workflowCustodyState === null || candidate.workflowCustodyState === "pending")) {
+                    await failInvalidAutomationRunBeforeClaimTx({
+                        tx, accountId: params.accountId, automationId: candidate.automationId,
+                        runId: candidate.id, state: candidate.state, runRevision: candidate.revision,
+                        executionInputEnvelope: candidate.executionInputEnvelope,
+                        workflowCustodyState: candidate.workflowCustodyState,
+                        errorCode: causeWorkDepth.errorCode, accountCurrentness: preclaimCurrentness, now,
+                    });
+                }
+                // Reclaim never terminalizes already-started custody from a missing source.
+                continue;
             }
             if (!hasExactDerivedAssignmentIndex(candidate)) {
                 if (candidate.state === "queued" && candidate.automationId !== null) {
@@ -814,46 +932,15 @@ export async function claimAutomationRun(params: {
                 }
                 continue;
             }
-            const hasV2FrozenRecipe = params.requireV2RunRepresentability
-                ? hasClaimableFrozenRecipe({
-                    accountId: params.accountId,
-                    runId: candidate.id,
-                    originKind: candidate.originKind,
-                    executionInputEnvelope: candidate.executionInputEnvelope,
-                    workflowAcceptedSnapshotEnvelope: candidate.workflowAcceptedSnapshotEnvelope,
-                    workflowCustodyState: candidate.workflowCustodyState,
-                    retainedV2OriginKind: candidate.originKind === "automation"
-                        ? retainedV2OriginKindForRun(candidate)
-                        : undefined,
-                    accountCurrentness: preclaimCurrentness,
-                    requireV2RunRepresentability: true,
+
                 })
                 : null;
             const parsedCandidateRecipe = parseAutomationRunExecutionRecipeV1(candidate.executionInputEnvelope);
             const isExecutionRun = parsedCandidateRecipe.kind === "available"
                 && parsedCandidateRecipe.recipe.target.kind === "executionRun";
-            if (hasV2FrozenRecipe === false) {
-                // The persisted discriminator already proves this is retained
-                // V2 input, while the parsed predicate proves that its frozen
-                // origin/mode contradicts the immutable Run. No current or V2
-                // worker can execute it, so leave terminality to the incumbent
-                // Run owner instead of letting one poisoned page starve later
-                // compatible work forever.
-                if (candidate.automationId !== null) await failInvalidAutomationRunBeforeClaimTx({
-                    tx,
-                    accountId: params.accountId,
-                    automationId: candidate.automationId,
-                    runId: candidate.id,
-                    state: candidate.state,
-                    runRevision: candidate.revision,
-                    executionInputEnvelope: candidate.executionInputEnvelope,
-                    accountCurrentness: preclaimCurrentness,
-                    now,
-                });
-                continue;
-            }
+
             if (
-                candidate.state !== "queued"
+                candidate.state !== "queued" && candidate.state !== "pause_requested"
                 && (
                     candidate.executionDispatchState === "dispatchPermitted"
                     || (
@@ -879,8 +966,7 @@ export async function claimAutomationRun(params: {
                 continue;
             }
             if (
-                !params.requireV2RunRepresentability
-                && !hasClaimableFrozenRecipe({
+                !hasClaimableFrozenRecipe({
                     accountId: params.accountId,
                     runId: candidate.id,
                     originKind: candidate.originKind,
@@ -893,7 +979,7 @@ export async function claimAutomationRun(params: {
                     accountCurrentness: preclaimCurrentness,
                 })
             ) {
-                if (candidate.automationId !== null) await failInvalidAutomationRunBeforeClaimTx({
+                if (candidate.automationId !== null && candidate.state !== "pause_requested") await failInvalidAutomationRunBeforeClaimTx({
                     tx,
                     accountId: params.accountId,
                     automationId: candidate.automationId,
@@ -953,7 +1039,16 @@ export async function claimAutomationRun(params: {
                 throw new Error("Automation Account currentness became unavailable during claim");
             }
 
-            if (run.originKind === "automation") {
+            if (candidate.state === "pause_requested") {
+                // Workflow control states use the existing machine-only
+                // projection; they are not Automation lifecycle enum members.
+                afterTx(tx, () => emitAutomationRunUpdatedToMachineOnly({
+                    accountId: params.accountId,
+                    machineId: params.machineId,
+                    run: { ...run, state: "pause_requested" },
+                    cursor,
+                }));
+            } else if (run.originKind === "automation") {
                 const automationRun = projectAutomationOriginRun(projectedRun);
                 if (!automationRun) throw new Error("Claimed Automation Run has invalid origin correspondence");
                 const previousState = candidate.state;
@@ -968,7 +1063,11 @@ export async function claimAutomationRun(params: {
             }
 
             return await settleClaimRequest({
-                run: { ...projectedRun, recipeKind: recipeKindForClaimRun(projectedRun) },
+                run: { ...projectedRun, recipeKind: recipeKindForClaimRun(projectedRun),
+                    // The CAS consumed this request. Keep it only in this exact
+                    // claim/receipt, never in the re-read mutable Run row.
+                    workflowResumeRequestedRevision: candidate.workflowResumeRequestedRevision,
+                    causeWorkDepth: causeWorkDepth.workDepth },
                 accountCurrentness,
             });
         }
@@ -1010,55 +1109,20 @@ export async function heartbeatAutomationRun(params: {
     accountId: string;
     runId: string;
     machineId: string;
-    /** Released V2 workers omitted this token; their adapter resolves it from the current same-machine lease. */
     attempt?: number;
     leaseDurationMs: number;
     expectedTriggerKind?: AutomationTriggerKind;
-    requireV2RunRepresentability?: boolean;
+
 }): Promise<{ ok: boolean; leaseExpiresAt: Date | null }> {
     return await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status !== "ready") return { ok: false, leaseExpiresAt: null };
-        if (
-            params.requireV2RunRepresentability
-            && await readMachineAvailabilityStateInTx({
-                tx,
-                accountId: params.accountId,
-                machineId: params.machineId,
-            }) !== "available"
-        ) return { ok: false, leaseExpiresAt: null };
+
         const now = new Date();
         const leaseExpiresAt = resolveClaimLeaseExpiresAt({ now, leaseDurationMs: params.leaseDurationMs });
 
-        const candidate = params.requireV2RunRepresentability
-            ? await tx.automationRun.findFirst({
-                where: {
-                    id: params.runId,
-                    accountId: params.accountId,
-                    claimedByMachineId: params.machineId,
-                    ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
-                    state: { in: ["claimed", "running"] },
-                    leaseExpiresAt: { gt: now },
-                    ...expectedRunTriggerCauseWhere(params.expectedTriggerKind),
-                },
-                select: automationRunWithAutomationSelect,
-            })
-            : null;
-        if (candidate) assertAutomationClaimRun(candidate);
-        if (
-            params.requireV2RunRepresentability
-            && (
-                !candidate?.executionInputEnvelope
-                || validateRetainedAutomationRunExecutionInputV2OuterForMode({
-                    raw: candidate.executionInputEnvelope,
-                    mode: accountFence.account.currentness.encryptionMode,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(candidate),
-                })?.kind !== "available"
-            )
-        ) {
-            return { ok: false, leaseExpiresAt: null };
-        }
-        const expectedAttempt = candidate?.attempt ?? params.attempt;
+
+        const expectedAttempt = params.attempt;
         if (expectedAttempt === undefined) {
             return { ok: false, leaseExpiresAt: null };
         }
@@ -1069,18 +1133,12 @@ export async function heartbeatAutomationRun(params: {
                 accountId: params.accountId,
                 claimedByMachineId: params.machineId,
                 attempt: expectedAttempt,
-                state: { in: ["claimed", "running"] },
+                state: { in: ["claimed", "running", "pause_requested"] },
                 leaseExpiresAt: { gt: now },
                 ...expectedRunTriggerCauseWhere(params.expectedTriggerKind),
-                ...(candidate
-                    ? {
-                        executionInputEnvelope: candidate.executionInputEnvelope,
-                    }
-                    : {}),
             },
             data: {
                 leaseExpiresAt,
-                revision: { increment: 1 },
                 updatedAt: now,
             },
         });

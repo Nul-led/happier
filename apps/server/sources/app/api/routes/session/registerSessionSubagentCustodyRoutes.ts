@@ -17,7 +17,7 @@ import {
 import {
     listSessionSubagentCustody,
     mutateSessionSubagentCustody,
-    retireSessionSubagentCustodyGeneration,
+    retireSessionSubagentCustodySource,
 } from '@/app/session/subagents/sessionSubagentCustodyService';
 import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
@@ -28,7 +28,7 @@ const ErrorSchema = z.object({ error: z.string(), code: z.string().optional() })
 
 function mutationErrorStatus(error: string): 400 | 404 | 409 | 500 {
     if (error === 'session-not-found') return 404;
-    if (error === 'generation-retired' || error === 'idempotency-conflict' || error === 'capacity-exceeded' || error === 'cas-conflict' || error === 'terminal-regression') return 409;
+    if (error === 'source-retired' || error === 'idempotency-conflict' || error === 'capacity-exceeded' || error === 'cas-conflict' || error === 'terminal-regression') return 409;
     if (error === 'invalid-params') return 400;
     return 500;
 }
@@ -74,7 +74,7 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
             authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) {
-            const status = result.error === 'invalid-params' ? 400 : result.error === 'session-not-found' ? 404 : result.error === 'generation-retired' ? 409 : 500;
+            const status = result.error === 'invalid-params' ? 400 : result.error === 'session-not-found' ? 404 : result.error === 'source-retired' ? 409 : 500;
             return reply.code(status).send({ error: result.error });
         }
         return reply.send({ records: result.records });
@@ -102,7 +102,7 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
         return reply.send({ record: result.record, replayed: result.replayed });
     });
 
-    app.post('/v2/session-subagents/custody/generation-retirements', {
+    app.post('/v2/session-subagents/custody/source-retirements', {
         preHandler: app.authenticate,
         schema: {
             body: SessionSubagentCustodyRetirementRequestV1Schema,
@@ -111,7 +111,7 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
     }, async (request, reply) => {
         const parsed = SessionSubagentCustodyRetirementRequestV1Schema.safeParse(request.body);
         if (!parsed.success) return reply.code(400).send({ error: 'Invalid parameters' });
-        const result = await retireSessionSubagentCustodyGeneration({
+        const result = await retireSessionSubagentCustodySource({
             actorUserId: request.userId,
             request: parsed.data,
         });

@@ -8,6 +8,7 @@ import { resolveApiHotEndpointRateLimit } from "../../../utils/apiRateLimitCatal
 import {
     createConnectedAccountAttemptTransaction,
     deleteConnectedAccountAttemptTransaction,
+    listPendingConnectedAccountAttemptTransactions,
     readConnectedAccountAttemptTransaction,
     replaceConnectedAccountAttemptTransaction,
 } from "./connectedAccountAttemptTransactionStore";
@@ -43,9 +44,22 @@ const TransactionEnvelopeSchema = StoredJsonContentEnvelopeSchema
         }
     });
 
+const TransactionScopeSchema = z.object({
+    machineId: z.string().min(1).max(256),
+    service: z.object({
+        pluginId: z.string().min(1).max(256),
+        localId: z.string().min(1).max(256),
+    }).strict(),
+    modeId: z.string().min(1).max(256),
+    intent: z.enum(["connect", "reconnect"]),
+    phase: z.enum(["starting", "awaitingOAuth", "awaitingDeviceAuthorization", "outcomeUnknown"]),
+    createdAtMs: z.number().int().nonnegative(),
+}).strict();
+
 const TransactionContentSchema = z.object({
     content: TransactionEnvelopeSchema,
     expiresAtMs: z.number().int().positive(),
+    scope: TransactionScopeSchema,
 }).strict();
 
 const TransactionMutationSchema = TransactionContentSchema.extend({
@@ -109,6 +123,49 @@ export function registerConnectedAccountAttemptTransactionRoutes(
         404: TransactionErrorSchema,
         409: TransactionErrorSchema,
     };
+
+    app.get("/v2/connect/connected-account-attempt-transactions/pending", {
+        preHandler: app.authenticate,
+        config: {
+            rateLimit: resolveApiHotEndpointRateLimit(
+                process.env,
+                "connectedServices.deviceAuth.poll",
+            ),
+        },
+        schema: {
+            querystring: z.object({
+                machineId: z.string().min(1).max(256),
+                pluginId: z.string().min(1).max(256),
+                localId: z.string().min(1).max(256),
+            }).strict(),
+            response: {
+                200: z.object({
+                    attempts: z.array(z.object({
+                        attemptId: TransactionParamsSchema.shape.attemptId,
+                        kind: TransactionParamsSchema.shape.kind,
+                        modeId: z.string().min(1).max(256),
+                        intent: z.enum(["connect", "reconnect"]),
+                        phase: TransactionScopeSchema.shape.phase,
+                        createdAtMs: z.number().int().nonnegative(),
+                        expiresAtMs: z.number().int().positive(),
+                    }).strict()),
+                }).strict(),
+                409: TransactionErrorSchema,
+            },
+        },
+    }, async (request, reply) => {
+        const result = await listPendingConnectedAccountAttemptTransactions({
+            accountId: request.userId,
+            machineId: request.query.machineId,
+            service: {
+                pluginId: request.query.pluginId,
+                localId: request.query.localId,
+            },
+            nowMs: Date.now(),
+        });
+        if (result.status !== "ok") return sendMutationError(reply, result.status);
+        return reply.send({ attempts: [...result.attempts] });
+    });
 
     app.post("/v2/connect/connected-account-attempt-transactions/:kind/:attemptId", {
         preHandler: app.authenticate,

@@ -11,15 +11,14 @@ describe('buildAppendSystemPromptBaseV1', () => {
     })).toBe('BASE');
   });
 
-  it('uses the enabled default when the guidance setting is absent', () => {
+  it('keeps role guidance out of the frozen fresh-session base when execution runs are enabled', () => {
     const out = buildAppendSystemPromptBaseV1({
       settings: {},
       base: 'BASE',
       executionRunsFeatureEnabled: true,
     });
 
-    expect(out).toContain("current backend's native subagent facility by default");
-    expect(out.toLowerCase()).not.toContain('custom rule');
+    expect(out).toBe('BASE');
   });
 
   it('honors an explicit guidance opt-out', () => {
@@ -45,12 +44,12 @@ describe('buildAppendSystemPromptBaseV1', () => {
       executionRunsFeatureEnabled: true,
     });
 
-    expect(out).toContain("current backend's native subagent facility by default");
+    expect(out).toBe('BASE');
     expect(out.toLowerCase()).not.toContain('custom rule');
     expect(out).not.toContain('Disabled custom rule');
   });
 
-  it('appends execution runs guidance when enabled', () => {
+  it('does not freeze legacy routing entries into the fresh-session base', () => {
     const out = buildAppendSystemPromptBaseV1({
       settings: {
         executionRunsGuidanceEnabled: true,
@@ -67,11 +66,7 @@ describe('buildAppendSystemPromptBaseV1', () => {
       executionRunsFeatureEnabled: true,
     });
 
-    expect(out).toContain('BASE');
-    expect(out).toContain('Happier-Managed Runs');
-    expect(out).toContain('Always use execution runs for code reviews.');
-    expect(out).toContain('backend=agent:claude');
-    expect(out.indexOf('Happier-Managed Runs')).toBeLessThan(out.indexOf('Custom Execution-Run Rules'));
+    expect(out).toBe('BASE');
   });
 
   it('appends memory recall guidance only when explicitly enabled', () => {

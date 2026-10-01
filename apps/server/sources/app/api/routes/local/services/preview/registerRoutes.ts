@@ -1,8 +1,12 @@
 import {
     LocalServicePreviewResourceV1Schema,
     type LocalServicePreviewResourceV1,
-} from "@happier-dev/protocol";
+    type LocalServicePreviewDirectBindingV1,
+} from "@happier-dev/protocol/local/services/preview/v1";
 import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { db } from '@/storage/db';
+import { LocalServicePreviewAccessRequestV1Schema, LocalServicePreviewServerAccessV1Schema, LocalServicePreviewNativeRegistrationRequestV1Schema, type LocalServicePreviewNativeDirectAccessRequestV1, type LocalServicePreviewNativeDirectAccessV1 } from '@happier-dev/protocol/local/services/preview/nativeDirect';
+import type { MachineIrohEndpointAuthorityV1 } from '@happier-dev/protocol';
 
 import type { Fastify } from "@/app/api/types";
 import {
@@ -35,7 +39,7 @@ type PreviewAccessValidationResult =
     | Readonly<{ ok: false; reasonCode: string }>;
 
 type PreviewAccessExchangeResult =
-    | Readonly<{ ok: true; rawToken: string; expiresAt: number }>
+    | Readonly<{ ok: true; rawToken: string; expiresAt: number | null }>
     | Readonly<{ ok: false; reasonCode: string }>;
 
 export type LocalServicePreviewSessionAccessPurpose = "register" | "proxy" | "unregister";
@@ -44,14 +48,7 @@ export type RegisterLocalServicePreviewRoutesOptions = Readonly<{
     resolvePreview: (previewId: string) => LocalServicePreviewResourceV1 | null | undefined;
     resolvePreviewByHost?: (hostname: string) => LocalServicePreviewResourceV1 | null | undefined;
     hostOriginBaseDomain?: string | null;
-    /**
-     * Whether the canonical public base URL is `https:` (F-5 / audit S-9). Path-mode preview
-     * cookies are marked `Secure` when it is. It cannot be unconditional: on a plain-http
-     * deployment a `Secure` cookie is dropped by the browser, which would break the private
-     * preview outright. The production composition site always supplies this; it defaults to
-     * `false` so an http-only caller keeps working rather than silently losing the feature.
-     */
-    publicBaseUrlSecure?: boolean;
+    externalProtocol?: "http" | "https";
     authorizeSessionAccess?: (input: Readonly<{
         userId: string;
         sessionId: string;
@@ -61,27 +58,34 @@ export type RegisterLocalServicePreviewRoutesOptions = Readonly<{
     validateAccess: (input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>) => PreviewAccessValidationResult;
     exchangeAccessToken?: (input: Readonly<{
         previewId: string;
         rawToken: string | null;
-        sessionId: string;
+        sessionId: string | undefined;
         machineId: string;
     }>) => PreviewAccessExchangeResult;
     registerPreview?: (input: LocalServicePreviewRuntimeRegistrationInput) => LocalServicePreviewRuntimeRegistrationResult;
+    resolveNativeDirectTarget?: (input: Readonly<{ accountId: string; machineId: string }>) => Promise<MachineIrohEndpointAuthorityV1 | null>;
+    mintNativeDirectAccess?: (input: Readonly<{ previewId: string; request: LocalServicePreviewNativeDirectAccessRequestV1; target: MachineIrohEndpointAuthorityV1 }>) => Readonly<{ ok: true; access: LocalServicePreviewNativeDirectAccessV1 } | { ok: false; reasonCode: string }>;
+    nativeDirectEnabled?: (request: object) => boolean | Promise<boolean>;
+    openNativeRegistration?: (binding: LocalServicePreviewDirectBindingV1, grantId: string) => Readonly<{ ok: true; signal: AbortSignal; close: () => void } | { ok: false; reasonCode: string }>;
     unregisterPreview?: (previewId: string) => Readonly<{ ok: true } | { ok: false; reasonCode: string }>;
     openTunnel?: OpenLocalServicePreviewTunnel;
     observability?: PeerMediationObservabilityEmitter;
     resolvePreviewAccountId?: (previewId: string) => string | null | undefined;
-    featureEnabled?: () => boolean;
+    /** The upgrade request being served, so the decision reads that request's Home configuration. */
+    featureEnabled?: (request: object) => boolean | Promise<boolean>;
     proxyHttp?: (input: Parameters<typeof proxyLocalServicePreviewHttpRequest>[0]) => Promise<ProxyLocalServicePreviewHttpRequestResult>;
     proxyWebSocket?: (input: ProxyLocalServicePreviewWebSocketUpgradeInput) => Promise<ProxyLocalServicePreviewWebSocketUpgradeResult>;
 }>;
 
 type RouteRequest = Readonly<{
+    raw?: import('node:http').IncomingMessage;
     method?: string;
+    protocol?: string;
     params?: Record<string, unknown>;
     query?: Record<string, unknown>;
     headers?: Record<string, unknown>;
@@ -92,6 +96,7 @@ type RouteRequest = Readonly<{
 }>;
 
 type RouteReply = {
+    hijack?: () => RouteReply;
     code?: (statusCode: number) => RouteReply;
     header?: (name: string, value: string | readonly string[]) => RouteReply;
     send?: (payload?: unknown) => unknown;
@@ -113,6 +118,7 @@ type UpgradeRequest = Readonly<{
     url?: string;
     headers?: Record<string, string | readonly string[] | undefined>;
     rawHeaders?: readonly string[];
+    socket?: { encrypted?: boolean };
 }>;
 
 type UpgradeSocket = LocalServicePreviewUpgradeSocket;
@@ -255,10 +261,6 @@ type PreviewHttpRouteTarget = Readonly<{
     exchangeRedirectLocation: string;
 }>;
 
-function pathModePreviewCookiePath(previewId: string): string {
-    return `/v1/local-services/preview/${encodeURIComponent(previewId)}/`;
-}
-
 function resolvePreviewHttpRouteTarget(
     request: RouteRequest,
     options: RegisterLocalServicePreviewRoutesOptions,
@@ -268,24 +270,7 @@ function resolvePreviewHttpRouteTarget(
     const tokenMaterial = readPreviewTokenMaterial(request);
     const previewId = readPreviewId(request);
     if (previewId) {
-        const preview = options.resolvePreview(previewId);
-        if (!preview) {
-            return { errorStatusCode: 404, error: "preview_not_found", reasonCode: "preview_not_found" };
-        }
-        return {
-            previewId,
-            preview,
-            path,
-            search,
-            tokenMaterial,
-            exchangeCookiePath: pathModePreviewCookiePath(previewId),
-            // F-5: host mode is always https, so it hard-codes `true`. Path mode follows the
-            // deployment: `Secure` on https, omitted on http where it would drop the cookie.
-            exchangeCookieSecure: options.publicBaseUrlSecure === true,
-            // `pathModePreviewCookiePath` already ends in `/`; the encoded wildcard path always
-            // begins with one, so join them without producing a `//` segment.
-            exchangeRedirectLocation: `${pathModePreviewCookiePath(previewId)}${path.replace(/^\/+/u, "")}${search}`,
-        };
+        return { errorStatusCode: 404, error: "preview_not_found", reasonCode: "host_origin_unavailable" };
     }
 
     const hostname = readHostHeader(request.headers);
@@ -463,8 +448,9 @@ function createPreviewHttpRequest(
                         : [[key, String(value)]]
             )),
         ),
-        body: bodyChunks(request.body),
+        body: request.body === undefined ? undefined : bodyChunks(request.body),
         signal,
+        externalProtocol: request.protocol === "https" ? "https" : "http",
     };
 }
 
@@ -489,31 +475,6 @@ function upgradeUrl(request: UpgradeRequest): URL | null {
     }
 }
 
-function parsePreviewUpgradeRoute(request: UpgradeRequest): PreviewUpgradeRoute | null {
-    const url = upgradeUrl(request);
-    if (!url || !url.pathname.startsWith(PREVIEW_UPGRADE_ROUTE_PREFIX)) {
-        return null;
-    }
-    const rest = url.pathname.slice(PREVIEW_UPGRADE_ROUTE_PREFIX.length);
-    const [encodedPreviewId, ...pathParts] = rest.split("/");
-    let decodedPreviewId: string | null = null;
-    try {
-        decodedPreviewId = encodedPreviewId ? decodeURIComponent(encodedPreviewId) : null;
-    } catch {
-        return null;
-    }
-    const previewId = readString(decodedPreviewId);
-    if (!previewId) return null;
-
-    const rawToken = readPreviewTokenFromUrl(url) ?? readCookieToken(request.headers);
-    return {
-        previewId,
-        path: `/${pathParts.join("/")}`,
-        search: serializeUrlSearchWithoutPreviewToken(url),
-        rawToken,
-    };
-}
-
 function sendError(reply: RouteReply, statusCode: number, error: string, reasonCode: string): void {
     reply.code?.(statusCode).send?.({ error, reasonCode });
 }
@@ -532,6 +493,31 @@ async function isSessionAuthorized(
         sessionId: input.sessionId,
         purpose: input.purpose,
         authentication: readSessionAccessAuthenticationFromRequest(request),
+    });
+}
+
+async function isPreviewLifecycleAuthorized(
+    request: RouteRequest,
+    options: RegisterLocalServicePreviewRoutesOptions,
+    preview: LocalServicePreviewResourceV1,
+    purpose: LocalServicePreviewSessionAccessPurpose,
+): Promise<boolean> {
+    const userId = readString(request.userId);
+    if (!userId) return false;
+    if (preview.owner.kind === 'user' && preview.owner.id !== userId) return false;
+    if (preview.owner.kind === 'session' && preview.owner.id !== preview.sessionId) return false;
+    if (purpose === 'proxy' && preview.sessionId !== undefined) {
+        return isSessionAuthorized(request, options, { sessionId: preview.sessionId, purpose });
+    }
+    const registeredAccountId = options.resolvePreviewAccountId?.(preview.previewId);
+    if (registeredAccountId && registeredAccountId !== userId) return false;
+    const machine = await db.machine.findFirst({
+        where: { id: preview.machineId, accountId: userId },
+        select: { id: true },
+    });
+    if (!machine) return false;
+    return preview.sessionId === undefined || await isSessionAuthorized(request, options, {
+        sessionId: preview.sessionId, purpose,
     });
 }
 
@@ -554,6 +540,16 @@ async function handlePreviewHttpRequest(
             machineId: target.preview.machineId,
         }) ?? { ok: false as const, reasonCode: "preview_token_exchange_unavailable" };
         if (!exchanged.ok) {
+            // A reload can still carry the already-consumed admission URL. A valid cookie for
+            // this exact registration may remove it without reissuing the cookie.
+            const cookieToken = readCookieToken(request.headers);
+            if (cookieToken && options.validateAccess({
+                previewId: target.previewId, rawToken: cookieToken,
+                sessionId: target.preview.sessionId, machineId: target.preview.machineId,
+            }).ok) {
+                reply.code?.(303).header?.('Location', target.exchangeRedirectLocation).send?.();
+                return undefined;
+            }
             sendError(reply, 401, "preview_access_denied", exchanged.reasonCode);
             return undefined;
         }
@@ -596,16 +592,18 @@ async function handlePreviewWebSocketUpgrade(
 ): Promise<void> {
     const url = upgradeUrl(request);
     if (!url) return;
-    const pathModeCandidate = url.pathname.startsWith(PREVIEW_UPGRADE_ROUTE_PREFIX);
-    const hostRouteCandidate = pathModeCandidate ? null : parseHostPreviewUpgradeRoute(request, options);
-    if (!pathModeCandidate && !hostRouteCandidate) return;
+    const hostRouteCandidate = parseHostPreviewUpgradeRoute(request, options);
+    if (!hostRouteCandidate) {
+        if (url.pathname.startsWith(PREVIEW_UPGRADE_ROUTE_PREFIX)) await sendUpgradeError(socket, 404, 'Not Found');
+        return;
+    }
 
-    if (options.featureEnabled && !options.featureEnabled()) {
+    if (options.featureEnabled && !await options.featureEnabled(request)) {
         await sendUpgradeError(socket, 404, "Not Found");
         return;
     }
 
-    const parsedRoute = parsePreviewUpgradeRoute(request) ?? hostRouteCandidate;
+    const parsedRoute = hostRouteCandidate;
     if (!parsedRoute) {
         await sendUpgradeError(socket, 400, "Bad Request");
         return;
@@ -650,6 +648,7 @@ async function handlePreviewWebSocketUpgrade(
                     )),
                 ),
                 rawHeaders: request.rawHeaders ?? [],
+                externalProtocol: request.socket?.encrypted ? "https" : options.externalProtocol ?? "http",
                 head,
                 client: createLocalServicePreviewUpgradeClient(socket),
             },
@@ -677,7 +676,7 @@ async function handleRegisterPreviewRequest(
         sendError(reply, 400, "invalid_preview_registration", "invalid_preview_resource");
         return;
     }
-    if (!await isSessionAuthorized(request, options, { sessionId: parsedResource.data.sessionId, purpose: "register" })) {
+    if (!await isPreviewLifecycleAuthorized(request, options, parsedResource.data, 'register')) {
         sendError(reply, 403, "preview_access_denied", "session_not_authorized");
         return;
     }
@@ -691,6 +690,8 @@ async function handleRegisterPreviewRequest(
     const result = options.registerPreview({
         resource: parsedResource.data,
         accountId: userId,
+        nativeDirectSupported: options.resolveNativeDirectTarget
+            ? Boolean(await options.resolveNativeDirectTarget({ accountId: userId, machineId: parsedResource.data.machineId })) : false,
     });
     if (!result.ok) {
         sendError(reply, 400, "invalid_preview_registration", result.reasonCode);
@@ -701,6 +702,8 @@ async function handleRegisterPreviewRequest(
         resource: result.resource,
         accessUrl: result.accessUrl,
         expiresAt: result.expiresAt,
+        ...(result.nativeDirect ? { nativeDirect: result.nativeDirect } : {}),
+        ...(result.accessUnavailableReasonCode ? { accessUnavailableReasonCode: result.accessUnavailableReasonCode } : {}),
     });
 }
 
@@ -724,7 +727,7 @@ async function handleUnregisterPreviewRequest(
         sendError(reply, 404, "preview_not_found", "preview_not_found");
         return;
     }
-    if (!await isSessionAuthorized(request, options, { sessionId: preview.sessionId, purpose: "unregister" })) {
+    if (!await isPreviewLifecycleAuthorized(request, options, preview, 'unregister')) {
         sendError(reply, 403, "preview_access_denied", "session_not_authorized");
         return;
     }
@@ -741,9 +744,9 @@ export function registerLocalServicePreviewRoutes(
     app: Fastify,
     options: RegisterLocalServicePreviewRoutesOptions,
 ): void {
-    app.server?.on?.("upgrade", (request, socket, head) => {
-        void handlePreviewWebSocketUpgrade(request as UpgradeRequest, socket as UpgradeSocket, head, options);
-    });
+    app.server?.on?.("upgrade", (request, socket, head) => (
+        handlePreviewWebSocketUpgrade(request as UpgradeRequest, socket as UpgradeSocket, head, options)
+    ));
 
     app.post(PREVIEW_REGISTRATION_ROUTE_PATH, {
         preHandler: app.authenticate,
@@ -757,28 +760,98 @@ export function registerLocalServicePreviewRoutes(
         await handleUnregisterPreviewRequest(request as RouteRequest, reply as RouteReply, options);
     });
 
+    app.post(`${PREVIEW_RESOURCE_ROUTE_PATH}/access`, { preHandler: app.authenticate }, async (rawRequest, rawReply) => {
+        const request = rawRequest as RouteRequest;
+        const reply = rawReply as RouteReply;
+        const previewId = readPreviewId(request);
+        const parsed = LocalServicePreviewAccessRequestV1Schema.safeParse(request.body);
+        if (!previewId || !parsed.success) return sendError(reply, 400, 'invalid_preview_request', 'invalid_native_access_request');
+        const resource = options.resolvePreview(previewId);
+        if (!resource) return sendError(reply, 404, 'preview_not_found', 'preview_not_found');
+        if (!await isPreviewLifecycleAuthorized(request, options, resource, 'proxy')) return sendError(reply, 403, 'preview_access_denied', 'session_not_authorized');
+        if (options.resolvePreview(previewId) !== resource) return sendError(reply, 404, 'preview_not_found', 'preview_not_found');
+        const accountId = options.resolvePreviewAccountId?.(previewId);
+        if ('kind' in parsed.data) {
+            if (!accountId || !options.registerPreview) return sendError(reply, 503, 'preview_transport_unavailable', 'server_preview_unavailable');
+            const admission = options.registerPreview({ resource, accountId });
+            if (!admission.ok) return sendError(reply, 503, 'preview_transport_unavailable', admission.reasonCode);
+            if (!admission.accessUrl || admission.expiresAt === null) return sendError(reply, 503, 'preview_transport_unavailable', 'preview_private_route_unavailable');
+            return reply.send?.(LocalServicePreviewServerAccessV1Schema.parse({
+                v: 1, kind: 'server_preview', previewId, machineId: resource.machineId,
+                accessUrl: admission.accessUrl, expiresAt: admission.expiresAt,
+            }));
+        }
+        if (!accountId || !options.resolveNativeDirectTarget || !options.mintNativeDirectAccess
+            || options.nativeDirectEnabled && !await options.nativeDirectEnabled(request)) return sendError(reply, 503, 'preview_transport_unavailable', 'native_preview_unavailable');
+        const target = await options.resolveNativeDirectTarget({ accountId, machineId: resource.machineId });
+        if (!target) return sendError(reply, 503, 'preview_transport_unavailable', 'machine_iroh_endpoint_unavailable');
+        // Revoke/replacement during the asynchronous target read cannot mint old authority.
+        if (options.resolvePreview(previewId) !== resource) return sendError(reply, 404, 'preview_not_found', 'preview_not_found');
+        const result = options.mintNativeDirectAccess({ previewId, request: parsed.data, target });
+        if (!result.ok) return sendError(reply, 503, 'preview_transport_unavailable', result.reasonCode);
+        reply.send?.(result.access);
+    });
+
+    app.post(`${PREVIEW_RESOURCE_ROUTE_PATH}/native-registration`, { preHandler: app.authenticate }, async (rawRequest, rawReply) => {
+        const request = rawRequest as RouteRequest;
+        const reply = rawReply as RouteReply;
+        const parsed = LocalServicePreviewNativeRegistrationRequestV1Schema.safeParse(request.body);
+        const previewId = readPreviewId(request);
+        if (!previewId || !parsed.success || parsed.data.previewId !== previewId) return sendError(reply, 400, 'invalid_preview_request', 'preview_registration_mismatch');
+        const resource = options.resolvePreview(previewId);
+        if (!resource) return sendError(reply, 404, 'preview_not_found', 'preview_not_found');
+        if (!await isPreviewLifecycleAuthorized(request, options, resource, 'register')) return sendError(reply, 403, 'preview_access_denied', 'session_not_authorized');
+        const { grantId, ...binding } = parsed.data;
+        const lease = options.openNativeRegistration?.(binding, grantId);
+        if (!lease?.ok) return sendError(reply, 404, 'preview_not_found', lease?.reasonCode ?? 'preview_registration_unavailable');
+        const raw = reply.raw;
+        if (!raw?.writeHead || !raw.write || !raw.end) { lease.close(); return sendError(reply, 503, 'preview_transport_unavailable', 'preview_registration_unavailable'); }
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
+            request.raw?.off('aborted', finish);
+            lease.signal.removeEventListener('abort', finish);
+            lease.close();
+            raw.end?.();
+        };
+        raw.once?.('close', finish);
+        request.raw?.once('aborted', finish);
+        lease.signal.addEventListener('abort', finish, { once: true });
+        reply.hijack?.();
+        raw.writeHead(200, 'OK', { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+        raw.write(textEncoder.encode(`${JSON.stringify({ v: 1, kind: 'preview_registration_admitted', previewId })}\n`));
+        if (lease.signal.aborted || request.raw?.aborted) finish();
+    });
+
     const hostRouteConstraint = hostOriginConstraint(options.hostOriginBaseDomain);
 
-    for (const method of PREVIEW_HTTP_METHODS) {
-        const handler = async (request: unknown, reply: unknown) => {
-            await handlePreviewHttpRequest(request as RouteRequest, reply as RouteReply, options);
-        };
-        if (method === "GET") {
-            app.get(PREVIEW_ROUTE_PATH, { exposeHeadRoute: false }, handler);
-            if (hostRouteConstraint) {
-                app.get(PREVIEW_HOST_ROUTE_PATH, {
-                    exposeHeadRoute: false,
-                    constraints: { host: hostRouteConstraint },
-                }, handler);
+    app.register(async (dataPlane) => {
+        // Data-plane bytes are owned by the upstream application. Control routes above retain
+        // their normal JSON parser and API body contract through Fastify encapsulation.
+        dataPlane.removeContentTypeParser(["application/json", "text/plain", "*"]);
+        dataPlane.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
+        for (const method of PREVIEW_HTTP_METHODS) {
+            const handler = async (request: unknown, reply: unknown) => {
+                await handlePreviewHttpRequest(request as RouteRequest, reply as RouteReply, options);
+            };
+            if (method === "GET") {
+                dataPlane.get(PREVIEW_ROUTE_PATH, { exposeHeadRoute: false }, handler);
+                if (hostRouteConstraint) {
+                    dataPlane.get(PREVIEW_HOST_ROUTE_PATH, {
+                        exposeHeadRoute: false,
+                        constraints: { host: hostRouteConstraint },
+                    }, handler);
+                }
+                continue;
             }
-            continue;
+            dataPlane[method.toLowerCase() as Lowercase<typeof method>](PREVIEW_ROUTE_PATH, handler);
+            if (method === "OPTIONS" || !hostRouteConstraint) {
+                continue;
+            }
+            dataPlane[method.toLowerCase() as Lowercase<typeof method>](PREVIEW_HOST_ROUTE_PATH, {
+                constraints: { host: hostRouteConstraint },
+            }, handler);
         }
-        app[method.toLowerCase() as Lowercase<typeof method>](PREVIEW_ROUTE_PATH, handler);
-        if (method === "OPTIONS" || !hostRouteConstraint) {
-            continue;
-        }
-        app[method.toLowerCase() as Lowercase<typeof method>](PREVIEW_HOST_ROUTE_PATH, {
-            constraints: { host: hostRouteConstraint },
-        }, handler);
-    }
+    });
 }

@@ -76,6 +76,29 @@ describe('Session Board Action contracts', () => {
       .toEqual({ ok: false, errorCode: 'cancelled', error: 'cancelled' });
     expect(projectSessionBoardAdapterFailureV1(new Error('unexpected')))
       .toEqual({ ok: false, errorCode: 'invalid_response', error: 'invalid_response' });
+    // A read that never reached the Home is the same disposition the mutation path already uses.
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'] as const) {
+      expect(projectSessionBoardAdapterFailureV1({ code }))
+        .toEqual({ ok: false, errorCode: 'offline', error: 'offline' });
+    }
+    expect(projectSessionBoardAdapterFailureV1({ cause: { code: 'ECONNREFUSED' } }))
+      .toEqual({ ok: false, errorCode: 'offline', error: 'offline' });
+    expect(projectSessionBoardAdapterFailureV1({ code: 'ERR_CANCELED' }))
+      .toEqual({ ok: false, errorCode: 'cancelled', error: 'cancelled' });
+    // A definite authorization denial stays `forbidden` and never becomes `not_authenticated`.
+    expect(projectSessionBoardAdapterFailureV1({ code: 'plugin_session_record_forbidden' }))
+      .toEqual({ ok: false, errorCode: 'forbidden', error: 'forbidden' });
+    // The feature refusal reuses the existing gate projection, which carries its operation.
+    expect(projectSessionBoardAdapterFailureV1(
+      { code: 'plugin_session_record_feature_disabled' },
+      'invalid_response',
+      'session.board.get',
+    )).toEqual({
+      ok: false,
+      errorCode: 'feature_disabled',
+      error: 'feature_disabled',
+      details: { operation: 'session.board.get' },
+    });
   });
   it('projects readable Board conflict revisions through generic Action failure details', () => {
     expect(projectSessionBoardActionFailureV1({
@@ -459,6 +482,55 @@ describe('Session Board Action contracts', () => {
     })).success).toBe(true);
   });
 
+  it('validates placement evidence with the semantics the layout operation actually guarantees', async () => {
+    const { SessionBoardActionRecoveryEvidenceV1Schema } = await import('./actions.js');
+    const layoutWithWideNote = {
+      v: 1 as const,
+      tabs: [{ id: 'overview', title: 'Overview', items: [{ itemId: 'note', width: 'wide' as const }] }],
+    };
+    const upsertEvidence = (placement: unknown, layout: unknown) => {
+      const mutationRequest = {
+        operation: 'upsert_item' as const,
+        itemId: 'note',
+        expectedItemRevision: revision,
+        itemContent: { t: 'plain' as const, v: item },
+        placement: { layoutContent: { t: 'plain' as const, v: layout }, expectedLayoutRevision: revision },
+      };
+      return {
+        v: 1,
+        actionId: 'session.board.item.upsert',
+        serverId: 'home-1',
+        sessionId: 'session-1',
+        requestBody: JSON.stringify(mutationRequest),
+        mutationRequest,
+        intent: { sessionId: 'session-1', itemId: 'note', expectedItemRevision: revision, item, placement },
+      };
+    };
+
+    // An omitted width preserves the existing placement width, so the evidence must accept it.
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'overview' }, layoutWithWideNote),
+    ).success).toBe(true);
+    // A tabTitle is consumed only when a missing view is created; it never renames an existing view.
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'overview', tabTitle: 'Renamed' }, layoutWithWideNote),
+    ).success).toBe(true);
+    // An explicitly invoked width is still compared exactly.
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'overview', width: 'narrow' }, layoutWithWideNote),
+    ).success).toBe(false);
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'overview', width: 'wide' }, layoutWithWideNote),
+    ).success).toBe(true);
+    // The item must still be present in the intended view.
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'other' }, layoutWithWideNote),
+    ).success).toBe(false);
+    expect(SessionBoardActionRecoveryEvidenceV1Schema.safeParse(
+      upsertEvidence({ tabId: 'overview' }, { v: 1 as const, tabs: [{ id: 'overview', title: 'Overview', items: [] }] }),
+    ).success).toBe(false);
+  });
+
   it('reports only facts the operation produced and never a removed item destination or preview', () => {
     const upsert = {
       v: 1,
@@ -521,6 +593,17 @@ describe('Session Board Action contracts', () => {
     expect(parseSessionBoardActionPortResultV1('session.board.item.upsert', input, {
       ...result, destination: { tabId: 'overview', width: 'compact' },
     }, binding).success).toBe(false);
+
+    // An update that moves an existing placement without naming a width keeps the width it had;
+    // the result validator must not invent the create-time default for it.
+    expect(parseSessionBoardActionPortResultV1('session.board.item.upsert', {
+      sessionId: 'session-1', itemId: 'note', expectedItemRevision: revision, item,
+      placement: { tabId: 'overview' },
+    }, {
+      ...result,
+      result: { operation: 'upsert_item', itemId: 'note', outcome: 'updated', itemRevision: revision, layoutRevision: revision },
+      destination: { tabId: 'overview', width: 'wide' },
+    }, binding).success).toBe(true);
 
     const updateWithoutPlacement = {
       sessionId: 'session-1', itemId: 'note', expectedItemRevision: revision, item,

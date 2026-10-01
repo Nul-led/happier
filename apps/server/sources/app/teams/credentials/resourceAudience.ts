@@ -6,11 +6,9 @@ import { resolveTeamCredentialCapabilities } from "../capabilities";
 import { resolveTeamMembershipContextInTx } from "../memberships/effectiveMembership";
 import { publishTeamChangedInTx } from "../teamChanges";
 import { recordTeamCredentialActivityInTx, type TeamCredentialActivityActor } from "./resourceActivity";
-import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
-import { readTeamCredentialBrokerPlacement, resolveTeamCredentialBrokerPoolForSaveInTx } from "./brokerPlacementResolver";
+import { readTeamCredentialBrokerPlacement, validateTeamCredentialBrokerPlacementForSaveInTx } from "./brokerPlacementResolver";
 import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
 import { retainEntitledTeamCredentialRecipientMaterialInTx } from "./recipientMaterial";
-import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
 import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
 
 export type TeamCredentialAudienceInput = Readonly<{
@@ -29,12 +27,11 @@ export async function validateTeamCredentialAudienceDraftInTx(
     tx: Tx,
     input: Readonly<{
         teamId: string;
-        custodianAccountId: string;
         disclosureCeiling: TeamCredentialDisclosureCeilingV1;
         brokerPlacement: TeamCredentialBrokerPlacementV1 | null;
         audience: Omit<TeamCredentialAudienceInput, 'resourceId' | 'expectedRevision'>;
     }>,
-): Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; error: 'invalid_audience' | 'disclosure_not_allowed' | 'broker_unavailable' | 'update_required' }>> {
+): Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; error: 'invalid_audience' | 'disclosure_not_allowed' | 'broker_unavailable' }>> {
     const { audience } = input;
     const modes = [
         ...(audience.allMembersDeliveryMode === null ? [] : [audience.allMembersDeliveryMode]),
@@ -49,28 +46,8 @@ export async function validateTeamCredentialAudienceDraftInTx(
     if (input.disclosureCeiling === 'brokered_only' && modes.some(mode => mode !== 'brokered')) {
         return { ok: false, error: 'disclosure_not_allowed' };
     }
-    if (modes.some(mode => mode !== 'direct')) {
-        if (input.brokerPlacement?.kind === 'machine') {
-            const broker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
-                custodianAccountId: input.custodianAccountId,
-                brokerMachineId: input.brokerPlacement.machineId,
-            });
-            if (!broker.ok) return broker;
-        } else if (input.brokerPlacement?.kind === 'machine_pool') {
-            const poolExists = await acquireMachinePoolMutationFenceInTx({
-                tx,
-                accountId: input.custodianAccountId,
-                poolId: input.brokerPlacement.poolId,
-            });
-            if (!poolExists) return { ok: false, error: 'broker_unavailable' };
-            const pool = await resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
-                custodianAccountId: input.custodianAccountId,
-                poolId: input.brokerPlacement.poolId,
-            });
-            if (!pool.ok) return pool;
-        } else {
-            return { ok: false, error: 'broker_unavailable' };
-        }
+    if (modes.some(mode => mode !== 'direct') && input.brokerPlacement === null) {
+        return { ok: false, error: 'broker_unavailable' };
     }
     const groups = await tx.teamGroup.findMany({
         where: { id: { in: audience.groupGrants.map(grant => grant.teamGroupId) }, teamId: input.teamId, archivedAt: null },
@@ -267,12 +244,20 @@ export async function setTeamCredentialAudienceInTx(
     if (!storedPlacement.ok) return { ok: false, error: "resource_corrupt" };
     const validation = await validateTeamCredentialAudienceDraftInTx(tx, {
         teamId: resource.teamId,
-        custodianAccountId: resource.custodianAccountId,
         disclosureCeiling: ceiling.data,
         brokerPlacement: storedPlacement.placement,
         audience: input,
     });
     if (!validation.ok) return validation;
+    // An audience-only withdrawal does not select a new location. Retain its
+    // repair path; an audience that still grants brokerage validates the saved location.
+    if (modes.some(mode => mode !== "direct")) {
+        const placement = await validateTeamCredentialBrokerPlacementForSaveInTx(tx, {
+            custodianAccountId: resource.custodianAccountId,
+            placement: storedPlacement.placement,
+        });
+        if (!placement.ok) return placement;
+    }
     const updated = await tx.teamCredentialResource.updateMany({
         where: { id: resource.id, revision: input.expectedRevision },
         data: { allMembersDeliveryMode: input.allMembersDeliveryMode, revision: { increment: 1 } },

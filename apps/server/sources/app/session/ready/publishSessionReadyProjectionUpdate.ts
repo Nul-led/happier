@@ -43,6 +43,9 @@ export async function publishSessionReadyProjectionUpdate(params: Readonly<{
                 {
                     latestReadyEventSeq: readyProjection.latestReadyEventSeq,
                     latestReadyEventAt: readyProjection.latestReadyEventAt,
+                    ...(readyProjection.latestReadyEventLocalId
+                        ? { latestReadyEventLocalId: readyProjection.latestReadyEventLocalId }
+                        : {}),
                 },
                 session,
                 accountId,

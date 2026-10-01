@@ -658,6 +658,19 @@ describe('ApprovalRequestV1Schema', () => {
 });
 
 describe('requiresExactDaemonApprovalReplay', () => {
+  it('keeps host Agent/MCP Account security requests on the deciding human Home adapter', () => {
+    for (const surface of ['agent', 'mcp'] as const) {
+      const approval = ApprovalRequestV2Schema.parse({
+        v: 2, status: 'open', createdAtMs: 1, updatedAtMs: 1,
+        createdBy: { surface, sessionId: 'session-1' }, requestedSurface: surface,
+        actionId: 'account.apiTokens.revokeAll', actionArgs: {}, summary: 'Revoke tokens',
+        executionOriginV1: { v: 1, authority: 'account_automation', surface,
+          caller: { kind: 'host' }, serverId: 'home', actionId: 'account.apiTokens.revokeAll',
+          requestId: 'request', sessionId: 'session-1', target: { kind: 'session', sessionId: 'session-1' } },
+      });
+      expect(requiresExactDaemonApprovalReplay(approval)).toBe(false);
+    }
+  });
   function approvalWithCaller(caller: unknown): unknown {
     return {
       v: 2,

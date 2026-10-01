@@ -38,6 +38,10 @@ describe('auth/keyChallenge', () => {
     };
 
     expect(KeyChallengeAuthRequestSchema.parse(request)).toEqual(request);
+    expect(KeyChallengeAuthRequestSchema.parse({ ...request, credentialKind: 'terminal' })).toEqual({
+      ...request, credentialKind: 'terminal',
+    });
+    expect(KeyChallengeAuthRequestSchema.safeParse({ ...request, credentialKind: 'account' }).success).toBe(false);
     expect(KeyChallengeAuthRequestSchema.safeParse({
       ...request,
       nonce: 'client-controlled-nonce',

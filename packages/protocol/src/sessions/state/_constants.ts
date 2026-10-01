@@ -2,6 +2,8 @@ export const SESSION_STATE_FIELD_IDS = [
   'identity.runtimeDescriptor',
   'identity.providerSessionId',
   'intent.model',
+  'intent.role',
+  'intent.sessionRoles',
   'intent.permissionMode',
   'intent.acpSessionMode',
   'intent.acpConfigOption',

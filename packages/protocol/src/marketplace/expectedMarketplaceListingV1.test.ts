@@ -12,7 +12,7 @@ const UNREVIEWED_SOURCES = [
 
 function unreviewedExpectedListing(
   source: (typeof UNREVIEWED_SOURCES)[number],
-  updatePolicy: 'pinned' | 'reviewEveryUpdate' | 'reviewSensitiveChanges',
+  updatePolicy: 'pinned' | 'allowed',
 ) {
   return {
     source: { ...source },
@@ -31,7 +31,7 @@ function unreviewedExpectedListing(
 describe('ExpectedMarketplaceListingV1', () => {
   it('carries every declared unreviewed update policy exactly, for community npm and user sources alike', () => {
     for (const source of UNREVIEWED_SOURCES) {
-      for (const updatePolicy of ['pinned', 'reviewEveryUpdate', 'reviewSensitiveChanges'] as const) {
+      for (const updatePolicy of ['pinned', 'allowed'] as const) {
         const result = ExpectedMarketplaceListingV1Schema.safeParse(unreviewedExpectedListing(source, updatePolicy));
         expect(result.success).toBe(true);
         if (result.success) {
@@ -44,7 +44,7 @@ describe('ExpectedMarketplaceListingV1', () => {
   it('still refuses an unreviewed source that claims a curated approval or a retired policy alias', () => {
     for (const source of UNREVIEWED_SOURCES) {
       expect(ExpectedMarketplaceListingV1Schema.safeParse({
-        ...unreviewedExpectedListing(source, 'reviewEveryUpdate'),
+        ...unreviewedExpectedListing(source, 'allowed'),
         review: { status: 'approved', reviewedAt: '2026-07-13T00:00:00.000Z' },
       }).success).toBe(false);
       expect(ExpectedMarketplaceListingV1Schema.safeParse({

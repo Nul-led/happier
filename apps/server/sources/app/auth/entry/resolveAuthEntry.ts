@@ -6,6 +6,7 @@ import {
     type AuthEntryProviderUnavailableReasonV1,
     type AuthEntryRequestV1,
     type TeamEntryUnavailableReasonV1,
+    type TeamInvitationPreviewV1,
 } from '@happier-dev/protocol';
 import { normalizeAuthMethodId, readServerEnabledBit } from '@happier-dev/protocol';
 import type { AuthTokenAuthenticationEvidenceV1 } from '@happier-dev/protocol';
@@ -21,8 +22,10 @@ import { resolveFeaturesFromEnv } from '@/app/features/registry';
 import {
     resolveTeamInvitationAuthEntryContextInTx,
     resolveTeamInvitationAuthEntryReferenceContextInTx,
+    previewTeamInvitationByReferenceInTx,
     type TeamInvitationAuthEntryContext,
 } from '@/app/teams/invitations/invitationService';
+import { readTeamInvitationPostAuthContinuationInTx } from '@/app/teams/invitations/postAuthContinuation';
 import { resolveTeamAuthEntryContextInTx, type TeamAuthEntryContext } from '@/app/teams/authEntryContext';
 import {
     qualifyTeamOperationAuthenticationInTx,
@@ -43,7 +46,7 @@ import {
 import { resolveJoinScreenHomeIdentity } from '@/app/teams/invitations/joinScreenHome';
 import type { JoinScreenHomeIdentity } from '@/app/teams/invitations/invitationService';
 import { readNativeAuthOneTimeOperation } from '@/app/auth/email/nativeAuthOneTimeOperations';
-import { shouldDenyPublicSignupProvisioningAction } from '@/app/integrations/publicUrl/publicSignupProvisioningPolicy';
+import { resolvePublicSignupProvisioningActionMode } from '@/app/integrations/publicUrl/publicSignupProvisioningPolicy';
 import type { Tx } from '@/storage/inTx';
 
 import {
@@ -92,15 +95,14 @@ type HomeActionRequestContext = Readonly<{
  */
 type TeamMembershipAdmissionState = 'admitted' | 'member_unqualified' | 'non_member';
 
-async function resolveTeamMembershipAdmissionInTx(
+async function resolveEffectiveTeamMemberInTx(
     tx: Parameters<typeof resolveTeamActorContextInTx>[0],
     input: Readonly<{
-        env: NodeJS.ProcessEnv;
         teamId: string;
         principal: AuthEntryPrincipal | null;
     }>,
-): Promise<TeamMembershipAdmissionState> {
-    if (input.principal === null) return 'non_member';
+) {
+    if (input.principal === null) return null;
     const actor = await resolveTeamActorContextInTx(tx, {
         teamId: input.teamId,
         actorAccountId: input.principal.accountId,
@@ -109,7 +111,20 @@ async function resolveTeamMembershipAdmissionInTx(
         accountStatus: actor.accountStatus,
         membershipStatus: actor.membership.status,
         teamArchivedAt: actor.team.archivedAt,
-    })) return 'non_member';
+    })) return null;
+    return actor;
+}
+
+async function resolveTeamMembershipAdmissionInTx(
+    tx: Parameters<typeof resolveTeamActorContextInTx>[0],
+    input: Readonly<{
+        env: NodeJS.ProcessEnv;
+        teamId: string;
+        principal: AuthEntryPrincipal | null;
+    }>,
+): Promise<TeamMembershipAdmissionState> {
+    const actor = await resolveEffectiveTeamMemberInTx(tx, input);
+    if (!actor || !input.principal) return 'non_member';
     const qualification = await qualifyTeamOperationAuthenticationInTx(tx, {
         context: actor,
         env: input.env,
@@ -257,19 +272,23 @@ function projectHomeAuthenticationActions(
             // request without a principal has nothing to attach it to, and its
             // only completion lives in the signed-in Account Security flow.
             if (action.id === 'connect' && request.principal === null) return [];
-            if (action.id === 'provision'
+            const mode = action.id === 'provision'
                 && request.requestIp !== undefined
-                && shouldDenyPublicSignupProvisioningAction({
+                ? resolvePublicSignupProvisioningActionMode({
                     env: request.env,
                     requestIp: request.requestIp,
                     methodId,
                     mode: action.mode,
-                })) return [];
+                }) : action.mode;
+            if (mode === null) return [];
+            const recommendedProvisionMode = mode !== action.mode
+                ? mode === 'keyed' ? 'e2ee' as const : 'plain' as const
+                : decision.recommendedProvisionMode;
             return [{
                 kind: 'authenticate' as const,
                 methodId,
                 action: action.id,
-                mode: action.mode,
+                mode,
                 origin: 'home' as const,
                 // The effective-method owner already resolved the Home's
                 // recommended protection for a new Account (deployment default
@@ -277,8 +296,8 @@ function projectHomeAuthenticationActions(
                 // provision action is what stops a chooser from inventing its own
                 // default out of the permitted set; `login`/`connect` act on an
                 // Account that already has a stored mode, so they state nothing.
-                ...(action.id === 'provision' && decision.recommendedProvisionMode
-                    ? { recommendedProvisionMode: decision.recommendedProvisionMode }
+                ...(action.id === 'provision' && recommendedProvisionMode
+                    ? { recommendedProvisionMode }
                     : {}),
                 // The reset request route mails a link exactly when password sign-in is enabled
                 // and mail delivery is ready; the sign-in action says so, so no client offers a
@@ -382,13 +401,13 @@ async function projectTeamConnectionActionsInTx(
     unavailable: readonly TeamConnectionUnavailableActionV1[];
 }>> {
     const resolution = input.policy.resolution;
-    const usableConnectionIds = resolution.status === 'restricted'
+    const usableConnectionIds = !input.directoryBindingOnly && resolution.status === 'restricted'
         ? new Set(resolution.choices.flatMap((choice) =>
             choice.availability === 'usable' && choice.reference.kind === 'team_connection'
                 ? [choice.reference.connectionId]
                 : []))
         : undefined;
-    const acceptedConnectionIds = resolution.status === 'restricted'
+    const acceptedConnectionIds = !input.directoryBindingOnly && resolution.status === 'restricted'
         ? new Set(resolution.choices.flatMap((choice) =>
             choice.reference.kind === 'team_connection' ? [choice.reference.connectionId] : []))
         : undefined;
@@ -399,7 +418,7 @@ async function projectTeamConnectionActionsInTx(
     const directorySources = input.directoryBindingOnly
         ? await tx.teamDirectorySource.findMany({
             where: { teamId: input.teamId },
-            select: { kind: true, state: true, activeReconcileRunId: true, teamIdentityConnectionId: true },
+            select: { id: true, kind: true, state: true, activeReconcileRunId: true, teamIdentityConnectionId: true },
         })
         : [];
     const bindingSources: typeof directorySources = [];
@@ -572,6 +591,7 @@ async function resolveInvitationAuthEntryInTx(
     emailDeliveryReady: boolean,
     principal: AuthEntryPrincipal | null,
     home: JoinScreenHomeIdentity,
+    preview?: TeamInvitationPreviewV1,
 ): Promise<AuthEntryProjectionV1> {
     const admission = { kind: 'team_invitation' as const };
     const [policy, homeMethods] = await Promise.all([
@@ -588,17 +608,12 @@ async function resolveInvitationAuthEntryInTx(
             admission,
         }),
     ]);
-    if (!hasUsableTeamAuthentication(policy)) {
-        return unavailableInvitationProjection(teamEntryPolicyRefusalReason(policy, principal));
-    }
-
     const account = await resolveAuthenticatedAccountPresentationInTx(tx, principal);
 
-    if (await resolveTeamMembershipAdmissionInTx(tx, {
-        env,
+    if (await resolveEffectiveTeamMemberInTx(tx, {
         teamId: invitation.team.teamId,
         principal,
-    }) === 'admitted') {
+    })) {
         return AuthEntryProjectionV1Schema.parse({
             v: 1,
             state: 'already_member',
@@ -624,12 +639,6 @@ async function resolveInvitationAuthEntryInTx(
         }).then((mailbox) => mailbox ? 'already_verified' as const : 'verification_required' as const)
         : undefined;
 
-    const allowedHomeMethodIds = policy.resolution.status === 'restricted'
-        ? new Set(policy.resolution.choices.flatMap((choice) =>
-            choice.availability === 'usable' && choice.reference.kind === 'home_method'
-                ? [normalizeAuthMethodId(choice.reference.methodId)]
-                : []))
-        : undefined;
     // Invitation admission is exempt from the public-signup restriction in every
     // finalizer, so the invitation projection carries no requesting address.
     const homeActions = projectHomeAuthenticationActions(homeMethods, { env, principal, emailDeliveryReady });
@@ -647,6 +656,7 @@ async function resolveInvitationAuthEntryInTx(
         ...(account ? { account } : {}),
         team: invitation.team,
         invitationEmailVerificationRequired: invitation.recipientEmailNormalized === null,
+        ...(preview ? { preview } : {}),
         actions: [
             ...connectionActions.available,
             ...connectionActions.unavailable,
@@ -665,18 +675,30 @@ async function resolveInvitationAuthEntryInTx(
 }
 
 async function resolveInvitationAuthEntry(
-    token: string,
+    scope: Extract<AuthEntryRequestV1['scope'], { kind: 'invitation' }>,
     env: NodeJS.ProcessEnv,
     emailDeliveryReady: boolean,
     principal: AuthEntryPrincipal | null,
     home: JoinScreenHomeIdentity,
 ): Promise<AuthEntryProjectionV1> {
     return await inTx(async (tx) => {
-        const invitation = await resolveTeamInvitationAuthEntryContextInTx(tx, { token });
+        const held = 'continuation' in scope && principal
+            ? await readTeamInvitationPostAuthContinuationInTx(tx, {
+                continuation: scope.continuation, accountId: principal.accountId,
+            })
+            : null;
+        if ('continuation' in scope && !held) return unavailableInvitationProjection('invitation_unavailable');
+        const invitation = 'token' in scope
+            ? await resolveTeamInvitationAuthEntryContextInTx(tx, { token: scope.token })
+            : held && await resolveTeamInvitationAuthEntryReferenceContextInTx(tx, held.stored);
+        const preview = held
+            ? await previewTeamInvitationByReferenceInTx(tx, { ...held.stored, home })
+            : null;
+        if (held && !preview) return unavailableInvitationProjection('invitation_unavailable');
         // The bearer is the proof of visibility here: naming a spent, revoked or
         // unknown invitation tells a holder what to do next and names no Team.
         return invitation
-            ? await resolveInvitationAuthEntryInTx(tx, invitation, env, emailDeliveryReady, principal, home)
+            ? await resolveInvitationAuthEntryInTx(tx, invitation, env, emailDeliveryReady, principal, home, preview ?? undefined)
             : unavailableInvitationProjection('invitation_unavailable');
     });
 }
@@ -698,7 +720,7 @@ export async function resolveAuthEntry(
         return await resolveTeamAuthEntry(input.scope.teamId, {
             env: context.env,
             principal: context.principal ?? null,
-            emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
+            emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env }),
             ...(context.requestIp === undefined ? {} : { requestIp: context.requestIp }),
         }, home);
     }
@@ -712,9 +734,9 @@ export async function resolveAuthEntry(
         }
         const home = await resolveJoinScreenHomeIdentity(context.env);
         return await resolveInvitationAuthEntry(
-            input.scope.token,
+            input.scope,
             context.env,
-            context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
+            context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env }),
             context.principal ?? null,
             home,
         );
@@ -736,7 +758,7 @@ export async function resolveAuthEntry(
                         tx,
                         invitation,
                         context.env,
-                        context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
+                        context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env }),
                         context.principal ?? null,
                         home,
                     )
@@ -745,18 +767,18 @@ export async function resolveAuthEntry(
             if (operation.consumer.kind !== 'fresh_account') return unavailableInvitationProjection('entry_not_available');
             const homeMethods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
                 env: context.env,
-                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
+                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env }),
             });
             if (homeMethods.status !== 'ready') return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
             return projectHomeAuthEntryProjection(homeMethods, {
                 env: context.env,
                 principal: context.principal ?? null,
                 ...(context.requestIp === undefined ? {} : { requestIp: context.requestIp }),
-                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env),
+                emailDeliveryReady: context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env }),
             }, false);
         });
     }
-    const emailDeliveryReady = context.emailDeliveryReady ?? await isAuthEmailDeliveryReady(context.env);
+    const emailDeliveryReady = context.emailDeliveryReady ?? await isAuthEmailDeliveryReady({ env: context.env });
     const homeMethods = await resolveEffectiveHomeAuthMethods({
         env: context.env,
         emailDeliveryReady,

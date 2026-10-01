@@ -16,11 +16,6 @@ import {
     AutomationValidationError,
     normalizeAutomationAssignments,
 } from "./automationValidation";
-import {
-    isAutomationDefinitionRepresentableInV2,
-    toAutomationV2ScheduleDto,
-} from "./automationApiProjection";
-import { RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } from "./automationStoredContentRead";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 
 type AutomationAssignmentWakeRun = Readonly<{
@@ -49,8 +44,8 @@ const automationAssignmentWakeRunSelect = {
 
 /**
  * The worker wake projection: exactly the scalar facts that decide a wake —
- * schedule cursors, open-Run state, and the released-V2 representability
- * boundary — with no private definition envelopes, assignments, or trigger
+ * schedule cursors and open-Run state — with no private definition envelopes,
+ * assignments or trigger
  * status state.
  */
 const automationAssignmentWakeTriggerSelect = {
@@ -60,7 +55,6 @@ const automationAssignmentWakeTriggerSelect = {
 
 function automationDaemonWakeAutomationSelect(
     machineId: string,
-    requireV2RunRepresentability: boolean,
 ) {
     return {
         id: true, name: true, enabled: true,
@@ -77,9 +71,6 @@ function automationDaemonWakeAutomationSelect(
                 automationId: { not: null },
                 causeKind: { not: null },
                 state: { in: [...AUTOMATION_RUN_STATES] },
-                ...(requireV2RunRepresentability
-                    ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
-                    : {}),
                 OR: [
                     { state: "queued" },
                     { state: "claimed", leaseExpiresAt: { not: null } },
@@ -292,7 +283,7 @@ export async function listDaemonAssignments(params: {
     accountId: string;
     machineId: string;
     expectedTriggerKind?: AutomationTriggerKind;
-    requireV2DefinitionRepresentability?: boolean;
+
 }) {
     const [rows, admittedRunAssignments] = await Promise.all([
         db.automationAssignment.findMany({
@@ -314,7 +305,6 @@ export async function listDaemonAssignments(params: {
                 automation: {
                     select: automationDaemonWakeAutomationSelect(
                         params.machineId,
-                        params.requireV2DefinitionRepresentability === true,
                     ),
                 },
             },
@@ -329,9 +319,6 @@ export async function listDaemonAssignments(params: {
                     causeKind: { not: null },
                     state: { in: [...AUTOMATION_RUN_STATES] },
                     accountId: params.accountId,
-                    ...(params.requireV2DefinitionRepresentability
-                        ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
-                        : {}),
                     OR: [
                         { state: "queued" },
                         { state: "claimed", leaseExpiresAt: { not: null } },
@@ -357,8 +344,6 @@ export async function listDaemonAssignments(params: {
     ]);
 
     const activeAssignments = rows
-        .filter((row) => !params.requireV2DefinitionRepresentability
-            || isAutomationDefinitionRepresentableInV2(row.automation))
         .map((row) => {
             const runs: AutomationAssignmentWakeRun[] = row.automation.runs.map((run) => {
                 if (run.causeKind === null || !isAutomationRunState(run.state)) {
@@ -374,12 +359,6 @@ export async function listDaemonAssignments(params: {
             return {
                 ...row,
                 automation: { ...row.automation, runs },
-                // The released adapter consumes this exact owner-provided wire
-                // projection. Zero canonical triggers is the released manual
-                // shape; no trigger row is fabricated for it.
-                v2Schedule: params.requireV2DefinitionRepresentability
-                    ? toAutomationV2ScheduleDto(row.automation.triggers[0])
-                    : null,
                 nextClaimAt: resolveAutomationAssignmentNextClaimAt({
                     schedules: row.automation.triggers
                         .filter((trigger) => trigger.kind === "schedule" && trigger.enabled)
@@ -427,27 +406,6 @@ export async function listDaemonAssignments(params: {
                 },
             },
         });
-    const frozenV2TriggerIds = params.requireV2DefinitionRepresentability
-        ? [...new Set(admittedRunAssignments.flatMap((assignment) => (
-            assignment.run.triggerId === null ? [] : [assignment.run.triggerId]
-        )))]
-        : [];
-    // A frozen released-V2 Run retains its own schedule identity even after
-    // that trigger is soft-deleted. It must never borrow `triggers[0]` from a
-    // mutable Definition, which can be a sibling trigger or no longer exist.
-    const frozenV2ScheduleTriggers = frozenV2TriggerIds.length === 0
-        ? []
-        : await db.automationTrigger.findMany({
-            where: {
-                id: { in: frozenV2TriggerIds },
-                kind: "schedule",
-                automation: { accountId: params.accountId },
-            },
-            select: automationAssignmentWakeTriggerSelect,
-        });
-    const frozenV2ScheduleTriggerById = new Map(
-        frozenV2ScheduleTriggers.map((trigger) => [trigger.id, trigger] as const),
-    );
     const admittedRunWakes: Array<(typeof activeAssignments)[number]> = [];
     for (const automation of frozenAutomations) {
         const assignments = frozenByAutomationId.get(automation.id) ?? [];
@@ -470,19 +428,6 @@ export async function listDaemonAssignments(params: {
                 assignedToMachine: true,
             };
         });
-        const frozenTriggerId = representative.run.triggerId;
-        const retainedDefinitionSchedules = frozenTriggerId === null
-            ? automation.triggers.filter((trigger) => trigger.kind === "schedule")
-            : [];
-        let frozenV2Schedule: ReturnType<typeof toAutomationV2ScheduleDto> | null = null;
-        if (frozenTriggerId === null) {
-            if (retainedDefinitionSchedules.length <= 1) {
-                frozenV2Schedule = toAutomationV2ScheduleDto(retainedDefinitionSchedules[0]);
-            }
-        } else {
-            const trigger = frozenV2ScheduleTriggerById.get(frozenTriggerId);
-            if (trigger) frozenV2Schedule = toAutomationV2ScheduleDto(trigger);
-        }
         admittedRunWakes.push({
             id: representative.run.id,
             machineId: representative.machineId,
@@ -490,11 +435,6 @@ export async function listDaemonAssignments(params: {
             priority: representative.priority,
             updatedAt: representative.run.updatedAt,
             automation: { ...automation, runs },
-            // A V2 Run Now on a retained scheduled Definition keeps that
-            // Definition schedule. A manual zero-trigger Definition projects
-            // the exact released manual shape. Missing or ambiguous scheduled
-            // provenance remains null so the route still fails closed.
-            v2Schedule: frozenV2Schedule,
             nextClaimAt: resolveAutomationAssignmentNextClaimAt({ schedules: [], runs }),
         });
     }

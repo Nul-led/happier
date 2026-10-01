@@ -3,7 +3,7 @@ import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 import semver from 'semver';
 
 import { PluginOptionalStringSchema } from '../_shared.js';
-import { CanonicalHttpOriginSchema } from '../canonicalHttpOrigin.js';
+import { CanonicalHttpOriginSchema } from '../../http/canonicalHttpOrigin.js';
 import { CanonicalPluginNetworkHostSuffixSchema } from '../networkHostSuffix.js';
 import { PluginContributesV2Schema } from '../contributions/v2.js';
 import { PluginDeclaredExecutableRefSchema } from '../contributions/agentAcpTransport.js';
@@ -17,26 +17,7 @@ import {
   PluginJsonValueV2Schema,
   PluginLocalizedStringV2Schema,
 } from '../contributions/publicTypes.js';
-import {
-  PluginDirectSecretDeclarationV1Schema,
-  readPluginSettingSecretCustody,
-} from '../contributions/settings.js';
-
-function hasOwn(value: Readonly<Record<string, unknown>>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function rejectForbiddenKey(
-  ctx: z.RefinementCtx,
-  key: string,
-  message: string,
-): void {
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    path: [key],
-    message,
-  });
-}
+import { PluginDirectSecretDeclarationV1Schema } from '../contributions/settings.js';
 
 export const PluginEnginesV2Schema = z.object({
   happier: z.string().trim().min(1).refine(
@@ -47,8 +28,30 @@ export const PluginEnginesV2Schema = z.object({
 export type PluginEnginesV2 = z.infer<typeof PluginEnginesV2Schema>;
 
 export const PLUGIN_RUNTIME_API_VERSION = 1 as const;
+const PluginAgentFactoryLocatorV1Schema = z.object({
+  module: z.string().regex(/^\.[/][A-Za-z0-9._/-]+$/u),
+  export: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/u),
+  runtimeApiVersion: z.literal(1),
+  externalSessionsExport: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/u).optional(),
+}).strict();
+const PluginRuntimeAgentFactoryV1Schema = z.object({
+  localAgentId: asProtocolZod(PluginContributionLocalIdSchema),
+  locator: PluginAgentFactoryLocatorV1Schema,
+  normalizedModulePath: z.string().trim().min(1).max(16_384),
+  loadMode: z.literal('immutable-js'),
+}).strict();
 export const PluginRuntimeV2Schema = z.object({
   apiVersion: z.literal(PLUGIN_RUNTIME_API_VERSION),
+  /** Publisher-validated factories in this exact packaged runtime. */
+  agentFactories: z.array(PluginRuntimeAgentFactoryV1Schema).superRefine((factories, ctx) => {
+    const ids = new Set<string>();
+    factories.forEach((factory, index) => {
+      if (ids.has(factory.localAgentId)) {
+        ctx.addIssue({ code: 'custom', path: [index, 'localAgentId'], message: 'Duplicate runtime Agent factory.' });
+      }
+      ids.add(factory.localAgentId);
+    });
+  }).optional(),
 }).strict();
 export type PluginRuntimeV2 = z.infer<typeof PluginRuntimeV2Schema>;
 
@@ -68,6 +71,8 @@ export type PluginEntrypointsV2 = z.infer<typeof PluginEntrypointsV2Schema>;
  */
 export const PluginBrandV2Schema = z.object({
   iconResourceId: asProtocolZod(PluginContributionLocalIdSchema),
+  /** A single-color alpha glyph rendered in the host's foreground color. */
+  monochrome: z.boolean().optional(),
 }).strict();
 export type PluginBrandV2 = z.infer<typeof PluginBrandV2Schema>;
 
@@ -319,34 +324,6 @@ export const PluginManifestActivationV2Schema = z.object({
 }).strict().optional();
 export type PluginManifestActivationV2 = z.infer<typeof PluginManifestActivationV2Schema>;
 
-type DeclaredSettingsFieldIdentity = Readonly<{
-  id: string;
-  scope: 'account' | 'daemon';
-  path: readonly (string | number)[];
-}>;
-
-type DeclaredSecretIdentity = Readonly<{
-  id: string;
-  custody: 'account' | 'daemon';
-  path: readonly (string | number)[];
-}>;
-
-function addPluginSettingsFieldIdentityConflict(
-  ctx: z.RefinementCtx,
-  current: DeclaredSettingsFieldIdentity | DeclaredSecretIdentity,
-  existing: DeclaredSettingsFieldIdentity | DeclaredSecretIdentity,
-  kind: 'sameScope' | 'pluginGlobalSecret',
-): void {
-  const custodyDetails = 'custody' in current
-    ? ` (${current.custody})`
-    : '';
-  ctx.addIssue({
-    code: 'custom',
-    path: [...current.path],
-    message: `plugin_settings_field_id_conflict: '${current.id}' conflicts with ${kind} declaration at ${existing.path.join('.')}${custodyDetails}.`,
-  });
-}
-
 export const PluginManifestV2Schema = z.object({
   schemaVersion: z.literal(2),
   id: asProtocolZod(PluginIdSchema),
@@ -366,72 +343,6 @@ export const PluginManifestV2Schema = z.object({
   contributes: PluginContributesV2Schema,
   metadata: z.record(z.string(), PluginJsonValueV2Schema).optional(),
 }).strict().superRefine((manifest, ctx) => {
-  const retiredKeys = new Map([
-    ['uses', 'Plugin manifest runtime demand is contribution-derived; uses is not supported.'],
-    ['declares', 'Plugin manifest capabilities are contribution-derived; declares is not supported.'],
-    ['permissions', 'Plugin manifest host access must use hostAccess.required/optional.'],
-    ['source', 'Plugin installation source is host-owned.'],
-    ['activationEvents', 'Plugin activation events must use activation.events.'],
-    ['marketplace', 'Marketplace review and source metadata are host-owned.'],
-    ['targets', `Plugin manifest v2 uses entrypoints; targets.${'daemon'} is not supported.`],
-    ['capabilities', 'Plugin manifest host access must use hostAccess.required/hostAccess.optional; capabilities permissions are not supported.'],
-    ['contributions', 'Plugin manifest v2 uses contributes; flat contributions are not supported.'],
-  ]);
-  for (const [key, message] of retiredKeys) {
-    if (hasOwn(manifest, key)) {
-      rejectForbiddenKey(ctx, key, message);
-    }
-  }
-
-  const nonSecretFields: DeclaredSettingsFieldIdentity[] = [];
-  const secrets: DeclaredSecretIdentity[] = [];
-  manifest.contributes.settings.forEach((contribution, contributionIndex) => {
-    contribution.fields.forEach((field, fieldIndex) => {
-      const path = ['contributes', 'settings', contributionIndex, 'fields', fieldIndex, 'id'] as const;
-      const custody = readPluginSettingSecretCustody(field.secret);
-      if (custody !== null) {
-        secrets.push({ id: field.id, custody, path });
-      } else {
-        nonSecretFields.push({ id: field.id, scope: contribution.scope, path });
-      }
-    });
-  });
-  manifest.secrets.forEach((secret, secretIndex) => {
-    secrets.push({
-      id: secret.id,
-      custody: secret.custody,
-      path: ['secrets', secretIndex, 'id'],
-    });
-  });
-
-  const nonSecretByScope = new Map<string, DeclaredSettingsFieldIdentity>();
-  const nonSecretById = new Map<string, DeclaredSettingsFieldIdentity>();
-  for (const field of nonSecretFields) {
-    const scopeKey = `${field.scope}\u0000${field.id}`;
-    const sameScope = nonSecretByScope.get(scopeKey);
-    if (sameScope) {
-      addPluginSettingsFieldIdentityConflict(ctx, field, sameScope, 'sameScope');
-    } else {
-      nonSecretByScope.set(scopeKey, field);
-    }
-    if (!nonSecretById.has(field.id)) {
-      nonSecretById.set(field.id, field);
-    }
-  }
-  const secretById = new Map<string, DeclaredSecretIdentity>();
-  for (const secret of secrets) {
-    const sameSecret = secretById.get(secret.id);
-    if (sameSecret) {
-      addPluginSettingsFieldIdentityConflict(ctx, secret, sameSecret, 'pluginGlobalSecret');
-      continue;
-    }
-    secretById.set(secret.id, secret);
-    const nonSecret = nonSecretById.get(secret.id);
-    if (nonSecret) {
-      addPluginSettingsFieldIdentityConflict(ctx, secret, nonSecret, 'pluginGlobalSecret');
-    }
-  }
-
   manifest.contributes.voiceProviders.forEach((provider, providerIndex) => {
     const seenConnectedServices = new Set<string>();
     provider.credentials?.sources.forEach((source, sourceIndex) => {

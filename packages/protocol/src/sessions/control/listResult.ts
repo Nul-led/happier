@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SessionReportsToV1Schema, SessionReportsV1Schema } from '../relations/sessionReportsToV1.js';
 import { SessionEffectiveAccessV1Schema } from '../access/sessionEffectiveAccessV1.js';
 import { AccountEncryptionModeSchema } from '../../features/payload/capabilities/encryptionCapabilities.js';
 import { TurnIdSchema } from '../idsV1.js';
@@ -8,6 +9,8 @@ import { SessionRuntimeActivityStateSchema, refineRuntimeActivityProjectionField
 
 export const SessionSummarySchema = z.object({
   id: z.string().min(1),
+  reportsTo: SessionReportsToV1Schema.optional(),
+  reports: SessionReportsV1Schema.optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   active: z.boolean(),
@@ -46,10 +49,17 @@ export const SessionSummarySchema = z.object({
 }).passthrough().superRefine(refineRuntimeActivityProjectionFields);
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
+/**
+ * Candidate rows withheld pending their owner's metadata migration. Counts from
+ * consumed pages may overlap: a positive value means incomplete coverage, not
+ * an exact number of distinct missing Sessions. It does not imply another page.
+ */
+export const SessionListMetadataUpgradeRequiredCountSchema = z.number().int().nonnegative();
+
 export const SessionListResultSchema = z.object({
   sessions: z.array(SessionSummarySchema),
   nextCursor: z.string().nullable().optional(),
   hasNext: z.boolean().optional(),
+  metadataUpgradeRequiredCount: SessionListMetadataUpgradeRequiredCountSchema.optional(),
 }).passthrough();
 export type SessionListResult = z.infer<typeof SessionListResultSchema>;
-

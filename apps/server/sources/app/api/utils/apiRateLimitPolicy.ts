@@ -1,4 +1,7 @@
-import { parseBooleanEnv, parseIntEnv } from "@/config/env";
+import { readServerConfig } from "@happier-dev/protocol";
+import { parseIntEnv } from "@/config/env";
+
+import { API_RATE_LIMIT_GLOBAL_SERVER_CONFIG as RATE_LIMIT_CONFIG } from "./apiRateLimitDefaults";
 import { auth } from "@/app/auth/auth";
 import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 
@@ -26,9 +29,11 @@ function resolveApiRateLimitKeyStrategy(
     env: Record<string, string | undefined>,
     opts: { scope: "route" | "global" },
 ): ApiRateLimitKeyStrategy {
-    const key = opts.scope === "global" ? "HAPPIER_API_RATE_LIMITS_GLOBAL_KEY_STRATEGY" : "HAPPIER_API_RATE_LIMITS_ROUTE_KEY_STRATEGY";
-    const raw = String(env[key] ?? "").trim().toLowerCase();
-    if (!raw || raw === "default") {
+    const entry = opts.scope === "global"
+        ? RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_GLOBAL_KEY_STRATEGY
+        : RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_ROUTE_KEY_STRATEGY;
+    const raw = readServerConfig(env, entry).toLowerCase();
+    if (raw === "default") {
         return opts.scope === "global" ? "ip-only" : "user-or-ip";
     }
     if (["ip", "ip-only", "ip_only"].includes(raw)) return "ip-only";
@@ -101,7 +106,7 @@ export function gateRateLimitConfig(
     env: Record<string, string | undefined>,
     rateLimit: ApiRouteRateLimitConfig,
 ): ApiRouteRateLimitConfig {
-    const enabled = parseBooleanEnv(env.HAPPIER_API_RATE_LIMITS_ENABLED, true);
+    const enabled = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_ENABLED);
     if (!enabled) return false;
     return rateLimit;
 }
@@ -109,14 +114,13 @@ export function gateRateLimitConfig(
 export function resolveApiRateLimitPluginOptions(
     env: Record<string, string | undefined>,
 ): Readonly<{ global: boolean; max?: number; timeWindow?: string; keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number> }> {
-    const enabled = parseBooleanEnv(env.HAPPIER_API_RATE_LIMITS_ENABLED, true);
+    const enabled = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_ENABLED);
     if (!enabled) {
         return { global: false };
     }
 
-    const globalMax = parseIntEnv(env.HAPPIER_API_RATE_LIMITS_GLOBAL_MAX, 0, { min: 0 });
-    const windowRaw = (env.HAPPIER_API_RATE_LIMITS_GLOBAL_WINDOW ?? "").trim();
-    const timeWindow = windowRaw.length > 0 ? windowRaw : "1 minute";
+    const globalMax = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_GLOBAL_MAX);
+    const timeWindow = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_GLOBAL_WINDOW);
 
     const keyGenerator = createApiRateLimitKeyGenerator(env, { scope: "global" });
     if (globalMax <= 0) {
@@ -136,7 +140,7 @@ export function resolveRouteRateLimit(
         keyGenerator?: (request: ApiRateLimitRequest) => string | number | Promise<string | number>;
     }>,
 ): ApiRouteRateLimitConfig {
-    const enabled = parseBooleanEnv(env.HAPPIER_API_RATE_LIMITS_ENABLED, true);
+    const enabled = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_API_RATE_LIMITS_ENABLED);
     if (!enabled) return false;
 
     const maxRaw = env[params.maxEnvKey];
@@ -154,7 +158,7 @@ export function resolveRouteRateLimit(
 }
 
 export function resolveApiTrustProxy(env: Record<string, string | undefined>): boolean | number | undefined {
-    const raw = (env.HAPPIER_SERVER_TRUST_PROXY ?? "").trim().toLowerCase();
+    const raw = readServerConfig(env, RATE_LIMIT_CONFIG.HAPPIER_SERVER_TRUST_PROXY)?.toLowerCase();
     if (!raw) return undefined;
     if (["true", "yes", "on"].includes(raw)) return true;
     if (["false", "no", "off"].includes(raw)) return false;

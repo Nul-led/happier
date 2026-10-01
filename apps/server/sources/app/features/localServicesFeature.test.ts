@@ -12,6 +12,8 @@ describe("local services server feature resolver", () => {
         expect(readServerEnabledBit(payload, "localServices.preview")).toBe(true);
         expect(readServerEnabledBit(payload, "localServices.publicPreview")).toBe(false);
         expect(payload.capabilities.localServices.preview.enabled).toBe(true);
+        expect(payload.capabilities.localServices.preview.hostOriginAvailable).toBe(false);
+        expect(payload.capabilities.localServices.preview.pathModeAvailable).toBe(false);
         expect(payload.capabilities.localServices.publicPreview.enabled).toBe(false);
     });
 

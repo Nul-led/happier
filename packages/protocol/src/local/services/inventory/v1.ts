@@ -138,6 +138,19 @@ export const LocalServiceInventorySnapshotV1Schema = z.object({
 }).strict();
 export type LocalServiceInventorySnapshotV1 = z.infer<typeof LocalServiceInventorySnapshotV1Schema>;
 
+/** Small presentation projection carried by the existing Machine daemon-state push. */
+export const LocalServiceMachineSummaryV1Schema = z.discriminatedUnion('state', [
+  z.object({
+    v: z.literal(1),
+    state: z.literal('ready'),
+    runningCount: z.number().int().nonnegative(),
+  }).strict(),
+  z.object({ v: z.literal(1), state: z.literal('unknown') }).strict(),
+  z.object({ v: z.literal(1), state: z.literal('error') }).strict(),
+  z.object({ v: z.literal(1), state: z.literal('disabled') }).strict(),
+]);
+export type LocalServiceMachineSummaryV1 = z.infer<typeof LocalServiceMachineSummaryV1Schema>;
+
 const DaemonLocalServiceInventoryMachineRequestV1Schema = z.object({
   machineId: z.string().trim().min(1).max(256),
 }).strict();

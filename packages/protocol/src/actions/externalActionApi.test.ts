@@ -348,6 +348,9 @@ describe('External Action API envelope v1', () => {
     const authentication = projectExternalActionHttpError('invalid_token');
     expect(authentication).toEqual({ statusCode: 401, payload: { error: 'invalid_token' } });
     expect(ExternalActionHttpErrorSchema.parse(authentication.payload)).toEqual(authentication.payload);
+    const scope = projectExternalActionHttpError('credential_scope_denied', 'request-not-disclosed');
+    expect(scope).toEqual({ statusCode: 403, payload: { error: 'credential_scope_denied' } });
+    expect(ExternalActionHttpErrorSchema.parse(scope.payload)).toEqual(scope.payload);
     expect(ExternalActionHttpErrorSchema.safeParse({
       ...placement.payload,
       details: { target: 'must-not-cross' },

@@ -4,11 +4,11 @@ import { eventRouter, buildKVBatchUpdateUpdate } from "@/app/events/eventRouter"
 import * as privacyKit from "privacy-kit";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import {
-    assertTodoKvAccountEncryptionTransitionStoredContent,
-    assertTodoKvMutationStoredContent,
-    isTodoKvKey,
-    TodoKvStoredContentModeMismatchError,
-} from "./todoKvStoredContent";
+    assertAccountJsonKvAccountEncryptionTransitionStoredContent,
+    assertAccountJsonKvMutationStoredContent,
+    isAccountJsonKvKey,
+    AccountJsonKvStoredContentModeMismatchError,
+} from "./accountJsonKvStoredContent";
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import { assertPublicGenericKvKey } from "./accountScopedKv";
 
@@ -154,7 +154,7 @@ type KVMutationStoredContentPolicy =
         admission: KVMutationStoredContentAdmission;
     }>
     | Readonly<{
-        kind: "todo-account-mode-transition";
+        kind: "account-json-kv-mode-transition";
         fromMode: "plain" | "e2ee";
         toMode: "plain" | "e2ee";
     }>;
@@ -201,11 +201,11 @@ export async function kvMutateInTx(
 }
 
 /**
- * Narrow Account-transition entry point. It permits only existing, exact Todo
+ * Narrow Account-transition entry point. It permits only existing, exact Account JSON KV
  * rows to move to the declared target mode; row CAS, writes, AccountChange, and
  * socket publication remain owned by the same KV mutation implementation.
  */
-export async function kvMutateTodoAccountEncryptionTransitionInTx(
+export async function kvMutateAccountJsonKvEncryptionTransitionInTx(
     tx: Tx,
     ctx: { uid: string },
     mutations: KVMutation[],
@@ -217,7 +217,7 @@ export async function kvMutateTodoAccountEncryptionTransitionInTx(
         ctx,
         mutations,
         {
-            kind: "todo-account-mode-transition",
+            kind: "account-json-kv-mode-transition",
             fromMode,
             toMode,
         },
@@ -238,12 +238,12 @@ async function kvMutateWithStoredContentPolicyInTx(
 
         const needsAccountCurrentness =
             storedContentPolicy.kind === "regular"
-            && mutations.some((mutation) => isTodoKvKey(mutation.key));
+            && mutations.some((mutation) => isAccountJsonKvKey(mutation.key));
         const fence = needsAccountCurrentness
             ? await acquireAccountEncryptionTransitionFenceInTx(tx, ctx.uid)
             : null;
         if (fence !== null && fence.status !== "ready") {
-            throw new TodoKvStoredContentModeMismatchError();
+            throw new AccountJsonKvStoredContentModeMismatchError();
         }
         const accountMode = fence?.status === "ready"
             ? fence.account.currentness.encryptionMode
@@ -255,25 +255,25 @@ async function kvMutateWithStoredContentPolicyInTx(
             mutations,
             async (mutation, existing) => {
             if (
-                storedContentPolicy.kind === "todo-account-mode-transition"
+                storedContentPolicy.kind === "account-json-kv-mode-transition"
             ) {
                 if (
-                    !isTodoKvKey(mutation.key)
+                    !isAccountJsonKvKey(mutation.key)
                     || existing?.value == null
                     || mutation.value === null
                     || mutation.version < 0
                 ) {
-                    throw new TodoKvStoredContentModeMismatchError();
+                    throw new AccountJsonKvStoredContentModeMismatchError();
                 }
-                assertTodoKvAccountEncryptionTransitionStoredContent({
+                assertAccountJsonKvAccountEncryptionTransitionStoredContent({
                     key: mutation.key,
                     persistedValue: existing.value,
                     nextValue: privacyKit.decodeBase64(mutation.value),
                     fromMode: storedContentPolicy.fromMode,
                     toMode: storedContentPolicy.toMode,
                 });
-            } else if (isTodoKvKey(mutation.key)) {
-                assertTodoKvMutationStoredContent({
+            } else if (isAccountJsonKvKey(mutation.key)) {
+                assertAccountJsonKvMutationStoredContent({
                     key: mutation.key,
                     persistedValue: existing?.value ?? null,
                     nextValue: mutation.value === null

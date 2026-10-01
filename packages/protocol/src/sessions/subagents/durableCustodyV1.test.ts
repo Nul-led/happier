@@ -18,7 +18,11 @@ describe('durable subagent custody v1 contract', () => {
   const scope = {
     pluginId: 'acme.agent',
     contributionId: 'assistant',
-    immutableGenerationId: 'generation-content-digest-1',
+    sourceCustody: {
+      kind: 'managed',
+      immutableGenerationId: 'generation-content-digest-1',
+      installSource: 'archive',
+    },
   } as const;
   const custodyKey = createSessionSubagentCustodyKeyV1({ ...scope, sessionId: 'session-a' });
   it('rejects terminal regressions while allowing idempotent terminal updates', () => {
@@ -185,29 +189,55 @@ describe('durable subagent custody v1 contract', () => {
 
   it('uses an immutable all-record list contract within the 256-record custody bound', () => {
     expect(SessionSubagentCustodyListQueryV1Schema.parse({ ...scope, custodyKey })).toEqual({ ...scope, custodyKey });
+    expect(SessionSubagentCustodyListQueryV1Schema.parse({
+      pluginId: scope.pluginId,
+      contributionId: scope.contributionId,
+      sourceCustody: JSON.stringify(scope.sourceCustody),
+      custodyKey,
+    })).toEqual({ ...scope, custodyKey });
     expect(SessionSubagentCustodyListQueryV1Schema.safeParse({ ...scope, custodyKey, cursor: 'mutable-time-cursor' }).success).toBe(false);
   });
 
-  it('derives the custody key from the exact qualified generation and session scope', () => {
+  it('derives the custody key from exact source custody and session scope', () => {
     expect(custodyKey).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(custodyKey).not.toBe(createSessionSubagentCustodyKeyV1({ ...scope, sessionId: 'session-b' }));
     expect(custodyKey).not.toBe(createSessionSubagentCustodyKeyV1({ ...scope, contributionId: 'reviewer', sessionId: 'session-a' }));
-    expect(custodyKey).not.toBe(createSessionSubagentCustodyKeyV1({ ...scope, immutableGenerationId: 'generation-content-digest-2', sessionId: 'session-a' }));
+    expect(custodyKey).not.toBe(createSessionSubagentCustodyKeyV1({
+      ...scope,
+      sourceCustody: { ...scope.sourceCustody, immutableGenerationId: 'generation-content-digest-2' },
+      sessionId: 'session-a',
+    }));
+    expect(custodyKey).not.toBe(createSessionSubagentCustodyKeyV1({
+      ...scope,
+      sourceCustody: { ...scope.sourceCustody, installSource: 'npm' },
+      sessionId: 'session-a',
+    }));
     const composedGenerationId = 'generation-\u00e9';
     const decomposedGenerationId = 'generation-e\u0301';
-    expect(SessionSubagentCustodyScopeV1Schema.parse({ ...scope, immutableGenerationId: composedGenerationId }).immutableGenerationId)
-      .toBe(composedGenerationId);
-    expect(SessionSubagentCustodyScopeV1Schema.parse({ ...scope, immutableGenerationId: decomposedGenerationId }).immutableGenerationId)
-      .toBe(decomposedGenerationId);
-    expect(createSessionSubagentCustodyKeyV1({ ...scope, immutableGenerationId: composedGenerationId, sessionId: 'session-a' }))
-      .not.toBe(createSessionSubagentCustodyKeyV1({ ...scope, immutableGenerationId: decomposedGenerationId, sessionId: 'session-a' }));
+    expect(SessionSubagentCustodyScopeV1Schema.parse({ ...scope, sourceCustody: { ...scope.sourceCustody, immutableGenerationId: composedGenerationId } }).sourceCustody)
+      .toMatchObject({ immutableGenerationId: composedGenerationId });
+    expect(createSessionSubagentCustodyKeyV1({ ...scope, sourceCustody: { ...scope.sourceCustody, immutableGenerationId: composedGenerationId }, sessionId: 'session-a' }))
+      .not.toBe(createSessionSubagentCustodyKeyV1({ ...scope, sourceCustody: { ...scope.sourceCustody, immutableGenerationId: decomposedGenerationId }, sessionId: 'session-a' }));
+    expect(createSessionSubagentCustodyKeyV1({
+      ...scope,
+      sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'pinned_runner_snapshot', snapshotId: 'runner-a' } },
+      sessionId: 'session-a',
+    })).not.toBe(createSessionSubagentCustodyKeyV1({
+      ...scope,
+      sourceCustody: { kind: 'bundled_first_party', packagedRuntime: { kind: 'cli_version_root', versionRootId: 'runner-a' } },
+      sessionId: 'session-a',
+    }));
   });
 
-  it('defines one strict idempotent actor-wide qualified-generation retirement contract', () => {
-    const retirement = { pluginId: scope.pluginId, immutableGenerationId: scope.immutableGenerationId };
+  it('defines one strict idempotent actor-wide source-custody retirement contract', () => {
+    const retirement = { pluginId: scope.pluginId, sourceCustody: scope.sourceCustody };
     expect(SessionSubagentCustodyRetirementRequestV1Schema.parse(retirement)).toEqual(retirement);
     expect(SessionSubagentCustodyRetirementRequestV1Schema.safeParse({ ...retirement, contributionId: scope.contributionId }).success).toBe(false);
-    expect(SessionSubagentCustodyRetirementRequestV1Schema.safeParse({ pluginId: scope.pluginId, immutableGenerationId: '' }).success).toBe(false);
+    expect(SessionSubagentCustodyRetirementRequestV1Schema.safeParse({ pluginId: scope.pluginId, sourceCustody: { kind: 'development', registeredRootId: '' } }).success).toBe(false);
+    expect(SessionSubagentCustodyRetirementRequestV1Schema.safeParse({
+      pluginId: scope.pluginId,
+      sourceCustody: { kind: 'development', registeredRootId: 'root-a', occurrenceId: 'must-not-persist' },
+    }).success).toBe(false);
     expect(SessionSubagentCustodyRetirementResponseV1Schema.parse({ retired: true })).toEqual({ retired: true });
     expect(SessionSubagentCustodyRetirementResponseV1Schema.safeParse({ retired: true, deletedRecords: 1 }).success).toBe(false);
   });

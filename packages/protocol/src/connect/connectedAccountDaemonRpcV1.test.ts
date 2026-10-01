@@ -141,8 +141,11 @@ describe('Connected Account daemon RPC v1', () => {
           }],
         },
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      occurrenceId: 'occurrence-1',
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-1.2.3' },
+      },
       accounts: [],
       operationTransport: {
         kind: 'legacy',
@@ -177,8 +180,11 @@ describe('Connected Account daemon RPC v1', () => {
           }],
         },
       },
-      generation: 'generation-1',
-      immutableGenerationId: 'artifact-1',
+      occurrenceId: 'occurrence-1',
+      sourceCustody: {
+        kind: 'bundled_first_party',
+        packagedRuntime: { kind: 'cli_version_root', versionRootId: 'cli-1.2.3' },
+      },
       accounts: Array.from({ length: 501 }, (_unused, index) => ({
         ref: {
           service: {

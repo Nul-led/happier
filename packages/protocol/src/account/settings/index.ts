@@ -13,6 +13,24 @@ export {
   type SessionReminderPresetV1,
 } from './sessionReminderPresetsV1.js';
 export { resolveAttentionDeliveryPreviewBehavior } from './attentionDeliveryPolicyDecision.js';
+export { RolesV1Schema, type RolesV1 } from './rolesV1.js';
+export { readLegacyRolesV1, saveRolesV1WithLegacyMigration, type LegacyRoleArtifactV1 } from './rolesV1Migration.js';
+export {
+  admitAgentStartV1,
+  AGENT_START_REFUSAL_CODES_V1,
+  AgentStartRefusalV1Schema,
+  type AgentStartAdmissionV1,
+  type AgentStartBaselineV1,
+  type AgentStartCallerV1,
+  type AgentStartContextV1,
+  type AgentStartFactsV1,
+  type AgentStartRefusalV1,
+  type AgentStartRequestV1,
+  type MaterializedWorkflowLeafV1,
+  type PermissionModeCeiling,
+  type StampedStartV1,
+  type Unresolved,
+} from './admitAgentStartV1.js';
 
 export {
   ACCOUNT_REMOTE_ALERT_POLICY_MAX_UTF8_BYTES,
@@ -70,6 +88,9 @@ export {
   SessionHandoffDefaultsV1Schema,
   SessionAgentSpawnPolicyV1Schema,
   SessionAgentSpawnPolicyV1StrictSchema,
+  SessionAgentStartAllowListsV1Schema,
+  DEFAULT_SESSION_AGENT_START_ALLOW_LISTS_V1,
+  type SessionAgentStartAllowListsV1,
   SessionTmuxMachineOverrideSchema,
   SessionPendingQueueDeliveryTimingSchema,
   SessionPendingQueueDrainModeSchema,
@@ -89,6 +110,7 @@ export {
   type NewSessionWizardSelectionSectionId,
   type ResolveAttentionDeliveryPolicyDecisionParams,
   type SessionAgentSpawnPolicyV1,
+  type SessionAgentStartOverridesV1,
   type SessionHandoffDefaultsV1,
   type SessionHandoffDirectTargetMode,
   type SessionPendingQueueDeliveryTiming,
@@ -182,8 +204,10 @@ export {
   MACHINE_ADMINISTRATION_SELECTION_KEY_MAX_LENGTH_V1,
   MACHINE_ADMINISTRATION_SELECTION_MAX_ENTRIES_V1,
   MachineAdministrationSelectionsV1Schema,
+  MachineAdministrationTargetsV1Schema,
   MachineAdministrationTargetV1Schema,
   type MachineAdministrationSelectionsV1,
+  type MachineAdministrationTargetsV1,
   type MachineAdministrationTargetV1,
 } from './machineAdministrationSelectionsV1.js';
 

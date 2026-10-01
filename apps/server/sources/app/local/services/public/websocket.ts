@@ -1,4 +1,6 @@
 import { readOptionalPublicAuthDisposition } from "@/app/api/utils/optionalPublicAuth";
+import proxyAddr from '@fastify/proxy-addr';
+import type { IncomingMessage } from 'node:http';
 import type { OpenLocalServicePreviewTunnel } from "@/app/local/services/preview/httpAdapter";
 import {
     proxyLocalServicePreviewWebSocketUpgrade,
@@ -28,6 +30,7 @@ type UpgradeRequest = Readonly<{
     url?: string;
     headers?: Record<string, string | readonly string[] | undefined>;
     rawHeaders?: readonly string[];
+    socket?: Readonly<{ encrypted?: boolean; remoteAddress?: string }>;
 }>;
 
 type UpgradeSocket = LocalServicePreviewUpgradeSocket;
@@ -49,6 +52,9 @@ export type LocalServicePublicWebSocketUpgradeOptions = Readonly<{
         clientKey: string;
     }>) => LocalServicePublicRuntimeAccessResult;
     resolveExposure?: (exposureId: string) => LocalServicePublicExposureV1 | null | undefined;
+    trustProxy?: boolean | number;
+    externalProtocol?: "http" | "https";
+    retainConnection?: (exposureId: string, close: () => void) => () => void;
     authorizeSessionAccess?: (input: Readonly<{
         userId: string;
         sessionId: string;
@@ -57,7 +63,8 @@ export type LocalServicePublicWebSocketUpgradeOptions = Readonly<{
     }>) => boolean | Promise<boolean>;
     readOptionalAuthenticatedUser?: (request: unknown) => Promise<LocalServicePublicAuthenticatedUser | null>;
     openTunnel?: OpenLocalServicePreviewTunnel;
-    featureEnabled?: () => boolean;
+    /** The upgrade request being served, so the decision reads that request's Home configuration. */
+    featureEnabled?: (request: object) => boolean | Promise<boolean>;
     observability?: PeerMediationObservabilityEmitter;
     proxyWebSocket?: (input: ProxyLocalServicePreviewWebSocketUpgradeInput) => Promise<ProxyLocalServicePreviewWebSocketUpgradeResult>;
 }>;
@@ -162,7 +169,7 @@ export async function handleLocalServicePublicWebSocketUpgrade(
     const url = upgradeUrl(request);
     if (!url || !url.pathname.startsWith(PUBLIC_UPGRADE_ROUTE_PREFIX)) return;
 
-    if (options.featureEnabled && !options.featureEnabled()) {
+    if (options.featureEnabled && !await options.featureEnabled(request)) {
         await sendUpgradeError(socket, 404, "Not Found");
         return;
     }
@@ -203,14 +210,18 @@ export async function handleLocalServicePublicWebSocketUpgrade(
         resolveExposure: options.resolveExposure,
         authorizeSessionAccess: options.authorizeSessionAccess,
     });
+    const trustProxy = options.trustProxy;
     const access = options.validateAccess({
         exposureId: route.exposureId,
         rawToken: route.rawToken,
         authenticated: identity.authenticated,
         sessionAuthorized: identity.sessionAuthorized,
-        clientKey: readLocalServicePublicClientKey([
-            (socket as Readonly<{ remoteAddress?: string }>).remoteAddress,
-        ]),
+        // Same proxy-addr implementation and trust function as Fastify's request.ip.
+        // The library reads only headers and socket; raw upgrade requests have this shape.
+        clientKey: readLocalServicePublicClientKey([proxyAddr({ ...request, socket } as IncomingMessage,
+            trustProxy === true ? () => true
+                : typeof trustProxy === 'number' ? (_address, hop) => hop < trustProxy
+                    : () => false)]),
     });
     if (!access.ok) {
         await sendUpgradeError(socket, 403, "Forbidden");
@@ -223,6 +234,11 @@ export async function handleLocalServicePublicWebSocketUpgrade(
         return;
     }
 
+    const releaseConnection = options.retainConnection?.(route.exposureId, () => { socket.destroy?.(); });
+    if (socket.destroyed) {
+        releaseConnection?.();
+        return;
+    }
     try {
         await proxyWebSocket({
             preview: access.preview,
@@ -239,6 +255,7 @@ export async function handleLocalServicePublicWebSocketUpgrade(
                     )),
                 ),
                 rawHeaders: request.rawHeaders ?? [],
+                externalProtocol: request.socket?.encrypted ? "https" : options.externalProtocol ?? "http",
                 head,
                 client: createLocalServicePreviewUpgradeClient(socket),
             },
@@ -247,5 +264,7 @@ export async function handleLocalServicePublicWebSocketUpgrade(
         });
     } catch {
         await sendUpgradeError(socket, 502, "Bad Gateway");
+    } finally {
+        releaseConnection?.();
     }
 }

@@ -15,12 +15,13 @@ import {
   ExecutionRunTurnStreamStartResponseSchema,
 } from '../execution/runs/index.js';
 import { actionSpecToActionDefinitionV1, serializeActionSpec } from './actionCatalog.js';
-import { ActionInputHintsSchema, ActionSpecSchema, PUBLIC_ACTION_IDS, PUBLIC_ACTION_INPUT_SCHEMAS, PUBLIC_ACTION_OUTPUT_SCHEMAS, PublicActionIdSchema, SIGNED_ROOT_ACTION_IDS, SignedRootActionIdSchema, SESSION_TRANSCRIPT_GET_MAX_LIMIT, ActionSurfaceSchema, PLUGIN_ACTION_INPUT_SCHEMAS, PLUGIN_ACTION_OUTPUT_SCHEMAS, PLUGIN_INVOCABLE_ACTION_IDS, PluginInvocableActionIdSchema, SessionTranscriptGetExternalShareableInputV1Schema, getActionContextualDefaults, getActionSpec, isActionSpecSurfacedOn, isHumanSecretApiExcludedActionId, isInteractiveDiscussionApiExcludedActionId, isInternalActionId, isPluginProvenanceOnlyActionId, isPluginSurfaceExcludedActionId, isVoicePromptHotPathSpec, isVoiceSdkSafeActionSpec, listActionSpecs, listActionSpecsForSurface, listVoicePromptHotPathSpecs, projectSessionSpawnNewApiRequest, resolveRuntimeActionHostEffectClass } from './actionSpecs.js';
+import { ActionInputHintsSchema, ActionSpecSchema, PUBLIC_ACTION_IDS, PUBLIC_ACTION_INPUT_SCHEMAS, PUBLIC_ACTION_OUTPUT_SCHEMAS, PublicActionIdSchema, SIGNED_ROOT_ACTION_IDS, SignedRootActionIdSchema, SESSION_TRANSCRIPT_GET_MAX_LIMIT, ActionSurfaceSchema, PLUGIN_ACTION_INPUT_SCHEMAS, PLUGIN_ACTION_OUTPUT_SCHEMAS, PLUGIN_INVOCABLE_ACTION_IDS, PluginInvocableActionIdSchema, SessionTranscriptGetExternalShareableInputV1Schema, getActionContextualDefaults, getActionSpec, isActionSpecSurfacedOn, isHumanSecretApiExcludedActionId, isInternalActionId, isPluginProvenanceOnlyActionId, isPluginSurfaceExcludedActionId, isVoicePromptHotPathSpec, isVoiceSdkSafeActionSpec, listActionSpecs, listActionSpecsForSurface, listVoicePromptHotPathSpecs, projectSessionSpawnNewApiRequest, resolveRuntimeActionHostEffectClass } from './actionSpecs.js';
 import { HOME_GOVERNANCE_ACTION_IDS_V1 } from '../home/governance/actionsV1.js';
 import { TEAM_ACTION_IDS_V1 } from '../teams/actionsV1.js';
 import { SHARED_SAVED_SECRET_ACTION_IDS_V1 } from '../account/settings/savedSecretResourceActionsV1.js';
 import { MANAGED_IDENTITY_PROVIDER_ACTION_IDS_V1 } from '../identity/providers.js';
 import { WORKFLOW_ACTION_IDS_V1 } from '../workflows/actionsV1.js';
+import { ROLE_ACTION_IDS_V1 } from '../prompts/roles/roleActionIdsV1.js';
 import { MANAGED_GITHUB_APP_ACTION_IDS_V1 } from '../identity/githubApps.js';
 import { resolveRuntimeActionSurfaces } from './surfaces.js';
 import type { ActionSpec } from './actionSpecs.js';
@@ -150,6 +151,7 @@ const RUNTIME_ACTION_IDS = [
 const TEAM_NON_REFRESHABLE_DANGER_ACTION_ID_SET = new Set<ActionId>([
   'teams.credentials.test',
   'teams.credentials.externalKeys.create',
+  'teams.credentials.externalKeys.authorize',
   'teams.invitations.create',
   'teams.invitations.reissue',
   'teams.identity.connections.test.start',
@@ -174,6 +176,9 @@ const WORKFLOW_READ_ACTION_ID_SET = new Set([
 ] as const);
 
 const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
+  ...ROLE_ACTION_IDS_V1,
+  'launch_profiles.publish',
+  'prompt_doc.get',
   'agents.acp.backends.upsert',
   'agents.acp.backends.delete',
   'secrets.shared.list',
@@ -186,12 +191,14 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'account.plugins.data.erase',
   'account.sessions.signOutEverywhere',
   'account.security.get',
+  'account.security.terminalPresentUser.set',
   'account.password.enroll',
   'account.password.change',
   'account.password.remove',
   'account.email.change.request',
   'account.apiTokens.create',
   'account.apiTokens.list',
+  'account.apiTokens.update',
   'account.apiTokens.revoke',
   'account.apiTokens.revokeAll',
   'machines.pools.list',
@@ -207,6 +214,9 @@ const RESULT_REQUIRED_BLOCKING_ACTION_IDS = [
   'execution.run.wait',
   'session.handoff.prepare_target_result.get',
   'session.handoff.status.get',
+  'workspace.sync.relationships.list',
+  'workspace.sync.conflicts.list',
+  'workspace.sync.conflict.inspect',
   'paths.list_recent',
   'projects.list',
   'prompts.invocations.list',
@@ -307,8 +317,13 @@ const RESULT_NONE_DEFERRED_ACTION_IDS = [
   'session.responsibility.candidates.list',
   'session.follow.sources.list',
   'session.stop',
+  'session.delete',
+  'session.folder.set',
+  'session.tags.set',
   'session.title.set',
+  'session.approval_reviewer.set',
   'session.read_state.set',
+  'session.attention.set',
   'session.permission_mode.set',
   'session.model.set',
   'session.archive',
@@ -368,6 +383,7 @@ const RESULT_NONE_DEFERRED_ACTION_IDS = [
 ] as const;
 
 const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
+  'session.reports_to.set',
   // Session-access mutations, mirrored from their owner's rows now that the
   // declared family is projected into the canonical id list.
   'session.access.grant.set',
@@ -414,6 +430,7 @@ const RESULT_OPTIONAL_DEFERRED_ACTION_IDS = [
   'session.handoff.prepare_target.resume',
   'session.handoff.commit',
   'session.handoff.abort',
+  'workspace.sync.relationship.create',
   'session.spawn_new',
   'session.message.send',
   'session.board.item.upsert',
@@ -536,7 +553,7 @@ describe('Action Spec Registry', () => {
       kind: 'plugins_dev_submit',
       outcome: 'reviewRequired',
       pendingReview: {
-        kind: 'sourceRootReviewRequired',
+        kind: 'reviewRequired', reviewKind: 'projectTrust',
         pendingChangeId: 'pending-plugin-change',
         review: { sourceRootPath: '/plugins/acme' },
       },
@@ -546,7 +563,7 @@ describe('Action Spec Registry', () => {
       kind: 'plugins_install',
       outcome: 'reviewRequired',
       pendingReview: {
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         pendingChangeId: 'pending-plugin-change',
         review: { pluginId: 'acme.plugin' },
       },
@@ -915,6 +932,24 @@ describe('Action Spec Registry', () => {
     }
   });
 
+  it('publishes valid direct tools for Account security request and read parity', () => {
+    for (const [actionId, toolName] of [
+      ['account.apiTokens.create', 'account_api_tokens_create'],
+      ['account.apiTokens.update', 'account_api_tokens_update'],
+      ['account.apiTokens.revoke', 'account_api_tokens_revoke'],
+      ['account.apiTokens.revokeAll', 'account_api_tokens_revoke_all'],
+      ['account.security.terminalPresentUser.set', 'account_security_terminal_present_user_set'],
+      ['account.apiTokens.list', 'account_api_tokens_list'],
+      ['account.security.get', 'account_security_get'],
+    ] as const) {
+      const spec = getActionSpec(actionId);
+      expect(spec.bindings?.mcpToolName, actionId).toBe(toolName);
+      expect(spec.surfaces.agent, actionId).toBe(true);
+      expect(spec.surfaces.mcp, actionId).toBe(true);
+      expect(ActionSpecSchema.safeParse(spec).success, actionId).toBe(true);
+    }
+  });
+
   it('keeps concrete browser result contracts when public plugin exposure reaches runtime Actions', () => {
     const clear = getActionSpec('browser.diagnostics.clear').outputSchema;
     const pause = getActionSpec('browser.diagnostics.pause').outputSchema;
@@ -1056,8 +1091,8 @@ describe('Action Spec Registry', () => {
         !isInternalActionId(spec.id)
           && !isPluginProvenanceOnlyActionId(spec.id)
           && !isHumanSecretApiExcludedActionId(spec.id)
-          && !isInteractiveDiscussionApiExcludedActionId(spec.id)
-          && spec.requiredAuthority === 'account_automation',
+          && (spec.requiredAuthority === 'account_automation'
+            || ['approval.request.decide', 'session.permission.respond', 'session.user_action.answer'].includes(spec.id)),
       );
       expect(Object.prototype.hasOwnProperty.call(spec.surfaces, 'plugin')).toBe(true);
       expect(typeof spec.surfaces.plugin).toBe('boolean');
@@ -1074,22 +1109,25 @@ describe('Action Spec Registry', () => {
       expect(SignedRootActionIdSchema.safeParse(spec.id).success, spec.id).toBe(
         !isInternalActionId(spec.id)
           && !isPluginProvenanceOnlyActionId(spec.id)
-          && !isHumanSecretApiExcludedActionId(spec.id)
-          && !isInteractiveDiscussionApiExcludedActionId(spec.id),
+          && !isHumanSecretApiExcludedActionId(spec.id),
       );
     }
 
     expect(SIGNED_ROOT_ACTION_IDS).toContain('approval.request.decide');
     expect(SIGNED_ROOT_ACTION_IDS).toContain('plugins.install');
-    expect(PUBLIC_ACTION_IDS).not.toContain('approval.request.decide');
+    expect(PUBLIC_ACTION_IDS).toContain('approval.request.decide');
     expect(PUBLIC_ACTION_IDS).not.toContain('plugins.install');
     for (const actionId of PUBLIC_ACTION_IDS) {
-      expect(getActionSpec(actionId).requiredAuthority, actionId).toBe('account_automation');
+      expect(getActionSpec(actionId).requiredAuthority, actionId).toBe(
+        ['approval.request.decide', 'session.permission.respond', 'session.user_action.answer'].includes(actionId)
+          ? 'present_user' : 'account_automation',
+      );
     }
 
     for (const [actionId, requiredAuthority] of [
       ['account.apiTokens.create', 'present_user'],
       ['account.apiTokens.list', 'account_automation'],
+      ['account.apiTokens.update', 'present_user'],
       ['account.apiTokens.revoke', 'present_user'],
       ['account.apiTokens.revokeAll', 'present_user'],
     ] as const) {
@@ -1177,14 +1215,29 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('session.user_action.answer').surfaces.plugin).toBe(true);
   });
 
-  it('keeps private Discussion read position interactive without publishing it to PAT or public SDK callers', () => {
+  it('exposes ORC-19 profile publication and Settle to agents with canonical approval metadata', () => {
+    for (const [actionId, approval] of [
+      ['launch_profiles.publish', { result: 'required' }],
+      ['session.attention.set', { result: 'none' }],
+      ['session.read_state.set', { result: 'none' }],
+    ] as const) {
+      const spec = getActionSpec(actionId);
+      expect(spec.surfaces.agent, actionId).toBe(true);
+      expect(spec.requiredAuthority, actionId).toBe('account_automation');
+      expect(listActionSpecsForSurface('agent').map((row) => row.id)).toContain(actionId);
+      expect(spec.approval, actionId).toEqual(approval);
+      expect(serializeActionSpec(spec).approval, actionId).toEqual(approval);
+    }
+  });
+
+  it('publishes the caller’s private Discussion read position to granted API callers', () => {
     const spec = getActionSpec('session.discussion.read_state.set');
     expect(spec.surfaces.ui).toBe(true);
     expect(spec.surfaces.cli).toBe(true);
-    expect(spec.requiredAuthority).toBe('present_user');
-    expect(spec.surfaces.api).toBe(false);
-    expect(PUBLIC_ACTION_IDS).not.toContain('session.discussion.read_state.set');
-    expect(PublicActionIdSchema.safeParse('session.discussion.read_state.set').success).toBe(false);
+    expect(spec.requiredAuthority).toBe('account_automation');
+    expect(spec.surfaces.api).toBe(true);
+    expect(PUBLIC_ACTION_IDS).toContain('session.discussion.read_state.set');
+    expect(PublicActionIdSchema.safeParse('session.discussion.read_state.set').success).toBe(true);
   });
 
   it('gives remote permission mediation an Account-automation minimum so a host-stamped plugin caller can reach it', () => {
@@ -1212,7 +1265,7 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('session.permission.remote.grants.revoke').surfaces.api).toBe(true);
   });
 
-  it('keeps permission approval on the signed interactive root but excludes PAT and trusted-plugin publication', () => {
+  it('publishes permission approval for opt-in token decisions while excluding trusted plugins', () => {
     const permission = getActionSpec('session.permission.respond');
     const userAction = getActionSpec('session.user_action.answer');
     expect(permission.requiredAuthority).toBe('present_user');
@@ -1227,13 +1280,13 @@ describe('Action Spec Registry', () => {
       agent: false,
       mcp: false,
       voice: false,
-      api: false,
+      api: true,
       plugin: false,
     });
     expect(SignedRootActionIdSchema.safeParse('session.permission.respond').success).toBe(true);
     expect(SIGNED_ROOT_ACTION_IDS).toContain('session.permission.respond');
-    expect(PublicActionIdSchema.safeParse('session.permission.respond').success).toBe(false);
-    expect(PUBLIC_ACTION_IDS).not.toContain('session.permission.respond');
+    expect(PublicActionIdSchema.safeParse('session.permission.respond').success).toBe(true);
+    expect(PUBLIC_ACTION_IDS).toContain('session.permission.respond');
     expect(PluginInvocableActionIdSchema.safeParse('session.permission.respond').success).toBe(false);
     expect(PLUGIN_INVOCABLE_ACTION_IDS).not.toContain('session.permission.respond');
     expect(PLUGIN_ACTION_INPUT_SCHEMAS).not.toHaveProperty('session.permission.respond');
@@ -1906,8 +1959,6 @@ describe('Action Spec Registry', () => {
         accessDeclarationDigest: 'a'.repeat(64),
         selectedAuthorityDigest: 'c'.repeat(64),
         selectedRawAccessDigest: 'd'.repeat(64),
-        installedGenerationId: 'generation-1',
-        installReviewPrincipalDigest: 'b'.repeat(64),
       },
       reason: 'Use the declared voice credential',
     };
@@ -1983,6 +2034,7 @@ describe('Action Spec Registry', () => {
 
   it('uses default blocking flow for result-required approval metadata', () => {
     expect(getActionSpec('session.list').approval).toEqual({ result: 'required' });
+    expect(getActionSpec('prompt_doc.get').approval).toEqual({ result: 'required' });
   });
 
   it('uses default deferred flow for no-result approval metadata', () => {
@@ -4144,8 +4196,8 @@ describe('Action Spec Registry', () => {
 
   it('provides input hints for every ActionSpec (single source of truth for elicitation)', () => {
     for (const spec of listActionSpecs()) {
-      expect((spec as any).inputHints).toBeTruthy();
-      expect(Array.isArray((spec as any).inputHints?.fields)).toBe(true);
+      expect.soft(spec.inputHints, spec.id).toBeTruthy();
+      expect.soft(Array.isArray(spec.inputHints?.fields), spec.id).toBe(true);
     }
   });
 
@@ -4633,20 +4685,18 @@ describe('Action Spec Registry', () => {
     expect(isVoicePromptHotPathSpec({ prompting: { voiceHotPath: false } })).toBe(false);
   });
 
-  it('uses concrete schema-shaped voice args examples for all voice surfaces', () => {
+  it.each(listActionSpecs().filter((spec) => spec.surfaces.voice))('uses concrete schema-shaped voice args examples for $id', (spec) => {
     const placeholderFragments = ['...optional...', '"..."', 'allow|deny', '...|null'];
 
-    for (const spec of listActionSpecs().filter((entry) => entry.surfaces.voice || entry.surfaces.voice)) {
-      const argsExample = spec.examples?.voice?.argsExample;
-      expect(typeof argsExample).toBe('string');
-      const exampleText = String(argsExample ?? '').trim();
-      expect(exampleText.length).toBeGreaterThan(0);
-      for (const fragment of placeholderFragments) {
-        expect(exampleText).not.toContain(fragment);
-      }
-
-      const parsedJson = JSON.parse(exampleText);
-      expect((spec.inputSchema as any).safeParse(parsedJson).success, spec.id).toBe(true);
+    const argsExample = spec.examples?.voice?.argsExample;
+    expect(typeof argsExample).toBe('string');
+    const exampleText = String(argsExample ?? '').trim();
+    expect(exampleText.length).toBeGreaterThan(0);
+    for (const fragment of placeholderFragments) {
+      expect(exampleText).not.toContain(fragment);
     }
+
+    const parsedJson = JSON.parse(exampleText);
+    expect(spec.inputSchema.safeParse(parsedJson).success).toBe(true);
   });
 });

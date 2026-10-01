@@ -1,0 +1,8 @@
+ALTER TABLE "Session" ADD COLUMN "originKind" TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE "Session" ADD COLUMN "originSessionId" TEXT;
+ALTER TABLE "Session" ADD COLUMN "originRunId" TEXT;
+ALTER TABLE "Session" ADD COLUMN "workDepth" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "SessionTurn" ADD COLUMN "initiator" TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE "SessionTurn" ADD COLUMN "workDepth" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "SessionTurn" ADD COLUMN "workflowInvocationJson" TEXT;

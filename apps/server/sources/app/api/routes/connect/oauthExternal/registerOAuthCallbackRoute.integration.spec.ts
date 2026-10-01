@@ -503,8 +503,14 @@ describe("OAuth callback provider security binding", () => {
         app.setValidatorCompiler(validatorCompiler);
         app.setSerializerCompiler(serializerCompiler);
         trackApp(app);
-        app.decorate("authenticate", async (request: { userId: string }) => {
+        app.decorate("authenticate", async (request: {
+            userId: string;
+            authTokenKind: string;
+            authAuthority: string;
+        }) => {
             request.userId = account.id;
+            request.authTokenKind = "account";
+            request.authAuthority = "present_user";
         });
         const typed = app.withTypeProvider<ZodTypeProvider>() as any;
         connectConnectExternalRoutes(typed);

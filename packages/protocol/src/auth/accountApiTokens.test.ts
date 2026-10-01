@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as tokens from './accountApiTokens.js';
 import { encodeBase64 } from '../crypto/base64.js';
+import { API_TOKEN_FULL_GRANT_V1 } from './apiTokenGrant.js';
 
 import {
   ACCOUNT_API_TOKEN_INTROSPECTION_HTTP_PATH_V1,
@@ -17,6 +18,13 @@ const CREDENTIAL_ID = '2c67deea-5ae7-4706-9ad6-b5b992df1cba';
 const PAT = `hap_v1_${CREDENTIAL_ID}_${'A'.repeat(43)}`;
 
 describe('API token encryption credentials', () => {
+  it('requires persisted Account mode on scoped self without inferring it from credential material', () => {
+    const self = { accountId: 'a', credentialId: CREDENTIAL_ID, parentTokenId: null,
+      expiresAt: null, grant: API_TOKEN_FULL_GRANT_V1, embedConfig: null };
+    expect(tokens.AccountApiTokenSelfV1Schema.safeParse(self).success).toBe(false);
+    expect(tokens.AccountApiTokenSelfV1Schema.safeParse({ ...self, accountEncryptionMode: 'plain' }).success).toBe(true);
+    expect(tokens.AccountApiTokenSelfV1Schema.safeParse({ ...self, accountEncryptionMode: 'e2ee' }).success).toBe(true);
+  });
   const payload = {
     bearer: PAT,
     wrappingSecret: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
@@ -74,8 +82,14 @@ describe('API token encryption credentials', () => {
       expiresAt: null,
       hasEncryptionAccess: true,
       hasUnattendedTeamAccess: true,
+      grant: API_TOKEN_FULL_GRANT_V1,
+      parentTokenId: null,
+      activeChildCount: 0,
+      embedConfig: null,
     };
     expect(tokens.AccountApiTokensListActionInputV1Schema.parse({})).toEqual({});
+    const observation = tokens.projectAccountApiTokenCreationObservation({ apiToken: summary, token: PAT });
+    expect(tokens.projectAccountApiTokenCreationObservation(observation)).toEqual({ apiToken: summary });
     expect(tokens.AccountApiTokensListActionInputV1Schema.safeParse({ includeEncryptionAccess: true }).success).toBe(false);
     expect(tokens.AccountApiTokensListActionOutputV1Schema.parse({ tokens: [summary] })).toEqual({ tokens: [summary] });
     expect(tokens.AccountApiTokensListActionOutputV1Schema.safeParse({ tokens: [{ ...summary, hasEncryptionAccess: undefined }] }).success).toBe(false);
@@ -107,6 +121,10 @@ describe('auth/accountApiTokens PAT introspection', () => {
       tokenId: CREDENTIAL_ID,
       label: 'Build automation',
       displayPrefix: 'hap_v1_2c67deea',
+      grant: API_TOKEN_FULL_GRANT_V1,
+      parentTokenId: null,
+      activeChildCount: 0,
+      embedConfig: null,
       createdAt: '2026-08-22T12:00:00.000Z',
       lastUsedAt: null,
       expiresAt: null,
@@ -174,6 +192,9 @@ describe('auth/accountApiTokens PAT introspection', () => {
       credentialId: CREDENTIAL_ID,
       expiresAt: '2030-08-22T12:01:00.000Z',
       authority: 'account_automation' as const,
+      grant: API_TOKEN_FULL_GRANT_V1,
+      parentTokenId: null,
+      embedConfig: null,
     };
 
     expect(AccountApiTokenIntrospectionSuccessV1Schema.parse(principal)).toEqual(

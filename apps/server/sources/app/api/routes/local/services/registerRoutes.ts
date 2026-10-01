@@ -1,4 +1,6 @@
 import type { Fastify } from "@/app/api/types";
+import { readAvailableMachineIrohEndpointAuthority } from '@/app/machines/machineStateGuards';
+import { resolveApiTrustProxy } from '@/app/api/utils/apiRateLimitPolicy';
 import {
     registerLocalServicePreviewRoutes,
     type LocalServicePreviewSessionAccessPurpose,
@@ -6,7 +8,7 @@ import {
 import { registerLocalServicePublicRoutes } from "@/app/api/routes/local/services/public/registerRoutes";
 import {
     createServerFeatureGatedRouteApp,
-    isServerFeatureEnabledForRequest,
+    isServerFeatureEnabledForHome,
 } from "@/app/features/catalog/serverFeatureGate";
 import { readLocalServicesFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
@@ -33,6 +35,7 @@ import { createLocalServicePublicRateLimitChecker } from "@/app/local/services/p
 import {
     LocalServicePublicPreviewExchangeRequestV1Schema,
     LocalServicePublicPreviewExchangeResponseV1Schema,
+    resolvePeerRouteFeatureId,
 } from "@happier-dev/protocol";
 import type { OpenLocalServicePreviewTunnel } from "@/app/local/services/preview/httpAdapter";
 import {
@@ -147,6 +150,7 @@ export function createLocalServiceRouteRuntimes(env: NodeJS.ProcessEnv): LocalSe
         publicBaseUrl,
         hostOriginBaseDomain: featureEnv.previewHostOriginBaseDomain,
         tokenTtlMs: featureEnv.previewTokenTtlMs,
+        env,
     });
     return {
         preview,
@@ -202,6 +206,8 @@ export function registerLocalServiceRoutes(
     const env = options.env ?? process.env;
     const featureEnv = readLocalServicesFeatureEnv(env);
     const runtimes = options.runtimes ?? createLocalServiceRouteRuntimes(env);
+    app.addHook('preClose', async () => runtimes.preview.closeNativeRegistrations());
+    const externalProtocol = isHttpsUrl(resolvePublicBaseUrl(env)) ? "https" : "http";
     const authorizeSessionAccess = options.authorizeSessionAccess ?? createLocalServiceRouteSessionAccessAuthorizer();
     const openTunnel = options.openTunnel
         ?? (
@@ -216,21 +222,22 @@ export function registerLocalServiceRoutes(
 
     registerLocalServicePreviewRoutes(createServerFeatureGatedRouteApp(app, "localServices.preview", env), {
         registerPreview: (input) => runtimes.preview.registerPreview(input),
+        mintNativeDirectAccess: (input) => runtimes.preview.mintNativeDirectAccess(input),
+        resolveNativeDirectTarget: (input) => readAvailableMachineIrohEndpointAuthority({ ...input, requiredCapability: 'localServicePreviewNativeAccess' }),
+        nativeDirectEnabled: (request) => isServerFeatureEnabledForHome(resolvePeerRouteFeatureId({ flowKind: 'tcp_tunnel', routeKind: 'iroh_peer' }), { env, request }),
+        openNativeRegistration: (binding, grantId) => runtimes.preview.openNativeRegistration(binding, grantId),
         unregisterPreview: (previewId) => runtimes.preview.unregisterPreview(previewId),
         resolvePreview: (previewId) => runtimes.preview.resolvePreview(previewId),
         resolvePreviewByHost: (hostname) => runtimes.preview.resolvePreviewByHost(hostname),
         hostOriginBaseDomain: featureEnv.previewHostOriginBaseDomain,
-        // F-5: mark the path-mode exchange cookie `Secure` on an https deployment. It cannot be
-        // unconditional — on plain http the browser drops a `Secure` cookie and the private
-        // preview stops working entirely.
-        publicBaseUrlSecure: isHttpsUrl(resolvePublicBaseUrl(env)),
+        externalProtocol,
         validateAccess: (input) => runtimes.preview.validateAccess(input),
         exchangeAccessToken: (input) => runtimes.preview.exchangeAccessToken(input),
         authorizeSessionAccess,
         openTunnel,
         observability: routeApp.peerMediationObservability,
         resolvePreviewAccountId: (previewId) => runtimes.preview.resolvePreviewContext(previewId)?.accountId ?? null,
-        featureEnabled: () => isServerFeatureEnabledForRequest("localServices.preview", env),
+        featureEnabled: (request) => isServerFeatureEnabledForHome("localServices.preview", { env, request }),
     });
 
     const publicRouteApp = createServerFeatureGatedRouteApp(app, "localServices.publicPreview", env);
@@ -239,12 +246,15 @@ export function registerLocalServiceRoutes(
         getStatus: (request) => runtimes.public.getSnapshot(request),
         createExposure: (input) => runtimes.public.createExposure(input),
         resolveExposure: (exposureId) => runtimes.public.resolveExposure(exposureId),
+        trustProxy: resolveApiTrustProxy(env),
+        externalProtocol,
+        retainConnection: (exposureId, close) => runtimes.public.retainConnection(exposureId, close),
         revokeExposure: (exposureId, input) => runtimes.public.revokeExposure(exposureId, input),
         validateAccess: (input) => runtimes.public.validateAccess(input),
         exchangeAccessToken: (input) => runtimes.public.exchangeAccessToken(input),
         authorizeSessionAccess,
         dnsTlsValid: resolveLocalServicePublicDnsTlsValid(env),
-        featureEnabled: () => isServerFeatureEnabledForRequest("localServices.publicPreview", env),
+        featureEnabled: (request) => isServerFeatureEnabledForHome("localServices.publicPreview", { env, request }),
         openTunnel,
         observability: routeApp.peerMediationObservability,
     });
@@ -274,7 +284,7 @@ function registerLocalServicePublicExchangeRoute(
     app.post(PUBLIC_EXCHANGE_ROUTE_PATH, async (request: unknown, reply: unknown) => {
         const typedRequest = request as ExchangeRouteRequest;
         const typedReply = reply as ExchangeRouteReply;
-        if (!isServerFeatureEnabledForRequest("localServices.publicPreview", env)) {
+        if (!await isServerFeatureEnabledForHome("localServices.publicPreview", { env, request: typedRequest })) {
             typedReply.code?.(404).send?.({ error: "not_found" });
             return;
         }

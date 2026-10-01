@@ -16,8 +16,8 @@ export const automationTriggerSelect = {
 } satisfies Prisma.AutomationTriggerSelect;
 
 /**
- * The list-specific trigger read: everything the list/detail DTO and released
- * V2 representability need, without the private definition envelope. Status
+ * The list-specific trigger read: everything the current list/detail DTO
+ * needs, without the private definition envelope. Status
  * summaries are batch-loaded by the status projection owner, so no trigger
  * select loads the unused status relation.
  */
@@ -37,6 +37,7 @@ export const automationTriggerListItemSelect = {
 /** Canonical definition read. Every current trigger reader starts here. */
 export const automationListItemSelect = {
     id: true, accountId: true, name: true, description: true, enabled: true,
+    workflowDefinitionId: true, scopeSessionId: true,
     targetType: true, templateCiphertext: true, templateVersion: true, lastRunAt: true,
     createdAt: true, updatedAt: true,
     assignments: {
@@ -125,22 +126,15 @@ export const automationRunV3ListItemSelect = {
     producedSessionId: true, createdAt: true, updatedAt: true,
 } satisfies Prisma.AutomationRunSelect;
 
-/** Released-V2 boundary read; retains fields required by its legacy adapter. */
-export const automationRunV2ListItemSelect = {
-    ...automationRunV3ListItemSelect,
-    executionInputEnvelope: true,
-    resultEnvelope: true,
-    errorMessage: true,
-    scheduledAt: true,
-} satisfies Prisma.AutomationRunSelect;
-
 export const automationRunWithAutomationSelect = {
     ...automationRunItemSelect,
+    workflowResumeRequestedRevision: true,
     assignments: {
         select: { machineId: true, priority: true },
         orderBy: [{ priority: "desc" }, { machineId: "asc" }],
     },
     automation: {
-        select: { id: true, name: true, enabled: true, targetType: true, templateCiphertext: true },
+        select: { id: true, name: true, enabled: true, targetType: true, templateCiphertext: true,
+            workflowDefinitionId: true, scopeSessionId: true },
     },
 } satisfies Prisma.AutomationRunSelect;

@@ -124,14 +124,18 @@ export async function discardClaimedTeamInvitationPostAuthContinuationInTx(
     return deleted.count === 1;
 }
 
-/** Consume the finalizer's same-row continuation through the invitation owner. */
-export async function acceptTeamInvitationPostAuthContinuationInTx(
+/** Read opaque custody only for its exact Account, without consuming it. */
+export async function readTeamInvitationPostAuthContinuationInTx(
     tx: Tx,
     input: Readonly<{
         continuation: TeamInvitationPostAuthContinuationV1;
         accountId: string;
     }>,
-): Promise<TeamInvitationAcceptResultV1> {
+): Promise<Readonly<{
+    stored: z.infer<typeof storedPostAuthContinuationSchema>;
+    value: string;
+    now: Date;
+}> | null> {
     const now = await readTransactionDatabaseTime(tx);
     const row = await tx.repeatKey.findUnique({
         where: {
@@ -140,30 +144,43 @@ export async function acceptTeamInvitationPostAuthContinuationInTx(
         },
         select: { value: true, expiresAt: true },
     });
-    if (!row) return { outcome: "not_found" };
+    if (!row) return null;
     let decoded: unknown;
     try {
         decoded = JSON.parse(row.value);
     } catch {
-        return { outcome: "not_found" };
+        return null;
     }
     const stored = storedPostAuthContinuationSchema.safeParse(decoded);
     if (!stored.success
         || stored.data.accountId !== input.accountId
         || stored.data.teamId !== input.continuation.teamId) {
-        return { outcome: "not_found" };
+        return null;
     }
+    return { stored: stored.data, value: row.value, now };
+}
+
+/** Consume the finalizer's same-row continuation through the invitation owner. */
+export async function acceptTeamInvitationPostAuthContinuationInTx(
+    tx: Tx,
+    input: Readonly<{
+        continuation: TeamInvitationPostAuthContinuationV1;
+        accountId: string;
+    }>,
+): Promise<TeamInvitationAcceptResultV1> {
+    const row = await readTeamInvitationPostAuthContinuationInTx(tx, input);
+    if (!row) return { outcome: "not_found" };
     const consumed = await tx.repeatKey.deleteMany({
         where: {
             key: input.continuation.reference,
             value: row.value,
-            expiresAt: { gt: now },
+            expiresAt: { gt: row.now },
         },
     });
     if (consumed.count !== 1) return { outcome: "not_found" };
     return await acceptTeamInvitationAdmissionReferenceInTx(tx, {
-        invitationId: stored.data.invitationId,
-        tokenHash: stored.data.tokenHash,
+        invitationId: row.stored.invitationId,
+        tokenHash: row.stored.tokenHash,
         accountId: input.accountId,
     });
 }

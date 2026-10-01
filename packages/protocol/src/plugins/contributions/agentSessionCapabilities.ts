@@ -31,6 +31,8 @@ export const PluginAgentSessionCapabilitiesV2Schema = z.object({
   open: z.array(z.enum(['create', 'resume', 'fork'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'),
   delivery: z.array(z.enum(['newTurn', 'steer', 'followUp'])).min(1).refine((values) => new Set(values).size === values.length, 'Entries must be unique.'),
   cancel: z.boolean(), configuration: z.boolean().optional(),
+  /** Native filesystem enforcement of configuration.workspaceWrites='deny'. Absence is unsupported. */
+  workspaceWrites: z.literal('deny').optional(),
   compaction: z.object({ events: z.literal(true), manual: z.literal(true).optional() }).strict().optional(),
   conversationRollback: z.literal(true).optional(),
   goals: PluginAgentGoalsV2Schema.optional(),
@@ -41,6 +43,8 @@ export const PluginAgentSessionCapabilitiesV2Schema = z.object({
   runtimeActivitySnapshots: z.literal(true).optional(),
   startupInstructions: z.object({
     versions: z.tuple([z.literal(1)]),
+    /** Omission means native resume cannot be used to apply changed instructions. */
+    revisionChanges: z.literal('resume').optional(),
   }).strict().optional(),
   /** Additive host context for Session-primary Agents executing without a Happier Session. */
   executionRunContext: z.object({

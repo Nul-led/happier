@@ -34,7 +34,6 @@ describe("Session data-key envelope full-page PATCH measurement (SQLite)", () =>
             tempDirPrefix: "happier-session-envelope-patch-measurement-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
         });

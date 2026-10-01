@@ -26,6 +26,7 @@ function createPolicy(overrides?: Partial<RetentionPolicy>): RetentionPolicy {
             globalLocks: { mode: 'keep_forever' },
             automationRuns: { mode: 'keep_forever' },
             automationRunEvents: { mode: 'keep_forever' },
+            homeAdministrationEvents: { mode: 'keep_forever' },
         },
         ...overrides,
     };
@@ -51,6 +52,7 @@ describe('retention/retentionPolicyToCapabilities', () => {
                 globalLocks: { mode: 'keep_forever' },
                 automationRuns: { mode: 'keep_forever' },
                 automationRunEvents: { mode: 'keep_forever' },
+                homeAdministrationEvents: { mode: 'keep_forever' },
             },
         }));
 
@@ -82,6 +84,7 @@ describe('retention/retentionPolicyToCapabilities', () => {
                 globalLocks: { mode: 'keep_forever' },
                 automationRuns: { mode: 'delete_older_than', days: 45 },
                 automationRunEvents: { mode: 'delete_older_than', days: 45 },
+                homeAdministrationEvents: { mode: 'keep_forever' },
             },
         }));
 

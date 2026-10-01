@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { projectEffectiveSessionAccess, type SessionAccessProjectionRow } from "./sessionAccess";
+import { projectEffectiveSessionAccess, resolveSessionAccessForOperation, type SessionAccessProjectionRow } from "./sessionAccess";
+import type { Tx } from "@/storage/inTx";
+import { readSessionAccessAuthenticationFromRequest, readSessionAccessAuthenticationFromSocket, type SessionAccessAuthentication } from "./sessionAccessAuthentication";
+import { API_TOKEN_FULL_GRANT_V1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 
 // Pure row projection never queries persistence; relational coverage uses the real SQLite harness.
 vi.mock("@/storage/db", () => ({ db: {} }));
@@ -12,6 +15,76 @@ function session(overrides: Partial<SessionAccessProjectionRow> = {}): SessionAc
 }
 
 describe("Session effective capability projection", () => {
+    it("admits an exact model Action without granting Send, while retaining underlying share limits", async () => {
+        const authentication: SessionAccessAuthentication = {
+            env: {}, authority: "account_automation", authenticationEvidence: undefined,
+            apiTokenGrant: { ...API_TOKEN_FULL_GRANT_V1,
+                actions: { families: [], ids: ["session.model.set"] },
+                targets: { sessions: ["session"], machines: [] } },
+        };
+        const reader = {} as Tx;
+        const operation = { accountId: "owner", sessionId: "session", authentication,
+            row: session(), capability: "submitAgentInput" as const,
+            apiTokenAction: { actionId: "session.model.set" as const } };
+        expect(await resolveSessionAccessForOperation(reader, operation)).toMatchObject({
+            status: "allowed", access: { capabilities: { submitAgentInput: false } },
+        });
+        expect(await resolveSessionAccessForOperation(reader, { ...operation,
+            apiTokenAction: { actionId: "session.message.send" } })).toEqual({ status: "unavailable" });
+        expect(await resolveSessionAccessForOperation(reader, { ...operation,
+            apiTokenAction: { actionId: "session.goal.set" } })).toEqual({ status: "unavailable" });
+        expect(await resolveSessionAccessForOperation(reader, { ...operation, row: session({
+            accountId: "other-owner", shares: [{ id: "share", sharedWithUserId: "owner",
+                accessLevel: "view", canApprovePermissions: false }],
+        }) })).toEqual({ status: "unavailable" });
+    });
+    it("preserves verified Action-effect constraints without applying a direct-token capability ceiling", async () => {
+        const principal = { grant: { ...API_TOKEN_FULL_GRANT_V1,
+            actions: { families: [], ids: ["session.goal.set" as const] }, permissionModes: null } };
+        const invocationConstraints = { models: null, permissionModes: ["default" as const] };
+        const direct = readSessionAccessAuthenticationFromRequest({ authAuthority: "account_automation", apiTokenPrincipal: principal });
+        const effect = readSessionAccessAuthenticationFromRequest({ authAuthority: "account_automation", apiTokenPrincipal: principal,
+            externalActionExecutionAuthorized: true, externalActionInputConstraints: invocationConstraints });
+        expect(direct.apiTokenGrant).toEqual(principal.grant);
+        expect(effect).not.toHaveProperty("apiTokenGrant");
+        expect(effect.callerInputConstraints).toEqual({ models: null, permissionModes: ["default"] });
+        expect(await resolveSessionAccessForOperation({} as Tx, { accountId: "owner", sessionId: "session",
+            authentication: direct, row: session(), capability: "submitAgentInput" })).toEqual({ status: "unavailable" });
+        expect(await resolveSessionAccessForOperation({} as Tx, { accountId: "owner", sessionId: "session",
+            authentication: effect, row: session(), capability: "submitAgentInput" })).toMatchObject({ status: "allowed" });
+    });
+    it("keeps API-token viewer credentials distinct from Runner runtime principals", () => {
+        const principal = { grant: {
+            v: 1, actions: null, targets: null, approve: false, origins: [], models: null, permissionModes: ["default"], create: null,
+        } };
+        const authentication = readSessionAccessAuthenticationFromSocket({ data: {
+            authAuthority: "account_automation", apiTokenPrincipal: principal,
+            ephemeralRunnerAdmission: { kind: "api-token-session-viewer", principal, sessionId: "session" },
+        } });
+        expect(authentication).not.toHaveProperty("sessionRuntimePrincipal");
+        expect(authentication).toHaveProperty("apiTokenGrant", principal.grant);
+        expect(authentication).toHaveProperty("callerInputConstraints", { models: null, permissionModes: ["default"] });
+    });
+    it.each(["effective_access_v1", "legacy_owner_or_direct"] as const)("caps token owner access on the %s seam and enforces the capped capability", async (accessMode) => {
+        const authentication: SessionAccessAuthentication = {
+            env: {}, authority: "account_automation" as const, authenticationEvidence: undefined,
+            apiTokenGrant: {
+                v: 1 as const, actions: { families: [], ids: ["session.transcript.get"] },
+                targets: null, approve: false, origins: [], models: null, permissionModes: null, create: null,
+            },
+        };
+        // This operation uses the already-loaded row; no persistence query is needed.
+        const reader = {} as Tx;
+        const result = await resolveSessionAccessForOperation(reader, {
+            accountId: "owner", sessionId: "session", authentication, accessMode, row: session(),
+        });
+        expect(result).toMatchObject({ status: "allowed", access: {
+            capabilities: { readTranscript: true, submitAgentInput: false, approveRuntimePermissions: false, manageAccess: false },
+        } });
+        expect(await resolveSessionAccessForOperation(reader, {
+            accountId: "owner", sessionId: "session", authentication, accessMode, row: session(), capability: "submitAgentInput",
+        })).toEqual({ status: "unavailable" });
+    });
     it("keeps owner custody available without published transcript or a grant", () => {
         const access = projectEffectiveSessionAccess(session({ currentStorageState: "machine_only" }), "owner");
         expect(access?.level).toBe("owner");

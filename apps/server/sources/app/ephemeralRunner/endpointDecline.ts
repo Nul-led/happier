@@ -1,4 +1,4 @@
-import { RunnerEndpointProjectionRequestV1Schema } from "@happier-dev/protocol/ephemeralRunner/endpointProjection";
+import { RunnerEndpointProjectionRequestV1Schema, type RunnerEndpointDeclineResponseV1 } from "@happier-dev/protocol/ephemeralRunner/endpointProjection";
 
 import {
     acquireAccountSessionOwnerMetadataFenceInTx,
@@ -11,10 +11,7 @@ import { readRunnerCreatorCurrentnessInTx, reconcileRunnerActivationCurrentnessI
 import { closeEphemeralRunnerActivationInTx } from "./activationLifecycle";
 import { verifyRunnerEndpointProjectionProofAgainstRow } from "./endpointProjection";
 
-export type DeclineEphemeralRunnerActivationResult =
-    | Readonly<{ status: "declined" }>
-    | Readonly<{ status: "unavailable"; reason: "activation_closed" | "activation_expired" | "creator_unavailable" | "recipient_mismatch" | "already_materialized" }>
-    | Readonly<{ status: "conflict"; reason: "proof_mismatch" }>;
+export type DeclineEphemeralRunnerActivationResult = RunnerEndpointDeclineResponseV1;
 
 /** Proof-bound endpoint decline, sharing the activation lifecycle transition owner. */
 export async function declineEphemeralRunnerActivationByEndpoint(params: Readonly<{

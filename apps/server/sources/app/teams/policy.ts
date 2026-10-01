@@ -11,7 +11,7 @@ import type { TeamSummaryV1 } from "@happier-dev/protocol/teams";
 
 import { resolveTeamAuthenticationPolicyInTx } from "@/app/auth/entry/resolveTeamAuthenticationPolicy";
 import type { Tx } from "@/storage/inTx";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 import {
     TeamRole,
@@ -125,7 +125,7 @@ export function authorizeTeamPolicyPatch(
 }
 
 export async function setTeamPolicyInTx(tx: Tx, input: SetTeamPolicyInput): Promise<TeamPolicyResult> {
-    if (!isServerFeatureEnabledForRequest("teams", input.env ?? process.env)) {
+    if (!await isServerFeatureEnabledForHome("teams", { tx, env: input.env })) {
         return { ok: false, error: "teams_unavailable" };
     }
     const context = await resolveTeamActorContextInTx(tx, {
@@ -247,5 +247,5 @@ export async function setTeamPolicyInTx(tx: Tx, input: SetTeamPolicyInput): Prom
         await applyTeamSessionAuthenticationContextEffectsInTx(tx, { teamIds: [input.teamId] });
     }
 
-    return { ok: true, team: await projectForActorInTx(tx, updated, input.actorAccountId) };
+    return { ok: true, team: await projectForActorInTx(tx, updated, input.actorAccountId, input.authentication) };
 }

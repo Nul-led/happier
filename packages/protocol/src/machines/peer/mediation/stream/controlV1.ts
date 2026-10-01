@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { MachineLiveStreamCaptureSourceKindV1 } from './captureV1.js';
 
 const PositiveIntSchema = z.number().int().positive();
 const NonNegativeIntSchema = z.number().int().nonnegative();
@@ -144,6 +145,8 @@ export function machineLiveStreamControlRequiresInputLeaseV1(
 
 export function validateMachineLiveStreamControlLeaseV1(input: Readonly<{
   source: unknown;
+  /** Capture kind from the registered source, never from a viewer's control payload. */
+  sourceKind?: MachineLiveStreamCaptureSourceKindV1;
   control: unknown;
   activeLease: unknown;
   nowMs: number;
@@ -165,9 +168,13 @@ export function validateMachineLiveStreamControlLeaseV1(input: Readonly<{
   if (!source.success) return { ok: false, reasonCode: 'invalid_source' };
   const control = MachineLiveStreamControlSidebandV1Schema.safeParse(input.control);
   if (!control.success) return { ok: false, reasonCode: 'invalid_control' };
+  if (source.data.sourceId !== control.data.sourceId) return { ok: false, reasonCode: 'input_lease_mismatch' };
 
   if (!machineLiveStreamControlRequiresInputLeaseV1(control.data)) return { ok: true };
   if (source.data.inputMode === 'none') return { ok: false, reasonCode: 'input_not_supported' };
+  // Browser input is arbitrated by the daemon automation/controller owner. Simulator/device
+  // input retains its existing lease contract; source kind is supplied by the capture registry.
+  if (input.sourceKind === 'browser') return { ok: true };
   if (!input.activeLease) return { ok: false, reasonCode: 'input_lease_required' };
 
   const lease = MachineLiveStreamControlLeaseV1Schema.safeParse(input.activeLease);

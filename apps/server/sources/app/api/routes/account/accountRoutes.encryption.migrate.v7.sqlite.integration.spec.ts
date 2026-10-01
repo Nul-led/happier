@@ -25,6 +25,7 @@ import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     encodeSessionOwnerMetadataEnvelopeV1,
     sealSessionOwnerMetadataEnvelopeV1,
+    sealAccountScopedBlobCiphertext,
     type AccountEncryptionMigrateRequest,
     type AccountEncryptionMigrateUnsignedRequest,
     type SessionOwnerMetadataEnvelopeV1,
@@ -63,6 +64,15 @@ const EMPTY_AMENDMENT9_DIRECTIVES = {
     sessionOrganization: { action: "assert_empty" as const },
     pets: { action: "assert_empty" as const },
 };
+
+function encryptedAuthoringMemoryContent() {
+    return { t: "encrypted" as const, c: sealAccountScopedBlobCiphertext({
+        kind: "authoring_memory",
+        material: SESSION_OWNER_MATERIAL,
+        payload: { key: "lastUsedProfile", value: "profile-a" },
+        randomBytes: (length) => new Uint8Array(length).fill(29),
+    }) };
+}
 
 function createSignedContentKeyBinding(
     signingSecretKey: Uint8Array,
@@ -392,6 +402,113 @@ describe("account encryption migration .7 SQLite matrix", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it.each(["plain", "e2ee"] as const)("reseals Account authoring memory atomically and replays the exact result (%s source)", async (fromMode) => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST: "none",
+        });
+        const signing = tweetnacl.sign.keyPair();
+        const binding = createSignedContentKeyBinding(signing.secretKey);
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(signing.publicKey),
+            ...binding,
+            encryptionMode: fromMode,
+            settings: null,
+        } });
+        const key = "lastUsedProfile";
+        const physicalKey = `@happier/account/authoring-memory/v1/${key}`;
+        const source = fromMode === "plain"
+            ? { t: "plain" as const, v: "profile-a" }
+            : encryptedAuthoringMemoryContent();
+        await db.userKVStore.create({ data: {
+            accountId: account.id, key: physicalKey, version: 3,
+            value: new TextEncoder().encode(JSON.stringify(source)),
+        } });
+        const toMode = fromMode === "plain" ? "e2ee" : "plain";
+        const content = toMode === "plain"
+            ? { t: "plain" as const, v: "profile-a" }
+            : encryptedAuthoringMemoryContent();
+        const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints(account);
+        const base = {
+            toMode,
+            expectedAccountVersion: account.seq,
+            expectedSigningKeyFingerprint: fingerprints.signingKeyFingerprint,
+            expectedContentKeyFingerprint: fingerprints.contentKeyFingerprint,
+            expectedSettingsVersion: 0,
+            settingsContent: null,
+            connectedServices: { action: "assert_empty" as const },
+            automations: { action: "assert_empty" as const },
+            machines: { action: "assert_empty" as const },
+            todos: { action: "assert_empty" as const },
+            artifacts: { action: "assert_empty" as const },
+            sessions: { action: "assert_empty" as const },
+            ...EMPTY_AMENDMENT9_DIRECTIVES,
+            authoringMemory: { items: [{ key, expectedRevision: 3, content }] },
+        };
+        const buildRequest = (candidate: typeof base | Omit<typeof base, "authoringMemory">) => toMode === "e2ee" ? signPlainToE2eeRequest({
+            accountId: account.id, signingSecretKey: signing.secretKey,
+            request: { ...candidate, keyProof: {
+                v: 1, publicKey: privacyKit.encodeBase64(signing.publicKey), ...binding,
+            } },
+        }) : candidate;
+        const request = buildRequest(base);
+        const app = createTestApp();
+        try {
+            const options = {
+                method: "POST" as const, url: "/v1/account/encryption/migrate",
+                headers: { "x-test-user-id": account.id, ...currentCompatibilityHeaders() },
+                payload: request,
+            };
+            const { authoringMemory: _memory, ...missingInventory } = base;
+            for (const invalid of [missingInventory, { ...base, authoringMemory: { items: [] } }, {
+                ...base, authoringMemory: { items: [{ key, expectedRevision: 2, content }] },
+            }]) {
+                const rejected = await app.inject({ ...options, payload: buildRequest(invalid) });
+                expect(rejected.statusCode).toBe(400);
+                expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).encryptionMode).toBe(fromMode);
+                expect((await db.userKVStore.findUniqueOrThrow({ where: {
+                    accountId_key: { accountId: account.id, key: physicalKey },
+                } })).version).toBe(3);
+            }
+            const wrongMode = await app.inject({ ...options, payload: buildRequest({
+                ...base, authoringMemory: { items: [{ key, expectedRevision: 3, content: source }] },
+            }) });
+            expect(wrongMode.statusCode).toBe(400);
+            // A stored source envelope inconsistent with the persisted mode
+            // must not be silently overwritten as part of a mode transition.
+            await db.userKVStore.update({ where: { accountId_key: { accountId: account.id, key: physicalKey } },
+                data: { value: new TextEncoder().encode(JSON.stringify(content)) },
+            });
+            const corruptSource = await app.inject(options);
+            expect(corruptSource.statusCode).toBe(400);
+            expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).encryptionMode).toBe(fromMode);
+            await db.userKVStore.update({ where: { accountId_key: { accountId: account.id, key: physicalKey } },
+                data: { value: new TextEncoder().encode(JSON.stringify(source)) },
+            });
+            const response = await app.inject(options);
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toMatchObject({ mode: toMode, authoringMemory: {
+                rows: [{ key, revision: 4, content }],
+            } });
+            const committed = await db.userKVStore.findUniqueOrThrow({ where: {
+                accountId_key: { accountId: account.id, key: physicalKey },
+            } });
+            expect(JSON.parse(new TextDecoder().decode(committed.value!))).toEqual(content);
+            expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).encryptionMode).toBe(toMode);
+            socketEmit.mockClear();
+            const replay = await app.inject(options);
+            expect(replay.statusCode).toBe(200);
+            expect(replay.json()).toEqual(response.json());
+            expect(socketEmit).not.toHaveBeenCalled();
+            expect(await db.userKVStore.findUniqueOrThrow({ where: {
+                accountId_key: { accountId: account.id, key: physicalKey },
+            } })).toEqual(committed);
+        } finally {
+            await app.close();
+        }
     });
 
     it("migrates the complete active and archived layout-1 Session inventory before the Account mode", async () => {
@@ -955,9 +1072,16 @@ describe("account encryption migration .7 SQLite matrix", () => {
         });
         const fixture =
             await createE2eeSessionInventoryFixture();
+        const memory = await db.userKVStore.create({ data: {
+            accountId: fixture.account.id,
+            key: "@happier/account/authoring-memory/v1/lastUsedProfile",
+            version: 3,
+            value: new TextEncoder().encode(JSON.stringify(encryptedAuthoringMemoryContent())),
+        } });
         const request = {
             ...fixture.request,
             settingsContent: null,
+            authoringMemory: { items: [{ key: "lastUsedProfile", expectedRevision: 3, content: { t: "plain", v: "profile-a" } }] },
         };
         const before =
             await readSessionMigrationState(fixture.account.id);
@@ -983,6 +1107,9 @@ describe("account encryption migration .7 SQLite matrix", () => {
             await expect(
                 readSessionMigrationState(fixture.account.id),
             ).resolves.toEqual(before);
+            await expect(db.userKVStore.findUniqueOrThrow({ where: { accountId_key: {
+                accountId: fixture.account.id, key: memory.key,
+            } } })).resolves.toEqual(memory);
             expect(ioTo).not.toHaveBeenCalled();
             expect(socketEmit).not.toHaveBeenCalled();
         } finally {

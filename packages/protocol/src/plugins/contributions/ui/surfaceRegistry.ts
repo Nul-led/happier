@@ -50,25 +50,22 @@ const ALL_UI_SURFACE_PLATFORMS: readonly PluginUiPlatformV1[] = Object.freeze([
 export const PLUGIN_UI_INLINE_SURFACE_SLOTS_V1 = Object.freeze({
   sessionSubagentLaunch: Object.freeze({
     role: 'sessionSubagentLaunch' as const,
-    targetKind: 'session' as const,
+    targets: Object.freeze({ session: 'sessionPane' as const }),
     presentations: Object.freeze(['content'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
     platforms: ALL_UI_SURFACE_PLATFORMS,
     authoredIn: 'ui.views' as const,
   }),
   sessionSubagentDetails: Object.freeze({
     role: 'sessionSubagentDetails' as const,
-    targetKind: 'session' as const,
+    targets: Object.freeze({ session: 'sessionPane' as const }),
     presentations: Object.freeze(['content', 'fill'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
     platforms: ALL_UI_SURFACE_PLATFORMS,
     authoredIn: 'ui.views' as const,
   }),
   sessionInfoSection: Object.freeze({
     role: 'sessionInfoSection' as const,
-    targetKind: 'session' as const,
+    targets: Object.freeze({ session: 'sessionPane' as const }),
     presentations: Object.freeze(['content'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
     platforms: ALL_UI_SURFACE_PLATFORMS,
     authoredIn: 'contributes.sessionInfoSections' as const,
   }),
@@ -80,11 +77,10 @@ export const PLUGIN_UI_INLINE_SURFACE_SLOTS_V1 = Object.freeze({
    * geometry already carried by the generic surface context, so it is
    * deliberately not a public presentation value.
    */
-  sessionWidget: Object.freeze({
-    role: 'sessionWidget' as const,
-    targetKind: 'session' as const,
+  widget: Object.freeze({
+    role: 'widget' as const,
+    targets: Object.freeze({ session: 'sessionPane' as const, app: 'appSurface' as const }),
     presentations: Object.freeze(['content', 'fill'] as const),
-    surfaceContextPlacement: 'sessionPane' as const,
     platforms: ALL_UI_SURFACE_PLATFORMS,
     authoredIn: 'ui.views' as const,
   }),
@@ -192,22 +188,26 @@ export type PluginUiInlineSurfaceMountV1 = {
 export function resolvePluginUiInlineSurfaceSlotV1(
   role: unknown,
   presentation: unknown,
+  targetKind: unknown = 'session',
 ): Readonly<{
   role: PluginUiInlineSurfaceRoleV1;
-  targetKind: 'session';
+  targetKind: 'session' | 'app';
   presentation: PluginUiInlineSurfacePresentationV1;
-  surfaceContextPlacement: 'sessionPane';
+  surfaceContextPlacement: 'sessionPane' | 'appSurface';
   platforms: readonly PluginUiPlatformV1[];
 }> | null {
   const parsedRole = PluginUiInlineSurfaceRoleV1Schema.safeParse(role);
   if (!parsedRole.success || (presentation !== 'content' && presentation !== 'fill')) return null;
+  if (targetKind !== 'session' && targetKind !== 'app') return null;
   const slot = PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[parsedRole.data];
   if (!(slot.presentations as readonly string[]).includes(presentation)) return null;
+  const placement = (slot.targets as Partial<Record<'session' | 'app', 'sessionPane' | 'appSurface'>>)[targetKind];
+  if (!placement) return null;
   return Object.freeze({
     role: slot.role,
-    targetKind: slot.targetKind,
+    targetKind,
     presentation,
-    surfaceContextPlacement: slot.surfaceContextPlacement,
+    surfaceContextPlacement: placement,
     platforms: slot.platforms,
   });
 }
@@ -777,8 +777,8 @@ export type PluginUiInlineSurfaceBindingV1 = Readonly<{
   rendererChain: readonly PluginContributionIdentityV1[];
   renderer: PluginContributionIdentityV1;
   target: PluginSurfaceTargetV1;
-  targetKind: 'session';
-  surfaceContextPlacement: 'sessionPane';
+  targetKind: 'session' | 'app';
+  surfaceContextPlacement: 'sessionPane' | 'appSurface';
   platforms: readonly PluginUiPlatformV1[];
 }>;
 
@@ -786,8 +786,10 @@ export function normalizePluginUiInlineSurfaceBindingV1(
   input: unknown,
 ): PluginUiInlineSurfaceBindingV1 | null {
   const parsed = PluginUiInlineSurfaceBindingInputV1Schema.safeParse(input);
-  if (!parsed.success || parsed.data.target.kind !== 'session') return null;
+  if (!parsed.success) return null;
   const slot = PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[parsed.data.role];
+  const placement = (slot.targets as Partial<Record<PluginUiTargetKindV1, PluginUiSurfacePlacementV1>>)[parsed.data.target.kind];
+  if (!placement) return null;
   const rendererChain = normalizePluginUiRendererChainV1({
     pluginId: parsed.data.pluginId,
     rendererId: parsed.data.rendererId,
@@ -805,8 +807,8 @@ export function normalizePluginUiInlineSurfaceBindingV1(
     rendererChain,
     renderer: rendererChain[0]!,
     target: Object.freeze({ ...parsed.data.target }),
-    targetKind: slot.targetKind,
-    surfaceContextPlacement: slot.surfaceContextPlacement,
+    targetKind: parsed.data.target.kind as 'session' | 'app',
+    surfaceContextPlacement: placement as 'sessionPane' | 'appSurface',
     platforms: slot.platforms,
   });
 }
@@ -818,19 +820,20 @@ export const PluginUiInlineSurfaceBindingV1Schema = z.object({
   rendererChain: z.array(asProtocolZod(PluginContributionIdentityV1Schema)).min(1),
   renderer: asProtocolZod(PluginContributionIdentityV1Schema),
   target: PluginSurfaceTargetV1Schema,
-  targetKind: z.literal('session'),
-  surfaceContextPlacement: z.literal('sessionPane'),
+  targetKind: z.enum(['session', 'app']),
+  surfaceContextPlacement: z.enum(['sessionPane', 'appSurface']),
   platforms: z.array(PluginUiPlatformV1Schema).min(1),
 }).strict().superRefine((binding, ctx) => {
   const slot = PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[binding.role];
-  if (binding.target.kind !== slot.targetKind) {
+  const placement = (slot.targets as Partial<Record<PluginUiTargetKindV1, PluginUiSurfacePlacementV1>>)[binding.targetKind];
+  if (binding.target.kind !== binding.targetKind || !placement) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['targetKind'],
       message: 'Plugin inline surface binding target kind must match its role.',
     });
   }
-  if (binding.surfaceContextPlacement !== slot.surfaceContextPlacement) {
+  if (binding.surfaceContextPlacement !== placement) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['surfaceContextPlacement'],

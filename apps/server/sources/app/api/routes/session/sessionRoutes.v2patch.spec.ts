@@ -28,7 +28,7 @@ describe("sessionRoutes v2 patch", () => {
     it("admits the restricted runtime only through the exact-Session guard", async () => {
         const route = await createSessionRouteTestBuilder("PATCH", "/v2/sessions/:sessionId");
         const entry = route.app.routes.get("PATCH /v2/sessions/:sessionId");
-        expect(entry?.opts.config).toMatchObject({ ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } });
+        expect(entry?.opts.config).toMatchObject({ restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } });
         expect(entry?.opts.preHandler).toBe(route.app.authenticate);
     });
 
@@ -773,6 +773,44 @@ describe("sessionRoutes v2 patch", () => {
             /shared-future|owner-private|agent-private/,
         );
         expect(buildSessionMetadataRecipientUpdate).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
+    });
+
+    it("preserves Team authentication-required status for shared-editor PATCH", async () => {
+        updateSessionMetadataEnvelopeTuple.mockResolvedValue({
+            ok: false,
+            error: "session_access_authentication_required",
+        });
+        const route = await createSessionRouteTestBuilder("PATCH", "/v2/sessions/:sessionId");
+        const { reply, response } = await route.invoke({
+            params: { sessionId: "s1" },
+            body: {
+                mode: "shared_editor",
+                metadataLayoutVersion: 1,
+                sharedMetadata: { ciphertext: "shared-editor-safe", expectedVersion: 5 },
+            },
+        });
+        expect(reply.code).toHaveBeenCalledWith(403);
+        expect(response).toEqual({ error: "session_access_authentication_required" });
+        expect(emitUpdate).not.toHaveBeenCalled();
+    });
+
+    it("preserves Team authentication-unavailable status for shared-editor PATCH", async () => {
+        updateSessionMetadataEnvelopeTuple.mockResolvedValue({
+            ok: false,
+            error: "session_access_authentication_unavailable",
+        });
+        const route = await createSessionRouteTestBuilder("PATCH", "/v2/sessions/:sessionId");
+        const { reply, response } = await route.invoke({
+            params: { sessionId: "s1" },
+            body: {
+                mode: "shared_editor",
+                metadataLayoutVersion: 1,
+                sharedMetadata: { ciphertext: "shared-editor-safe", expectedVersion: 5 },
+            },
+        });
+        expect(reply.code).toHaveBeenCalledWith(503);
+        expect(response).toEqual({ error: "session_access_authentication_unavailable" });
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 

@@ -97,6 +97,35 @@ afterEach(async () => {
 });
 
 describe("Home governance routes", () => {
+    it("answers whether an owner's Home has any sessions, other people or Teams", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const read = async () => await post(app, "/v1/home/emptiness/get", owner.token, {});
+
+        expect((await read()).json()).toEqual({ isEmpty: true });
+
+        const session = await db.session.create({ data: {
+            accountId: owner.accountId,
+            tag: crypto.randomUUID(),
+            metadata: "{}",
+            encryptionMode: "plain",
+        } });
+        expect((await read()).json()).toEqual({ isEmpty: false });
+        await db.session.delete({ where: { id: session.id } });
+
+        const member = await createAccount("member");
+        expect((await read()).json()).toEqual({ isEmpty: false });
+        const memberRead = await post(app, "/v1/home/emptiness/get", member.token, {});
+        expect(memberRead.statusCode).toBe(403);
+        await db.account.delete({ where: { id: member.accountId } });
+
+        const team = await db.team.create({ data: { name: "Still here" } });
+        expect((await read()).json()).toEqual({ isEmpty: false });
+        await db.team.delete({ where: { id: team.id } });
+
+        expect((await read()).json()).toEqual({ isEmpty: true });
+    });
+
     it("reports owner setup without disclosing the administrative projection", async () => {
         const app = createTestApp();
         const first = await createAccount("member");
@@ -120,8 +149,18 @@ describe("Home governance routes", () => {
 
         const eligibility = await post(app, "/v1/home/governance/eligibility/get", member.token, {});
         expect(eligibility.statusCode).toBe(200);
-        expect(eligibility.json()).toEqual({ teamsEnabled: true, createTeam: false });
-        expect(JSON.stringify(eligibility.json())).not.toMatch(/policy|provider|network|owner|role/i);
+        expect(eligibility.json()).toMatchObject({ teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false });
+        // Only the creation class, the administrators' names and this viewer's Teams visibility
+        // join the three effective facts; no other policy, provider, network or roster fact does.
+        expect(Object.keys(eligibility.json()).sort()).toEqual([
+            "administratorNames",
+            "createTeam",
+            "createTeamForChosenAccount",
+            "showTeams",
+            "teamCreationPolicy",
+            "teamsEnabled",
+        ]);
+        expect(JSON.stringify(eligibility.json())).not.toMatch(/provider|network|revision|role|authentication/i);
         const crossHomeBody = await post(app, "/v1/home/governance/eligibility/get", member.token, {
             serverId: "another-home",
         });
@@ -140,6 +179,25 @@ describe("Home governance routes", () => {
         expect((await post(app, "/v1/home/governance/get", owner.token, {
             includePolicySecrets: true,
         })).statusCode).toBe(400);
+    });
+
+    it("does not let a terminal credential bypass Home erase authority by targeting itself", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const member = await createAccount("member");
+        const terminalToken = await auth.createToken(member.accountId, undefined, {
+            kind: "terminal",
+            authority: "account_automation",
+        });
+
+        const response = await post(app, "/v1/home/accounts/delete", terminalToken, { accountId: member.accountId });
+
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toEqual({ error: "home_governance_forbidden" });
+        expect(await db.account.findUniqueOrThrow({ where: { id: member.accountId }, select: { status: true } }))
+            .toEqual({ status: "active" });
+        expect(await db.account.findUniqueOrThrow({ where: { id: owner.accountId }, select: { status: true } }))
+            .toEqual({ status: "active" });
     });
 
     it("answers malformed governance mutations with the one strict Home error envelope", async () => {
@@ -484,6 +542,35 @@ describe("Home governance routes", () => {
         }
     });
 
+    it("lists the deployment's own OIDC providers by name only, as read-only facts", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        expect((await post(app, "/v1/home/governance/get", owner.token, {})).json().identityServices.deploymentOidcProviders)
+            .toEqual([]);
+
+        const previous = process.env.AUTH_PROVIDERS_CONFIG_JSON;
+        process.env.AUTH_PROVIDERS_CONFIG_JSON = JSON.stringify([{
+            id: "acme-sso",
+            type: "oidc",
+            displayName: "Acme SSO",
+            issuer: "https://sso.acme.example",
+            clientId: "acme-client",
+            clientSecret: "acme-deployment-secret",
+            redirectUrl: "https://home.example.test/v1/oauth/acme-sso/callback",
+        }]);
+        try {
+            const projection = (await post(app, "/v1/home/governance/get", owner.token, {})).json();
+            expect(projection.identityServices.deploymentOidcProviders).toEqual([
+                { id: "acme-sso", displayName: "Acme SSO", sourceKey: "AUTH_PROVIDERS_CONFIG_JSON" },
+            ]);
+            expect(JSON.stringify(projection)).not.toContain("acme-deployment-secret");
+            expect(JSON.stringify(projection)).not.toContain("sso.acme.example");
+        } finally {
+            if (previous === undefined) delete process.env.AUTH_PROVIDERS_CONFIG_JSON;
+            else process.env.AUTH_PROVIDERS_CONFIG_JSON = previous;
+        }
+    });
+
     it("projects bounded deployment authentication options without service endpoints", async () => {
         const app = createTestApp();
         const owner = await createAccount("owner");
@@ -502,10 +589,13 @@ describe("Home governance routes", () => {
                 // Native email/password is on by default, so a deployment that
                 // sets no `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__*` key still
                 // projects it; the endpoint-leak assertion below is the subject.
-                methods: [
+                methods: expect.arrayContaining([
                     expect.objectContaining({ id: "key_challenge" }),
                     expect.objectContaining({ id: "email_password" }),
-                ],
+                    // A method this deployment cannot run is listed with why (§3.4 bound 2), not hidden:
+                    // mTLS needs trusted proxy headers the deployment does not set.
+                    expect.objectContaining({ id: "mtls", unavailable: { requires: [] } }),
+                ]),
                 permittedAccountModes: ["e2ee"],
                 recommendedProvisioningMode: "e2ee",
                 signInService: { deploymentMode: "external", canDisable: true },
@@ -830,6 +920,8 @@ describe("Home governance routes", () => {
 
             const response = await post(app, "/v1/home/policy/set", owner.token, {
                 expectedRevision: 1,
+                // Repairing restores a sign-in route, which widens: the owner confirms it (§3.4).
+                confirmWidening: true,
                 authenticationPolicy: { v: 1, enabledMethodIds: ["email_password"] },
             });
 
@@ -930,20 +1022,139 @@ describe("Home governance routes", () => {
             .toBe(beforeById.get(member.accountId));
     });
 
+    it("tells an admitted member how Teams are created here and who administers them, by name only", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const admin = await createAccount("admin");
+        const unnamedAdmin = await createAccount("admin");
+        const disabledAdmin = await createAccount("admin", "disabled");
+        const member = await createAccount("member");
+        await db.account.update({ where: { id: owner.accountId }, data: { firstName: "Ada", lastName: "Lovelace" } });
+        await db.account.update({ where: { id: admin.accountId }, data: { username: "grace" } });
+        await db.account.update({ where: { id: disabledAdmin.accountId }, data: { firstName: "Former" } });
+        await db.account.update({ where: { id: member.accountId }, data: { firstName: "Mia" } });
+
+        const response = await post(app, "/v1/home/governance/eligibility/get", member.token, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            teamsEnabled: true,
+            createTeam: false,
+            createTeamForChosenAccount: false,
+            teamCreationPolicy: "managed_only",
+            // Active owners first, then administrators; an unnamed or inactive one is not named.
+            administratorNames: ["Ada Lovelace", "grace"],
+            showTeams: true,
+        });
+        const body = response.body;
+        for (const accountId of [owner.accountId, admin.accountId, unnamedAdmin.accountId, disabledAdmin.accountId]) {
+            expect(body).not.toContain(accountId);
+        }
+        expect(body).not.toContain("Former");
+    });
+
+    it("gives an Account that is not admitted to this Home neither the policy class nor any name", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        await db.account.update({ where: { id: owner.accountId }, data: { firstName: "Ada" } });
+        const suspended = await createAccount("member", "suspended");
+        const erased = await createAccount("member");
+        await db.account.delete({ where: { id: erased.accountId } });
+
+        for (const token of [suspended.token, erased.token]) {
+            const response = await post(app, "/v1/home/governance/eligibility/get", token, {});
+            expect(response.body).not.toMatch(/Ada|managed_only|teamCreationPolicy|administratorNames/);
+        }
+    });
+
+    it("shows Teams to members by default and hides it only from members outside every Team once turned off", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const admin = await createAccount("admin");
+        const member = await createAccount("member");
+        const teamMember = await createAccount("member");
+        const team = await db.team.create({ data: { name: "Visible to its members" }, select: { id: true } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: teamMember.accountId, role: "member" } });
+        const showTeams = async (token: string) =>
+            (await post(app, "/v1/home/governance/eligibility/get", token, {})).json().showTeams;
+
+        // A Home that never stored the policy shows Teams to everyone.
+        expect(await showTeams(member.token)).toBe(true);
+        expect((await post(app, "/v1/home/governance/get", owner.token, {})).json())
+            .toMatchObject({ policy: { teamsVisibleToMembers: true } });
+
+        // Only a Home administrator may turn it off.
+        expect((await post(app, "/v1/home/policy/set", member.token, {
+            expectedRevision: 0,
+            teamsVisibleToMembers: false,
+        })).statusCode).toBe(403);
+        const turnedOff = await post(app, "/v1/home/policy/set", admin.token, {
+            expectedRevision: 0,
+            teamsVisibleToMembers: false,
+        });
+        expect(turnedOff.statusCode, turnedOff.body).toBe(200);
+        expect(turnedOff.json()).toMatchObject({ revision: 1, teamsVisibleToMembers: false, teamCreationPolicy: "managed_only" });
+
+        expect(await showTeams(member.token)).toBe(false);
+        expect(await showTeams(teamMember.token)).toBe(true);
+        expect(await showTeams(admin.token)).toBe(true);
+        expect(await showTeams(owner.token)).toBe(true);
+
+        // With creation disabled, only an Account that belongs to a Team keeps the destination.
+        expect((await post(app, "/v1/home/policy/set", owner.token, {
+            expectedRevision: 1,
+            teamsVisibleToMembers: true,
+            teamCreationPolicy: "disabled",
+        })).statusCode).toBe(200);
+        expect(await showTeams(member.token)).toBe(false);
+        expect(await showTeams(admin.token)).toBe(false);
+        expect(await showTeams(teamMember.token)).toBe(true);
+    });
+
+    it("wakes every active Account when Teams visibility changes", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const member = await createAccount("member");
+        const before = await db.account.findMany({
+            where: { id: { in: [owner.accountId, member.accountId] } },
+            select: { id: true, seq: true },
+        });
+
+        expect((await post(app, "/v1/home/policy/set", owner.token, {
+            expectedRevision: 0,
+            teamsVisibleToMembers: false,
+        })).statusCode).toBe(200);
+
+        const after = await db.account.findMany({
+            where: { id: { in: [owner.accountId, member.accountId] } },
+            select: { id: true, seq: true },
+        });
+        const beforeById = new Map(before.map((account) => [account.id, account.seq]));
+        for (const account of after) {
+            expect(account.seq).toBe(beforeById.get(account.id)! + 1);
+        }
+    });
+
     it("narrows Team creation through the effective capability the policy decides", async () => {
         const app = createTestApp();
         const owner = await createAccount("owner");
         const member = await createAccount("member");
 
         expect((await post(app, "/v1/home/governance/eligibility/get", member.token, {})).json())
-            .toEqual({ teamsEnabled: true, createTeam: false });
+            .toMatchObject({ teamsEnabled: true, createTeam: false, createTeamForChosenAccount: false });
+        // Under the default managed creation an administrator creates Teams for a chosen
+        // Account, so the plain self-service form would be refused.
+        expect((await post(app, "/v1/home/governance/eligibility/get", owner.token, {})).json())
+            .toMatchObject({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: true });
 
         await post(app, "/v1/home/policy/set", owner.token, {
             expectedRevision: 0,
             teamCreationPolicy: "self_service",
         });
         expect((await post(app, "/v1/home/governance/eligibility/get", member.token, {})).json())
-            .toEqual({ teamsEnabled: true, createTeam: true });
+            .toMatchObject({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false });
+        expect((await post(app, "/v1/home/governance/eligibility/get", owner.token, {})).json())
+            .toMatchObject({ teamsEnabled: true, createTeam: true, createTeamForChosenAccount: false });
 
         await post(app, "/v1/home/policy/set", owner.token, {
             expectedRevision: 1,

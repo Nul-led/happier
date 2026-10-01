@@ -19,6 +19,11 @@ import {
   TeamSummaryV1Schema,
 } from './projections.js';
 import {
+  decodeTeamInvitationsCursorV1,
+  encodeTeamInvitationsCursorV1,
+  teamInvitationsQueryKeyV1,
+} from './invitation.js';
+import {
   TEAM_DESCRIPTION_MAX_LENGTH_V1,
   TEAM_NAME_MAX_LENGTH_V1,
   TeamPolicyV1Schema,
@@ -346,6 +351,24 @@ describe('Team directory cursor codec', () => {
     expect(TeamsListInputV1Schema.safeParse({ v: 1, scope: 'everyone', archived: 'active' }).success).toBe(false);
     expect(TeamsListInputV1Schema.safeParse({ v: 1, scope: 'member', archived: 'active', query: 'x' }).success)
       .toBe(false);
+  });
+});
+
+describe('Team invitation cursor codec', () => {
+  const active = { teamId: 'team_a', state: 'active' as const };
+  const revoked = { teamId: 'team_a', state: 'revoked' as const };
+
+  it('round-trips the ordering tuple and binds the derived state query', () => {
+    const queryKey = teamInvitationsQueryKeyV1(active);
+    const cursor = encodeTeamInvitationsCursorV1({ queryKey, createdAt: 42, id: 'inv_1' });
+    expect(decodeTeamInvitationsCursorV1(cursor, queryKey)).toEqual({
+      status: 'ok',
+      cursor: { createdAt: 42, id: 'inv_1' },
+    });
+    expect(decodeTeamInvitationsCursorV1(cursor, teamInvitationsQueryKeyV1(revoked)))
+      .toEqual({ status: 'invalid' });
+    expect(decodeTeamInvitationsCursorV1(cursor, teamInvitationsQueryKeyV1({ ...active, teamId: 'team_b' })))
+      .toEqual({ status: 'invalid' });
   });
 });
 

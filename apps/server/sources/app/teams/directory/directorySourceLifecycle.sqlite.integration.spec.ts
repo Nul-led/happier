@@ -23,7 +23,7 @@ describe("directory source lifecycle", () => {
                 ownerTeamId: params.teamId,
                 kind: "workos_sso",
                 displayName: "WorkOS",
-                config: { v: 1 },
+                config: { v: 1, kind: "workos_sso" },
             },
         });
         const connection = await db.teamIdentityConnection.create({
@@ -156,6 +156,33 @@ describe("directory source lifecycle", () => {
         await expect(findNextDirectorySourceDueForSync({
             now: new Date("2026-09-05T12:01:00.000Z"),
         })).resolves.toBeNull();
+    });
+
+    it("runs one manual retry when its request shares the prior attempt's millisecond", async () => {
+        const team = await db.team.create({ data: { name: "Same millisecond retry" } });
+        const attemptedAt = new Date("2026-09-29T10:00:00.000Z");
+        const source = await createWorkosSource({
+            teamId: team.id,
+            state: "active",
+            suffix: "same-millisecond-retry",
+            data: {
+                lastAttemptAt: attemptedAt,
+                lastErrorCode: "directory_source_permission_lost",
+                eventCursor: "event_1",
+            },
+        });
+        expect(await requestDirectorySourceSync({ sourceId: source.id, now: attemptedAt }))
+            .toEqual({ ok: true, status: "requested" });
+        expect(await findNextDirectorySourceDueForSync({ now: attemptedAt }))
+            .toEqual({ id: source.id, mode: "full" });
+        expect(await claimDirectorySourceFullReconcile({
+            sourceId: source.id, reconcileRunId: "same-ms-run", now: attemptedAt,
+        })).toMatchObject({ ok: true });
+        expect(await markDirectorySourceReconcileFailed({
+            sourceId: source.id, reconcileRunId: "same-ms-run",
+            errorCode: "directory_source_permission_lost", now: attemptedAt,
+        })).toEqual({ applied: true });
+        expect(await findNextDirectorySourceDueForSync({ now: attemptedAt })).toBeNull();
     });
 
     it("schedules WorkOS incremental observations at five minutes and full repair daily", async () => {

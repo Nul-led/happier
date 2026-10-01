@@ -44,7 +44,6 @@ import { registerTeamRoutes } from "./registerTeamRoutes";
  * Feature bits this journey needs on the Home (`teams` is enabled by default
  * and is named for completeness):
  *   HAPPIER_FEATURE_TEAMS__ENABLED
- *   HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED   (Team grants, responsibility, envelopes audience)
  *   HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED (Team-shared Sessions appear in a listing)
  *   HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED       (auto-Follow, read tracking, attention)
  *   HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED   (discussions and mentions)
@@ -136,7 +135,6 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
             initAuth: false,
             env: {
                 HAPPIER_FEATURE_TEAMS__ENABLED: "1",
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: "1",
@@ -176,7 +174,7 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
             }),
             email: {
                 delivery: {
-                    isReady: true,
+                    isReady: async () => true,
                     deliver: async (message) => {
                         delivered.push(message);
                         return { status: "sent" };
@@ -487,7 +485,7 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         expect(quiet.json().session.viewer.relevance.reasons).toContain("mentioned_in_discussion");
     });
 
-    it("step 11 — A's Agent creates a Board item and its view atomically; the E2EE content stays opaque and B is woken content-free", async () => {
+    it("step 11 — A's authenticated Board Action creates an item and its view atomically; E2EE content stays opaque and B is woken content-free", async () => {
         const boardUrl = `/v2/sessions/${state.sessionId}/board`;
         const itemContent = { t: "encrypted", c: "sealed-journey-item" };
         const layoutContent = { t: "encrypted", c: "sealed-journey-layout" };

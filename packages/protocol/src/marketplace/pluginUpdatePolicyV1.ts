@@ -6,15 +6,32 @@ import { z } from 'zod';
  * human decides on, the daemon change contract, and the installed trust
  * record.
  *
- * `pinned` blocks updates; `reviewEveryUpdate` reviews every update;
- * `reviewSensitiveChanges` applies an explicit update without a new review
- * only while the reviewed npm registry/package ownership channel is preserved and
- * no review-sensitive trust fact changed. There are no aliases and no
- * surface-local variants.
+ * `allowed` admits an explicit update request and `pinned` freezes the current
+ * release. Whether a candidate needs a present-user decision is owned by the
+ * canonical authority-delta classifier, never by this eligibility setting.
+ * There are no aliases and no surface-local variants.
  */
 export const PluginUpdatePolicyV1Schema = z.enum([
+  'allowed',
   'pinned',
-  'reviewEveryUpdate',
-  'reviewSensitiveChanges',
 ]);
 export type PluginUpdatePolicyV1 = z.infer<typeof PluginUpdatePolicyV1Schema>;
+
+/**
+ * The user's update review preference, one per Account, applied by the
+ * daemon's authority-delta classifier to every managed update (marketplace,
+ * npm, archive, and local path installs).
+ *
+ * `confirmAccessChanges` asks before an update widens user-granted reach
+ * (host access, Connected Account purposes, request interceptors, raw
+ * credentials). `autoApply` applies such updates without asking. New
+ * contributions and executable realms of already-trusted code never ask, and
+ * development plugins never ask on change, in either mode. The per-plugin
+ * `allowed | pinned` eligibility above is independent of this preference.
+ */
+export const PluginUpdateReviewModeV1Schema = z.enum([
+  'confirmAccessChanges',
+  'autoApply',
+]);
+export type PluginUpdateReviewModeV1 = z.infer<typeof PluginUpdateReviewModeV1Schema>;
+export const DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1: PluginUpdateReviewModeV1 = 'confirmAccessChanges';

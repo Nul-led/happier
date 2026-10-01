@@ -4,6 +4,7 @@ import {
     computeContentPublicKeyFingerprint,
     type SessionTranscriptObservationProvenanceV1,
     VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
+    API_TOKEN_FULL_GRANT_V1,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
 import { createEnvPatcher } from "@/testkit/env";
@@ -292,6 +293,29 @@ let updateSessionReadCursor: typeof import("./sessionWriteService").updateSessio
 let updateSessionRuntimeActivityProjection: typeof import("./sessionWriteService").updateSessionRuntimeActivityProjection;
 
 describe("sessionWriteService", () => {
+    it.each(["ready-local-id", null])("projects the exact committed ready local identity (%s)", async (localId) => {
+        currentTx.session.updateMany.mockResolvedValue({ count: 1 });
+        const createdAt = new Date(200);
+        // The database transaction is the system boundary; only the used session adapter is supplied.
+        const tx = currentTx as unknown as Parameters<typeof sessionWriteServiceExports.updateSessionMessageActivityProjection>[0];
+
+        const result = await sessionWriteServiceExports.updateSessionMessageActivityProjection(tx, {
+            sessionId: "s1",
+            created: { seq: 47, createdAt, localId },
+            trustedSessionEventType: "ready",
+        });
+
+        expect(result).toEqual({
+            latestReadyEventSeq: 47,
+            latestReadyEventAt: 200,
+            ...(localId ? { latestReadyEventLocalId: localId } : {}),
+        });
+        expect(currentTx.session.updateMany).toHaveBeenLastCalledWith({
+            where: { id: "s1", OR: [{ latestReadyEventSeq: null }, { latestReadyEventSeq: { lt: 47 } }] },
+            data: { latestReadyEventSeq: 47, latestReadyEventAt: createdAt },
+        });
+    });
+
     const storagePolicyEnv = createEnvPatcher([
         "HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY",
         "HAPPIER_DB_PROVIDER",
@@ -3144,6 +3168,7 @@ describe("sessionWriteService", () => {
                 readyProjection: {
                     latestReadyEventSeq: 10,
                     latestReadyEventAt: createdAt.getTime(),
+                    latestReadyEventLocalId: "ready-plain-local",
                 },
             });
         });
@@ -3220,7 +3245,19 @@ describe("sessionWriteService", () => {
             expect(res).not.toHaveProperty("readyProjection");
         });
 
-        it("stores supplied encrypted message role metadata when creating a message", async () => {
+        it.each(["event", "agent"])("rejects direct-token %s inputs instead of allowing receipt-less encrypted prompts", async (messageRole) => {
+            await expect(createSessionMessage({ authentication: { ...authentication, apiTokenGrant: API_TOKEN_FULL_GRANT_V1 },
+                inputAdmission: "authenticatedAccount", actorUserId: "u1", sessionId: "s1", ciphertext: "cipher", messageRole }))
+                .resolves.toMatchObject({ ok: false, error: "invalid-params" });
+        });
+        it("rejects a direct-token plaintext nonuser body even when the supplied wire role says user", async () => {
+            await expect(createSessionMessage({ authentication: { ...authentication, apiTokenGrant: API_TOKEN_FULL_GRANT_V1 },
+                inputAdmission: "authenticatedAccount", actorUserId: "u1", sessionId: "s1",
+                content: { t: "plain", v: { role: "agent", text: "not a user input" } }, messageRole: "user" }))
+                .resolves.toMatchObject({ ok: false, error: "invalid-params" });
+        });
+
+        it("stores encrypted message role metadata and the verified token's per-input constraints", async () => {
             const createdAt = new Date("2020-01-01T00:00:00.000Z");
 
             currentTx.sessionMessage.findUnique.mockResolvedValue(null);
@@ -3259,7 +3296,9 @@ describe("sessionWriteService", () => {
 
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
+            const res = await createSessionMessage({ authentication: {
+                ...authentication, apiTokenGrant: { ...API_TOKEN_FULL_GRANT_V1, permissionModes: ["default"] },
+            }, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3274,6 +3313,9 @@ describe("sessionWriteService", () => {
                 expect.objectContaining({
                     data: expect.objectContaining({
                         messageRole: "user",
+                        inputAdmissionReceipt: expect.objectContaining({
+                            actorAccountId: "u1", callerInputConstraints: { models: null, permissionModes: ["default"] },
+                        }),
                     }),
                 }),
             );

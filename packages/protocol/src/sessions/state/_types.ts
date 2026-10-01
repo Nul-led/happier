@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 
 import type { ModelOverrideV1 } from '../metadata/metadataOverridesV1.js';
+import type { SessionRoleConfigurationV1 } from '../../prompts/roles/sessionRolesSnapshot.js';
 import type { SessionModelSelectionIntentV1 } from '../../providers/selection/v1.js';
 import type { RuntimeDescriptorV1 } from '../metadata/runtimeDescriptorV1.js';
 import type { SessionPermissionMode } from '../metadata/sessionPermissionModes.js';
@@ -55,6 +56,8 @@ export interface SessionStateFieldRegistry {
   'identity.runtimeDescriptor': { value: RuntimeDescriptorV1 };
   'identity.providerSessionId': { value: string };
   'intent.model': { value: SessionModelSelectionIntentReadCompatV1 };
+  'intent.role': { value: string };
+  'intent.sessionRoles': { value: SessionRoleConfigurationV1 };
   'intent.permissionMode': { value: PermissionModeIntentV1 };
   'intent.acpSessionMode': { value: AcpSessionModeIntentV1 };
   'intent.acpConfigOption': { value: AcpConfigOptionIntentV1 };

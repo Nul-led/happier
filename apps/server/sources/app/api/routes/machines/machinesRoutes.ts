@@ -46,6 +46,7 @@ import {
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { registerMachineReplacementRoutes } from "./registerMachineReplacementRoutes";
 import { registerMachinePoolRoutes } from "./pools/registerMachinePoolRoutes";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 function bytesEqual(a: Uint8Array | null, b: Uint8Array | null) {
     if (a === b) return true;
@@ -167,6 +168,7 @@ export function machinesRoutes(app: Fastify) {
             })
         }
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
         const {
             id,
@@ -272,7 +274,7 @@ export function machinesRoutes(app: Fastify) {
         // can create machine rows that permanently fail DEK decryption for the actual account key.
         if (machineStorageMode === "e2ee" && typeof dataEncryptionKey === "string") {
             const requireContentPublicKeyForDek = parseBooleanEnv(
-                process.env.HAPPIER_MACHINES_REQUIRE_CONTENT_PUBLIC_KEY_FOR_DEK,
+                requestHomeEnv.HAPPIER_MACHINES_REQUIRE_CONTENT_PUBLIC_KEY_FOR_DEK,
                 false,
             );
 

@@ -49,39 +49,23 @@ describe('PeerLoopbackEndpointV1', () => {
     expect(PeerLoopbackEndpointCandidateV1Schema.parse({
       v: 1,
       routeKind: 'loopback_direct',
-      url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
+      url: 'http://127.0.0.1:3000',
       endpointFingerprint: 'loopback_endpoint_1',
       expiresAt: 10_000,
-      directRouteGrantProofVerifierVersions: [2],
     })).toMatchObject({
-      url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
-      directRouteGrantProofVerifierVersions: [2],
+      url: 'http://127.0.0.1:3000',
     });
 
-    expect(PeerLoopbackEndpointCandidateV1Schema.parse({
-      v: 1,
-      routeKind: 'loopback_direct',
-      url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
-      endpointFingerprint: 'legacy-endpoint',
-      expiresAt: 10_000,
-    }).directRouteGrantProofVerifierVersions).toEqual([]);
-
-    expect(PeerLoopbackEndpointCandidateV1Schema.safeParse({
-      v: 1,
-      routeKind: 'loopback_direct',
-      url: 'http://127.0.0.1:3000/peer-mediation/v1/probe',
-      endpointFingerprint: 'unknown-verifier',
-      expiresAt: 10_000,
-      directRouteGrantProofVerifierVersions: [3],
-    }).success).toBe(false);
 
     for (const url of [
-      'http://192.168.1.20:3000/peer-mediation/v1/probe',
-      'http://0.0.0.0:3000/peer-mediation/v1/probe',
-      'http://daemon.localhost:3000/peer-mediation/v1/probe',
-      'http://user:pass@127.0.0.1:3000/peer-mediation/v1/probe',
-      'http://127.0.0.1:3000/peer-mediation/v1/probe?grant=secret',
-      'http://127.0.0.1:3000/peer-mediation/v1/probe#secret',
+      'http://192.168.1.20:3000',
+      'http://0.0.0.0:3000',
+      'http://daemon.localhost:3000',
+      'http://user:pass@127.0.0.1:3000',
+      'http://127.0.0.1:3000?grant=secret',
+      'http://127.0.0.1:3000#secret',
+      'http://127.0.0.1:3000/peer-mediation/v1/probe',
+      'http://127.0.0.1:3000/another-endpoint',
     ]) {
       expect(PeerLoopbackEndpointCandidateV1Schema.safeParse({
         v: 1,
@@ -91,6 +75,16 @@ describe('PeerLoopbackEndpointV1', () => {
         expiresAt: 10_000,
       }).success).toBe(false);
     }
+  });
+
+  it('uses the canonical loopback predicate for equivalent IPv6 loopback text', () => {
+    expect(PeerLoopbackEndpointCandidateV1Schema.safeParse({
+      v: 1,
+      routeKind: 'loopback_direct',
+      url: 'http://[0:0:0:0:0:0:0:1]:3000',
+      endpointFingerprint: 'endpoint-a',
+      expiresAt: 123,
+    }).success).toBe(true);
   });
 
   it('validates probe request and response receipts through the peer-mediation catalog', () => {

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
     AutomationRunCauseSchema,
     deriveSessionCreationTagV1,
+    sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
     serializeAutomationRunExecutionRecipeV1,
 } from "@happier-dev/protocol";
 
@@ -31,9 +32,7 @@ import {
 import {
     failAutomationRun,
     startAutomationRun,
-    startAutomationRunFromV2,
     succeedAutomationRun,
-    succeedAutomationRunFromV2,
 } from "./automationRunService";
 
 const TEST_TEMPLATE_ENVELOPE = JSON.stringify({
@@ -52,7 +51,7 @@ function strictE2eeRecipeForAssignments(assignmentMachineIds: readonly string[])
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine" },
-                directory: "/tmp/automation-claim-test",
+                directory: { kind: "path", path: "/tmp/automation-claim-test" },
                 agentTarget: {
                     kind: "agent",
                     identity: { pluginId: "happier.agent.codex", localId: "codex" },
@@ -77,7 +76,7 @@ function strictPlainRecipeForAssignments(assignmentMachineIds: readonly string[]
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine" },
-                directory: "/tmp/automation-claim-test",
+                directory: { kind: "path", path: "/tmp/automation-claim-test" },
                 agentTarget: {
                     kind: "agent",
                     identity: { pluginId: "happier.agent.codex", localId: "codex" },
@@ -224,6 +223,69 @@ async function readSignedClaimReceiptRow(params: Readonly<{
 describe("automationClaimService (integration)", () => {
     let harness: LightSqliteHarness;
 
+    it("derives occurrence depth from the firing turn rather than the trigger owner", async () => {
+        const machineId = randomUUID();
+        const { accountId } = await createAccountWithMachine(machineId, "plain");
+        const automation = await createAutomationWithAssignments({ accountId, machineIds: [machineId], name: "Depth" });
+        const session = await db.session.create({ data: {
+            accountId, tag: randomUUID(), metadata: "{}", agentState: "{}", workDepth: 8,
+        } });
+        for (const [initiator, workDepth] of [["user", 0], ["agent_session", 3]] as const) {
+            const turnId = randomUUID();
+            await db.sessionTurn.create({ data: {
+                sessionId: session.id, turnId, initiator, workDepth,
+                status: "completed", startedAt: 1n, updatedAt: 2n,
+            } });
+            const now = new Date();
+            const run = await db.automationRun.create({ data: {
+                accountId, automationId: automation.id, state: "queued", dueAt: now, scheduledAt: now,
+                executionInputEnvelope: strictPlainRecipeForAssignments([machineId]),
+                assignments: frozenRunAssignments([machineId]),
+                ...encodeAutomationRunCause(AutomationRunCauseSchema.parse({
+                    kind: "trigger", triggerKind: "sessionLifecycle", triggerId: automation.triggerId,
+                    triggerRevision: 0, occurredAt: now.getTime(),
+                    occurrenceKey: createHash("sha256").update(turnId).digest("base64url"),
+                    evidence: { event: "parentTurnCompleted", sourceSessionId: session.id, sourceTurnId: turnId,
+                        policy: { kind: "everyMatch" } },
+                })),
+            } });
+            const result = await claimAutomationRun({ accountId, machineId, leaseDurationMs: 30_000,
+                recipeFeaturePolicy: { workflowsEnabled: true } });
+            expect(toAutomationV3WorkerClaimResponse(result).run).toMatchObject({ id: run.id, causeWorkDepth: workDepth });
+            await db.automationRun.update({ where: { id: run.id }, data: { state: "succeeded" } });
+        }
+        const now = new Date();
+        const scheduled = await db.automationRun.create({ data: {
+            accountId, automationId: automation.id, state: "queued", dueAt: now, scheduledAt: now,
+            executionInputEnvelope: strictPlainRecipeForAssignments([machineId]),
+            assignments: frozenRunAssignments([machineId]), ...scheduleRunCause(automation.triggerId),
+        } });
+        const result = await claimAutomationRun({ accountId, machineId, leaseDurationMs: 30_000,
+            recipeFeaturePolicy: { workflowsEnabled: true } });
+        expect(toAutomationV3WorkerClaimResponse(result).run).toMatchObject({ id: scheduled.id, causeWorkDepth: 0 });
+        await db.automationRun.update({ where: { id: scheduled.id }, data: { state: "succeeded" } });
+        const missingSource = await db.automationRun.create({ data: {
+            accountId, automationId: automation.id, state: "queued", dueAt: now, scheduledAt: now,
+            // A previous dispatch refusal created no native run; its queued
+            // retry is still pre-effect work when the firing turn disappears.
+            executionInputEnvelope: strictPlainExecutionRecipeForAssignments([machineId]),
+            executionDispatchState: "retryWaiting", executionAttempt: 1, attempt: 1,
+            assignments: frozenRunAssignments([machineId]),
+            ...encodeAutomationRunCause(AutomationRunCauseSchema.parse({
+                kind: "trigger", triggerKind: "sessionLifecycle", triggerId: automation.triggerId,
+                triggerRevision: 0, occurredAt: now.getTime(),
+                occurrenceKey: createHash("sha256").update("missing-turn").digest("base64url"),
+                evidence: { event: "parentTurnCompleted", sourceSessionId: session.id,
+                    sourceTurnId: randomUUID(), policy: { kind: "everyMatch" } },
+            })),
+        } });
+        await expect(claimAutomationRun({ accountId, machineId, leaseDurationMs: 30_000,
+            recipeFeaturePolicy: { workflowsEnabled: true } })).resolves.toMatchObject({ run: null });
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: missingSource.id },
+            select: { state: true, attempt: true, errorCode: true, startedAt: true, producedSessionId: true } }))
+            .toEqual({ state: "failed", attempt: 1, errorCode: "source_unavailable", startedAt: null, producedSessionId: null });
+    });
+
     beforeAll(async () => {
         harness = await createLightSqliteHarness({ tempDirPrefix: "happier-automation-claim-service-" });
     }, 120_000);
@@ -331,7 +393,6 @@ describe("automationClaimService (integration)", () => {
             accountId,
             machineId,
             leaseDurationMs: 30_000,
-            requireV2RunRepresentability: true,
         })).resolves.toEqual({ run: null, accountCurrentness: null });
     });
 
@@ -339,39 +400,36 @@ describe("automationClaimService (integration)", () => {
         const machineId = "machine-direct-workflow-claim";
         const { accountId } = await createAccountWithMachine(machineId, "plain");
         const runId = randomUUID();
-        const acceptedSnapshotEnvelope = JSON.stringify({
-            t: "plain",
-            v: {
-                v: 1,
-                binding: { v: 1, purpose: "accepted_snapshot", accountId, runId },
-                content: {
-                    definition: {
-                        version: 1,
-                        inputs: [],
-                        defaults: {},
-                        blocks: [{
-                            kind: "step",
-                            id: "step-1",
-                            document: { text: "Do it", references: [], attachments: [] },
-                            input: [],
-                            result: { kind: "text" },
-                        }],
-                    },
-                    source: { kind: "inline" },
-                    inputs: {},
-                    machineId,
-                    executionTarget: { kind: "session" },
-                    workspaceTarget: {
-                        project: { machineId, directory: "/repo", checkoutRootPath: "/repo" },
-                    },
-                    origin: { kind: "direct" },
-                    authorization: {
-                        admittedPermissionCeiling: "default",
-                        principal: { kind: "host" },
-                    },
+        const acceptedSnapshotEnvelope = JSON.stringify(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+            mode: "plain",
+            binding: { v: 1, purpose: "accepted_snapshot", accountId, runId },
+            acceptedSnapshot: {
+                definition: {
+                    version: 1,
+                    inputs: [],
+                    defaults: {},
+                    blocks: [{
+                        kind: "step",
+                        id: "step-1",
+                        document: { text: "Do it", references: [], attachments: [] },
+                        input: [],
+                        result: { kind: "text" },
+                    }],
+                },
+                source: { kind: "inline" },
+                inputs: {},
+                machineId,
+                executionTarget: { kind: "session" },
+                workspaceTarget: {
+                    project: { machineId, directory: "/repo", checkoutRootPath: "/repo" },
+                },
+                origin: { kind: "direct" },
+                authorization: {
+                    admittedPermissionCeiling: "default",
+                    principal: { kind: "host" },
                 },
             },
-        });
+        }));
         await db.automationRun.create({
             data: {
                 id: runId,
@@ -388,10 +446,13 @@ describe("automationClaimService (integration)", () => {
             },
         });
 
+        await expect(listDaemonAssignments({ accountId, machineId })).resolves.toEqual([]);
+
         const claimed = toAutomationV3WorkerClaimResponse(await claimAutomationRun({
             accountId,
             machineId,
             leaseDurationMs: 30_000,
+            recipeFeaturePolicy: { workflowsEnabled: true },
         }));
         expect(claimed).toMatchObject({
             run: {
@@ -689,12 +750,23 @@ describe("automationClaimService (integration)", () => {
     it("claims a Session lifecycle Run and returns its complete immutable cause", async () => {
         const machineId = "machine-session-lifecycle-claim";
         const { accountId } = await createAccountWithMachine(machineId);
+        const machineInstallationId = "installation-session-lifecycle-claim";
+        await db.machine.update({ where: { id: machineId }, data: { installationId: machineInstallationId } });
         const automation = await createAutomationWithAssignments({
             accountId,
             machineIds: [machineId],
             name: "Session lifecycle claim",
         });
         const occurredAt = new Date(Date.now() - 30_000);
+        await db.session.create({ data: {
+            id: "session-lifecycle-source", accountId, tag: randomUUID(),
+            metadata: "{}", agentState: "{}", workDepth: 5,
+        } });
+        await db.sessionTurn.create({ data: {
+            sessionId: "session-lifecycle-source", turnId: "turn-lifecycle-source",
+            initiator: "agent_session", workDepth: 3, status: "completed",
+            startedAt: 1n, updatedAt: 2n,
+        } });
         const cause = AutomationRunCauseSchema.parse({
             kind: "trigger" as const,
             triggerId: automation.triggerId,
@@ -727,10 +799,13 @@ describe("automationClaimService (integration)", () => {
             select: { id: true },
         });
 
+        const claimRequest = { machineInstallationId, nonce: "lifecycle-depth-claim",
+            expiresAt: new Date(Date.now() + 60_000) };
         const claim = await claimAutomationRun({
             accountId,
             machineId,
             leaseDurationMs: 30_000,
+            claimRequest,
         });
 
         // The claim candidate read is a cause reader: a partial select would
@@ -741,6 +816,14 @@ describe("automationClaimService (integration)", () => {
             throw new Error("Expected an Automation-origin claim response");
         }
         expect(response.run.cause).toEqual(cause);
+        expect(response.run.causeWorkDepth).toBe(3);
+        await db.sessionTurn.update({ where: { sessionId_turnId: {
+            sessionId: "session-lifecycle-source", turnId: "turn-lifecycle-source",
+        } }, data: { workDepth: 7 } });
+        const replay = await claimAutomationRun({ accountId, machineId, leaseDurationMs: 30_000, claimRequest });
+        expect(toAutomationV3WorkerClaimResponse(replay).run).toMatchObject({
+            id: response.run.id, attempt: response.run.attempt, causeWorkDepth: 3,
+        });
     });
 
     it("converges concurrent and response-loss retries of one signed V3 claim onto one Run", async () => {
@@ -1184,62 +1267,6 @@ describe("automationClaimService (integration)", () => {
         })).resolves.toEqual({ state: "queued", attempt: 0 });
     });
 
-    it("claims a released-V2 run queued behind current strict-recipe runs", async () => {
-        const machineId = "machine-v2-discriminator";
-        const { accountId } = await createAccountWithMachine(machineId);
-        const automation = await createAutomationWithAssignments({
-            accountId,
-            machineIds: [machineId],
-            name: "V2 claim discriminator",
-        });
-        const createQueuedRun = async (params: Readonly<{
-            dueAt: Date;
-            executionInputEnvelope: string;
-        }>) => await db.automationRun.create({
-            data: {
-                automationId: automation.id,
-                ...scheduleRunCause(automation.triggerId),
-                accountId,
-                state: "queued",
-                scheduledAt: new Date(params.dueAt.getTime() - 10_000),
-                dueAt: params.dueAt,
-                executionInputEnvelope: params.executionInputEnvelope,
-                assignments: frozenRunAssignments([machineId]),
-            },
-            select: { id: true },
-        });
-        const dueBase = Date.now() - 120_000;
-        const strictRunIds: string[] = [];
-        for (let index = 0; index < 30; index += 1) {
-            const run = await createQueuedRun({
-                dueAt: new Date(dueBase + index * 1_000),
-                executionInputEnvelope: strictE2eeRecipeForAssignments([machineId]),
-            });
-            strictRunIds.push(run.id);
-        }
-        const retainedV2Run = await createQueuedRun({
-            dueAt: new Date(dueBase + 60_000),
-            executionInputEnvelope: JSON.stringify({
-                kind: "happier_automation_run_execution_input_v1",
-                targetType: "new_session",
-                templateVersion: 1,
-                templateCiphertext: TEST_TEMPLATE_ENVELOPE,
-                origin: { kind: "scheduled", scheduledFor: dueBase + 60_000 },
-            }),
-        });
-
-        const claimed = await claimAutomationRun({
-            accountId,
-            machineId,
-            leaseDurationMs: 30_000,
-            requireV2RunRepresentability: true,
-        });
-        expect(claimed.run?.id).toBe(retainedV2Run.id);
-        await expect(db.automationRun.findMany({
-            where: { id: { in: strictRunIds }, state: "claimed" },
-            select: { id: true },
-        })).resolves.toEqual([]);
-    });
 
     it("does not replay a newer lease attempt under an older signed V3 claim nonce", async () => {
         const machineId = "machine-claim-attempt-replay";
@@ -1665,93 +1692,6 @@ describe("automationClaimService (integration)", () => {
         );
     });
 
-    it("preserves released V2 expired-lease reclaim when the worker omits the attempt token", async () => {
-        const { accountId } = await createAccountWithMachine("machine-1");
-        const automation = await createAutomationWithAssignments({
-            accountId,
-            machineIds: ["machine-1"],
-            name: "Released V2 attempt fence automation",
-        });
-        const run = await db.automationRun.create({
-            data: {
-                automationId: automation.id,
-                ...scheduleRunCause(automation.triggerId),
-                accountId,
-                state: "claimed",
-                scheduledAt: new Date(Date.now() - 60_000),
-                dueAt: new Date(Date.now() - 50_000),
-                claimedAt: new Date(Date.now() - 40_000),
-                claimedByMachineId: "machine-1",
-                leaseExpiresAt: new Date(Date.now() - 1_000),
-                attempt: 1,
-                executionInputEnvelope: JSON.stringify({
-                    kind: "happier_automation_run_execution_input_v1",
-                    targetType: "new_session",
-                    templateVersion: 1,
-                    templateCiphertext: TEST_TEMPLATE_ENVELOPE,
-                    origin: {
-                        kind: "scheduled",
-                        scheduledFor: Date.now() - 60_000,
-                    },
-                }),
-                assignments: frozenRunAssignments(["machine-1"]),
-            },
-            select: { id: true },
-        });
-
-        const releasedV2Claim = await claimAutomationRun({
-            accountId,
-            machineId: "machine-1",
-            leaseDurationMs: 30_000,
-            requireV2RunRepresentability: true,
-        });
-
-        expect(releasedV2Claim.run).toEqual(expect.objectContaining({
-            id: run.id,
-            attempt: 2,
-        }));
-        await expect(db.automationRun.findUniqueOrThrow({
-            where: { id: run.id },
-            select: { state: true, claimedByMachineId: true, attempt: true },
-        })).resolves.toEqual({
-            state: "claimed",
-            claimedByMachineId: "machine-1",
-            attempt: 2,
-        });
-
-        await expect(heartbeatAutomationRun({
-            accountId,
-            runId: run.id,
-            machineId: "machine-1",
-            attempt: 1,
-            leaseDurationMs: 30_000,
-            requireV2RunRepresentability: true,
-        })).resolves.toEqual({ ok: false, leaseExpiresAt: null });
-        await expect(startAutomationRunFromV2({
-            accountId,
-            runId: run.id,
-            machineId: "machine-1",
-            attempt: 1,
-        })).resolves.toBeNull();
-
-        await expect(heartbeatAutomationRun({
-            accountId,
-            runId: run.id,
-            machineId: "machine-1",
-            leaseDurationMs: 30_000,
-            requireV2RunRepresentability: true,
-        })).resolves.toMatchObject({ ok: true });
-        await expect(startAutomationRunFromV2({
-            accountId,
-            runId: run.id,
-            machineId: "machine-1",
-        })).resolves.toEqual(expect.objectContaining({ state: "running", attempt: 2 }));
-        await expect(succeedAutomationRunFromV2({
-            accountId,
-            runId: run.id,
-            machineId: "machine-1",
-        })).resolves.toEqual(expect.objectContaining({ state: "succeeded", attempt: 2 }));
-    });
 
     it("reclaims a stale running run when lease expiration has passed", async () => {
         const { accountId } = await createAccountWithMachine("machine-1");
@@ -1954,11 +1894,8 @@ describe("automationClaimService (integration)", () => {
         })).toEqual(expect.objectContaining({ id: failRun.id, state: "failed", errorCode: "current" }));
     });
 
-    it.each([
-        ["released V2", true],
-        ["current", false],
-    ] as const)("does not grant a %s claimant a lease to origin-mismatched retained V2 input", async (_claimant, requireV2RunRepresentability) => {
-        const machineId = `machine-${requireV2RunRepresentability ? "v2" : "current"}-frozen-input`;
+    it("does not grant a current claimant a lease to origin-mismatched retained 0.2 input", async () => {
+        const machineId = `machine-current-frozen-input`;
         const { accountId } = await createAccountWithMachine(machineId);
         const automation = await createAutomationWithAssignments({
             accountId,
@@ -2007,7 +1944,7 @@ describe("automationClaimService (integration)", () => {
                 select: { id: true },
             }),
         ]);
-        if (!requireV2RunRepresentability) {
+        {
             await db.automationRun.createMany({
                 data: Array.from({ length: 25 }, (_, index) => ({
                     automationId: automation.id,
@@ -2028,7 +1965,6 @@ describe("automationClaimService (integration)", () => {
             machineId,
             leaseDurationMs: 30_000,
             expectedTriggerKind: "schedule",
-            ...(requireV2RunRepresentability ? { requireV2RunRepresentability: true } : {}),
         })).resolves.toEqual(expect.objectContaining({
             run: expect.objectContaining({ id: compatible.id }),
         }));
@@ -2047,7 +1983,7 @@ describe("automationClaimService (integration)", () => {
                 revision: true,
             },
         });
-        expect(originMismatches).toHaveLength(requireV2RunRepresentability ? 1 : 26);
+        expect(originMismatches).toHaveLength(26);
         expect(originMismatches[0]).toEqual({
             id: originMismatch.id,
             state: "failed",
@@ -2065,11 +2001,8 @@ describe("automationClaimService (integration)", () => {
         ))).toBe(true);
     });
 
-    it.each([
-        ["released V2", true],
-        ["current", false],
-    ] as const)("terminalizes a saturated invalid retained-V2 page before a later %s claim", async (_claimant, requireV2RunRepresentability) => {
-        const machineId = `machine-${requireV2RunRepresentability ? "v2" : "current"}-saturated-invalid-v2`;
+    it("terminalizes a saturated invalid retained 0.2 page before a later current claim", async () => {
+        const machineId = `machine-current-saturated-invalid-v2`;
         const { accountId } = await createAccountWithMachine(machineId);
         const automation = await createAutomationWithAssignments({
             accountId,
@@ -2128,7 +2061,6 @@ describe("automationClaimService (integration)", () => {
             machineId,
             leaseDurationMs: 30_000,
             expectedTriggerKind: "schedule",
-            ...(requireV2RunRepresentability ? { requireV2RunRepresentability: true } : {}),
         })).resolves.toEqual({ run: null, accountCurrentness: null });
         await expect(db.automationRun.count({
             where: { id: { in: invalidIds }, state: "failed" },
@@ -2139,7 +2071,6 @@ describe("automationClaimService (integration)", () => {
             machineId,
             leaseDurationMs: 30_000,
             expectedTriggerKind: "schedule",
-            ...(requireV2RunRepresentability ? { requireV2RunRepresentability: true } : {}),
         })).resolves.toEqual(expect.objectContaining({
             run: expect.objectContaining({ id: compatible.id }),
         }));

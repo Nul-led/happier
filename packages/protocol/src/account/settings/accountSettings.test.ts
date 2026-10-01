@@ -1,3 +1,4 @@
+import { LegacyRecentMachinePathsSchema } from './legacyAuthoringMemorySettingsV1.js';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -19,6 +20,7 @@ import {
 } from '../../actions/actionSettings.js';
 import type { ActionId } from '../../actions/actionIds.js';
 import { computeWorkspaceSyncPolicyDigest } from '../../sessions/control/handoff/workspaceSyncSchemas.js';
+import { MAX_PLUGIN_IDENTIFIER_BYTES } from '../../plugins/pluginId.js';
 
 type ActionSurface = NonNullable<ActionEnablementContext['surface']>;
 
@@ -32,6 +34,38 @@ function expectActionSurfaceEnabled(
 }
 
 describe('accountSettings', () => {
+  it('defaults workspace tab sync on and preserves an explicit account opt-out', () => {
+    expect(accountSettingsParse({}).workspaceTabsSyncEnabled).toBe(true);
+    expect(accountSettingsParse({ workspaceTabsSyncEnabled: false }).workspaceTabsSyncEnabled).toBe(false);
+    expect(accountSettingsParse({ workspaceTabsSyncEnabled: 'invalid' }).workspaceTabsSyncEnabled).toBe(true);
+  });
+
+  it('keeps the legacy tmux preference as the default terminal host while accepting first-class hosts', () => {
+    expect(accountSettingsParse({}).sessionTerminalHost).toBe('legacy');
+    expect(accountSettingsParse({ sessionTerminalHost: 'herdr' }).sessionTerminalHost).toBe('herdr');
+    expect(accountSettingsParse({ sessionTerminalHost: 'invalid' }).sessionTerminalHost).toBe('legacy');
+    const normalized = accountSettingsParse({
+      sessionTmuxByMachineId: {
+        machine: {
+          useTmux: false,
+          terminalHost: 'zellij',
+          sessionName: 'happy',
+          isolated: true,
+          tmpDir: null,
+        },
+      },
+    });
+    expect(normalized.sessionTerminalHostByMachineId).toEqual({ machine: 'zellij' });
+    expect(normalized.sessionTmuxByMachineId.machine).toEqual({
+      useTmux: false, sessionName: 'happy', isolated: true, tmpDir: null,
+    });
+    expect(accountSettingsParse({}).sessionTerminalHostByMachineId).toEqual({});
+    expect(accountSettingsParse({
+      sessionTerminalHostByMachineId: {},
+      sessionTmuxByMachineId: { machine: { useTmux: false, terminalHost: 'herdr', sessionName: '', isolated: false, tmpDir: null } },
+    }).sessionTerminalHostByMachineId).toEqual({});
+  });
+
   it('owns tolerant ordered semantic reminder presets as an account preference', () => {
     const longLabel = `A detailed reminder preset ${'with useful context '.repeat(12)}`.trim();
     expect(longLabel.length).toBeGreaterThan(80);
@@ -59,6 +93,21 @@ describe('accountSettings', () => {
   it('defaults execution-run parent completion notifications off and accepts an explicit value', () => {
     expect(accountSettingsParse({}).executionRunsNotifyParentOnCompletionDefault).toBe(false);
     expect(accountSettingsParse({ executionRunsNotifyParentOnCompletionDefault: true }).executionRunsNotifyParentOnCompletionDefault).toBe(true);
+  });
+  it('keeps the home layout per Account: every section in the default order until the person changes it', () => {
+    expect(accountSettingsParse({}).homeHubLayoutV1).toEqual({ order: [], hidden: [] });
+    const layout = { order: ['usage', 'machines', 'a-section-from-a-newer-app'], hidden: ['setup'] };
+    expect(accountSettingsParse({ homeHubLayoutV1: layout }).homeHubLayoutV1).toEqual(layout);
+    expect(accountSettingsParse({ homeHubLayoutV1: { order: 'usage' } }).homeHubLayoutV1).toEqual({ order: [], hidden: [] });
+  });
+  it('accepts the longest qualified Home widget id while rejecting a longer id', () => {
+    const pluginId = `a.${'a'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES - 2)}`;
+    const widgetId = `widget:${pluginId}/${'a'.repeat(MAX_PLUGIN_IDENTIFIER_BYTES)}`;
+    const layout = { order: [widgetId], hidden: [widgetId] };
+    expect(accountSettingsParse({ homeHubLayoutV1: layout }).homeHubLayoutV1).toEqual(layout);
+    expect(ACCOUNT_SETTING_DEFINITIONS.homeHubLayoutV1.parseMutationValue({
+      order: [`${widgetId}a`], hidden: [],
+    }).success).toBe(false);
   });
   it('requires explicit opt-in to disclose remote alert policy', () => {
     expect(accountSettingsParse({}).sessionRemoteAlertsEnabled).toBe(false);
@@ -97,15 +146,26 @@ describe('accountSettings', () => {
       'legacy-path-without-machine',
     ];
 
-    expect(accountSettingsParse({ recentMachinePaths }).recentMachinePaths).toEqual([
+    expect(LegacyRecentMachinePathsSchema.parse(recentMachinePaths)).toEqual([
       { machineId: 'machine-1', path: '/workspace/project' },
       { machineId: 'machine-2', path: '/workspace/secondary' },
     ]);
-    expect(accountSettingsParse({ recentMachinePaths: 'not-an-array' }).recentMachinePaths).toEqual([]);
+    expect(LegacyRecentMachinePathsSchema.parse('not-an-array')).toEqual([]);
+  });
+
+  it('retires authoring-memory keys from the active settings catalog and effective projection', () => {
+    for (const key of ['recentMachinePaths', 'lastUsedProfile', 'lastEngineSelectionsByScopeV1']) {
+      expect(ACCOUNT_SETTING_DEFINITIONS).not.toHaveProperty(key);
+      expect(accountSettingsParse({ [key]: 'legacy-value', futureRoot: true })).not.toHaveProperty(key);
+    }
+    expect(accountSettingsParse({ rememberLastEngineSelectionsV1: false }).rememberLastEngineSelectionsV1).toBe(false);
   });
 
   it('drops retired Account roots while preserving a safe forward-compatible root', () => {
     const parsed = accountSettingsParse({
+      // 0.2 persisted this preference and may send it beside live Account settings.
+      showEnvironmentBadge: false,
+      showFlavorIcons: false,
       expUsageReporting: true,
       experimentalFeatureToggles: { automations: true },
       sessionMruOrderV1: ['server-a:session-a'],
@@ -116,6 +176,8 @@ describe('accountSettings', () => {
     }) as Record<string, unknown>;
 
     expect(parsed).not.toHaveProperty('expUsageReporting');
+    expect(parsed).not.toHaveProperty('showEnvironmentBadge');
+    expect(parsed.showFlavorIcons).toBe(false);
     expect(parsed).not.toHaveProperty('experimentalFeatureToggles');
     expect(parsed).not.toHaveProperty('sessionMruOrderV1');
     expect(parsed).not.toHaveProperty('multiServerProfiles');
@@ -944,11 +1006,11 @@ describe('accountSettings', () => {
     });
 
     expect(parsed.backendEnabledByTargetKey).toEqual({
-      'backend:claude': true,
+      'agent:happier.agent.claude/claude': true,
       'backend:team-review:configured:team-review': false,
     });
     expect(parsed.backendCliSourcePreferenceByTargetKey).toEqual({
-      'backend:claude': 'system-first',
+      'agent:happier.agent.claude/claude': 'system-first',
       'backend:team-review:configured:team-review': 'managed-first',
     });
   });
@@ -984,12 +1046,12 @@ describe('accountSettings', () => {
     });
 
     expect(parsed.backendEnabledByTargetKey).toEqual({
-      'backend:claude': false,
-      'backend:codex': true,
+      'agent:happier.agent.claude/claude': false,
+      'agent:happier.agent.codex/codex': true,
     });
     expect(parsed.backendCliSourcePreferenceByTargetKey).toEqual({
-      'backend:claude': 'managed-first',
-      'backend:codex': 'system-first',
+      'agent:happier.agent.claude/claude': 'managed-first',
+      'agent:happier.agent.codex/codex': 'system-first',
     });
   });
 
@@ -1010,12 +1072,12 @@ describe('accountSettings', () => {
     });
 
     expect(parsed.backendEnabledByTargetKey).toEqual({
-      'backend:codex': true,
-      'backend:claude': false,
+      'agent:happier.agent.codex/codex': true,
+      'agent:happier.agent.claude/claude': false,
     });
     expect(parsed.backendCliSourcePreferenceByTargetKey).toEqual({
-      'backend:codex': 'managed-first',
-      'backend:gemini': 'system-first',
+      'agent:happier.agent.codex/codex': 'managed-first',
+      'agent:happier.agent.gemini/gemini': 'system-first',
     });
   });
 
@@ -1041,10 +1103,10 @@ describe('accountSettings', () => {
     });
 
     expect(parsed.backendEnabledByTargetKey).toEqual({
-      'backend:claude': true,
+      'agent:happier.agent.claude/claude': true,
     });
     expect(parsed.backendCliSourcePreferenceByTargetKey).toEqual({
-      'backend:claude': 'system-first',
+      'agent:happier.agent.claude/claude': 'system-first',
     });
     expect(parsed.futureField).toEqual({ keep: true });
   });
@@ -1094,6 +1156,7 @@ describe('accountSettings', () => {
       allowAgentModeOverride: true,
       allowConfigOptionOverrides: true,
       allowProfileOverride: true,
+      allowEnvironmentVariables: true,
       allowConnectedServicesOverride: true,
       allowMcpSelectionOverride: true,
       allowTranscriptStorageOverride: true,
@@ -1416,12 +1479,82 @@ describe('accountSettings', () => {
     expect(() => accountSettingsParse({ workspaceRefsV1: [...refs, { ...refs[1], id: 'beta-2' }] })).toThrow(/scope/i);
     expect(() => accountSettingsParse({ workspaceRefsV1: [...refs, { ...refs[1], rootPath: '/other' }] })).toThrow(/id/i);
     expect(() => accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, betaWorkspaceRefId: 'missing' }] })).toThrow(/reference/i);
-    expect(() => accountSettingsParse({
+    expect(accountSettingsParse({
       workspaceRefsV1: refs,
       workspaceSyncRelationshipsV1: [relationship, { ...relationship, relationshipId: 'relationship-2' }],
-    })).toThrow(/endpoint pair/i);
-    expect(() => accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, controllerMachineId: 'machine-b' }] }))
-      .toThrow(/controller/i);
+    }).workspaceSyncRelationshipsV1).toHaveLength(2);
+    expect(accountSettingsParse({ workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, controllerMachineId: 'machine-b' }] })
+      .workspaceSyncRelationshipsV1).toHaveLength(1);
+    expect(() => assertAccountWorkspaceSettingsTransition(
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [] },
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [{ ...relationship, controllerMachineId: 'machine-b' }] },
+    )).toThrow(expect.objectContaining({ code: 'workspace_sync_topology_invalid' }));
+  });
+
+  it('admits only supported workspace-sync components while keeping saved invalid topology readable and removable', () => {
+    const policyFields = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [] };
+    const contentPolicy = { ...policyFields, policyDigest: computeWorkspaceSyncPolicyDigest(policyFields) };
+    const refs = [
+      { id: 'a', serverId: 'server', machineId: 'machine-a', rootPath: '/a', createdAtMs: 1 },
+      { id: 'b', serverId: 'server', machineId: 'machine-b', rootPath: '/b', createdAtMs: 1 },
+      { id: 'c', serverId: 'server', machineId: 'machine-c', rootPath: '/c', createdAtMs: 1 },
+      { id: 'd', serverId: 'server', machineId: 'machine-d', rootPath: '/d', createdAtMs: 1 },
+      { id: 'e', serverId: 'server', machineId: 'machine-e', rootPath: '/e', createdAtMs: 1 },
+    ];
+    const relationship = (
+      relationshipId: string,
+      alphaWorkspaceRefId: string,
+      betaWorkspaceRefId: string,
+      controllerMachineId: string,
+      enabled = true,
+    ) => ({
+      v: 1 as const,
+      relationshipId,
+      controllerMachineId,
+      alphaWorkspaceRefId,
+      betaWorkspaceRefId,
+      mode: 'keep_both_in_sync' as const,
+      contentPolicy,
+      enabled,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    });
+    const ab = relationship('ab', 'a', 'b', 'machine-a');
+    const ac = relationship('ac', 'a', 'c', 'machine-a');
+    const bc = relationship('bc', 'b', 'c', 'machine-b');
+    const unrelated = relationship('de', 'd', 'e', 'machine-d');
+
+    expect(() => assertAccountWorkspaceSettingsTransition(
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab] },
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab, ac] },
+    )).not.toThrow();
+
+    expect(() => assertAccountWorkspaceSettingsTransition(
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab, ac] },
+      { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab, ac, bc] },
+    )).toThrow(expect.objectContaining({ code: 'workspace_sync_topology_invalid' }));
+
+    const savedInvalid = { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab, ac, bc] };
+    expect(accountSettingsParse(savedInvalid).workspaceSyncRelationshipsV1).toHaveLength(3);
+    expect(() => assertAccountWorkspaceSettingsTransition(savedInvalid, {
+      ...savedInvalid,
+      workspaceSyncRelationshipsV1: [ab, ac],
+    })).not.toThrow();
+
+    const disabledReuse = relationship('bc-disabled', 'b', 'c', 'machine-b', false);
+    const withDisabledReuse = { workspaceRefsV1: refs, workspaceSyncRelationshipsV1: [ab, ac, disabledReuse] };
+    expect(accountSettingsParse(withDisabledReuse).workspaceSyncRelationshipsV1).toHaveLength(3);
+    expect(() => assertAccountWorkspaceSettingsTransition(withDisabledReuse, {
+      ...withDisabledReuse,
+      workspaceSyncRelationshipsV1: [ab, ac, { ...disabledReuse, enabled: true, updatedAtMs: 2 }],
+    })).toThrow(expect.objectContaining({ code: 'workspace_sync_topology_invalid' }));
+
+    // An unrelated change does not make an already-saved invalid component a
+    // global parse/write poison pill.
+    expect(() => assertAccountWorkspaceSettingsTransition(withDisabledReuse, {
+      ...withDisabledReuse,
+      workspaceSyncRelationshipsV1: [...withDisabledReuse.workspaceSyncRelationshipsV1, unrelated],
+    })).not.toThrow();
   });
 
   it('fills sparse prompt-library Account roots through their shared Protocol schemas', () => {

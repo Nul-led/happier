@@ -293,6 +293,21 @@ describe('SessionFollowEdge service', () => {
         await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, {
             principal, destinationSessionId: destination.id, request,
         }))).resolves.toBeNull();
+        // A reports-to snapshot is a distinct current-state read on the SAME
+        // transport owner, not a widened incremental Follow frontier. Both
+        // edges may coexist, so the exact attachment marker selects its owner.
+        await db.sessionReportsTo.create({ data: { sessionId: source.id, leadSessionId: destination.id,
+            attachedAt: new Date(100), deliveredTranscriptSeq: 3 } });
+        const snapshotRequest = { v: 1 as const, sourceSessionId: source.id,
+            edgeKind: 'reports_to' as const, attachedAt: 100,
+            readMode: 'initial_current_snapshot' as const, afterTranscriptSeq: 0, observedTranscriptSeq: 3, limit: 1 };
+        await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, {
+            principal, destinationSessionId: destination.id, request: snapshotRequest,
+        }))).resolves.toMatchObject({ source: { id: source.id }, messages: [{ seq: 3 }], hasMore: true });
+        await db.sessionReportsTo.update({ where: { sessionId: source.id }, data: { attachedAt: new Date(101) } });
+        await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, {
+            principal, destinationSessionId: destination.id, request: snapshotRequest,
+        }))).resolves.toBeNull();
         await db.machine.update({ where: { id: machine.id }, data: { revokedAt: new Date() } });
         await expect(inTx((tx) => projectSessionFollowSourceForRunnerInTx(tx, { principal, destinationSessionId: destination.id, request })))
             .resolves.toBeNull();
@@ -417,11 +432,16 @@ describe('SessionFollowEdge service', () => {
         }))).toEqual([]);
     });
 
-    it('admits key preparation only for the current edge and exact ephemeral destination AccessKey', async () => {
+    it.each(['follow', 'reports_to'] as const)('admits key preparation only for the current %s edge and exact ephemeral destination AccessKey', async (edgeKind) => {
         const owner = await createAccount();
         const source = await createSession(owner.id);
         const destination = await createSession(owner.id);
-        await setSessionFollowSource({ accountId: owner.id, sourceSessionId: source.id, destinationSessionId: destination.id });
+        if (edgeKind === 'follow') {
+            await setSessionFollowSource({ accountId: owner.id, sourceSessionId: source.id, destinationSessionId: destination.id });
+        } else {
+            await db.sessionReportsTo.create({ data: { sessionId: source.id, leadSessionId: destination.id } });
+            expect(await readEdge(destination.id, source.id)).toBeNull();
+        }
         const installationId = `installation-${randomUUID()}`;
         const installationPublicKey = new Uint8Array(32).fill(9);
         const runner = await db.machine.create({ data: {
@@ -459,12 +479,14 @@ describe('SessionFollowEdge service', () => {
             installationPublicKey: encodeBase64(installationPublicKey, 'base64url'),
             creatorTokenEpoch: owner.tokenEpoch,
         };
-        await expect(authorizeSessionFollowSourceKeyPreparation({
-            accountId: owner.id,
-            sourceSessionId: source.id,
-            destinationSessionId: destination.id,
-            principal,
-        })).resolves.toEqual({ ok: false, error: 'session_follow_source_forbidden' });
+        if (edgeKind === 'follow') {
+            await expect(authorizeSessionFollowSourceKeyPreparation({
+                accountId: owner.id,
+                sourceSessionId: source.id,
+                destinationSessionId: destination.id,
+                principal,
+            })).resolves.toEqual({ ok: false, error: 'session_follow_source_forbidden' });
+        }
         await db.ephemeralRunnerActivation.create({ data: {
             id: activationId, creatorAccountId: owner.id, creatorTokenEpoch: owner.tokenEpoch, draftId: `draft-${randomUUID()}`,
             sessionId: destination.id, machineId: runner.id, state: 'materialized', workspacePolicy: 'choose_on_endpoint', homeServerIdentityId: 'home',
@@ -521,20 +543,30 @@ describe('SessionFollowEdge service', () => {
             destinationSessionId: destination.id,
             principal,
         })).resolves.toEqual({ ok: false, error: 'session_follow_source_forbidden' });
+
+        if (edgeKind === 'follow') {
+            await db.sessionFollowEdge.deleteMany({ where: { sourceSessionId: source.id } });
+        } else {
+            const otherLead = await createSession(owner.id);
+            await db.sessionReportsTo.update({ where: { sessionId: source.id }, data: { leadSessionId: otherLead.id } });
+        }
+        await expect(authorizeSessionFollowSourceKeyPreparation({
+            accountId: owner.id, sourceSessionId: source.id, destinationSessionId: destination.id, principal,
+        })).resolves.toEqual({ ok: false, error: 'session_not_found' });
     });
 
-    it('rejects an authorized edge author who cannot address the destination Account Machine', async () => {
+    it.each(['follow', 'reports_to'] as const)('requires the %s destination Account grant even when its edge author is authorized', async (edgeKind) => {
         const sourceOwner = await createAccount();
         const destinationOwner = await createAccount();
         const source = await createSession(sourceOwner.id);
         const destination = await createSession(destinationOwner.id);
         await grantAccess(source, destinationOwner.id, 'view');
         await grantAccess(destination, sourceOwner.id, 'edit');
-        await setSessionFollowSource({
-            accountId: sourceOwner.id,
-            sourceSessionId: source.id,
-            destinationSessionId: destination.id,
-        });
+        if (edgeKind === 'follow') {
+            await setSessionFollowSource({ accountId: sourceOwner.id, sourceSessionId: source.id, destinationSessionId: destination.id });
+        } else {
+            await db.sessionReportsTo.create({ data: { sessionId: source.id, leadSessionId: destination.id } });
+        }
         const installationId = `installation-${randomUUID()}`;
         const installationPublicKey = new Uint8Array(32).fill(8);
         const runner = await db.machine.create({ data: {
@@ -571,21 +603,29 @@ describe('SessionFollowEdge service', () => {
             endpointFactsRecipient: {},
         } });
 
+        const principal = {
+            kind: 'ephemeral_session_runner' as const,
+            authority: 'session_runtime' as const,
+            accountId: destinationOwner.id,
+            activationId,
+            sessionId: destination.id,
+            machineId: runner.id,
+            installationId,
+            installationPublicKey: encodeBase64(installationPublicKey, 'base64url'),
+            creatorTokenEpoch: destinationOwner.tokenEpoch,
+        };
         await expect(authorizeSessionFollowSourceKeyPreparation({
             accountId: sourceOwner.id,
             sourceSessionId: source.id,
             destinationSessionId: destination.id,
-            principal: {
-                kind: 'ephemeral_session_runner',
-                authority: 'session_runtime',
-                accountId: destinationOwner.id,
-                activationId,
-                sessionId: destination.id,
-                machineId: runner.id,
-                installationId,
-                installationPublicKey: encodeBase64(installationPublicKey, 'base64url'),
-                creatorTokenEpoch: destinationOwner.tokenEpoch,
-            },
+            principal,
+        })).resolves.toEqual({ ok: false, error: 'session_follow_source_forbidden' });
+        await expect(authorizeSessionFollowSourceKeyPreparation({
+            accountId: destinationOwner.id, sourceSessionId: source.id, destinationSessionId: destination.id, principal,
+        })).resolves.toMatchObject({ ok: true, value: { destinationRuntimeAccountId: destinationOwner.id, machineId: runner.id } });
+        await db.sessionShare.deleteMany({ where: { sessionId: source.id, sharedWithUserId: destinationOwner.id } });
+        await expect(authorizeSessionFollowSourceKeyPreparation({
+            accountId: destinationOwner.id, sourceSessionId: source.id, destinationSessionId: destination.id, principal,
         })).resolves.toEqual({ ok: false, error: 'session_follow_source_forbidden' });
     });
 

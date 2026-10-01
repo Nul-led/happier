@@ -18,13 +18,15 @@ ALTER TABLE `Automation` MODIFY `targetType` ENUM('new_session', 'existing_sessi
 ALTER TABLE `AutomationRun`
     MODIFY `automationId` VARCHAR(191) NULL,
     MODIFY `causeKind` ENUM('trigger', 'manual', 'conversation') NULL DEFAULT 'trigger',
-    MODIFY `state` ENUM('queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'expired', 'dispatch_failed', 'skipped', 'missed', 'outcome_uncertain', 'pause_requested', 'paused', 'interrupted') NOT NULL DEFAULT 'queued',
+    MODIFY `state` ENUM('queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'expired', 'dispatch_failed', 'skipped', 'missed', 'outcome_uncertain', 'pause_requested', 'paused', 'interrupted', 'waiting_for_review') NOT NULL DEFAULT 'queued',
     ADD COLUMN `originKind` VARCHAR(191) NOT NULL DEFAULT 'automation',
     ADD COLUMN `originSessionId` VARCHAR(191) NULL,
     ADD COLUMN `workflowAcceptedSnapshotEnvelope` LONGTEXT NULL,
     ADD COLUMN `workflowCheckpointEnvelope` LONGTEXT NULL,
     ADD COLUMN `workflowCustodyState` ENUM('pending', 'settled') NULL,
-    ADD COLUMN `workflowResultDeliveryState` ENUM('pending', 'accepted', 'unavailable', 'workflow_outcome_unresolved') NULL,
+    ADD COLUMN `workflowResumeRequestedRevision` INTEGER NULL,
+    ADD COLUMN `originDeliveryAckRevision` INTEGER NULL,
+    ADD COLUMN `visibleTeamId` VARCHAR(191) NULL,
     ADD CONSTRAINT `AutomationRun_originSessionId_fkey` FOREIGN KEY (`originSessionId`) REFERENCES `Session`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 CREATE TABLE `WorkflowRunInvocation` (
@@ -34,7 +36,8 @@ CREATE TABLE `WorkflowRunInvocation` (
     `parentRecordId` VARCHAR(191) NULL,
     `memberOrdinal` BIGINT NOT NULL,
     `attempt` BIGINT NOT NULL DEFAULT 0,
-    `lifecycle` ENUM('pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'needs_attention', 'completed', 'failed', 'skipped', 'cancel_requested', 'cancelled', 'outcome_uncertain', 'superseded') NOT NULL DEFAULT 'pending',
+    `contentRevision` BIGINT NOT NULL DEFAULT 0,
+    `lifecycle` ENUM('pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'waiting_for_review', 'needs_attention', 'completed', 'failed', 'skipped', 'cancel_requested', 'cancelled', 'outcome_uncertain', 'superseded') NOT NULL DEFAULT 'pending',
     `contentEnvelope` LONGTEXT NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
@@ -42,10 +45,22 @@ CREATE TABLE `WorkflowRunInvocation` (
     CONSTRAINT `WorkflowRunInvocation_runId_fkey` FOREIGN KEY (`runId`) REFERENCES `AutomationRun`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+CREATE TABLE `WorkflowRunDataKeyEnvelope` (
+    `runId` VARCHAR(191) NOT NULL,
+    `recipientAccountId` VARCHAR(191) NOT NULL,
+    `encryptedDataKey` LONGBLOB NOT NULL,
+    `recipientContentPublicKeyFingerprint` VARCHAR(191) NOT NULL,
+    PRIMARY KEY (`runId`, `recipientAccountId`),
+    CONSTRAINT `WorkflowRunDataKeyEnvelope_runId_fkey` FOREIGN KEY (`runId`) REFERENCES `AutomationRun`(`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `WorkflowRunDataKeyEnvelope_recipientAccountId_fkey` FOREIGN KEY (`recipientAccountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE INDEX `WorkflowRunDataKeyEnvelope_recipientAccountId_idx` ON `WorkflowRunDataKeyEnvelope`(`recipientAccountId`);
+
 CREATE UNIQUE INDEX `WorkflowRunInvocation_run_sequence_key` ON `WorkflowRunInvocation`(`runId`, `sequence`);
 CREATE UNIQUE INDEX `WorkflowRunInvocation_slot_attempt_key` ON `WorkflowRunInvocation`(`runId`, `parentRecordId`, `memberOrdinal`, `attempt`);
 CREATE INDEX `WorkflowRunInvocation_lifecycle_idx` ON `WorkflowRunInvocation`(`runId`, `lifecycle`, `sequence`);
 CREATE INDEX `AutomationRun_account_origin_created_id_idx` ON `AutomationRun`(`accountId`, `originKind`, `createdAt` DESC, `id` DESC);
+CREATE INDEX `AutomationRun_account_created_id_idx` ON `AutomationRun`(`accountId`, `createdAt` DESC, `id` DESC);
 CREATE INDEX `AutomationRun_originSession_created_id_idx` ON `AutomationRun`(`originSessionId`, `createdAt` DESC, `id` DESC);
 
 -- MySQL rejects a CHECK that reads automationId/originSessionId because both
@@ -56,7 +71,7 @@ BEFORE INSERT ON `AutomationRun`
 FOR EACH ROW
 BEGIN
 IF NOT (
-    (NEW.`originKind` = 'automation' AND NEW.`automationId` IS NOT NULL AND NEW.`originSessionId` IS NULL AND NEW.`causeKind` IS NOT NULL)
+    (NEW.`originKind` = 'automation' AND NEW.`automationId` IS NOT NULL AND NEW.`causeKind` IS NOT NULL)
     OR (NEW.`originKind` = 'direct'
         AND NEW.`automationId` IS NULL
         AND NEW.`triggerId` IS NULL
@@ -101,7 +116,7 @@ BEFORE UPDATE ON `AutomationRun`
 FOR EACH ROW
 BEGIN
 IF NOT (
-    (NEW.`originKind` = 'automation' AND NEW.`automationId` IS NOT NULL AND NEW.`originSessionId` IS NULL AND NEW.`causeKind` IS NOT NULL)
+    (NEW.`originKind` = 'automation' AND NEW.`automationId` IS NOT NULL AND NEW.`causeKind` IS NOT NULL)
     OR (NEW.`originKind` = 'direct'
         AND NEW.`automationId` IS NULL
         AND NEW.`triggerId` IS NULL
@@ -142,7 +157,7 @@ END IF;
 END;
 
 ALTER TABLE `WorkflowRunInvocation` ADD CONSTRAINT `WorkflowRunInvocation_counter_check` CHECK (
-    `sequence` >= 0 AND `memberOrdinal` >= 0 AND `attempt` >= 0
+    `sequence` >= 0 AND `memberOrdinal` >= 0 AND `attempt` >= 0 AND `contentRevision` >= 0
 );
 
 ALTER TABLE `AutomationRun` DROP CHECK `AutomationRun_cause_arm_check`;
@@ -177,7 +192,9 @@ ALTER TABLE `AutomationRun` ADD CONSTRAINT `AutomationRun_cause_arm_check` CHECK
                 OR (`causeTriggerKind` = 'sessionLifecycle' AND `causeEventPluginId` IS NULL AND `causeEventLocalId` IS NULL
                     AND `causeScheduledFor` IS NULL
                     AND `causeSessionLifecycleEvent` IS NOT NULL AND `causeSourceSessionId` IS NOT NULL
-                    AND `causeSourceTurnId` IS NOT NULL AND `causeSourceSelectorId` IS NULL
+                    AND ((`causeSessionLifecycleEvent` IN ('sessionStarted', 'sessionArchived') AND `causeSourceTurnId` IS NULL)
+                        OR (`causeSessionLifecycleEvent` NOT IN ('sessionStarted', 'sessionArchived') AND `causeSourceTurnId` IS NOT NULL))
+                    AND `causeSourceSelectorId` IS NULL
                     AND `causeSessionLifecyclePolicyKind` IS NOT NULL
                     AND ((`causeSessionLifecycleEvent` = 'userActionRequired'
                             AND `causeSessionLifecycleRequestId` IS NOT NULL

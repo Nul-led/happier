@@ -52,9 +52,8 @@ export function computePluginUiArtifactSha256DigestV1(bytes: Uint8Array): Plugin
  * loadable JavaScript, so every host boundary that turns artifact bytes into an
  * executable module refuses it here rather than handing it to a JS evaluator.
  *
- * The check is byte-based on purpose: a Re.Pack build with Hermes enabled emits
- * bytecode under whatever entry name the author configured, so an entry-path
- * suffix heuristic misses the realistic case.
+ * The check is byte-based because entry-path suffixes do not reliably identify
+ * Hermes bytecode produced by external tooling.
  */
 const HERMES_BYTECODE_MAGIC_LITTLE_ENDIAN_V1 = Object.freeze([
   0xc6, 0x1f, 0xbc, 0x03, 0xc1, 0x03, 0x19, 0x1f,

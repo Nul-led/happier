@@ -1,7 +1,7 @@
 import { Server, Socket } from "socket.io";
 
 import type { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
-import type { EphemeralRunnerSocketAdmission } from "./ephemeralRunnerSocketAdmission";
+import type { RestrictedSocketAdmission } from "./restrictedSocketAdmission";
 
 import { registerSocketRpcHandlers } from "./rpc/registerSocketRpcHandlers";
 
@@ -17,7 +17,7 @@ export function rpcHandler(
             | "isCurrentPublisherProjection"
             | "runAsProjectedCurrentPublisher"
         >;
-        ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission | null;
+        ephemeralRunnerAdmission?: RestrictedSocketAdmission | null;
     },
 ) {
     registerSocketRpcHandlers({

@@ -1,21 +1,30 @@
 import { websocketEventsCounter } from "@/app/monitoring/metrics/index";
 import { buildNewArtifactUpdate, buildUpdateArtifactUpdate, buildDeleteArtifactUpdate, eventRouter } from "@/app/events/eventRouter";
-import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { log } from "@/utils/logging/log";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { Socket } from "socket.io";
 import * as privacyKit from "privacy-kit";
 import { createArtifact, deleteArtifact, updateArtifact } from "@/app/artifacts/artifactWriteService";
-import { artifactOrdinaryWhere } from "@/app/artifacts/artifactClassification";
+import { readArtifactForCallerInTx } from "@/app/artifacts/artifactAccessService";
 import {
     isPlainArtifactDataKeyBytes,
-    openArtifactStoredContentPair,
 } from "@/app/artifacts/artifactStoredContent";
 import {
     buildAccountStoredContentSocketUpgradeError,
     readAccountStoredContentCompatibilityForSocket,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
+import { hasCurrentSocketCredential } from "./socketCredentialCurrentness";
+
+/**
+ * Refuses a socket operation whose credential is no longer current and closes
+ * the socket, so a connection that outlived its eviction cannot read or mutate
+ * Account-owned Artifacts.
+ */
+function refuseStaleArtifactOperation(socket: Socket, callback?: (response: any) => void): void {
+    callback?.({ result: 'error', message: 'Forbidden' });
+    socket.disconnect(true);
+}
 
 function readMarkedArtifactSocketUpgradeRequired(
     socket: Socket,
@@ -59,34 +68,12 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 return;
             }
 
-            // Fetch artifact
-            const [artifact, account] = await Promise.all([
-                db.artifact.findFirst({
-                    where: {
-                        id: artifactId,
-                        accountId: userId,
-                        ...artifactOrdinaryWhere,
-                    },
-                }),
-                db.account.findUnique({
-                    where: { id: userId },
-                    select: { encryptionMode: true },
-                }),
-            ]);
-
-            if (!artifact) {
-                if (callback) {
-                    callback({ result: 'error', message: 'Artifact not found' });
-                }
+            const read = await inTx(tx => readArtifactForCallerInTx(tx, { actorAccountId: userId, artifactId }));
+            if (!read.ok) {
+                callback?.({ result: 'error', message: read.error === 'artifact_not_found' ? 'Artifact not found' : 'Internal error' });
                 return;
             }
-            const accountMode = account
-                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
-                : null;
-            if (accountMode?.status !== "ready") {
-                callback?.({ result: 'error', message: 'Internal error' });
-                return;
-            }
+            const artifact = read.artifact;
             const upgradeRequired = readMarkedArtifactSocketUpgradeRequired(
                 socket,
                 artifact.dataEncryptionKey,
@@ -95,16 +82,12 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 callback?.(upgradeRequired);
                 return;
             }
-            const opened = openArtifactStoredContentPair({
-                accountId: userId,
-                artifactId: artifact.id,
-                mode: accountMode.mode,
-                dataEncryptionKey: artifact.dataEncryptionKey,
-                header: artifact.header,
-                body: artifact.body,
-            });
-            if (!opened) {
-                callback({ result: 'error', message: 'Internal error' });
+            // Everything above is read; this is the disclosure. Re-run the
+            // socket's own connect-time admission here, after the last await,
+            // so a credential that stopped being current mid-read cannot be
+            // overtaken by its own result.
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                refuseStaleArtifactOperation(socket, callback);
                 return;
             }
 
@@ -113,9 +96,13 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 result: 'success',
                 artifact: {
                     id: artifact.id,
-                    header: privacyKit.encodeBase64(opened.header),
+                    ownerAccountId: artifact.ownerAccountId,
+                    access: artifact.access,
+                    encryptionMode: artifact.encryptionMode,
+                    dataEncryptionKey: privacyKit.encodeBase64(artifact.dataEncryptionKey),
+                    header: privacyKit.encodeBase64(artifact.header),
                     headerVersion: artifact.headerVersion,
-                    body: privacyKit.encodeBase64(opened.body),
+                    body: privacyKit.encodeBase64(artifact.body),
                     bodyVersion: artifact.bodyVersion,
                     seq: artifact.seq,
                     createdAt: artifact.createdAt.getTime(),
@@ -172,6 +159,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             }
 
             const compatibility = readArtifactSocketCompatibility(socket);
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                refuseStaleArtifactOperation(socket, callback);
+                return;
+            }
             const result = await updateArtifact({
                 actorUserId: userId,
                 artifactId,
@@ -196,6 +187,13 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 }
 
                 if (result.error === 'version-mismatch') {
+                    // This branch hands back the CURRENT stored header and body,
+                    // which the caller did not supply — the same disclosure
+                    // artifact-read performs, under the same admission.
+                    if (!await hasCurrentSocketCredential(userId, socket)) {
+                        refuseStaleArtifactOperation(socket, callback);
+                        return;
+                    }
                     const response: any = { result: 'version-mismatch' };
                     if (header && result.current) {
                         response.header = {
@@ -224,9 +222,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                 ? { value: body.data, version: result.body.version }
                 : undefined;
 
-            const updatePayload = buildUpdateArtifactUpdate(artifactId, result.cursor, randomKeyNaked(12), headerUpdate, bodyUpdate);
+            const legacyRecipient = result.ownerUpdate ?? { accountId: userId, cursor: result.cursor };
+            const updatePayload = buildUpdateArtifactUpdate(artifactId, legacyRecipient.cursor, randomKeyNaked(12), headerUpdate, bodyUpdate);
             eventRouter.emitUpdate({
-                userId,
+                userId: legacyRecipient.accountId,
                 payload: updatePayload,
                 recipientFilter: { type: 'user-scoped-only' }
             });
@@ -269,6 +268,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
 
             // Check if artifact already exists
             const compatibility = readArtifactSocketCompatibility(socket);
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                refuseStaleArtifactOperation(socket, callback);
+                return;
+            }
             const result = await createArtifact({
                 actorUserId: userId,
                 artifactId: id,
@@ -304,6 +307,14 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
                     payload: newArtifactPayload,
                     recipientFilter: { type: 'user-scoped-only' }
                 });
+            }
+
+            // An id this Account already owns is answered with the EXISTING
+            // row's content and `didWrite: false` — a read wearing a create's
+            // name, so it takes the same admission.
+            if (!result.didWrite && !await hasCurrentSocketCredential(userId, socket)) {
+                refuseStaleArtifactOperation(socket, callback);
+                return;
             }
 
             callback?.({
@@ -345,6 +356,10 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             }
 
             const compatibility = readArtifactSocketCompatibility(socket);
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                refuseStaleArtifactOperation(socket, callback);
+                return;
+            }
             const result = await deleteArtifact({
                 actorUserId: userId,
                 artifactId,

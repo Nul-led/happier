@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 
+import { API_TOKEN_FULL_GRANT_V1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 import {
     ExternalActionDaemonDispatchRequestSchema,
     prepareExternalActionResponseEnvelopeV1,
@@ -189,6 +190,7 @@ describe("Redis Streams adapter current consumer composition", () => {
                 principalId: "principal:external-action:cluster",
                 credentialId: "credential:external-action:cluster",
                 authority: "account_automation",
+                grant: API_TOKEN_FULL_GRANT_V1,
             },
         })).resolves.toEqual({ kind: "response", prepared: preparedResponse });
         expect(exactRequest).toMatchObject({ actionId, envelope });

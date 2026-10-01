@@ -67,6 +67,7 @@ const resetOperation: NativeAuthOneTimeOperationV1 = {
     purpose: "reset_plain_password",
     accountId: "acc_1",
     credentialRevision: 4,
+    nativeIdentityId: "identity_1",
     expectedNativeIdentity: "alice@example.com",
 };
 

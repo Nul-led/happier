@@ -181,7 +181,7 @@ describe("Account encryption migration exact replay", () => {
         await harness.close();
     });
 
-    it("returns capable draft records from an atomic mode change and exact read-only replay", async () => {
+    it("returns capable drafts and migrates workspace rows atomically with exact read-only replay", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
@@ -214,6 +214,11 @@ describe("Account encryption migration exact replay", () => {
             content: { t: "encrypted", v: 2, c: "source-ciphertext" },
             authentication,
         })).toMatchObject({ status: "updated", record: { revision: 0 } });
+        const workspaceKeys = ['workspace:tabs:v1', 'workspace:handoff-tabs:v1:device:window'];
+        const workspaceValue = privacyKit.encodeBase64(new TextEncoder().encode(JSON.stringify({ t: 'plain', v: { v: 1, tabsById: {}, order: [], pairs: [] } })));
+        for (const key of workspaceKeys) await db.userKVStore.create({ data: { accountId: account.id, key, version: 4, value: new TextEncoder().encode('source-ciphertext') } });
+        const tombstoneKey = 'workspace:handoff-tabs:v1:deleted:window';
+        await db.userKVStore.create({ data: { accountId: account.id, key: tombstoneKey, version: 9, value: null } });
         const currentAccount = await db.account.findUniqueOrThrow({ where: { id: account.id } });
         const request = {
             toMode: "plain", expectedAccountVersion: currentAccount.seq,
@@ -225,23 +230,34 @@ describe("Account encryption migration exact replay", () => {
             sessions: { action: "assert_empty" }, reviewComments: { action: "assert_empty" },
             sessionOrganization: { action: "assert_empty" }, pets: { action: "assert_empty" },
             sessionDrafts: { v: 2, items: [{ address, expectedRevision: 0, content }] },
+            workspace: { action: 'migrate', items: workspaceKeys.map(key => ({ key, expectedVersion: 4, value: workspaceValue })) },
         } satisfies AccountEncryptionMigrateRequest;
         const app = createTestApp();
         await app.ready();
         try {
-            const invoke = () => app.inject({
+            const invoke = (payload: AccountEncryptionMigrateRequest = request) => app.inject({
                 method: "POST", url: "/v1/account/encryption/migrate",
                 headers: {
                     [ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER]: String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
                     "content-type": "application/json", "x-test-user-id": account.id,
                 },
-                payload: request,
+                payload,
             });
+            const omittedInventory = await invoke({ ...request, workspace: { action: 'assert_empty' } });
+            expect(omittedInventory.statusCode, omittedInventory.body).toBe(400);
+            expect(await db.account.findUnique({ where: { id: account.id } })).toMatchObject({ encryptionMode: 'e2ee', settingsVersion: 0 });
+            expect(await db.userKVStore.findMany({ where: { accountId: account.id, key: { in: workspaceKeys } } })).toEqual(expect.arrayContaining(workspaceKeys.map(key => expect.objectContaining({ key, version: 4 }))));
+            const staleInventory = await invoke({ ...request, workspace: { action: 'migrate', items: workspaceKeys.map(key => ({ key, expectedVersion: 3, value: workspaceValue })) } });
+            expect(staleInventory.statusCode, staleInventory.body).toBe(400);
+            expect(await db.account.findUnique({ where: { id: account.id } })).toMatchObject({ encryptionMode: 'e2ee', settingsVersion: 0 });
             const response = await invoke();
             expect(response.statusCode, response.body).toBe(200);
             expect(response.json()).toMatchObject({
                 success: true, mode: "plain", sessionDrafts: { v: 2, records: [{ address, revision: 1, content }] },
             });
+            expect(await db.userKVStore.findMany({ where: { accountId: account.id, key: { in: workspaceKeys } }, orderBy: { key: 'asc' }, select: { version: true, value: true } }))
+                .toEqual(workspaceKeys.map(() => ({ version: 5, value: privacyKit.decodeBase64(workspaceValue) })));
+            expect(await db.userKVStore.findUnique({ where: { accountId_key: { accountId: account.id, key: tombstoneKey } } })).toMatchObject({ version: 9, value: null });
             const beforeReplay = await readSessionDraft({ accountId: account.id, address, epoch: "v2", authentication });
             socketEmit.mockClear();
             const replay = await invoke();

@@ -249,6 +249,38 @@ describe('AccountSettingMutationV1', () => {
     })).toEqual({ status: 'invalid', reason: 'tooLarge' });
   });
 
+  it('resets a retained machine host without reviving its development alias or dropping neighbors', () => {
+    const raw = {
+      sessionTmuxByMachineId: {
+        machine: {
+          useTmux: false, terminalHost: 'herdr', sessionName: 'work', isolated: false,
+          tmpDir: '/tmp/work', futureOption: { keep: true },
+        },
+        other: { useTmux: true, sessionName: 'other', isolated: true, tmpDir: null },
+      },
+      futureSetting: { keep: true },
+    };
+    expect(accountSettingsParse(raw).sessionTerminalHostByMachineId).toEqual({ machine: 'herdr' });
+    const result = applyAccountSettingMutationV1(raw, {
+      operations: [{ op: 'reset', key: 'sessionTerminalHostByMachineId' }],
+    });
+    expect(result.status).toBe('applied');
+    if (result.status === 'invalid') throw new Error('Expected a valid Account reset');
+    expect(result.raw).toEqual({
+      sessionTmuxByMachineId: {
+        machine: {
+          useTmux: false, sessionName: 'work', isolated: false,
+          tmpDir: '/tmp/work', futureOption: { keep: true },
+        },
+        other: { useTmux: true, sessionName: 'other', isolated: true, tmpDir: null },
+      },
+      futureSetting: { keep: true },
+    });
+    expect(result.raw).not.toHaveProperty('sessionTerminalHostByMachineId');
+    expect(accountSettingsParse(result.raw).sessionTerminalHostByMachineId).toEqual({});
+    expect(raw.sessionTmuxByMachineId.machine.terminalHost).toBe('herdr');
+  });
+
   it('sets and resets only named persisted keys while preserving structurally valid future raw neighbors', () => {
     const raw = {
       sessionPendingQueueDeliveryTiming: 'after_foreground_ready',

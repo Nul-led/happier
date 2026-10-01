@@ -19,8 +19,10 @@ import {
     type PluginWebhookEndpointRevokeInputV1,
 } from "@happier-dev/protocol";
 
+import { isPluginIntentSelectingDeclarationV1 } from "@/app/plugins/availability/currentDeclaration";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
+import { readHomeConfigEnv } from "@/app/home/settings/homeSettings";
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 
@@ -282,9 +284,9 @@ async function resolveCurrentWebhookContributionV1(params: Readonly<{
 async function isCurrentCallerPluginEnabledV1(accountId: string, pluginId: string): Promise<boolean> {
     const intent = await db.accountPluginIntent.findUnique({
         where: { accountId_pluginId: { accountId, pluginId } },
-        select: { enabled: true, desiredVersion: true },
+        select: { enabled: true, desiredVersion: true, releaseLessDeclaration: true },
     });
-    return intent?.enabled === true && intent.desiredVersion !== null;
+    return isPluginIntentSelectingDeclarationV1(intent, pluginId);
 }
 
 /**
@@ -295,10 +297,16 @@ async function isCurrentCallerPluginEnabledV1(accountId: string, pluginId: strin
 export function createPluginWebhookEndpointActionsV1(options: Readonly<{
     authorizeSharedInstallation?: Parameters<typeof createPluginWebhookEndpointStoreV1>[0]["authorizeSharedInstallation"];
 }> = {}) {
-    const createStore = (serverIdentityId: string) => createPluginWebhookEndpointStoreV1({
+    // Endpoint URLs live at the Home's effective public address — deployment, stored or inferred
+    // (plan 2026-09-26-home-owner-console §3.2) — read once per action from the live overlay.
+    const createStore = async (serverIdentityId: string) => {
+        const publicBaseUrl = resolveConfiguredPublicServerUrl(await readHomeConfigEnv()) ?? null;
+        return createStoreWithBaseUrl(serverIdentityId, publicBaseUrl);
+    };
+    const createStoreWithBaseUrl = (serverIdentityId: string, publicBaseUrl: string | null) => createPluginWebhookEndpointStoreV1({
         resolveTarget: async (params) => await resolveCurrentWebhookTargetV1(serverIdentityId, params),
         resolveContribution: resolveCurrentWebhookContributionV1,
-        resolvePublicBaseUrl: () => resolveConfiguredPublicServerUrl(process.env) ?? null,
+        resolvePublicBaseUrl: () => publicBaseUrl,
         ...(options.authorizeSharedInstallation
             ? { authorizeSharedInstallation: options.authorizeSharedInstallation }
             : {}),
@@ -306,18 +314,18 @@ export function createPluginWebhookEndpointActionsV1(options: Readonly<{
 
     return {
         ensure: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointEnsureInputV1 }>) => {
-            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            const store = await createStore(await getOrCreateServerIdentityId(process.env));
             return await store.ensure({ accountId: params.accountId, ...params.input });
         },
         read: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointReadInputV1 }>) => {
-            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            const store = await createStore(await getOrCreateServerIdentityId(process.env));
             return await store.read({ accountId: params.accountId, ...params.input });
         },
         revoke: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointRevokeInputV1 }>) => (
             await revokePluginWebhookEndpointV1({ accountId: params.accountId, ...params.input })
         ),
         retarget: async (params: Readonly<{ accountId: string; input: PluginWebhookEndpointRetargetInputV1 }>) => {
-            const store = createStore(await getOrCreateServerIdentityId(process.env));
+            const store = await createStore(await getOrCreateServerIdentityId(process.env));
             return await store.retarget({ accountId: params.accountId, ...params.input });
         },
         movePending: async (params: Readonly<{

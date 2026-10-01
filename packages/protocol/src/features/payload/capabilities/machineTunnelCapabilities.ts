@@ -7,9 +7,6 @@ import {
 } from '../../../machines/peer/mediation/tunnel/encoding.js';
 
 export const DEFAULT_MACHINE_TUNNEL_DIRECT_ALLOWED_PORTS: readonly number[] = Object.freeze([]);
-export const DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS = 30_000;
-export const DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS = 300_000;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET = 8;
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES = 64 * 1024;
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_SUPPORTED_ENCODINGS: readonly PeerTcpTunnelEncoding[] = Object.freeze([
@@ -20,15 +17,8 @@ export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES = 16 *
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES = 256 * 1024;
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAMED_MESSAGE_BYTES = 512 * 1024;
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_CONCURRENT_SUBSTREAMS = 32;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS = 1024;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM = DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES = DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS = DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS;
-export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS = DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS;
 export const MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET_HARD_MAX = 128;
 export const MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES_HARD_MAX = 8 * 1024 * 1024;
-export const MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX = 8 * 1024 * 1024 * 1024;
-export const MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAMS_HARD_MAX = 4096;
 
 export function normalizeMachineTunnelPositiveInt(
   raw: unknown,
@@ -96,27 +86,11 @@ export const MachineTunnelDirectPeerCapabilitiesSchema = z.object({
     .preprocess((raw) => [...normalizeMachineTunnelAllowedPorts(raw)], z.array(z.number().int().min(1).max(65_535)))
     .optional()
     .default([...DEFAULT_MACHINE_TUNNEL_DIRECT_ALLOWED_PORTS]),
-  maxIdleMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS),
-  maxDurationMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS),
 });
 export type MachineTunnelDirectPeerCapabilities = z.infer<typeof MachineTunnelDirectPeerCapabilitiesSchema>;
 
 export const DEFAULT_MACHINE_TUNNEL_DIRECT_PEER_CAPABILITIES: MachineTunnelDirectPeerCapabilities = {
   allowedPorts: [...DEFAULT_MACHINE_TUNNEL_DIRECT_ALLOWED_PORTS],
-  maxIdleMs: DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
-  maxDurationMs: DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
 };
 
 export const MachineTunnelSubstreamCapabilitiesSchema = z.object({
@@ -131,71 +105,14 @@ export const MachineTunnelSubstreamCapabilitiesSchema = z.object({
     )
     .optional()
     .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_CONCURRENT_SUBSTREAMS),
-  maxTotalSubstreams: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(
-        raw,
-        DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS,
-        { max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAMS_HARD_MAX },
-      ),
-      z.number().int().positive().max(MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAMS_HARD_MAX),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS),
-  maxBytesPerSubstream: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM, {
-        max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
-      }),
-      z.number().int().positive().max(MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM),
-  maxAggregateBytes: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES, {
-        max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
-      }),
-      z.number().int().positive().max(MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES),
-  maxSubstreamIdleMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS),
-  maxSessionIdleMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS),
 });
 export type MachineTunnelSubstreamCapabilities = z.infer<typeof MachineTunnelSubstreamCapabilitiesSchema>;
 
 export const DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES: MachineTunnelSubstreamCapabilities = {
   maxConcurrentSubstreams: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_CONCURRENT_SUBSTREAMS,
-  maxTotalSubstreams: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_TOTAL_SUBSTREAMS,
-  maxBytesPerSubstream: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_PER_SUBSTREAM,
-  maxAggregateBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
-  maxSubstreamIdleMs: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SUBSTREAM_IDLE_MS,
-  maxSessionIdleMs: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_SESSION_IDLE_MS,
 };
 
 export const MachineTunnelServerRoutedCapabilitiesSchema = z.object({
-  maxBytes: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES, {
-        max: MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX,
-      }),
-      z.number().int().positive().max(MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES_HARD_MAX),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES),
   maxActiveTunnelsPerSocket: z
     .preprocess(
       (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET, {
@@ -250,26 +167,11 @@ export const MachineTunnelServerRoutedCapabilitiesSchema = z.object({
     .optional()
     .default(DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAMED_MESSAGE_BYTES),
   substreams: MachineTunnelSubstreamCapabilitiesSchema.optional().default(DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES),
-  maxIdleMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS),
-  maxDurationMs: z
-    .preprocess(
-      (raw) => normalizeMachineTunnelPositiveInt(raw, DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS),
-      z.number().int().positive(),
-    )
-    .optional()
-    .default(DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS),
   disabledReason: z.string().min(1).optional().default('relay_disabled_by_server_policy'),
 });
 export type MachineTunnelServerRoutedCapabilities = z.infer<typeof MachineTunnelServerRoutedCapabilitiesSchema>;
 
 export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_CAPABILITIES: MachineTunnelServerRoutedCapabilities = {
-  maxBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BYTES,
   maxActiveTunnelsPerSocket: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET,
   maxFrameBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAME_BYTES,
   supportedEncodings: [...DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_SUPPORTED_ENCODINGS],
@@ -278,8 +180,6 @@ export const DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_CAPABILITIES: MachineTunnelSer
   maxRawPayloadBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_RAW_PAYLOAD_BYTES,
   maxFramedMessageBytes: DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_FRAMED_MESSAGE_BYTES,
   substreams: DEFAULT_MACHINE_TUNNEL_SUBSTREAM_CAPABILITIES,
-  maxIdleMs: DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
-  maxDurationMs: DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
   disabledReason: 'relay_disabled_by_server_policy',
 };
 

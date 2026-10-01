@@ -1,4 +1,4 @@
-import { parseBooleanEnv } from '@happier-dev/protocol';
+import { readServerConfig, type ServerConfigEntry } from '@happier-dev/protocol';
 
 import type {
     DeleteOlderThanRetentionPolicy,
@@ -7,16 +7,30 @@ import type {
     RetentionPolicy,
     SessionRetentionPolicy,
 } from './retentionPolicyTypes';
-import { readRetentionDomainDefinitions } from '@/app/retention/runtime/retentionRuleRegistry';
-
-const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
-const DEFAULT_BATCH_SIZE = 500;
-const DEFAULT_MAX_DELETES_PER_RULE_PER_RUN = 100_000;
-const DEFAULT_SWEEP_TIME_BUDGET_MS = 10_000;
-const DEFAULT_MAX_CANDIDATES_PER_RULE_PER_RUN = 10_000;
+import { readRetentionDomainDefinitions } from '@/app/retention/config/retentionDomains';
+import { RETENTION_SERVER_CONFIG as CONFIG } from '@/app/retention/config/retentionServerConfig';
 
 const KEEP_FOREVER_POLICY = Object.freeze({ mode: 'keep_forever' as const });
 const EMPTY_ENV = Object.freeze({}) as NodeJS.ProcessEnv;
+
+/**
+ * Why a retention key cannot be read: `required` when a deleting mode has no days, `invalid`
+ * when the text does not parse. Thrown by the strict reader below.
+ */
+export class RetentionPolicyEnvError extends Error {
+    constructor(readonly key: string, readonly reason: 'required' | 'invalid', message: string) {
+        super(message);
+        this.name = 'RetentionPolicyEnvError';
+    }
+}
+
+/**
+ * Retention keys are parsed strictly: an operator typo stops the server instead of silently
+ * deleting on a different schedule. The key and its default come from the registry entry.
+ */
+function readPositiveIntConfig(env: NodeJS.ProcessEnv, entry: ServerConfigEntry & { default: number }): number {
+    return parsePositiveInt({ env, key: entry.key, fallback: entry.default });
+}
 
 function parsePositiveInt(params: {
     env: NodeJS.ProcessEnv;
@@ -26,14 +40,14 @@ function parsePositiveInt(params: {
     const raw = String(params.env[params.key] ?? '').trim();
     if (!raw) {
         if (typeof params.fallback === 'number') return params.fallback;
-        throw new Error(`${params.key} must be set`);
+        throw new RetentionPolicyEnvError(params.key, 'required', `${params.key} must be set`);
     }
     if (!/^\d+$/.test(raw)) {
-        throw new Error(`${params.key} must be a positive integer`);
+        throw new RetentionPolicyEnvError(params.key, 'invalid', `${params.key} must be a positive integer`);
     }
     const value = Number(raw);
     if (!Number.isSafeInteger(value) || value < 1) {
-        throw new Error(`${params.key} must be a positive integer`);
+        throw new RetentionPolicyEnvError(params.key, 'invalid', `${params.key} must be a positive integer`);
     }
     return value;
 }
@@ -46,7 +60,7 @@ function readAgePolicy(params: {
     const mode = String(params.env[params.modeKey] ?? '').trim().toLowerCase();
     if (!mode || mode === 'keep_forever') return KEEP_FOREVER_POLICY;
     if (mode !== 'delete_older_than') {
-        throw new Error(`${params.modeKey} must be keep_forever or delete_older_than`);
+        throw new RetentionPolicyEnvError(params.modeKey, 'invalid', `${params.modeKey} must be keep_forever or delete_older_than`);
     }
     return Object.freeze({
         mode: 'delete_older_than',
@@ -58,7 +72,7 @@ function readSessionPolicy(params: { env: NodeJS.ProcessEnv; modeKey: string; du
     const mode = String(params.env[params.modeKey] ?? '').trim().toLowerCase();
     if (!mode || mode === 'keep_forever') return KEEP_FOREVER_POLICY;
     if (mode !== 'delete_inactive') {
-        throw new Error(`${params.modeKey} must be keep_forever or delete_inactive`);
+        throw new RetentionPolicyEnvError(params.modeKey, 'invalid', `${params.modeKey} must be keep_forever or delete_inactive`);
     }
     return Object.freeze({
         mode: 'delete_inactive',
@@ -84,33 +98,31 @@ export function readRetentionPolicyFromEnv(env: NodeJS.ProcessEnv): RetentionPol
     const safeEnv = env ?? EMPTY_ENV;
 
     return Object.freeze({
-        enabled: parseBooleanEnv(safeEnv.HAPPIER_SERVER_RETENTION__ENABLED, false),
-        intervalMs: parsePositiveInt({
-            env: safeEnv,
-            key: 'HAPPIER_SERVER_RETENTION__INTERVAL_MS',
-            fallback: DEFAULT_INTERVAL_MS,
-        }),
-        batchSize: parsePositiveInt({
-            env: safeEnv,
-            key: 'HAPPIER_SERVER_RETENTION__BATCH_SIZE',
-            fallback: DEFAULT_BATCH_SIZE,
-        }),
-        dryRun: parseBooleanEnv(safeEnv.HAPPIER_SERVER_RETENTION__DRY_RUN, false),
-        maxDeletesPerRulePerRun: parsePositiveInt({
-            env: safeEnv,
-            key: 'HAPPIER_SERVER_RETENTION__MAX_DELETES_PER_RULE_PER_RUN',
-            fallback: DEFAULT_MAX_DELETES_PER_RULE_PER_RUN,
-        }),
-        sweepTimeBudgetMs: parsePositiveInt({
-            env: safeEnv,
-            key: 'HAPPIER_SERVER_RETENTION__SWEEP_TIME_BUDGET_MS',
-            fallback: DEFAULT_SWEEP_TIME_BUDGET_MS,
-        }),
-        maxCandidatesPerRulePerRun: parsePositiveInt({
-            env: safeEnv,
-            key: 'HAPPIER_SERVER_RETENTION__MAX_CANDIDATES_PER_RULE_PER_RUN',
-            fallback: DEFAULT_MAX_CANDIDATES_PER_RULE_PER_RUN,
-        }),
+        enabled: readServerConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__ENABLED),
+        intervalMs: readPositiveIntConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__INTERVAL_MS),
+        batchSize: readPositiveIntConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__BATCH_SIZE),
+        dryRun: readServerConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__DRY_RUN),
+        maxDeletesPerRulePerRun: readPositiveIntConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__MAX_DELETES_PER_RULE_PER_RUN),
+        sweepTimeBudgetMs: readPositiveIntConfig(safeEnv, CONFIG.HAPPIER_SERVER_RETENTION__SWEEP_TIME_BUDGET_MS),
+        maxCandidatesPerRulePerRun: readPositiveIntConfig(
+            safeEnv,
+            CONFIG.HAPPIER_SERVER_RETENTION__MAX_CANDIDATES_PER_RULE_PER_RUN,
+        ),
         domains: readDomainPolicies(safeEnv),
     });
+}
+
+/**
+ * A Home write must leave the retention policy readable (plan §3.6): each key is validated on its
+ * own by the registry, but a deleting mode also needs its days, so the whole prospective overlay is
+ * read once with the strict reader. `null` when it reads; otherwise the first key it refused.
+ */
+export function findRetentionPolicyEnvProblem(env: NodeJS.ProcessEnv): Readonly<{ key: string; reason: 'required' | 'invalid' }> | null {
+    try {
+        readRetentionPolicyFromEnv(env);
+        return null;
+    } catch (error) {
+        if (error instanceof RetentionPolicyEnvError) return { key: error.key, reason: error.reason };
+        throw error;
+    }
 }

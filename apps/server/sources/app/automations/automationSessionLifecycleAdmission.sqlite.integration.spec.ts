@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
     MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
+    serializeAutomationStoredWorkflowDefinitionRecipeV2,
+    sealWorkflowCheckpointStoredEnvelopeV1,
 } from "@happier-dev/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,10 +16,17 @@ import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { registerSessionArchiveRoutes } from "@/app/api/routes/session/registerSessionArchiveRoutes";
+import { deleteOwnedSession } from "@/app/session/delete/deleteOwnedSession";
 
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
 import { encodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
+import { claimAutomationRun } from "./automationClaimService";
+import { admitDueAutomationScheduleTriggerTx } from "./automationRunQueueService";
+import { failAutomationRun } from "./automationRunService";
+import { validateSessionLifecycleTriggerRegistrationTx } from "./automationSessionLifecycleRegistration";
 
 const authentication = createPresentUserSessionAccessAuthentication();
 
@@ -114,6 +123,7 @@ describe("Session lifecycle Automation admission on SQLite", () => {
     async function source(params: Readonly<{
         agentId?: string;
         agentTurnId?: string;
+        initiator?: "user" | "agent_session" | "host" | "workflow";
         /** An E2EE Account whose content-key binding is absent is not current. */
         inconsistentE2ee?: boolean;
     }> = {}) {
@@ -143,6 +153,11 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                 observedAt: Date.now() - 1_000,
                 agentId: params.agentId,
                 agentTurnId: params.agentTurnId,
+                initiator: params.initiator ?? "user",
+                workDepth: 2,
+                ...(params.initiator === "workflow" ? {
+                    workflowInvocation: { runId: `run-${suffix}`, invocationRecordId: `invocation-${suffix}` },
+                } : {}),
             },
         });
         return { accountId: account.id, sessionId: session.id, turnId, suffix };
@@ -152,6 +167,8 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         enabled?: boolean;
         triggerEnabled?: boolean;
         deleted?: boolean;
+        scoped?: boolean;
+        workflow?: boolean;
         events?: Array<"parentTurnCompleted" | "parentTurnFailed" | "parentTurnCancelled" | "userActionRequired">;
         policy?:
             | { kind: "currentTurn"; sourceTurnId: string }
@@ -168,20 +185,27 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                 kind: "newSession",
                 spawn: {
                     executionTarget: { serverId: `server-${params.suffix}`, machineId: `machine-${params.suffix}` },
-                    directory: "/tmp/exact-turn",
+                    directory: { kind: "path", path: "/tmp/exact-turn" },
                     agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.codex", localId: "codex" } },
                 },
             },
         });
         if (recipe.kind !== "available") throw new Error("Recipe unavailable");
+        const workflowRecipe = params.workflow ? serializeAutomationStoredWorkflowDefinitionRecipeV2({
+            v: 2, templateVersion: 1, triggerEvidence: null,
+            workflow: { t: "plain", v: { workspace: { directory: "/tmp/exact-turn" }, executionTarget: { kind: "session" } } },
+        }) : null;
+        if (workflowRecipe?.kind === "contentInvalid") throw new Error("Workflow recipe unavailable");
         const automation = await db.automation.create({
             data: {
                 accountId: params.accountId,
                 name: "Exact turn",
                 enabled: params.enabled ?? true,
-                targetType: "new_session",
-                templateCiphertext: recipe.serialized,
+                targetType: params.workflow ? null : "new_session",
+                templateCiphertext: workflowRecipe?.serialized ?? recipe.serialized,
                 templateVersion: 1,
+                ...(params.workflow ? { workflowDefinitionId: "builtin:keep-going" } : {}),
+                ...(params.scoped ? { scopeSessionId: params.sessionId } : {}),
             },
             select: { id: true },
         });
@@ -230,6 +254,31 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         });
     }
 
+    it.each(["user", "agent_session", "host", "workflow"] as const)(
+        "admits needs-you for %s turns but reserves turn-end occurrences only for user and agent-session turns",
+        async (initiator) => {
+            const current = await source({ initiator });
+            const terminal = await trigger({ ...current, policy: { kind: "firstMatch" } });
+            const needsYou = await trigger({ ...current, events: ["userActionRequired"], policy: { kind: "everyMatch" } });
+            await expect(updateSessionAgentState({
+                actorUserId: current.accountId, sessionId: current.sessionId,
+                expectedVersion: 0, agentStateCiphertext: "{}",
+                userActionRequiredOccurrences: [{ sourceTurnId: current.turnId,
+                    requestId: `request-${current.suffix}`, requestKind: "permission", occurredAt: Date.now() }],
+            })).resolves.toMatchObject({ ok: true });
+            await expect(db.automationRun.count({ where: { triggerId: needsYou.id } })).resolves.toBe(1);
+            await expect(applySessionTurnMutation({
+                actorUserId: current.accountId,
+                mutation: { v: 1, sessionId: current.sessionId, turnId: current.turnId,
+                    action: "complete", mutationId: `complete-${current.suffix}`, observedAt: Date.now() },
+            })).resolves.toMatchObject({ ok: true, didApply: true });
+            const fires = initiator === "user" || initiator === "agent_session";
+            await expect(db.automationRun.count({ where: { triggerId: terminal.id } })).resolves.toBe(fires ? 1 : 0);
+            await expect(db.automationTrigger.findUniqueOrThrow({ where: { id: terminal.id } }))
+                .resolves.toMatchObject({ remainingOccurrences: fires ? 0 : 1 });
+        },
+    );
+
     it("creates one Run per trigger and replay creates none additional", async () => {
         const current = await source();
         const first = await trigger(current);
@@ -245,6 +294,178 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             mutation: { v: 1, sessionId: current.sessionId, mutationId: `replay-${current.suffix}`, action: "complete", turnId: current.turnId, observedAt: completedAt + 1 },
         })).resolves.toMatchObject({ ok: true, didApply: false });
         await expect(db.automationRun.count({ where: { triggerId: { in: [first.id, second.id] } } })).resolves.toBe(2);
+    });
+
+    it("coalesces scoped pending firings without reserving another bounded occurrence, then claims the newest after active completion", async () => {
+        const current = await source();
+        const attached = await trigger({ ...current, scoped: true, policy: { kind: "nextMatches", count: 2 } });
+        const assignment = await db.automationAssignment.findFirstOrThrow({ where: { automationId: attached.automationId } });
+        const complete = async (turnId: string, observedAt: number) => {
+            await expect(applySessionTurnMutation({ actorUserId: current.accountId,
+                mutation: { v: 1, sessionId: current.sessionId, turnId, action: "complete",
+                    mutationId: `complete-${turnId}`, observedAt },
+            })).resolves.toMatchObject({ ok: true, didApply: true });
+        };
+        const at = Date.now();
+        await complete(current.turnId, at);
+        const active = await claimAutomationRun({ accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000 });
+        expect(active.run?.triggerId).toBe(attached.id);
+        for (const [index, name] of ["B", "C"].entries()) {
+            const turnId = `${name}-${current.suffix}`;
+            await expect(applySessionTurnMutation({ actorUserId: current.accountId,
+                mutation: { v: 1, sessionId: current.sessionId, turnId, action: "begin", initiator: "user", workDepth: 0,
+                    mutationId: `begin-${turnId}`, observedAt: at + index * 2 + 1 },
+            })).resolves.toMatchObject({ ok: true, didApply: true });
+            await complete(turnId, at + index * 2 + 2);
+        }
+        const rows = await db.automationRun.findMany({ where: { triggerId: attached.id } });
+        expect(rows).toHaveLength(3);
+        expect(rows.find((row) => row.causeSourceTurnId === `B-${current.suffix}`))
+            .toMatchObject({ state: "skipped", errorCode: "superseded_by_newer_occurrence" });
+        const newest = rows.find((row) => row.causeSourceTurnId === `C-${current.suffix}`)!;
+        expect(newest.state).toBe("queued");
+        expect((await db.automationTrigger.findUniqueOrThrow({ where: { id: attached.id } })).remainingOccurrences).toBe(0);
+        // Make queued work due; occurrence timestamps above are deliberately monotonic test data.
+        await db.automationRun.update({ where: { id: newest.id }, data: { dueAt: new Date(0) } });
+        expect((await claimAutomationRun({ accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000 })).run).toBeNull();
+        // The external execution boundary settles the incumbent; no later turn is needed to release C.
+        const checkpointEnvelope = JSON.stringify(sealWorkflowCheckpointStoredEnvelopeV1({
+            mode: 'plain', binding: { v: 1, purpose: 'checkpoint', accountId: current.accountId, runId: active.run!.id },
+            checkpoint: { kind: 'happier.workflow-checkpoint.v1', rootRecordId: 'review-root', nextSequence: '1',
+                frontier: { nextBlockOrdinal: 0, paused: false } },
+        }));
+        await db.automationRun.update({ where: { id: active.run!.id }, data: {
+            state: "succeeded", finishedAt: new Date(), workflowCheckpointEnvelope: checkpointEnvelope,
+        } });
+        const machineInstallationId = randomUUID();
+        await db.machine.update({ where: { id: assignment.machineId }, data: { installationId: machineInstallationId } });
+        const claimParams = { accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000,
+            claimRequest: { machineInstallationId, nonce: randomUUID(), expiresAt: new Date(Date.now() + 60_000) } };
+        const next = await claimAutomationRun(claimParams);
+        expect(next.run?.id).toBe(newest.id);
+        expect(next.run).toMatchObject({ lastSucceededRun: { runId: active.run!.id, checkpointEnvelope } });
+        const receipt = await db.automationWorkerClaimReceipt.findFirstOrThrow({ where: { accountId: current.accountId } });
+        expect(JSON.parse(receipt.claimResultJson).run.lastSucceededRun)
+            .toEqual({ runId: active.run!.id, checkpointEnvelope: null });
+        expect((await claimAutomationRun(claimParams)).receiptReplay?.run)
+            .toMatchObject({ id: newest.id, lastSucceededRun: { runId: active.run!.id, checkpointEnvelope } });
+    });
+
+    it("admits archive triggers only on archive transitions through the HTTP owner and rolls back archive when admission fails", async () => {
+        const current = await source();
+        const attached = await trigger({ ...current, scoped: true, policy: { kind: "everyMatch" } });
+        await db.automationTrigger.update({ where: { id: attached.id }, data: { sessionLifecycleEventsJson: '["sessionArchived"]' } });
+        await withAuthenticatedTestApp(registerSessionArchiveRoutes, async (app) => {
+            const post = (action: string) => app.inject({ method: "POST", url: `/v2/sessions/${current.sessionId}/${action}`,
+                headers: { "x-test-user-id": current.accountId } });
+            const restore = failRunCreate(attached.automationId);
+            try {
+                expect((await post("archive")).statusCode).toBe(500);
+                expect((await db.session.findUniqueOrThrow({ where: { id: current.sessionId } })).archivedAt).toBeNull();
+            } finally { restore(); }
+            expect((await post("archive")).statusCode).toBe(200);
+            const admitted = await db.automationRun.findMany({ where: { triggerId: attached.id } });
+            expect(admitted).toHaveLength(1);
+            expect(admitted[0]).toMatchObject({ causeSessionLifecycleEvent: "sessionArchived", causeSourceTurnId: null });
+            expect((await post("archive")).statusCode).toBe(200);
+            expect((await post("unarchive")).statusCode).toBe(200);
+            expect(await db.automationRun.count({ where: { triggerId: attached.id } })).toBe(1);
+        });
+    });
+
+    it("settles a claimed workflow refusal as skipped without starting custody or producing effects", async () => {
+        const current = await source();
+        const attached = await trigger({ ...current, scoped: true });
+        await applySessionTurnMutation({ actorUserId: current.accountId, mutation: {
+            v: 1, sessionId: current.sessionId, turnId: current.turnId, mutationId: `complete-${current.suffix}`,
+            action: "complete", observedAt: Date.now(),
+        } });
+        const assignment = await db.automationAssignment.findFirstOrThrow({ where: { automationId: attached.automationId } });
+        const claimed = await claimAutomationRun({ accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000 });
+        expect(claimed.run).not.toBeNull();
+        // The database boundary supplies the workflow custody shape; the real refusal settlement remains under test.
+        await db.automationRun.update({ where: { id: claimed.run!.id }, data: { workflowCustodyState: "pending" } });
+        const settled = await failAutomationRun({ accountId: current.accountId, machineId: assignment.machineId,
+            runId: claimed.run!.id, attempt: claimed.run!.attempt, accountCurrentness: claimed.accountCurrentness!,
+            terminalState: "skipped", errorCode: "diff_unchanged",
+        });
+        expect(settled).toMatchObject({ state: "skipped", workflowCustodyState: "settled", startedAt: null,
+            producedSessionId: null, workflowAcceptedSnapshotEnvelope: null, errorCode: "diff_unchanged" });
+        expect(await db.automationRunEvent.count({ where: { runId: claimed.run!.id, type: "run_skipped" } })).toBe(1);
+    });
+
+    it("refuses late sessionStarted registration at the canonical server owner", async () => {
+        const current = await source();
+        await expect(inTx((tx) => validateSessionLifecycleTriggerRegistrationTx({
+            tx, accountId: current.accountId, automationTargetType: "new_session",
+            input: { kind: "sessionLifecycle", enabled: true,
+                sourceSessionId: current.sessionId, events: ["sessionStarted"], policy: { kind: "firstMatch" } },
+        }))).rejects.toMatchObject({ code: "session_already_started" });
+    });
+
+    it.each([
+        { scoped: true, workflow: false, noTurn: false },
+        { scoped: true, workflow: true, noTurn: true },
+        { scoped: false, workflow: false, noTurn: true },
+        { scoped: false, workflow: true, noTurn: false },
+    ])("settles deleted-source queued work at claim without effects (scoped=$scoped, workflow=$workflow, noTurn=$noTurn)", async ({ scoped, workflow, noTurn }) => {
+        const current = await source();
+        const attached = await trigger({ ...current, scoped, workflow, policy: { kind: "everyMatch" } });
+        const assignment = await db.automationAssignment.findFirstOrThrow({ where: { automationId: attached.automationId } });
+        if (noTurn) {
+            await db.automationTrigger.update({ where: { id: attached.id }, data: { sessionLifecycleEventsJson: '["sessionArchived"]' } });
+            await inTx((tx) => admitSessionLifecycleAutomationRunsTx({ tx, accountId: current.accountId,
+                occurrence: { v: 1, kind: "sessionLifecycle", event: "sessionArchived",
+                    sourceSessionId: current.sessionId, occurredAt: Date.now() },
+            }));
+        } else await applySessionTurnMutation({ actorUserId: current.accountId,
+            mutation: { v: 1, sessionId: current.sessionId, turnId: current.turnId, action: "complete",
+                mutationId: `complete-delete-${current.suffix}`, observedAt: Date.now() } });
+        const admitted = await db.automationRun.findFirstOrThrow({ where: { triggerId: attached.id } });
+        await expect(deleteOwnedSession({ sessionId: current.sessionId, ownerAccountId: current.accountId, reason: "user_request" }))
+            .resolves.toEqual({ ok: true });
+        const retired = await db.automation.findUniqueOrThrow({ where: { id: attached.automationId } });
+        expect(retired.deletedAt !== null).toBe(scoped);
+        expect(retired.enabled).toBe(!scoped);
+        expect(await db.automationRun.count({ where: { triggerId: attached.id } })).toBe(1);
+        // Deletion retires the definition, but queued history is disposed only at claim.
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: admitted.id } }))
+            .toMatchObject({ state: "queued", errorCode: null, attempt: 0,
+                workflowCustodyState: workflow ? "pending" : null });
+        const machineInstallationId = randomUUID();
+        await db.machine.update({ where: { id: assignment.machineId }, data: { installationId: machineInstallationId } });
+        const claimParams = { accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000,
+            claimRequest: { machineInstallationId, nonce: randomUUID(), expiresAt: new Date(Date.now() + 60_000) } };
+        await expect(claimAutomationRun(claimParams)).resolves.toMatchObject({ run: null });
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: admitted.id } }))
+            .toMatchObject({ state: "failed", errorCode: "source_unavailable", attempt: 0,
+                workflowCustodyState: workflow ? "settled" : null, startedAt: null, claimedAt: null,
+                producedSessionId: null, workflowAcceptedSnapshotEnvelope: null });
+        expect(await db.automationRunEvent.findMany({ where: { runId: admitted.id, type: "run_failed" } }))
+            .toMatchObject([{ payload: { errorCode: "source_unavailable" } }]);
+        // The signed no-work result and terminal event remain exact on retry.
+        await expect(claimAutomationRun(claimParams)).resolves.toMatchObject({ run: null });
+        expect(await db.automationRunEvent.count({ where: { runId: admitted.id, type: "run_failed" } })).toBe(1);
+    });
+
+    it("settles queued scoped schedule work when its session disappears, without guessing a lifecycle depth", async () => {
+        const current = await source();
+        const attached = await trigger({ ...current, scoped: true, workflow: true });
+        const assignment = await db.automationAssignment.findFirstOrThrow({ where: { automationId: attached.automationId } });
+        const now = new Date();
+        const schedule = await db.automationTrigger.create({ data: { automationId: attached.automationId,
+            kind: "schedule", enabled: true, revision: 1, scheduleKind: "interval", everyMs: 60_000, nextRunAt: now } });
+        const admitted = await inTx((tx) => admitDueAutomationScheduleTriggerTx({ tx, triggerId: schedule.id,
+            expectedRevision: schedule.revision, expectedNextRunAt: now, now }));
+        expect(admitted?.kind).toBe("admitted");
+        await expect(deleteOwnedSession({ sessionId: current.sessionId, ownerAccountId: current.accountId, reason: "user_request" }))
+            .resolves.toEqual({ ok: true });
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: admitted!.run.id } })).toMatchObject({ state: "queued" });
+        await expect(claimAutomationRun({ accountId: current.accountId, machineId: assignment.machineId, leaseDurationMs: 60_000 }))
+            .resolves.toMatchObject({ run: null });
+        expect(await db.automationRun.findUniqueOrThrow({ where: { id: admitted!.run.id } }))
+            .toMatchObject({ state: "failed", errorCode: "source_unavailable", workflowCustodyState: "settled",
+                attempt: 0, startedAt: null, producedSessionId: null, workflowAcceptedSnapshotEnvelope: null });
     });
 
     it("selects exact-turn candidates from the settled Session Account only", async () => {
@@ -282,7 +503,7 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                 kind: "newSession",
                 spawn: {
                     executionTarget: { serverId: `server-${current.suffix}`, machineId: `machine-${current.suffix}` },
-                    directory: "/tmp/exact-turn",
+                    directory: { kind: "path", path: "/tmp/exact-turn" },
                     agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.codex", localId: "codex" } },
                 },
             },
@@ -339,7 +560,16 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             await db.automationAssignment.createMany({ data: [...chunk] });
         }
 
-        await expect(applySessionTurnMutation({
+        // Observe the genuine DB boundary so a sanitized HTTP-owner failure retains its deciding diagnostic.
+        const transactionBoundary = db as unknown as { $transaction: (...args: unknown[]) => Promise<unknown> };
+        const originalTransaction = transactionBoundary.$transaction;
+        let transactionFailure: unknown;
+        transactionBoundary.$transaction = async (...args) => {
+            try { return await Reflect.apply(originalTransaction, db, args); }
+            catch (error) { transactionFailure = error; throw error; }
+        };
+        let fanOutResult;
+        try { fanOutResult = await applySessionTurnMutation({
             actorUserId: current.accountId,
             mutation: {
                 v: 1,
@@ -349,7 +579,9 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                 turnId: current.turnId,
                 observedAt: now.getTime(),
             },
-        })).resolves.toMatchObject({ ok: true, didApply: true });
+        }); } finally { transactionBoundary.$transaction = originalTransaction; }
+        expect(fanOutResult, transactionFailure instanceof Error ? transactionFailure.stack : String(transactionFailure))
+            .toMatchObject({ ok: true, didApply: true });
 
         await expect(db.automationRun.count({
             where: { triggerId: { in: triggerRows.map((trigger) => trigger.id) } },
@@ -635,6 +867,12 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             sourceTurnId: `${current.turnId}-1`,
             occurredAt: Date.now(),
         };
+        // Admission reads host-stamped initiator facts, not an author-supplied turn id.
+        await db.sessionTurn.createMany({ data: [1, 2, 3].map((index) => ({
+            sessionId: current.sessionId, turnId: `${current.turnId}-${index}`,
+            initiator: "user" as const, workDepth: 0, status: "completed" as const,
+            startedAt: BigInt(first.occurredAt), updatedAt: BigInt(first.occurredAt),
+        })) });
         await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId: current.accountId,

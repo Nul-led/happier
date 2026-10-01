@@ -55,6 +55,7 @@ export const NativeAuthOneTimeOperationV1Schema = z.discriminatedUnion('purpose'
             z.object({
                 kind: z.literal('sign_in_email_change'),
                 accountId: AccountIdSchema,
+                nativeIdentityId: AccountIdSchema,
                 expectedNativeIdentity: NormalizedEmailSchema,
             }).strict(),
         ]),
@@ -64,6 +65,7 @@ export const NativeAuthOneTimeOperationV1Schema = z.discriminatedUnion('purpose'
         purpose: z.literal('reset_plain_password'),
         accountId: AccountIdSchema,
         credentialRevision: CredentialRevisionSchema,
+        nativeIdentityId: AccountIdSchema,
         expectedNativeIdentity: NormalizedEmailSchema,
     }).strict(),
 ]);

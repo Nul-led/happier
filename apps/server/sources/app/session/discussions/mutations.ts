@@ -15,6 +15,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { scheduleSessionActivityRemoteAlerts } from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
+import { scheduleSessionPersonalEvent } from "@/app/session/personal/publishPersonalEvent";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import {
     filterAccountsWithCurrentSessionReadAccessInTx,
@@ -199,11 +200,13 @@ function isValidProducerForSession(
 async function validateMentionTargetsInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     mentionedAccountIds: readonly string[];
+    authentication: import("@/app/session/access/sessionAccessAuthentication").SessionAccessAuthentication;
 }>): Promise<boolean> {
     if (params.mentionedAccountIds.length === 0) return true;
     const readable = await filterAccountsWithCurrentSessionReadAccessInTx(tx, {
         sessionId: params.sessionId,
         accountIds: params.mentionedAccountIds,
+        authentication: params.authentication,
     });
     return params.mentionedAccountIds.every((accountId) => readable.has(accountId));
 }
@@ -231,20 +234,33 @@ function scheduleDiscussionMentionRemoteAlertsInTx(tx: Tx, params: Readonly<{
     }));
 }
 
-function scheduleDiscussionMessageRemoteAlertsInTx(tx: Tx, params: Readonly<{
+function scheduleDiscussionMessageAlertsInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     discussionId: string;
+    committedMessageId: string;
     committedMessageSeq: number;
+    recipientAccountIds: readonly string[];
     authorAccountId: string;
     mentionedAccountIds: readonly string[];
     producer: SessionDiscussionProducerV1 | undefined;
 }>): void {
+    const event = params.producer ? "message" : "human_message";
+    for (const recipientAccountId of params.recipientAccountIds) {
+        if (params.mentionedAccountIds.includes(recipientAccountId)) continue;
+        const fact = {
+            type: "session-personal-event" as const, sessionId: params.sessionId, eventId: params.committedMessageId,
+            message: { sequenceDomain: "discussion" as const, discussionId: params.discussionId, messageSeq: params.committedMessageSeq },
+        };
+        scheduleSessionPersonalEvent(tx, recipientAccountId, event === "human_message"
+            ? { ...fact, event, sourceAccountId: params.authorAccountId }
+            : { ...fact, event });
+    }
     afterTx(tx, () => scheduleSessionActivityRemoteAlerts({
         sessionId: params.sessionId,
         // Direct Account-authenticated posts are meaningful human activity and
         // therefore remain eligible for an Important Follow. Trusted runtime
         // posts use the ordinary all-messages class.
-        event: params.producer ? "message" : "human_message",
+        event,
         committedMessage: {
             domain: "discussion", discussionId: params.discussionId, seq: params.committedMessageSeq,
         },
@@ -413,6 +429,7 @@ async function createSessionDiscussionTransaction(
         if (!await validateMentionTargetsInTx(tx, {
             sessionId: params.sessionId,
             mentionedAccountIds: intent.mentionedAccountIds,
+            authentication: params.authentication,
         })) {
             return discussionFailure("session_discussion_invalid_mention");
         }
@@ -442,8 +459,9 @@ async function createSessionDiscussionTransaction(
         await initializeNewSessionDiscussionCursorsInTx(tx, {
             sessionId: params.sessionId,
             discussionId: created.id,
+            authentication: params.authentication,
         });
-        await markSessionDiscussionReadersChangedInTx({ tx, sessionId: params.sessionId });
+        const readerCursors = await markSessionDiscussionReadersChangedInTx({ tx, sessionId: params.sessionId });
         scheduleSessionDiscussionBadgeRefreshInTx({ tx, sessionId: params.sessionId });
         scheduleDiscussionMentionRemoteAlertsInTx(tx, {
             sessionId: params.sessionId,
@@ -453,10 +471,12 @@ async function createSessionDiscussionTransaction(
             mentionedAccountIds: intent.mentionedAccountIds,
             producer: undefined,
         });
-        scheduleDiscussionMessageRemoteAlertsInTx(tx, {
+        scheduleDiscussionMessageAlertsInTx(tx, {
             sessionId: params.sessionId,
             discussionId: created.id,
             committedMessageSeq: firstMessage.seq,
+            committedMessageId: firstMessage.id,
+            recipientAccountIds: readerCursors.map(({ accountId }) => accountId),
             authorAccountId: params.actorAccountId,
             mentionedAccountIds: intent.mentionedAccountIds,
             producer: undefined,
@@ -602,6 +622,7 @@ export async function postSessionDiscussionMessageInTx(tx: Tx, params: Readonly<
         if (!await validateMentionTargetsInTx(tx, {
             sessionId: params.sessionId,
             mentionedAccountIds: intent.mentionedAccountIds,
+            authentication: params.authentication,
         })) {
             return discussionFailure("session_discussion_invalid_mention");
         }
@@ -621,7 +642,7 @@ export async function postSessionDiscussionMessageInTx(tx: Tx, params: Readonly<
             producer,
             createdAt: now,
         });
-        await markSessionDiscussionReadersChangedInTx({ tx, sessionId: params.sessionId });
+        const readerCursors = await markSessionDiscussionReadersChangedInTx({ tx, sessionId: params.sessionId });
         scheduleSessionDiscussionBadgeRefreshInTx({ tx, sessionId: params.sessionId });
         scheduleDiscussionMentionRemoteAlertsInTx(tx, {
             sessionId: params.sessionId,
@@ -631,10 +652,12 @@ export async function postSessionDiscussionMessageInTx(tx: Tx, params: Readonly<
             mentionedAccountIds: intent.mentionedAccountIds,
             producer,
         });
-        scheduleDiscussionMessageRemoteAlertsInTx(tx, {
+        scheduleDiscussionMessageAlertsInTx(tx, {
             sessionId: params.sessionId,
             discussionId: discussion.id,
             committedMessageSeq: allocated.messageSeq,
+            committedMessageId: message.id,
+            recipientAccountIds: readerCursors.map(({ accountId }) => accountId),
             authorAccountId: params.actorAccountId,
             mentionedAccountIds: intent.mentionedAccountIds,
             producer,

@@ -171,6 +171,8 @@ export type PluginUiHostApiSurfaceThemeV1 = z.infer<
 export const PluginUiHostApiSurfaceContextV1Schema = z.object({
   mount: PluginUiMountContextV1Schema,
   target: PluginUiHostApiSurfaceTargetV1Schema,
+  /** Host page chrome for app pages; absent on other surface placements. */
+  page: z.object({ columnVisible: z.boolean() }).strict().optional(),
   accountEncryptionMode: z.enum(['plain', 'e2ee']),
   platform: PluginUiPlatformV1Schema,
   locale: PluginUiHostApiSurfaceNonBlankStringV1Schema,

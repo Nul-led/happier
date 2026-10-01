@@ -558,6 +558,119 @@ describe("qualified Connected Account V4 route family (integration)", () => {
         );
     });
 
+    it.each(["manual", "automatic"] as const)("ties the active member and switch clock for a %s selection", async (selection) => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: "plain",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_CREDENTIALS_AT_REST: "none",
+        });
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const headers = { "x-test-user-id": account.id };
+        await withAuthenticatedTestApp(registerQualifiedConnectedAccountCredentialRoutesV4, async (app) => {
+            const primary = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/credential", headers,
+                payload: {
+                    ref, authenticationModeId: "api-key", expectedCredentialRevision: null,
+                    content: { t: "plain", v: { token: "primary-secret" } },
+                    metadata: {},
+                },
+            });
+            expect(primary.statusCode, primary.body).toBe(200);
+            const backup = { service, accountId: "backup" };
+            const backupCredential = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/credential", headers,
+                payload: {
+                    ref: backup, authenticationModeId: "api-key", expectedCredentialRevision: null,
+                    content: { t: "plain", v: { token: "backup-secret" } },
+                    metadata: {},
+                },
+            });
+            expect(backupCredential.statusCode, backupCredential.body).toBe(200);
+            const created = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/groups", headers,
+                payload: { service, group: { groupId: groupRef.groupId } },
+            });
+            expect(created.statusCode, created.body).toBe(200);
+            let group = created.json().group as QualifiedConnectedAccountGroupV4;
+            for (const member of [ref, backup]) {
+                const added = await app.inject({
+                    method: "POST", url: "/v4/connect/qualified/group/members", headers,
+                    payload: {
+                        group: groupRef, connectedAccountId: member.accountId,
+                        expectedGeneration: group.generation, expectedIncarnation: group.incarnation,
+                        expectedRuntimeStateRevision: group.runtimeStateRevision,
+                    },
+                });
+                expect(added.statusCode, added.body).toBe(200);
+                group = added.json().group;
+            }
+            const initialSelection = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/group/active-account", headers,
+                payload: {
+                    group: groupRef, connectedAccountId: ref.accountId,
+                    expectedGeneration: group.generation, expectedIncarnation: group.incarnation,
+                    expectedRuntimeStateRevision: group.runtimeStateRevision,
+                },
+            });
+            expect(initialSelection.statusCode, initialSelection.body).toBe(200);
+            group = initialSelection.json().group;
+            expect(group.activeConnectedAccountId).toBe(ref.accountId);
+            const beforeSwitchMs = Date.now();
+            const switched = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/group/active-account", headers,
+                payload: {
+                    group: groupRef, connectedAccountId: backup.accountId,
+                    expectedGeneration: group.generation, expectedIncarnation: group.incarnation,
+                    expectedRuntimeStateRevision: group.runtimeStateRevision,
+                    ...(selection === "automatic" ? {
+                        expectedSource: {
+                            connectedAccountId: ref.accountId,
+                            credentialRevision: primary.json().credentialRevision,
+                            configurationRevision: primary.json().configurationRevision,
+                        },
+                        overrideRuntimeCooldown: true,
+                    } : {}),
+                },
+            });
+            expect(switched.statusCode, switched.body).toBe(200);
+            group = switched.json().group;
+            expect(group.activeConnectedAccountId).toBe(backup.accountId);
+            expect(group.state.activeSince?.accountId).toBe(backup.accountId);
+            expect(group.state.lastSwitchAt).toBe(group.state.activeSince?.atMs);
+            expect(group.state.lastSwitchAt).toBeGreaterThanOrEqual(beforeSwitchMs);
+            expect(group.state.lastSwitchAt).toBeLessThanOrEqual(Date.now());
+            const selectedAt = group.state.lastSwitchAt;
+            const selectedRevision = group.runtimeStateRevision;
+            const patched = await app.inject({
+                method: "PATCH", url: "/v4/connect/qualified/group/runtime-state", headers,
+                payload: {
+                    service, groupId: groupRef.groupId,
+                    expectedGeneration: group.generation, expectedIncarnation: group.incarnation,
+                    expectedRuntimeStateRevision: group.runtimeStateRevision,
+                    runtimeState: { state: { status: "ready", lastSwitchAt: 1 }, memberStates: [] },
+                },
+            });
+            expect(patched.statusCode, patched.body).toBe(200);
+            group = patched.json().group;
+            expect(group.runtimeStateRevision).toBe(selectedRevision + 1);
+            expect(group.state.lastSwitchAt).toBe(selectedAt);
+            expect(group.state.activeSince).toEqual({ accountId: backup.accountId, atMs: selectedAt });
+            const repeated = await app.inject({
+                method: "POST", url: "/v4/connect/qualified/group/active-account", headers,
+                payload: {
+                    group: groupRef, connectedAccountId: backup.accountId,
+                    expectedGeneration: group.generation, expectedIncarnation: group.incarnation,
+                    expectedRuntimeStateRevision: group.runtimeStateRevision,
+                },
+            });
+            expect(repeated.statusCode, repeated.body).toBe(200);
+            expect(repeated.json().group.state.lastSwitchAt).toBe(selectedAt);
+        });
+    });
+
     it("serves every advertised operation through the canonical qualified repositories", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
@@ -1429,9 +1542,52 @@ describe("qualified Connected Account V4 route family (integration)", () => {
                 expect(modeMismatchDeleteRecord.json()).toEqual({
                     error: "provider_account_usage_storage_mode_mismatch",
                 });
+                const sealedSubscription = {
+                    observedAtMs: snapshot.fetchedAtMs - 1,
+                    ciphertext: "opaque-0.2-subscription",
+                };
+                await db.providerAccountUsageRecord.update({
+                    where: { accountId_recordId: { accountId: account.id, recordId: snapshot.recordId } },
+                    data: {
+                        payloadMode: "sealed_account_scoped_v1",
+                        snapshot: prismaRuntime.DbNull,
+                        sealedPayload: {
+                            format: "account_scoped_v1",
+                            ciphertext: "opaque-0.2-base",
+                            subscription: sealedSubscription,
+                        },
+                    },
+                });
+                const sealedRecordRead = await app.inject({
+                    method: "GET",
+                    url: "/v4/connect/qualified/provider-account-usage/record?recordId="
+                        + encodeURIComponent(snapshot.recordId),
+                    headers,
+                });
+                expect(sealedRecordRead.statusCode).toBe(200);
+                expect(sealedRecordRead.json().content).toEqual({
+                    t: "encrypted",
+                    c: "opaque-0.2-base",
+                    subscription: sealedSubscription,
+                });
+                const sealedQuotaRead = await app.inject({
+                    method: "GET",
+                    url: "/v4/connect/qualified/quotas?ref=" + encodeURIComponent(encodedRef),
+                    headers,
+                });
+                expect(sealedQuotaRead.statusCode).toBe(200);
+                expect(sealedQuotaRead.json().content).toEqual(sealedRecordRead.json().content);
                 await db.account.update({
                     where: { id: account.id },
                     data: { encryptionMode: "plain" },
+                });
+                await db.providerAccountUsageRecord.update({
+                    where: { accountId_recordId: { accountId: account.id, recordId: snapshot.recordId } },
+                    data: {
+                        payloadMode: "plain_json_v1",
+                        snapshot,
+                        sealedPayload: prismaRuntime.DbNull,
+                    },
                 });
 
                 await db.connectedServiceUsageSource.updateMany({

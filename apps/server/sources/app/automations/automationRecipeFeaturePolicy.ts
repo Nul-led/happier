@@ -1,14 +1,17 @@
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome, type HomeConfigSource } from "@/app/features/catalog/serverFeatureGate";
 
 export type AutomationRecipeFeaturePolicy = Readonly<{
     workflowsEnabled: boolean;
 }>;
 
-/** Thin projection of the canonical server feature decision for Automation recipe owners. */
-export function resolveAutomationRecipeFeaturePolicy(
-    env: NodeJS.ProcessEnv = process.env,
-): AutomationRecipeFeaturePolicy {
+/**
+ * Thin projection of the canonical server feature decision for Automation recipe owners, on the
+ * Home-effective configuration (pass the transaction when called inside one).
+ */
+export async function resolveAutomationRecipeFeaturePolicy(
+    source?: HomeConfigSource,
+): Promise<AutomationRecipeFeaturePolicy> {
     return {
-        workflowsEnabled: isServerFeatureEnabledForRequest("workflows", env),
+        workflowsEnabled: await isServerFeatureEnabledForHome("workflows", source),
     };
 }

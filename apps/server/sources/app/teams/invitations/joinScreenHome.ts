@@ -4,7 +4,7 @@ import {
     resolveEffectiveWebappUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
-import { PERSONAL_HOME_RUNTIME_PURPOSE } from "@/app/home/governance/ownerAssignment";
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 import type { HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
 import type { HomeConnectionDescriptorContinuityStore } from "@/app/features/homeConnectionDescriptorContinuity";
 import { readRequiredAuthenticatedHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
@@ -70,7 +70,7 @@ export function resolveJoinScreenHomeHosting(
 ): JoinScreenHomeIdentity["hosting"] {
     const purpose = String(env.HAPPIER_MANAGED_RELAY_PURPOSE ?? "").trim();
     if (!purpose) return null;
-    return purpose === PERSONAL_HOME_RUNTIME_PURPOSE ? "personal" : "shared";
+    return isPersonalHomeRuntimePurpose(purpose) ? "personal" : "shared";
 }
 
 export async function resolveJoinScreenHomeIdentity(

@@ -1,5 +1,10 @@
-import { PluginManifestV2Schema } from '@happier-dev/protocol';
+import type { ParsedPluginManifestV2 } from '@happier-dev/protocol';
 
+import {
+    currentPluginDeclarationKeyV1,
+    resolveCurrentPluginDeclarationsTx,
+    resolveCurrentPluginDeclarationTx,
+} from '@/app/plugins/availability/currentDeclaration';
 import type { Tx } from '@/storage/inTx';
 
 import type {
@@ -14,17 +19,11 @@ export type CurrentPluginWebhookClaimAuthorityV1 = Readonly<{
     contribution: ResolvedPluginWebhookContributionV1;
 }>;
 
-function projectCurrentPluginWebhookContributionsV1(params: Readonly<{
-    pluginId: string;
-    version: string;
-    intent: Readonly<{ enabled: boolean; desiredVersion: string | null }> | null | undefined;
-    normalizedManifest: unknown;
-}>): readonly ResolvedPluginWebhookContributionV1[] {
-    if (!params.intent?.enabled || params.intent.desiredVersion !== params.version) return [];
-    const manifest = PluginManifestV2Schema.safeParse(params.normalizedManifest);
-    if (!manifest.success || manifest.data.id !== params.pluginId) return [];
-    return manifest.data.contributes.webhooks.map((contribution) => Object.freeze({
-        pluginId: manifest.data.id,
+function projectPluginWebhookContributionsV1(
+    manifest: ParsedPluginManifestV2,
+): readonly ResolvedPluginWebhookContributionV1[] {
+    return manifest.contributes.webhooks.map((contribution) => Object.freeze({
+        pluginId: manifest.id,
         localId: contribution.id,
         handlerActionLocalId: contribution.handlerAction.localId,
         verifierKind: contribution.verifier.kind,
@@ -47,42 +46,15 @@ export async function resolveCurrentPluginWebhookClaimAuthoritiesTxV1(params: Re
     }>[];
 }>): Promise<readonly CurrentPluginWebhookClaimAuthorityV1[]> {
     if (params.targets.length === 0) return [];
-    const pluginIds = [...new Set(params.targets.map((target) => target.pluginId))];
-    const releaseRefs = [...new Map(params.targets.map((target) => [
-        `${target.pluginId}\0${target.version}`,
-        { pluginId: target.pluginId, version: target.version },
-    ])).values()];
-    const [intents, releases] = await Promise.all([
-        params.tx.accountPluginIntent.findMany({
-            where: {
-                accountId: params.accountId,
-                pluginId: { in: pluginIds },
-            },
-            select: { pluginId: true, enabled: true, desiredVersion: true },
-        }),
-        params.tx.accountPluginRelease.findMany({
-            where: {
-                accountId: params.accountId,
-                OR: releaseRefs,
-            },
-            select: { pluginId: true, version: true, normalizedManifest: true },
-        }),
-    ]);
-    const intentsByPluginId = new Map(intents.map((intent) => [intent.pluginId, intent] as const));
-    const releasesByRef = new Map(releases.map((release) => [
-        `${release.pluginId}\0${release.version}`,
-        release,
-    ] as const));
+    const declarations = await resolveCurrentPluginDeclarationsTx({
+        tx: params.tx,
+        accountId: params.accountId,
+        refs: params.targets,
+    });
     return params.targets.flatMap((target) => {
-        const intent = intentsByPluginId.get(target.pluginId);
-        const release = releasesByRef.get(`${target.pluginId}\0${target.version}`);
-        if (!release) return [];
-        return projectCurrentPluginWebhookContributionsV1({
-            pluginId: target.pluginId,
-            version: target.version,
-            intent,
-            normalizedManifest: release.normalizedManifest,
-        }).map((contribution) => Object.freeze({
+        const declaration = declarations.get(currentPluginDeclarationKeyV1(target.pluginId, target.version));
+        if (!declaration) return [];
+        return projectPluginWebhookContributionsV1(declaration.manifest).map((contribution) => Object.freeze({
             materializationId: target.materializationId,
             pluginId: target.pluginId,
             version: target.version,
@@ -99,35 +71,14 @@ export async function resolveCurrentPluginWebhookContributionTxV1(params: Readon
     target: ResolvedPluginWebhookTargetV1;
 }>): Promise<ResolvedPluginWebhookContributionV1 | null> {
     if (params.contribution.pluginId !== params.target.materialization.pluginId) return null;
-    const [intent, release] = await Promise.all([
-        params.tx.accountPluginIntent.findUnique({
-            where: {
-                accountId_pluginId: {
-                    accountId: params.accountId,
-                    pluginId: params.contribution.pluginId,
-                },
-            },
-            select: { enabled: true, desiredVersion: true },
-        }),
-        params.tx.accountPluginRelease.findUnique({
-            where: {
-                accountId_pluginId_version: {
-                    accountId: params.accountId,
-                    pluginId: params.contribution.pluginId,
-                    version: params.target.pluginVersion,
-                },
-            },
-            select: { normalizedManifest: true },
-        }),
-    ]);
-    if (!release) return null;
-    const contribution = projectCurrentPluginWebhookContributionsV1({
+    const declaration = await resolveCurrentPluginDeclarationTx({
+        tx: params.tx,
+        accountId: params.accountId,
         pluginId: params.contribution.pluginId,
         version: params.target.pluginVersion,
-        intent,
-        normalizedManifest: release.normalizedManifest,
-    }).find(
+    });
+    if (!declaration) return null;
+    return projectPluginWebhookContributionsV1(declaration.manifest).find(
         (candidate) => candidate.localId === params.contribution.localId,
-    );
-    return contribution ?? null;
+    ) ?? null;
 }

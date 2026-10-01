@@ -6,8 +6,11 @@ export {
 } from './marketplaceIndexV1.js';
 
 export {
+  DEFAULT_PLUGIN_UPDATE_REVIEW_MODE_V1,
   PluginUpdatePolicyV1Schema,
+  PluginUpdateReviewModeV1Schema,
   type PluginUpdatePolicyV1,
+  type PluginUpdateReviewModeV1,
 } from './pluginUpdatePolicyV1.js';
 
 export {

@@ -176,17 +176,18 @@ describe("kvMutate (AccountChange integration)", () => {
             contentPublicKeySig: null,
         });
         txCreate.mockResolvedValue({ key: "todo.index", version: 0 });
-        const { TodoKvStoredContentModeMismatchError } = await import("./todoKvStoredContent");
+        const { AccountJsonKvStoredContentModeMismatchError } = await import("./accountJsonKvStoredContent");
         const { kvMutate } = await import("./kvMutate");
 
         await expect(kvMutate(
             { uid: "u1" },
             [{ key: "todo.index", value: null, version: -1 }],
             { supportsCurrentProtocol: true },
-        )).rejects.toBeInstanceOf(TodoKvStoredContentModeMismatchError);
+        )).rejects.toBeInstanceOf(AccountJsonKvStoredContentModeMismatchError);
 
         expect(txFindUnique).not.toHaveBeenCalled();
         expect(txCreate).not.toHaveBeenCalled();
         expect(txUpdate).not.toHaveBeenCalled();
     });
+
 });

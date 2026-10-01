@@ -237,10 +237,21 @@ describe("Team logo custody (SQLite integration)", () => {
             authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }],
             authenticationAuthority: "present_user" as const,
         };
+        const replaced = await setTeamLogo({
+            actorAccountId: owner.id,
+            teamId,
+            authentication,
+            image: { mimeType: "image/jpeg", dataBase64: await jpegBase64(64, 64) },
+        });
+        expect(replaced.ok).toBe(true);
+        if (!replaced.ok) return;
+        expect(replaced.team.capabilities.manageMembers).toBe(true);
         const removed = await removeTeamLogo({ actorAccountId: owner.id, teamId, authentication });
         expect(removed.ok).toBe(true);
         if (!removed.ok) return;
         expect(removed.team.logo).toBeNull();
+        expect(removed.team.capabilities.manageMembers).toBe(true);
+        expect(await objectExists(replaced.team.logo?.path ?? "")).toBe(false);
         expect(await objectExists(set.team.logo?.path ?? "")).toBe(false);
 
         const again = await removeTeamLogo({ actorAccountId: owner.id, teamId });

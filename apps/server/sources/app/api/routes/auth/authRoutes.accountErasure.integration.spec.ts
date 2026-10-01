@@ -60,7 +60,7 @@ describe("authRoutes (Account erasure) (integration)", () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: "happier-auth-account-erasure-",
             initAuth: true,
-            env: { AUTH_REQUIRED_LOGIN_PROVIDERS: "", HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1" },
+            env: { AUTH_REQUIRED_LOGIN_PROVIDERS: "" },
         });
     }, 120_000);
 

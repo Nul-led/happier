@@ -112,8 +112,6 @@ CREATE TABLE "PluginCollectionRelation" (
     CONSTRAINT "PluginCollectionRelation_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "PluginCollectionContract_identity_schema_key"
-ON "PluginCollectionContract"("pluginId", "collectionId", "schemaVersion");
 CREATE UNIQUE INDEX "PluginCollectionContract_identity_digest_key"
 ON "PluginCollectionContract"("pluginId", "collectionId", "contractDigest");
 CREATE INDEX "PluginCollectionContract_identity_idx"
@@ -184,6 +182,7 @@ CREATE TABLE "AccountPluginIntent" (
     "enabled" BOOLEAN NOT NULL DEFAULT false,
     "offlineUiHosting" TEXT COLLATE "C" NOT NULL DEFAULT 'disabled',
     "writableCollections" JSONB NOT NULL,
+    "releaseLessDeclaration" JSONB,
     "revision" BIGINT NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,

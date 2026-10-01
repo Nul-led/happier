@@ -13,7 +13,7 @@ const stamp = {
   requester: {
     pluginId: 'acme.widgets',
     contributionId: 'settings',
-    generationId: 'generation-1',
+    occurrenceId: 'occurrence-1',
     invocationId: 'invocation-1',
   },
   createdAtMs: 1,
@@ -29,6 +29,37 @@ const appScopeStamp = {
 } as const;
 
 describe('transient interaction contract', () => {
+  it('uses one opaque process-local occurrence requester fence and rejects generation custody aliases', () => {
+    expect(InteractionTransientRequestV1Schema.safeParse({
+      ...appScopeStamp,
+      kind: 'confirmation',
+      title: 'Continue?',
+      message: 'Continue?',
+    }).success).toBe(true);
+    expect(InteractionTransientRequestV1Schema.safeParse({
+      ...appScopeStamp,
+      requester: {
+        pluginId: 'acme.widgets',
+        contributionId: 'settings',
+        generationId: 'generation-1',
+        invocationId: 'invocation-1',
+      },
+      kind: 'confirmation',
+      title: 'Continue?',
+      message: 'Continue?',
+    }).success).toBe(false);
+    expect(InteractionTransientRequestV1Schema.safeParse({
+      ...appScopeStamp,
+      requester: {
+        ...appScopeStamp.requester,
+        sourceCustody: { kind: 'managed', immutableGenerationId: 'managed-1' },
+      },
+      kind: 'confirmation',
+      title: 'Continue?',
+      message: 'Continue?',
+    }).success).toBe(false);
+  });
+
   it('accepts host-stamped app scope while rejecting the retired top-level Session stamp', () => {
     const appRequest = {
       ...appScopeStamp,
@@ -255,7 +286,7 @@ describe('transient interaction contract', () => {
       'requesterAborted',
       'timedOut',
       'sessionEnded',
-      'generationRetired',
+      'occurrenceRetired',
       'hostRestarted',
       'unavailable',
     ] as const) {

@@ -14,7 +14,7 @@ BEGIN
 END $$;
 
 CREATE TYPE "AutomationTriggerKind" AS ENUM ('schedule', 'pluginEvent', 'sessionLifecycle');
-CREATE TYPE "AutomationSessionLifecycleEvent" AS ENUM ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired');
+CREATE TYPE "AutomationSessionLifecycleEvent" AS ENUM ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired', 'sessionStarted', 'sessionArchived');
 CREATE TYPE "AutomationSessionLifecyclePolicyKind" AS ENUM ('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch');
 CREATE TYPE "AutomationSessionLifecycleRequestKind" AS ENUM ('permission', 'user_action');
 CREATE TYPE "AutomationObservationTransport" AS ENUM ('checkpointedPull', 'durablePush', 'socket');
@@ -264,7 +264,9 @@ ALTER TABLE "AutomationRun"
                 OR ("causeTriggerKind" = 'sessionLifecycle' AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
                     AND "causeScheduledFor" IS NULL
                     AND "causeSessionLifecycleEvent" IS NOT NULL AND "causeSourceSessionId" IS NOT NULL
-                    AND "causeSourceTurnId" IS NOT NULL AND "causeSourceSelectorId" IS NULL
+                    AND (("causeSessionLifecycleEvent" IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NULL)
+                        OR ("causeSessionLifecycleEvent" NOT IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NOT NULL))
+                    AND "causeSourceSelectorId" IS NULL
                     AND "causeSessionLifecyclePolicyKind" IS NOT NULL
                     AND (("causeSessionLifecycleEvent" = 'userActionRequired'
                             AND "causeSessionLifecycleRequestId" IS NOT NULL
@@ -344,7 +346,7 @@ CREATE TABLE "AutomationEventSourceStatus" (
     "reporterMachineId" TEXT NOT NULL,
     "reporterMachineInstallationId" TEXT NOT NULL,
     "reporterMaterializationId" TEXT NOT NULL,
-    "reporterImmutableGenerationId" VARCHAR(256) NOT NULL,
+    "reporterSourceCustody" JSONB NOT NULL,
     "state" "AutomationEventSourceStatusState" NOT NULL,
     "code" TEXT,
     "lastObservedAt" TIMESTAMP(3),
@@ -365,7 +367,7 @@ CREATE TABLE "AutomationEventSourceCatalogStatus" (
     "reporterMachineId" TEXT NOT NULL,
     "reporterMachineInstallationId" TEXT NOT NULL,
     "reporterMaterializationId" TEXT NOT NULL,
-    "reporterImmutableGenerationId" VARCHAR(256) NOT NULL,
+    "reporterSourceCustody" JSONB NOT NULL,
     "scopeKey" TEXT NOT NULL,
     "observedRevision" BIGINT NOT NULL,
     "adoptedRevision" BIGINT,

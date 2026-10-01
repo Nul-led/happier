@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ApiTokenGrantV1Schema } from '../auth/apiTokenGrant.js';
 import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
 
 import { RunnerMachineContentKeyBindingV1Schema } from '../ephemeralRunner/machineContentKeyBindingSchema.js';
@@ -74,6 +75,7 @@ const ExternalActionHttpErrorCodeV1Schema = z.enum(EXTERNAL_ACTION_HTTP_ERROR_CO
 export type ExternalActionHttpErrorCodeV1 = z.infer<typeof ExternalActionHttpErrorCodeV1Schema>;
 
 const EXTERNAL_ACTION_HTTP_PLACEMENT_ERROR_CODES = [
+  'credential_scope_denied',
   'target_required',
   'target_not_local',
   'target_unavailable',
@@ -123,11 +125,13 @@ const ExternalActionInvalidRequestHttpErrorSchema = z.object({
 const ExternalActionAuthenticationHttpErrorSchema = z.object({
   error: z.enum(EXTERNAL_ACTION_HTTP_AUTHENTICATION_ERROR_CODES),
 }).strict();
+const ExternalActionCredentialScopeHttpErrorSchema = z.object({ error: z.literal('credential_scope_denied') }).strict();
 
 /** One strict redacted outer error union shared by both Action HTTP origins. */
 export const ExternalActionHttpErrorSchema = z.union([
   ExternalActionInvalidRequestHttpErrorSchema,
   ExternalActionAuthenticationHttpErrorSchema,
+  ExternalActionCredentialScopeHttpErrorSchema,
 ]);
 export type ExternalActionHttpError = z.infer<typeof ExternalActionHttpErrorSchema>;
 
@@ -169,7 +173,8 @@ export function projectExternalActionExecutionResultV1(value: unknown): ActionEx
 }
 
 /** Maps a protocol transport failure to its complete HTTP representation. */
-function externalActionHttpErrorStatus(code: ExternalActionHttpErrorCode): 400 | 401 | 409 | 413 | 500 | 503 {
+function externalActionHttpErrorStatus(code: ExternalActionHttpErrorCode): 400 | 401 | 403 | 409 | 413 | 500 | 503 {
+  if (code === 'credential_scope_denied') return 403;
   if (code === 'invalid_token') return 401;
   if (code === 'auth_unavailable' || code === 'server_unavailable') return 503;
   if (code === 'request_too_large') return 413;
@@ -198,9 +203,10 @@ export function projectExternalActionHttpError(
   code: ExternalActionHttpErrorCode,
   requestId?: string,
 ): Readonly<{
-  statusCode: 400 | 401 | 409 | 413 | 500 | 503;
+  statusCode: 400 | 401 | 403 | 409 | 413 | 500 | 503;
   payload: ExternalActionHttpError;
 }> {
+  if (code === 'credential_scope_denied') return { statusCode: 403, payload: { error: code } };
   return isExternalActionHttpAuthenticationErrorCode(code)
     ? { statusCode: externalActionHttpErrorStatus(code), payload: { error: code } }
     : {
@@ -896,6 +902,7 @@ export const ExternalActionServerPrincipalV1Schema = z.object({
   principalId: ExternalActionServerPrincipalIdV1Schema,
   credentialId: ExternalActionServerPrincipalIdV1Schema,
   authority: z.literal('account_automation'),
+  grant: ApiTokenGrantV1Schema,
 }).strict();
 export type ExternalActionServerPrincipalV1 = z.infer<typeof ExternalActionServerPrincipalV1Schema>;
 

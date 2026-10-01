@@ -8,7 +8,7 @@ import {
   ProviderBrokerExternalApiKeyRelayBindingV1Schema,
   ProviderBrokerResourceTestRelayBindingV1Schema,
   PeerTcpTunnelRelayAuthorizationV2Schema,
-} from '../../machines/peer/mediation/tunnel/authorization.js';
+} from '../../machines/peer/mediation/tunnel/authorizationSchemas.js';
 import { UsageObservationTokensSchema } from '../../usage/usageAnalyticsContracts.js';
 import { TeamCredentialSourceBindingV1Schema } from './sourceBindingV1.js';
 import { TeamCredentialUsageLimitDenialV1Schema } from './usageV1.js';
@@ -17,6 +17,19 @@ import { TeamCredentialUsageLimitDenialV1Schema } from './usageV1.js';
 export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_API_BASE_PATH_V1 = '/api/provider-broker/v1' as const;
 export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_ADMISSION_HTTP_PATH_V1 = '/v1/teams/credential-resources/broker/external/admit' as const;
 export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_TERMINAL_USAGE_HTTP_PATH_V1 = '/v1/teams/credential-resources/broker/external/terminal-usage' as const;
+export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_OPERATION_RETIRE_EVENT_V1 = 'team-credential-external-provider-operation-retire-v1' as const;
+
+export const TeamCredentialExternalProviderOperationRetireV1Schema = z.object({
+  v: z.literal(1),
+  externalApiKeyId: z.string().uuid(),
+  operationId: z.string().uuid(),
+}).strict();
+export type TeamCredentialExternalProviderOperationRetireV1 = z.infer<typeof TeamCredentialExternalProviderOperationRetireV1Schema>;
+export const TeamCredentialExternalProviderOperationRetireResponseV1Schema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), retired: z.boolean() }).strict(),
+  z.object({ ok: z.literal(false), reasonCode: z.enum(['invalid_request', 'resource_forbidden']) }).strict(),
+]);
+export type TeamCredentialExternalProviderOperationRetireResponseV1 = z.infer<typeof TeamCredentialExternalProviderOperationRetireResponseV1Schema>;
 export const TEAM_CREDENTIAL_RESOURCE_TEST_ADMISSION_HTTP_PATH_V1 = '/v1/teams/credential-resources/broker/resource-test/admit' as const;
 export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_APPLICATION_HTTP_PATH_V1 = '/__happier/provider-broker/external/v1' as const;
 export const TEAM_CREDENTIAL_EXTERNAL_PROVIDER_RAW_BODY_MAX_BYTES_V1 =
@@ -186,6 +199,7 @@ export const TeamCredentialExternalProviderAdmissionResponseV1Schema = z.discrim
     operation: z.object({
       kind: z.literal('external_api_key'),
       externalApiKeyId: ExternalProviderApiKeyIdV1Schema,
+      operationId: z.string().uuid(),
       assignedAccountId: ExternalProviderIdentityV1Schema,
       assignedTeamMembershipId: ExternalProviderIdentityV1Schema,
     }).strict(),

@@ -153,6 +153,21 @@ function projectMutationAdmissionError(
     return "session_access_forbidden";
 }
 
+/**
+ * Admission-only seam for compound writes that carry an additional resource
+ * reference. It uses the same canonical capability decision as the grant
+ * writer, but lets the caller avoid validating/disclosing that secondary
+ * reference before the actor is known to manage this Session. The writer still
+ * repeats the check in its own transaction path.
+ */
+export async function assertSessionAccessManageAccessInTx(
+    tx: Tx,
+    input: Readonly<{ actorAccountId: string; sessionId: string; authentication: SessionAccessAuthentication }>,
+): Promise<SessionAccessGrantErrorCode | null> {
+    const admission = await assertMutationCapabilityInTx(tx, { ...input, capability: "manageAccess" });
+    return admission === "allowed" ? null : projectMutationAdmissionError(admission);
+}
+
 async function validateSessionContextTeamInTx(
     tx: Tx,
     params: Readonly<{ actorAccountId: string; teamId: string }>,
@@ -358,8 +373,10 @@ export async function applyInitialSessionAccessInTx(
     });
     const newlyGranted = new Set(effects.grantedAccountIds);
     for (const item of resolved) {
-        const accountIds = (await resolveAffectedAccountIdsInTx(tx, item.subject))
-            .filter((accountId) => newlyGranted.has(accountId));
+        const accountIds = item.subject.kind === "account"
+            ? [item.subject.accountId]
+            : (await resolveAffectedAccountIdsInTx(tx, item.subject))
+                .filter((accountId) => newlyGranted.has(accountId));
         if (accountIds.length === 0) continue;
         await applySessionAutoFollowForRelationshipChangeInTx(tx, {
             sessionId: params.sessionId,
@@ -773,11 +790,14 @@ export async function putSessionAccessGrantInTx(
     if (stored === null) {
         await applySessionAutoFollowForRelationshipChangeInTx(tx, {
             sessionId: params.sessionId,
-            // Only Accounts that actually gained effective read, never an overlap
-            // (teams-lane-04-session-access-sharing-authorship-presence.md §3).
-            // Eligibility, explicit-choice precedence and the conditional insert
-            // stay in the Follow owner.
-            accountIds: effects.grantedAccountIds,
+            // A direct share is itself the newly-created relationship, even when
+            // the recipient already reads through a Team. Derived Team/Group
+            // relationships still qualify only Accounts that gained effective
+            // read. Eligibility, explicit-choice precedence and conditional
+            // insertion remain in the Follow owner.
+            accountIds: subject.kind === "account"
+                ? [subject.accountId]
+                : effects.grantedAccountIds,
             relationship: subject.kind === "account" ? "direct" : subject.kind,
         });
     }

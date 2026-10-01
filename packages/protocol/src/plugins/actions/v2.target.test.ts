@@ -129,7 +129,7 @@ describe('plugin executable contribution target grammar', () => {
     }).success).toBe(false);
     expect(PluginActionContributionV2Schema.safeParse({
       ...daemonVoiceAction,
-      execution: { target: 'daemon', client: { artifactId: 'a', modulePath: './a', exportName: 'a' } },
+      execution: { target: 'daemon', client: { artifactId: 'a', exportName: 'a' } },
     }).success).toBe(false);
     expect(PluginToolContributionV2Schema.safeParse({
       id: 'voice-tool',
@@ -151,7 +151,6 @@ describe('plugin executable contribution target grammar', () => {
         target: 'client',
         client: {
           artifactId: 'preview-client',
-          modulePath: './previewClient',
           exportName: 'activatePreview',
         },
         platforms: ['web'],
@@ -169,16 +168,6 @@ describe('plugin executable contribution target grammar', () => {
       execution: {
         ...clientAction.execution,
         platforms: ['web', 'web'],
-      },
-    }).success).toBe(false);
-    expect(PluginActionContributionV2Schema.safeParse({
-      ...clientAction,
-      execution: {
-        ...clientAction.execution,
-        client: {
-          ...clientAction.execution.client,
-          modulePath: '../previewClient',
-        },
       },
     }).success).toBe(false);
   });

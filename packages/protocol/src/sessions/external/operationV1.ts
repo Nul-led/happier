@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { SessionIdSchema } from '../idsV1.js';
+import { SpawnSessionTerminalSchema } from '../spawnSession.js';
 import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { AbsoluteWorkspacePathSchema } from '../../workspaces/locationSchema.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
@@ -9,11 +10,12 @@ import {
   ExternalSessionRefSchema,
   ExternalSessionSourceIdSchema,
 } from './sourceCatalog.js';
-import { ExternalSessionTakeoverStorageModeV1Schema } from './takeoverV1.js';
+import { ExternalSessionDestructiveQuiescenceResultV1Schema, ExternalSessionTakeoverStorageModeV1Schema } from './takeoverV1.js';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 import {
   agentRoutingIdAddressesContributionIdentityV1,
 } from '../../plugins/contributionIdentity.js';
+import { PluginSourceCustodyV1Schema } from '../../plugins/runtime/sourceCustody.js';
 
 const OperationIdSchema = z.string().trim().min(1).max(256);
 const OperationReferenceIdSchema = z.string().trim().min(1).max(512);
@@ -110,7 +112,7 @@ const ExternalSessionOperationSourceBindingV1Schema = z.object({
   qualifiedIdentity: LinkedExternalSessionQualifiedIdentityV1Schema,
   linkGeneration: OperationGenerationSchema,
   sourceGeneration: OperationGenerationSchema,
-  contributionGeneration: OperationGenerationSchema,
+  sourceCustody: PluginSourceCustodyV1Schema,
 }).strict();
 
 const ExternalSessionMaterializeRequestV1Schema = z.object({
@@ -133,6 +135,7 @@ const ExternalSessionTakeoverRequestV1Schema = z.object({
   targetDirectory: ExternalSessionTakeoverTargetDirectoryV1Schema,
   // Remote takeover is explicitly outside ES-EXTERNAL-SESSIONS-v1.
   targetRuntimeMode: z.literal('terminal'),
+  terminal: SpawnSessionTerminalSchema.optional(),
 }).strict();
 
 /**
@@ -348,7 +351,6 @@ export const ExternalSessionCanonicalOwnerDisagreementV1Schema = z.object({
     'linked_session',
     'runtime_control',
     'transcript_authority',
-    'pending_admission',
     'publication',
   ]),
   expectedRevision: OperationRevisionSchema,
@@ -367,9 +369,9 @@ export type ExternalSessionCanonicalOwnerDisagreementV1 = z.infer<
  */
 export const ExternalSessionCanonicalOwnerEvidenceV1Schema = z.object({
   linkedSessionRevision: OperationRevisionSchema,
+  destructiveQuiescence: ExternalSessionDestructiveQuiescenceResultV1Schema.optional(),
   sourceSnapshotEvidenceRef: OperationSourceCursorEvidenceSchema.optional(),
   transcriptAuthorityRevision: OperationRevisionSchema.optional(),
-  pendingAdmissionRevision: OperationRevisionSchema.optional(),
   disagreement: ExternalSessionCanonicalOwnerDisagreementV1Schema.optional(),
 }).strict();
 export type ExternalSessionCanonicalOwnerEvidenceV1 = z.infer<

@@ -1,4 +1,4 @@
-import type { SessionViewerProjectionV1 } from "@happier-dev/protocol";
+import { ExternalSessionStorageStateV1Schema, type SessionViewerProjectionV1 } from "@happier-dev/protocol";
 import { AccountProfile } from "@/types";
 import { getPublicUrl } from "@/storage/blob/files";
 import { type UpdatePayload, type EphemeralPayload } from "./eventPayloadTypes";
@@ -22,6 +22,7 @@ import {
     type SessionTranscriptObservationProvenanceV1,
 } from "@happier-dev/protocol";
 import { applySessionTranscriptPublicationCeiling } from "@/app/session/sessionTranscriptPublicationPolicy";
+import { projectSessionInputAdmissionReceipt } from "@/app/session/messages/sessionInputAdmission";
 
 type UpdateMessagePayloadInput = Readonly<{
     id: string;
@@ -44,9 +45,11 @@ type UpdateMessagePayloadInput = Readonly<{
     /**
      * Sanitized authenticated Account actor, already evaluated by the server
      * projector. Absent means an unmigrated producer; `null` is an explicit
-     * retraction. The raw admission receipt is never accepted here.
+     * retraction.
      */
     accountActor?: SessionMessageAccountActorV1 | null;
+    /** Trusted database receipt, validated before authenticated wire publication. */
+    inputAdmissionReceipt?: unknown;
 }>;
 
 type UpdateMessagePayloadOptions = Readonly<{
@@ -72,9 +75,9 @@ function serializeUpdateMessage(message: UpdateMessagePayloadInput, options?: Up
             : {}),
         // Explicit object-or-null from a current producer; omitted only when the
         // publisher predates the projection. Deliberately whitelisted rather
-        // than spread, so `inputAdmissionReceipt`/`authorAccountId` on the
-        // source row can never reach the wire.
+        // than spread, so private source-row fields cannot reach the wire.
         ...("accountActor" in message ? { accountActor: message.accountActor ?? null } : {}),
+        ...projectSessionInputAdmissionReceipt(message.inputAdmissionReceipt),
     };
 }
 
@@ -104,6 +107,8 @@ export function buildNewSessionUpdate(session: {
     createdAt: Date;
     updatedAt: Date;
     meaningfulActivityAt?: Date | null;
+    /** The persisted storage state (`hosted` by default; `machine_only` for an external-session import). */
+    currentStorageState?: string | null;
 }, updateSeq: number, updateId: string, metadataProjection?: Readonly<{
     metadata: string;
     metadataVersion: number;
@@ -141,7 +146,12 @@ export function buildNewSessionUpdate(session: {
             activeAt: session.lastActiveAt.getTime(),
             createdAt: session.createdAt.getTime(),
             updatedAt: session.updatedAt.getTime(),
-            meaningfulActivityAt: (session.meaningfulActivityAt ?? session.createdAt).getTime()
+            meaningfulActivityAt: (session.meaningfulActivityAt ?? session.createdAt).getTime(),
+            // Clients decide which transcript reader may run from the storage state; without it a
+            // fresh import reads as a legacy linked session until the next list refresh.
+            ...(ExternalSessionStorageStateV1Schema.safeParse(session.currentStorageState).success
+                ? { currentStorageState: session.currentStorageState }
+                : {}),
         },
         createdAt: Date.now()
     };
@@ -224,6 +234,7 @@ export function buildUpdateSessionUpdate(
         pendingRequestObservedAt?: number | null;
         latestReadyEventSeq?: number | null;
         latestReadyEventAt?: number | null;
+        latestReadyEventLocalId?: string;
         latestTurnId?: string | null;
         latestTurnStatus?: PrimaryTurnStatusV1 | null;
         latestTurnStatusObservedAt?: number | null;
@@ -277,6 +288,9 @@ export function buildUpdateSessionUpdate(
                 : {}),
             ...(typeof projection?.latestReadyEventAt === 'number' || projection?.latestReadyEventAt === null
                 ? { latestReadyEventAt: projection.latestReadyEventAt }
+                : {}),
+            ...(projection?.latestReadyEventLocalId
+                ? { latestReadyEventLocalId: projection.latestReadyEventLocalId }
                 : {}),
             ...(projection && 'latestTurnId' in projection ? { latestTurnId: projection.latestTurnId ?? null } : {}),
             ...(projection && 'latestTurnStatus' in projection ? { latestTurnStatus: projection.latestTurnStatus ?? null } : {}),

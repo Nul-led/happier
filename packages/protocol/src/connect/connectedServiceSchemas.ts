@@ -14,6 +14,7 @@ import {
     PersistedConnectedServiceBindingsV1Schema,
 } from './connectedServiceBindings.js';
 import { ConnectedServiceCredentialKindSchema } from './connectedServiceCredentialKind.js';
+import { ProviderAccountSubscriptionV1Schema } from './accountSubscription.js';
 import {
     ConnectedServiceLimitCategoryV1Schema,
     type ConnectedServiceLimitCategoryV1,
@@ -521,6 +522,7 @@ export const ConnectedServiceQuotaSnapshotV1Schema = z.object({
     confidence: ConnectedServiceQuotaConfidenceV1Schema.optional(),
     evidence: ConnectedServiceQuotaEvidenceV1Schema.optional(),
     recoveryCredits: ConnectedServiceQuotaRecoveryCreditsV1Schema.optional(),
+    subscription: ProviderAccountSubscriptionV1Schema.optional(),
     meters: z.array(ConnectedServiceQuotaMeterV1Schema),
 });
 
@@ -665,6 +667,10 @@ export const ConnectedServiceAuthGroupStateV1Schema = z
         status: z.enum(['ready', 'switching', 'exhausted', 'error', 'unknown']).optional(),
         lastSwitchAt: z.number().int().nonnegative().nullable().optional(),
         lastSwitchReason: z.string().trim().min(1).nullable().optional(),
+        activeSince: z.object({
+            accountId: z.string().trim().min(1),
+            atMs: z.number().int().nonnegative(),
+        }).strict().nullable().optional(),
     })
     .passthrough()
     .default({});

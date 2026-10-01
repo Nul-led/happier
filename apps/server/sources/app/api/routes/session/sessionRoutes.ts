@@ -18,6 +18,7 @@ import { registerSessionSystemRecordRoutes } from "./registerSessionSystemRecord
 import { registerSessionSubagentCustodyRoutes } from "./registerSessionSubagentCustodyRoutes";
 import { registerSessionFollowRoutes } from "./registerSessionFollowRoutes";
 import { registerSessionFollowSourceRoutes } from "./registerSessionFollowSourceRoutes";
+import { registerSessionReportsToRoutes } from "./registerSessionReportsToRoutes";
 import { registerSessionBoardRoutes } from "./registerSessionBoardRoutes";
 
 export function sessionRoutes(app: Fastify) {
@@ -25,6 +26,7 @@ export function sessionRoutes(app: Fastify) {
     registerSessionBoardRoutes(app);
     registerSessionFollowRoutes(app);
     registerSessionFollowSourceRoutes(app);
+    registerSessionReportsToRoutes(app);
     registerSessionListingRoutes(app);
     registerSessionLookupByTagsRoute(app);
     registerSessionOrganizationRoutes(app);

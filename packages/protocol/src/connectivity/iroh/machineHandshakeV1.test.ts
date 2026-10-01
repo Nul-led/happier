@@ -92,9 +92,32 @@ function handshake(overrides: Partial<IrohMachineHandshakeV1> = {}): IrohMachine
 }
 
 describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () => {
+  it('admits the existing signed TCP tunnel scope without adding a destination authority', () => {
+    const original = handshake();
+    const tunnel = {
+      ...original,
+      flow: 'tcp_tunnel',
+      grant: {
+        ...original.grant,
+        payload: {
+          ...original.grant.payload,
+          flowKind: 'tcp_tunnel',
+          scope: { kind: 'tcp_tunnel', tunnelId: 'tunnel-1', allowedPorts: [3000], },
+          iroh: { ...original.grant.payload.iroh!, operationKind: 'tcp_tunnel' },
+        },
+      },
+    };
+    expect(IrohMachineHandshakeV1Schema.safeParse(tunnel).success).toBe(true);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...tunnel, destination: { host: '127.0.0.1', port: 3000 } }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...tunnel,
+      grant: { ...tunnel.grant, payload: { ...tunnel.grant.payload, flowKind: 'bounded_transfer', scope: original.grant.payload.scope } },
+    }).success).toBe(false);
+  });
+
   it('exposes the closed v1 wire version, carrier flows, and strict shape', () => {
     expect(IROH_MACHINE_HANDSHAKE_VERSION_V1).toBe(1);
-    expect(IROH_MACHINE_CARRIER_FLOWS_V1).toEqual(['finite_transfer', 'workspace_sync']);
+    expect(IROH_MACHINE_CARRIER_FLOWS_V1).toEqual(['finite_transfer', 'workspace_sync', 'tcp_tunnel']);
     expect(IrohMachineHandshakeV1Schema.parse(handshake())).toEqual(handshake());
   });
 

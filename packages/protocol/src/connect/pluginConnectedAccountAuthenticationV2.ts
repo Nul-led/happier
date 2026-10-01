@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { CanonicalHttpOriginSchema } from '../plugins/canonicalHttpOrigin.js';
+import { CanonicalHttpOriginSchema } from '../http/canonicalHttpOrigin.js';
 import { PluginContributionLocalIdSchema } from '../plugins/contributionIdentity.js';
 import {
   PluginConfigurationSettingFieldV2Schema,

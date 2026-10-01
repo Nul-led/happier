@@ -7,6 +7,7 @@ import { decodeBase64 } from './base64.js';
  */
 export type AccountScopedBlobKind =
   | 'account_settings'
+  | 'authoring_memory'
   | 'account_session_draft_private_payload'
   | 'action_operation_snapshot'
   | 'external_action_transport'
@@ -73,6 +74,7 @@ const ACCOUNT_SCOPED_KIND_BYTE = Object.freeze({
   workflow_checkpoint: 30,
   workflow_final_result: 31,
   runner_machine_content_key_verifier: 32,
+  authoring_memory: 33,
 } satisfies Record<AccountScopedBlobKind, number>);
 
 /**

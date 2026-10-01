@@ -12,6 +12,8 @@ export const AutomationSessionLifecycleEventSchema = z.enum([
   'parentTurnFailed',
   'parentTurnCancelled',
   'userActionRequired',
+  'sessionStarted',
+  'sessionArchived',
 ]);
 export type AutomationSessionLifecycleEvent = z.infer<
   typeof AutomationSessionLifecycleEventSchema

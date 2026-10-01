@@ -617,7 +617,7 @@ async function resolveWritableCollectionInTx(input: Readonly<{
         writableCollections: intent.writableCollections,
         revision: intent.revision.toString(),
     });
-    if (!parsedIntent.success || !parsedIntent.data.enabled || parsedIntent.data.desiredVersion === null) {
+    if (!parsedIntent.success || !parsedIntent.data.enabled) {
         throw new PluginCollectionMutationOperationError("collection_unavailable");
     }
     const writer = parsedIntent.data.writableCollections.find((candidate) => (
@@ -1700,10 +1700,11 @@ export async function updateIndexReadinessInTx(input: Readonly<{
     });
 }
 
-async function mutatePluginCollectionInTx(input: Readonly<{
+async function mutatePluginCollectionAfterAdmissionInTx(input: Readonly<{
     tx: Tx;
     accountId: string;
     request: PluginCollectionMutationRequestV1;
+    resolved: ResolvedWritableCollection;
     deployment: PluginDataCollectionsCapabilities;
     authentication: SessionAccessAuthentication | undefined;
     /**
@@ -1715,26 +1716,7 @@ async function mutatePluginCollectionInTx(input: Readonly<{
      */
     physicallyRetiresRequestedRow?: boolean;
 }>): Promise<PluginCollectionMutationResultV1> {
-    // Collection mutations share the Account-first transition fence with every
-    // mode-bound writer. The returned currentness is the sole encryption-mode
-    // authority for this transaction; do not re-read Account through a second
-    // local mode path after the fence.
-    const fence = await acquireAccountEncryptionTransitionFenceInTx(
-        input.tx,
-        input.accountId,
-    );
-    if (fence.status === "account_not_found") {
-        throw new PluginCollectionMutationOperationError("collection_unavailable");
-    }
-    if (fence.status === "account_inconsistent") {
-        throw new PluginCollectionMutationOperationError("collection_content_mode_mismatch");
-    }
-    const resolved = await resolveWritableCollectionInTx({
-        tx: input.tx,
-        accountId: input.accountId,
-        encryptionMode: fence.account.currentness.encryptionMode,
-        request: input.request,
-    });
+    const resolved = input.resolved;
     const operations = input.request.operations;
     const rowIds = operations.map((operation) => operation.rowId);
     const existingRows = await input.tx.pluginCollectionRow.findMany({
@@ -2040,6 +2022,34 @@ async function mutatePluginCollectionInTx(input: Readonly<{
     });
 }
 
+async function mutatePluginCollectionInTx(input: Readonly<{
+    tx: Tx;
+    accountId: string;
+    request: PluginCollectionMutationRequestV1;
+    deployment: PluginDataCollectionsCapabilities;
+    authentication: SessionAccessAuthentication | undefined;
+    physicallyRetiresRequestedRow?: boolean;
+}>): Promise<PluginCollectionMutationResultV1> {
+    // Collection mutations share the Account-first transition fence with every
+    // mode-bound writer. The returned currentness is the sole encryption-mode
+    // authority for this transaction; do not re-read Account through a second
+    // local mode path after the fence.
+    const fence = await acquireAccountEncryptionTransitionFenceInTx(input.tx, input.accountId);
+    if (fence.status === "account_not_found") {
+        throw new PluginCollectionMutationOperationError("collection_unavailable");
+    }
+    if (fence.status === "account_inconsistent") {
+        throw new PluginCollectionMutationOperationError("collection_content_mode_mismatch");
+    }
+    const resolved = await resolveWritableCollectionInTx({
+        tx: input.tx,
+        accountId: input.accountId,
+        encryptionMode: fence.account.currentness.encryptionMode,
+        request: input.request,
+    });
+    return await mutatePluginCollectionAfterAdmissionInTx({ ...input, resolved });
+}
+
 /**
  * The only live collection writer. Account intent owns current writable
  * contract selection; this owner consumes it in the same transaction as CAS,
@@ -2146,9 +2156,10 @@ export async function forgetPluginCollection(input: Readonly<{
             // The canonical mutation transaction owns this retirement's whole
             // publication: the logical delete, every relation nullification it
             // cascades, and the retired collection's full-scope invalidation.
-            const deleted = await mutatePluginCollectionInTx({
+            const deleted = await mutatePluginCollectionAfterAdmissionInTx({
                 tx,
                 accountId: input.accountId,
+                resolved,
                 deployment: readPluginsFeatureEnv(process.env).collectionLimits,
                 physicallyRetiresRequestedRow: true,
                 authentication: undefined,

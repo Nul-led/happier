@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 
 import { resolveServerWorkspaceRoot, runPrismaCli } from "./prismaCli";
 import { runCommand } from "./runCommand";
@@ -223,6 +223,34 @@ export function resolveSchemaSyncInvocation(params: Readonly<{
     };
 }
 
+export async function invalidateServerTypeScriptBuildInfo(params: Readonly<{
+    serverRoot: string;
+    statFile?: (path: string) => Promise<Readonly<{ mtimeMs: number }>>;
+    rmFile?: (path: string, options: Readonly<{ force: boolean }>) => Promise<void>;
+}>): Promise<void> {
+    const statFile = params.statFile ?? stat;
+    const buildInfoPath = join(
+        params.serverRoot,
+        "node_modules",
+        ".cache",
+        "tsc",
+        "server.typecheck.tsbuildinfo",
+    );
+    const buildInfo = await statFile(buildInfoPath).catch(() => null);
+    if (!buildInfo) return;
+    const repoRoot = join(params.serverRoot, "..", "..");
+    const declarationPaths = [
+        join(repoRoot, "node_modules", ".prisma", "client", "index.d.ts"),
+        join(params.serverRoot, "generated", "sqlite-client", "index.d.ts"),
+        join(params.serverRoot, "generated", "mysql-client", "index.d.ts"),
+    ];
+    const declarations = await Promise.all(declarationPaths.map(async (path) => (
+        await statFile(path).catch(() => null)
+    )));
+    if (!declarations.some((entry) => entry && entry.mtimeMs > buildInfo.mtimeMs)) return;
+    await (params.rmFile ?? rm)(buildInfoPath, { force: true });
+}
+
 async function main(): Promise<void> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     const serverRoot = resolveServerWorkspaceRoot(import.meta.url);
@@ -231,6 +259,7 @@ async function main(): Promise<void> {
 
     const schemaSyncInvocation = resolveSchemaSyncInvocation({ env, checkOnly });
     await runCommand(schemaSyncInvocation.command, schemaSyncInvocation.args, env, { cwd: serverRoot });
+    await invalidateServerTypeScriptBuildInfo({ serverRoot });
     if (await areRequestedPrismaOutputsCurrent({ serverRoot, providers })) {
         return;
     }
@@ -282,6 +311,7 @@ async function main(): Promise<void> {
             generatedClientDir: join(serverRoot, "generated", "mysql-client"),
         });
     }
+    await invalidateServerTypeScriptBuildInfo({ serverRoot });
 }
 
 if (isMainModule(import.meta.url, process.argv[1])) {

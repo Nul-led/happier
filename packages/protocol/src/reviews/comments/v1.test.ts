@@ -11,6 +11,37 @@ import {
 } from './v1.js';
 
 describe('ReviewCommentV1Schema', () => {
+  it('persists deferred triage without claiming a new dismissal verdict', () => {
+    const annotation = {
+      workspace: { machineId: 'machine-1', path: '/repo' }, commentId: 'comment-1',
+      expectedState: 'dismissed', expectedServerRevision: 3, toState: 'dismissed',
+      reviewTriageStatus: 'defer', clientMutationId: 'triage-defer',
+    };
+    expect(ReviewCommentTransitionRequestV1Schema.safeParse(annotation).success).toBe(true);
+    expect(ReviewCommentTransitionRequestV1Schema.safeParse({ ...annotation, expectedState: 'open' }).success).toBe(false);
+  });
+  it('authors a semantic finding on a machine workspace without a Project', () => {
+    const value = {
+      workspace: { machineId: 'machine-1', path: '/repo' },
+      anchor: { kind: 'file', filePath: 'src/a.ts' },
+      snapshot: { kind: 'too_large', filePath: 'src/a.ts', sizeBytes: 10, capBytes: 1, capturedAt: 1 },
+      body: 'A semantic finding.',
+      findingIdentity: 'a'.repeat(64),
+      findingSeverity: 'high',
+      clientMutationId: 'workspace-mutation',
+    };
+    expect(ReviewCommentCreateRequestV1Schema.safeParse(value).success).toBe(true);
+    expect(ReviewCommentCreateRequestV1Schema.safeParse({ ...value, workspace: undefined }).success).toBe(false);
+    expect(ReviewCommentTransitionRequestV1Schema.safeParse({
+      workspace: value.workspace,
+      commentId: 'comment-1',
+      expectedState: 'dismissed',
+      expectedServerRevision: 1,
+      toState: 'open',
+      reason: 'The reviewer raised this finding again.',
+      clientMutationId: 'workspace-transition',
+    }).success).toBe(true);
+  });
   it('accepts the broad durable comment shape with current state and append-only transitions', () => {
     const parsed = ReviewCommentV1Schema.parse({
       v: 1,

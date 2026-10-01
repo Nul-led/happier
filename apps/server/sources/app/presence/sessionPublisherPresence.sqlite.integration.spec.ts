@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { Socket } from "socket.io";
+import {
+    MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1,
+    MachineSessionTerminalCaptureResponseV1Schema,
+} from "@happier-dev/protocol";
+import { createFakeSocket, getSocketHandler } from "@/app/api/testkit/socketHarness";
+import { machineUpdateHandler } from "@/app/api/socket/machineUpdateHandler";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -68,6 +75,29 @@ describe("session publisher presence on SQLite", () => {
             fence,
         };
     }
+
+    it("does not replace a newer snapshot registration fence with a delayed heartbeat observation", async () => {
+        const seeded = await seed();
+        let clock = new Date(seeded.fence.getTime() + 20);
+        const presence = createSessionPublisherPresence({ now: () => clock });
+        const socket = {};
+        await presence.publishSnapshot({ socket, binding: seeded.binding, completeSnapshot: { state: "active", activeCount: 1 } });
+        const registered = await db.session.findUniqueOrThrow({
+            where: { id: seeded.binding.sessionId },
+            select: { active: true, lastActiveAt: true, publisherGenerationLastActiveAt: true, runtimeActivityRevision: true },
+        });
+        clock = new Date(seeded.fence.getTime() + 60_000);
+        await expect(presence.touchPublisher({ socket, observedAt: new Date(seeded.fence.getTime() + 10) }))
+            .resolves.toEqual({ status: "stale_observation" });
+        await expect(presence.registerPublisher({
+            socket, binding: seeded.binding, completeActivitySnapshot: { state: "unknown", activeCount: 0 },
+            observedAt: new Date(seeded.fence.getTime() + 10),
+        })).resolves.toEqual({ status: "rejected", reason: "contention" });
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: seeded.binding.sessionId },
+            select: { active: true, lastActiveAt: true, publisherGenerationLastActiveAt: true, runtimeActivityRevision: true },
+        })).resolves.toEqual(registered);
+    });
 
     async function seedEphemeralRunner() {
         const seeded = await seed();
@@ -817,6 +847,30 @@ describe("session publisher presence on SQLite", () => {
         await expect(presence.captureExplicitMachineStop({ binding: seeded.binding })).resolves.toEqual({
             status: "rejected",
             reason: "machine_control_unavailable",
+        });
+
+        const socket = createFakeSocket({ data: {
+            clientType: "machine-scoped",
+            machineId: seeded.binding.machineId,
+        } });
+        // FakeSocket models only the Socket.IO transport; admission and storage stay real.
+        machineUpdateHandler(seeded.binding.accountId, socket as unknown as Socket, {
+            operationSocketBatchLimits: {
+                ok: true,
+                limits: { maxItems: 200, maxSerializedBytes: 524_288 },
+            },
+            sessionPublisherPresence: presence,
+        });
+        const callback = vi.fn();
+        await getSocketHandler(socket, MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1)(
+            { v: 1, sessionId: seeded.binding.sessionId },
+            callback,
+        );
+        expect(MachineSessionTerminalCaptureResponseV1Schema.parse(callback.mock.calls[0]?.[0])).toEqual({
+            v: 1,
+            status: "rejected",
+            sessionId: seeded.binding.sessionId,
+            reason: "unauthorized",
         });
     });
 

@@ -222,7 +222,8 @@ export function projectTeamDirectorySourceSummary(params: Readonly<{
     // (`retryNotBefore`); the projection reports that fact instead of deriving a
     // second, disagreeing delay. Paused sources have no scheduled work.
     let nextScheduledAt: Date | null = null;
-    if (source.state !== "paused") {
+    if (source.state !== "paused"
+        && (source.lastErrorCode === null || isDirectoryErrorRetryable(source.lastErrorCode))) {
         const pendingRetryAt = safeError !== null && isDirectoryErrorRetryable(safeError)
             ? source.retryNotBefore ?? null
             : null;

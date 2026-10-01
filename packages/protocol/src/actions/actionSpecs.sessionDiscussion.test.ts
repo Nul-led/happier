@@ -32,7 +32,7 @@ const READ_ACTION_IDS = [
   'session.discussion.read',
 ] as const;
 
-const PRESENT_USER_ACTION_IDS = [
+const MANAGEMENT_ACTION_IDS = [
   'session.discussion.create',
   'session.discussion.rename',
   'session.discussion.archive',
@@ -62,23 +62,17 @@ describe('Session discussion Action catalog rows', () => {
       const spec = getActionSpec(actionId);
       expect(spec.inputSchema, actionId).toBe(SESSION_DISCUSSION_ACTION_INPUT_SCHEMAS_V1[actionId]);
       expect(spec.outputSchema, actionId).toBe(SESSION_DISCUSSION_ACTION_OUTPUT_SCHEMAS_V1[actionId]);
-      expect(spec.requiredAuthority, actionId).toBe(
-        PRESENT_USER_ACTION_IDS.includes(actionId as (typeof PRESENT_USER_ACTION_IDS)[number])
-          ? 'present_user'
-          : 'account_automation',
-      );
+      expect(spec.requiredAuthority, actionId).toBe('account_automation');
       // Discussions live on the Session's own Home and resolve through that owner.
       expect(spec.executionPlacement, actionId).toBe('session');
       expect(spec.contextualDefaults, actionId).toEqual({ sessionId: 'current_session' });
       expect(isInternalActionId(actionId), actionId).toBe(false);
       expect(isPluginProvenanceOnlyActionId(actionId), actionId).toBe(false);
-      expect(isPluginSurfaceExcludedActionId(actionId), actionId).toBe(
-        PRESENT_USER_ACTION_IDS.includes(actionId as (typeof PRESENT_USER_ACTION_IDS)[number]),
-      );
+      expect(isPluginSurfaceExcludedActionId(actionId), actionId).toBe(false);
     }
   });
 
-  it('exposes reads and posting to Agents while keeping management present-user only', () => {
+  it('exposes management to API callers while keeping Agent and MCP management disabled', () => {
     for (const actionId of READ_ACTION_IDS) {
       const spec = getActionSpec(actionId);
       expect(spec.surfaces.agent, actionId).toBe(true);
@@ -95,20 +89,17 @@ describe('Session discussion Action catalog rows', () => {
     expect(post.surfaces.mcp).toBe(true);
     expect(post.sideEffectClass).toBe('danger');
 
-    // Management and the explicit mark-read intent are present-user operations.
-    // An automatic foreground read observation must never become a tool that
-    // lets an Agent mark a human's messages read.
-    for (const actionId of PRESENT_USER_ACTION_IDS) {
+    for (const actionId of MANAGEMENT_ACTION_IDS) {
       const spec = getActionSpec(actionId);
       expect(spec.surfaces.agent, actionId).toBe(false);
       expect(spec.surfaces.mcp, actionId).toBe(false);
       expect(spec.surfaces.ui, actionId).toBe(true);
       expect(spec.surfaces.cli, actionId).toBe(true);
-      expect(spec.requiredAuthority, actionId).toBe('present_user');
-      expect(spec.surfaces.api, actionId).toBe(false);
-      expect(spec.surfaces.plugin, actionId).toBe(false);
-      expect(PUBLIC_ACTION_IDS, actionId).not.toContain(actionId);
-      expect(PublicActionIdSchema.safeParse(actionId).success, actionId).toBe(false);
+      expect(spec.requiredAuthority, actionId).toBe('account_automation');
+      expect(spec.surfaces.api, actionId).toBe(true);
+      expect(spec.surfaces.plugin, actionId).toBe(true);
+      expect(PUBLIC_ACTION_IDS, actionId).toContain(actionId);
+      expect(PublicActionIdSchema.safeParse(actionId).success, actionId).toBe(true);
     }
   });
 

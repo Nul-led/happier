@@ -28,6 +28,8 @@ import {
     LegacyHostSessionSystemRecordUpsertResponseSchema,
     PluginIdSchema,
     SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER,
+    SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
+    SESSION_SYSTEM_RECORDS_PROTOCOL_V1_HTTP_HEADER_VALUE,
     SessionSystemRecordAddressSchema,
     SessionSystemRecordErrorResponseSchema,
     SessionSystemRecordDeleteRequestSchema,
@@ -61,7 +63,7 @@ const PERMISSION_MEDIATION_RECORD_LIST_ROUTE_PARAMS_SCHEMA = SessionPermissionMe
 });
 
 function isSystemRecordV1Request(request: Readonly<{ headers: Record<string, unknown> }>): boolean {
-    return request.headers["x-happier-session-system-records-protocol"] === "1";
+    return request.headers[SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER] === SESSION_SYSTEM_RECORDS_PROTOCOL_V1_HTTP_HEADER_VALUE;
 }
 
 function readSystemRecordV1PluginId(request: Readonly<{ headers: Record<string, unknown> }>): string | null {
@@ -162,7 +164,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         preHandler: app.authenticate,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_LIST_ROUTE_PARAMS_SCHEMA,
@@ -194,7 +196,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         preHandler: app.authenticate,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
@@ -222,7 +224,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         preHandler: app.authenticate,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
@@ -256,7 +258,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         preHandler: app.authenticate,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
@@ -288,7 +290,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         errorHandler: handleSystemRecordRouteError,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: z.object({ sessionId: z.string() }),
@@ -364,7 +366,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         errorHandler: handleSystemRecordRouteError,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: z.object({ sessionId: z.string() }),
@@ -428,7 +430,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         errorHandler: handleLegacySystemRecordRouteError,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: z.object({ sessionId: z.string() }),
@@ -469,7 +471,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         errorHandler: handleSystemRecordRouteError,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: z.object({ sessionId: z.string() }),
@@ -540,7 +542,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         errorHandler: handleSystemRecordRouteError,
         config: {
             allowApiToken: true,
-            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+            restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
         },
         schema: {
             params: z.object({ sessionId: z.string() }),

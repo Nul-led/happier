@@ -31,9 +31,8 @@ function baseInput(overrides: Partial<Parameters<typeof resolveHostedWebAssetPol
 describe('hosted web asset policy', () => {
   it('derives the sole generated-V2 profile from the verified Artifact graph', () => {
     const graph = {
-      contributionId: 'panel',
+      artifactId: 'panel',
       tier: 'hostedWeb' as const,
-      platform: 'web' as const,
       entry: 'hosted-web/panel/index.html',
       files: [
         {
@@ -48,9 +47,8 @@ describe('hosted web asset policy', () => {
         },
       ],
       digest: `sha256:${'c'.repeat(64)}`,
-      builtWith: { bundler: 'vite' as const, version: '7.0.0' },
-      hostUiApiVersion: '1.0.0',
-      compat: {},
+      builtWith: { staging: 'staticDirectory' as const },
+      hostUiApiRange: '^1.0.0',
     };
 
     expect(deriveGeneratedHostedWebAssetPolicyV1(graph)).toMatchObject({

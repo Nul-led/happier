@@ -4,15 +4,14 @@ import { MessageActionReferenceV1Schema } from '../../sessions/messages/messageA
 import { PluginContributionLocalIdSchema as CanonicalPluginContributionLocalIdSchema } from '../contributionIdentity.js';
 import { PluginMachineMaterializationRefV1Schema } from '../availability/materializationRefV1.js';
 import { PluginJsonValueV2Schema } from '../contributions/publicTypes.js';
+import { PluginIdSchema } from '../pluginId.js';
 import { ComposerRefV1Schema, type ComposerRefV1 } from '../ui/composer.js';
 import { PluginUiSelectedActionInputCarrierV1Schema } from '../ui/selectedActionInput.js';
-import { PluginUiImmutableGenerationIdV1Schema as CanonicalPluginUiImmutableGenerationIdV1Schema } from '../ui/targetedContributions.js';
 import { asProtocolZod } from './internalProtocolZodAdapter.js';
 
 const PluginContributionLocalIdSchema = asProtocolZod(CanonicalPluginContributionLocalIdSchema);
-const PluginUiImmutableGenerationIdV1Schema = asProtocolZod(
-  CanonicalPluginUiImmutableGenerationIdV1Schema,
-);
+const PluginIdWireSchema = asProtocolZod(PluginIdSchema);
+const PluginRuntimeOccurrenceIdSchema = z.string().trim().min(1).max(512);
 
 /**
  * The mounted UI host's observed binding. This is not a caller credential: the
@@ -20,8 +19,10 @@ const PluginUiImmutableGenerationIdV1Schema = asProtocolZod(
  * invocation caller itself.
  */
 export const DaemonPluginStructuredMessageActionMountedBindingSchema = z.object({
+  pluginId: PluginIdWireSchema,
   contributionLocalId: PluginContributionLocalIdSchema,
-  materializationRef: PluginMachineMaterializationRefV1Schema,
+  occurrenceId: PluginRuntimeOccurrenceIdSchema,
+  materializationRef: PluginMachineMaterializationRefV1Schema.optional(),
 }).strict();
 export type DaemonPluginStructuredMessageActionMountedBinding = z.infer<
   typeof DaemonPluginStructuredMessageActionMountedBindingSchema
@@ -82,9 +83,8 @@ function composerRefSessionId(ref: ComposerRefV1): string | null {
 }
 
 const PluginActionDaemonInvocationV1Shape = {
-  expectedGeneration: z.string().trim().min(1),
   executionSurface: z.enum(['cli', 'ui', 'voice']),
-  expectedContributorImmutableGenerationId: PluginUiImmutableGenerationIdV1Schema.optional(),
+  expectedContributorOccurrenceId: PluginRuntimeOccurrenceIdSchema,
   selectedActionInputCarrier: PluginUiSelectedActionInputCarrierV1Schema.optional(),
   invocation: DaemonPluginStructuredMessageActionInvocationV1Schema.optional(),
   messageActionReference: MessageActionReferenceV1Schema.optional(),
@@ -178,17 +178,33 @@ function validatePluginActionDaemonDispatch(
 export const DaemonPluginStructuredMessageActionExecuteRequestSchema = z.object({
   machineId: z.string().trim().min(1),
   requestId: z.string().trim().min(1).max(2_000).optional(),
-  expectedGeneration: PluginActionDaemonInvocationV1Shape.expectedGeneration,
   qualifiedActionId: z.string().trim().min(1),
   input: PluginJsonValueV2Schema.optional(),
   sessionId: z.string().trim().min(1).optional(),
   executionSurface: PluginActionDaemonInvocationV1Shape.executionSurface,
-  expectedContributorImmutableGenerationId:
-    PluginActionDaemonInvocationV1Shape.expectedContributorImmutableGenerationId,
+  expectedContributorOccurrenceId:
+    PluginActionDaemonInvocationV1Shape.expectedContributorOccurrenceId,
   selectedActionInputCarrier: PluginActionDaemonInvocationV1Shape.selectedActionInputCarrier,
   invocation: PluginActionDaemonInvocationV1Shape.invocation,
   messageActionReference: PluginActionDaemonInvocationV1Shape.messageActionReference,
-}).strict().superRefine(validatePluginActionDaemonDispatch);
+  /**
+   * The present user's settled confirmation, given in the invoking UI before
+   * this request was sent. It is the only current-intent carrier for a `ui` or
+   * `voice` invocation: the daemon admits it without a durable approval
+   * artifact. Absent means the UI asked nobody, so a daemon that requires a
+   * present-user decision refuses rather than executing.
+   */
+  presentUserIntent: z.literal('confirmed').optional(),
+}).strict().superRefine((request, context) => {
+  validatePluginActionDaemonDispatch(request, context);
+  if (request.presentUserIntent !== undefined && request.executionSurface === 'cli') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['presentUserIntent'],
+      message: 'A present-user intent is valid only for the UI or Voice execution surface.',
+    });
+  }
+});
 export type DaemonPluginStructuredMessageActionExecuteRequest = z.infer<
   typeof DaemonPluginStructuredMessageActionExecuteRequestSchema
 >;

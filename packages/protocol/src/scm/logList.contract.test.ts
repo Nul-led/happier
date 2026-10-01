@@ -35,6 +35,13 @@ describe('ScmLogList wire contract with bounded commit query', () => {
         expect(response.queryApplied).toBe(true);
     });
 
+    it('accepts only the fixed incoming range and its explicit producer acknowledgement', () => {
+        expect(ScmLogListRequestSchema.parse({ cwd: '/repo', range: 'incoming' }).range).toBe('incoming');
+        expect(ScmLogListRequestSchema.safeParse({ cwd: '/repo', range: 'other-ref' }).success).toBe(false);
+        expect(ScmLogListResponseSchema.parse({ success: true, entries: [], rangeApplied: true }).rangeApplied).toBe(true);
+        expect(ScmLogListResponseSchema.parse({ success: true, entries: [] }).rangeApplied).toBeUndefined();
+    });
+
     it('rejects a query beyond the published bound', () => {
         const tooLong = 'a'.repeat(SCM_LOG_QUERY_MAX_LENGTH + 1);
         expect(ScmLogListRequestSchema.safeParse({ cwd: '/repo', query: tooLong }).success).toBe(false);

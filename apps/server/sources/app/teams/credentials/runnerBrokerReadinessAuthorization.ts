@@ -90,7 +90,11 @@ export async function readRunnerBrokerReadinessProjectionInTx(
         revision: machine.operationProtocolCapabilitiesRevision });
     return endpoint ? {
         credentialSelectionBinding: input.selection,
-        target: endpoint,
+        target: {
+            endpointId: endpoint.endpointId,
+            ...(endpoint.relayUrls ? { relayUrls: [...endpoint.relayUrls] } : {}),
+            ...(endpoint.directAddresses ? { directAddresses: [...endpoint.directAddresses] } : {}),
+        },
         provider: { identity: input.selection.application.implementationIdentity, definitionRevision: 1 },
         readiness: { kind: "available" },
     } : null;

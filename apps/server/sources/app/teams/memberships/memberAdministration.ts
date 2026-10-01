@@ -38,7 +38,9 @@ import {
     type TeamMemberActorFacts,
 } from "./capabilities";
 import { resolveTeamMembershipCapabilitiesV1 } from "../capabilities";
+import { readHomeGovernanceAccountInTx, resolveHomeGovernanceAuthority } from "@/app/home/governance/homeCapabilities";
 import { admitTeamMemberInTx, setTeamMembershipStatusInTx } from "./membershipService";
+import { withdrawIneligibleDirectoryGroupContributionsInTx } from "./externalFacts";
 import {
     isExternallyManagedMembership,
     projectTeamMembershipV1,
@@ -310,6 +312,48 @@ function memberSearchPredicate(query: string) {
             { account: { firstName: buildAccountTextPrefixFilter(query, provider) } },
             { account: { lastName: buildAccountTextPrefixFilter(query, provider) } },
         ],
+    };
+}
+
+/** One Team membership of one Account, as Home administration may see it. */
+export type HomeAdministeredTeamMembership = Readonly<{
+    teamId: string;
+    name: string;
+    role: TeamRole;
+    status: TeamMembershipStatus;
+    archived: boolean;
+}>;
+
+/**
+ * The Teams one Account belongs to, for the Home administrator's People detail.
+ *
+ * Authorized by the caller's Home `manageAccounts` authority, reread in this transaction: the
+ * answer is a Home-governance fact about a person, not a Team read, so it needs no Team role and
+ * is refused to everyone without account administration. It carries each Team's name and the
+ * membership's role and status only — never Groups, Session access, provisioning or management
+ * facts (`docs/teams.md`: Team administration authorizes governance only). Suspended memberships
+ * and archived Teams are included and flagged.
+ */
+export async function listTeamMembershipsForAccountInTx(
+    tx: Tx,
+    input: Readonly<{ actorAccountId: string; accountId: string }>,
+): Promise<TeamMemberServiceResult<readonly HomeAdministeredTeamMembership[]>> {
+    const actor = await readHomeGovernanceAccountInTx(tx, input.actorAccountId);
+    if (!resolveHomeGovernanceAuthority(actor).manageAccounts) return denied("team_forbidden");
+    const rows = await tx.teamMembership.findMany({
+        where: { accountId: input.accountId },
+        select: { role: true, status: true, team: { select: { id: true, name: true, archivedAt: true } } },
+        orderBy: [{ team: { name: "asc" } }, { teamId: "asc" }],
+    });
+    return {
+        ok: true,
+        value: rows.map((row) => Object.freeze({
+            teamId: row.team.id,
+            name: row.team.name,
+            role: row.role,
+            status: row.status,
+            archived: row.team.archivedAt !== null,
+        })),
     };
 }
 
@@ -750,7 +794,7 @@ export async function setTeamMemberManagementForActorInTx(
     const [current, currentIdentityConnectionManagement] = await Promise.all([
         tx.teamProvisionedIdentity.findUnique({
             where: { teamMembershipId: target.id },
-            select: { id: true, directorySourceId: true },
+            select: { id: true, directorySourceId: true, state: true },
         }),
         tx.teamMembershipIdentityConnectionManagement.findUnique({
             where: { teamMembershipId: target.id },
@@ -758,24 +802,12 @@ export async function setTeamMemberManagementForActorInTx(
         }),
     ]);
 
-    if (input.management.kind === "native") {
-        if (current) {
-            await tx.teamProvisionedIdentity.update({
-                where: { id: current.id },
-                data: { teamMembershipId: null, teamMembershipTeamId: null },
-            });
-        }
-        if (currentIdentityConnectionManagement) {
-            await tx.teamMembershipIdentityConnectionManagement.delete({
-                where: { teamMembershipId: target.id },
-            });
-        }
-        if (current || currentIdentityConnectionManagement) {
-            await publishTeamChangedInTx(tx, { teamId: input.teamId });
-        }
-    } else {
+    let nextIdentityId: string | null = null;
+    let changesManagement = current !== null || currentIdentityConnectionManagement !== null;
+    if (input.management.kind === "directory_source") {
         const { directorySourceId } = input.management;
-        if (!current || current.directorySourceId !== directorySourceId) {
+        changesManagement = current?.directorySourceId !== directorySourceId;
+        if (changesManagement) {
             const source = await tx.teamDirectorySource.findUnique({
                 where: { id: directorySourceId },
                 select: { id: true, teamId: true, state: true, activeReconcileRunId: true },
@@ -796,7 +828,16 @@ export async function setTeamMemberManagementForActorInTx(
                 select: { id: true },
             });
             if (!identity) return denied("management_conflict");
+            nextIdentityId = identity.id;
+        }
+    }
 
+    if (changesManagement) {
+        await withTeamSessionAccessEffectsInTx(tx, {
+            teamId: input.teamId,
+            accountIds: [target.accountId],
+            origin: "retained_lifecycle",
+        }, async (sessionAccessImpacts) => {
             if (current) {
                 await tx.teamProvisionedIdentity.update({
                     where: { id: current.id },
@@ -808,12 +849,24 @@ export async function setTeamMemberManagementForActorInTx(
                     where: { teamMembershipId: target.id },
                 });
             }
-            await tx.teamProvisionedIdentity.update({
-                where: { id: identity.id },
-                data: { teamMembershipId: target.id, teamMembershipTeamId: input.teamId },
-            });
+            if (nextIdentityId) {
+                await tx.teamProvisionedIdentity.update({
+                    where: { id: nextIdentityId },
+                    data: { teamMembershipId: target.id, teamMembershipTeamId: input.teamId },
+                });
+            }
+            if (current) {
+                await withdrawIneligibleDirectoryGroupContributionsInTx(tx, {
+                    teamId: input.teamId,
+                    teamMembershipId: target.id,
+                    accountId: target.accountId,
+                    directorySourceId: current.directorySourceId,
+                    releasedIdentityState: current.state,
+                    sessionAccessImpacts,
+                });
+            }
             await publishTeamChangedInTx(tx, { teamId: input.teamId });
-        }
+        });
     }
 
     const member = await projectMemberInTx(tx, { context, membershipId: target.id });

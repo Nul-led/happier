@@ -11,6 +11,7 @@ describe("Team credential direct-material routes", () => {
         const base = "/v2/teams/:teamId/credential-resources/:resourceId/direct-material";
         expect(app.routes.has(`GET ${base}`)).toBe(true);
         expect(app.routes.has(`PUT ${base}`)).toBe(true);
+        expect(app.routes.has(`DELETE ${base}`)).toBe(true);
         expect(app.routes.has("POST /v1/teams/credential-resources/direct-material/preparation/list")).toBe(false);
     });
 });

@@ -11,7 +11,7 @@ import {
     setIdentityVisibilityInTx,
     unlinkIdentity,
 } from './accountIdentityLifecycle';
-import { connectExternalIdentity } from './identity';
+import { prepareExternalIdentityConnection } from './identity';
 import { resolveOAuthRuntimeById } from './identityProviderCatalog';
 import { encryptString } from '@/modules/encrypt';
 
@@ -237,13 +237,14 @@ describe('AccountIdentity lifecycle transaction contract', () => {
         const runtime = await resolveOAuthRuntimeById(process.env, provider.id);
         expect(runtime).not.toBeNull();
 
-        await expect(connectExternalIdentity({
+        const prepared = await prepareExternalIdentityConnection({
             providerId: provider.id,
             reference: runtime!.reference,
             ctx: { uid: a.id } as never,
             profile: { sub: 'subject-1', preferred_username: 'alice' },
             accessToken: 'test-token',
-        })).resolves.toBeUndefined();
+        });
+        await expect(inTx(prepared.connectInTx)).resolves.toBeUndefined();
         await expect(db.accountIdentity.findFirst({
             where: { accountId: a.id, provider: provider.id },
             select: { providerUserId: true },

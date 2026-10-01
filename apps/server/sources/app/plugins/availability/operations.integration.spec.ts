@@ -17,6 +17,7 @@ import {
     createPluginUiArtifactArchiveV1,
     encodePluginUiArtifactArchiveBodyV1,
 } from "@happier-dev/protocol/plugins/ui";
+import { createPluginEventAutomationSetupResultV1JsonSchema } from "@happier-dev/protocol/automations/event-setup-result";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
@@ -25,6 +26,15 @@ import {
     retirePluginCollectionCandidatePreparation,
     stagePluginCollectionCandidatePreparation,
 } from "@/app/plugins/data/collections/candidatePreparation";
+import { readCurrentPluginCollectionContract } from "@/app/plugins/data/collections/uiQuery";
+import {
+    resolveCurrentPluginWebhookClaimAuthoritiesTxV1,
+    resolveCurrentPluginWebhookContributionTxV1,
+} from "@/app/plugins/webhooks/currentContribution";
+import {
+    assertCurrentAutomationEventCallerMaterializationTx,
+    resolveCurrentAutomationEventContributionTx,
+} from "@/app/automations/automationEventCurrentness";
 
 import {
     createPluginAvailabilityOperations,
@@ -55,29 +65,16 @@ function releaseFacts(overrides: Record<string, unknown> = {}) {
         collectionContracts: [],
         uiSlots: [{
             contributionId: "hosted",
+            artifactId: "hosted",
             tier: "hostedWeb",
             platform: "web",
             artifactDigest: `sha256:${"b".repeat(64)}`,
-            compatibility: {
-                hostUiApiVersion: "1.0.0",
-            },
+            hostUiApiRange: "^1.0.0",
         }],
         packageAssetArchive: {
             archiveDigestSha256: `sha256:${"c".repeat(64)}`,
             resources: [],
         },
-        ...overrides,
-    };
-}
-
-function hostedArtifactLinkCompatibility(overrides: Record<string, unknown> = {}) {
-    return {
-        hostAppVersion: "2.0.0",
-        hostUiApiVersion: "1.0.0",
-        reactVersion: "19.2.0",
-        platform: "web",
-        channel: "store",
-        nativeCapabilities: ["safe-area"],
         ...overrides,
     };
 }
@@ -90,9 +87,8 @@ function createBrowserArtifactArchive() {
         { relativePath: "hosted-web/hosted/assets/app.js", bytes: moduleBytes },
     ];
     const graph = {
-        contributionId: "hosted",
+        artifactId: "hosted",
         tier: "hostedWeb" as const,
-        platform: "web" as const,
         entry: "hosted-web/hosted/index.html",
         files: files.map((file) => ({
             relativePath: file.relativePath,
@@ -100,9 +96,8 @@ function createBrowserArtifactArchive() {
             byteSize: file.bytes.byteLength,
         })),
         digest: computePluginUiArtifactFileSetSha256DigestV1(files),
-        builtWith: { bundler: "vite" as const, version: "7.0.0" },
-        hostUiApiVersion: "1.0.0",
-        compat: {},
+        builtWith: { staging: "staticDirectory" as const },
+        hostUiApiRange: "^1.0.0",
     };
     const archive = createPluginUiArtifactArchiveV1({
         pluginId: PLUGIN_ID,
@@ -325,8 +320,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: fixture.ref,
                 slot: fixture.slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: fixture.uiArtifactId,
+                accountArtifactId: fixture.uiArtifactId,
                 artifact: fixture.uiArtifact,
             },
         });
@@ -412,7 +406,7 @@ describe("plugin Availability operations", () => {
 
         await service.publishRelease({
             accountId: ACCOUNT_ID,
-            input: { facts, sourceClass: "bundledFirstParty" },
+            input: { facts, sourceClass: "versionedArchive" },
         });
         await expect(db.accountPluginIntent.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(0);
 
@@ -618,6 +612,23 @@ describe("plugin Availability operations", () => {
         })).resolves.toMatchObject({
             intent: { enabled: false, revision: "1" },
         });
+
+        // An identical body is a rejoin: no revision, Account.seq or change hint.
+        const readSeq = async () => (await db.account.findUniqueOrThrow({
+            where: { id: ACCOUNT_ID },
+            select: { seq: true },
+        })).seq;
+        const seqBefore = await readSeq();
+        const changesBefore = await db.accountChange.count({ where: { accountId: ACCOUNT_ID } });
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: { ...input, enabled: false, expectedRevision: "1" },
+        })).resolves.toMatchObject({
+            intent: { enabled: false, revision: "1" },
+        });
+        await expect(readSeq()).resolves.toBe(seqBefore);
+        await expect(db.accountChange.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(changesBefore);
     });
 
     it("promotes exactly one complete candidate generation inside the intent CAS and rolls back a partial candidate", async () => {
@@ -924,7 +935,7 @@ describe("plugin Availability operations", () => {
     });
 
     it.each(["plain", "e2ee"] as const)(
-        "lists selected Account intent identities in sorted order without fabricating a machine materialization for a %s Account",
+        "lists every Account intent identity, including release-less ones, in sorted order without fabricating a machine materialization for a %s Account",
         async (encryptionMode) => {
             await seedAccountAndMachine({ encryptionMode });
             const service = operations();
@@ -994,11 +1005,534 @@ describe("plugin Availability operations", () => {
 
             expect(discovery).toEqual({
                 availabilityCursor: account.seq,
-                pluginIds: [DISABLED_PLUGIN_ID, PLUGIN_ID],
+                pluginIds: [DISABLED_PLUGIN_ID, PLUGIN_ID, "com.acme.unselected"],
             });
             expect(materializations.snapshots).toEqual([]);
         },
     );
+
+    describe("release-less Collection writer claims", () => {
+        const CLAIMED_TASKS_V1 = {
+            id: "tasks",
+            schemaVersion: 1,
+            rowIdField: "id",
+            schema: {
+                type: "object",
+                properties: {
+                    id: { type: "string", maxLength: 256 },
+                    status: { type: "string", enum: ["closed", "open"] },
+                },
+                required: ["id", "status"],
+                additionalProperties: false,
+            },
+            serverReadable: ["status"],
+            indexes: [{ id: "by-status", fields: [{ field: "status", direction: "asc" }] }],
+            relations: [],
+        } as const;
+        const CLAIMED_TASKS_V2 = {
+            ...CLAIMED_TASKS_V1,
+            schemaVersion: 2,
+            schema: {
+                ...CLAIMED_TASKS_V1.schema,
+                properties: {
+                    ...CLAIMED_TASKS_V1.schema.properties,
+                    title: { type: "string", maxLength: 256 },
+                },
+            },
+        } as const;
+
+        function claimedRef(collection: unknown) {
+            const [contract] = normalizePluginAccountCollectionContractsV1({
+                pluginId: PLUGIN_ID,
+                contributions: [PluginAccountCollectionContributionV1Schema.parse(collection)],
+            });
+            return {
+                pluginId: contract!.pluginId,
+                collectionId: contract!.collectionId,
+                schemaVersion: contract!.schemaVersion,
+                contractDigest: contract!.contractDigest,
+            };
+        }
+
+        function claimManifest(accountCollections: readonly unknown[], version: string = RELEASE.version) {
+            return {
+                ...releaseFacts().normalizedManifest,
+                version,
+                contributes: { accountCollections },
+            };
+        }
+
+        async function readAccountSeq(accountId = ACCOUNT_ID) {
+            return (await db.account.findUniqueOrThrow({
+                where: { id: accountId },
+                select: { seq: true },
+            })).seq;
+        }
+
+        it("creates a release-less writer pointer that Data admits and Availability discovery lists", async () => {
+            await seedAccountAndMachine();
+            const service = operations();
+
+            await expect(service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: claimManifest([CLAIMED_TASKS_V1]) },
+            })).resolves.toEqual({
+                intent: {
+                    pluginId: PLUGIN_ID,
+                    desiredVersion: null,
+                    enabled: true,
+                    offlineUiHosting: "disabled",
+                    writableCollections: [claimedRef(CLAIMED_TASKS_V1)],
+                    revision: "0",
+                },
+            });
+            await expect(db.pluginCollectionIndexState.findMany({
+                where: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID },
+                select: { indexId: true, buildState: true },
+            })).resolves.toEqual([{ indexId: "by-status", buildState: "ready" }]);
+            await expect(readCurrentPluginCollectionContract({
+                accountId: ACCOUNT_ID,
+                request: { ref: claimedRef(CLAIMED_TASKS_V1) },
+            })).resolves.toMatchObject({ access: "writable" });
+            await expect(service.listIntentIds({ accountId: ACCOUNT_ID, input: {} }))
+                .resolves.toMatchObject({ pluginIds: [PLUGIN_ID] });
+        });
+
+        it("rejoins an identical claim, never lowers a schemaVersion, and refuses an unbumped schema change", async () => {
+            await seedAccountAndMachine();
+            const service = operations();
+            const claim = (collection: unknown, version?: string) => service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: claimManifest([collection], version) },
+            });
+
+            await claim(CLAIMED_TASKS_V2);
+            const seqAfterClaim = await readAccountSeq();
+
+            await expect(claim(CLAIMED_TASKS_V2)).resolves.toMatchObject({
+                intent: { writableCollections: [claimedRef(CLAIMED_TASKS_V2)], revision: "0" },
+            });
+            // A lagging machine's lower claim is settled by the monotonic rule:
+            // the pointer stays at v2, the newer declaration stays, and nothing
+            // semantic changes.
+            await expect(claim(CLAIMED_TASKS_V1, "1.2.2")).resolves.toMatchObject({
+                intent: { writableCollections: [claimedRef(CLAIMED_TASKS_V2)], revision: "0" },
+            });
+            await expect(readAccountSeq()).resolves.toBe(seqAfterClaim);
+
+            await expect(claim({
+                ...CLAIMED_TASKS_V2,
+                relations: [],
+                schema: {
+                    ...CLAIMED_TASKS_V2.schema,
+                    properties: {
+                        ...CLAIMED_TASKS_V2.schema.properties,
+                        id: { type: "string", maxLength: 128 },
+                    },
+                },
+            })).rejects.toMatchObject({ code: "plugin_collection_contract_conflict" });
+            await expect(service.readIntent({
+                accountId: ACCOUNT_ID,
+                input: { pluginId: PLUGIN_ID },
+            })).resolves.toMatchObject({
+                intent: { writableCollections: [claimedRef(CLAIMED_TASKS_V2)], revision: "0" },
+            });
+        });
+
+        it("never overrides a present-user release selection, while the user can select a release over a claim", async () => {
+            await seedAccountAndMachine();
+            const service = operations();
+            const normalizedManifest = {
+                ...releaseFacts().normalizedManifest,
+                contributes: { accountCollections: [CLAIMED_TASKS_V1] },
+            };
+            await service.publishRelease({
+                accountId: ACCOUNT_ID,
+                input: {
+                    facts: releaseFacts({
+                        normalizedManifest,
+                        collectionContracts: [claimedRef(CLAIMED_TASKS_V1)],
+                    }),
+                    sourceClass: "registryPackage",
+                },
+            });
+
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: claimManifest([CLAIMED_TASKS_V1]) },
+            });
+            await expect(service.setIntent({
+                accountId: ACCOUNT_ID,
+                input: {
+                    pluginId: PLUGIN_ID,
+                    desiredVersion: RELEASE.version,
+                    enabled: true,
+                    offlineUiHosting: "disabled",
+                    writableCollections: [claimedRef(CLAIMED_TASKS_V1)],
+                    expectedRevision: "0",
+                },
+            })).resolves.toMatchObject({
+                intent: { desiredVersion: RELEASE.version, revision: "1" },
+            });
+
+            await expect(service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: claimManifest([CLAIMED_TASKS_V2]) },
+            })).rejects.toMatchObject({ code: "plugin_intent_release_selected" });
+            await expect(service.readIntent({
+                accountId: ACCOUNT_ID,
+                input: { pluginId: PLUGIN_ID },
+            })).resolves.toMatchObject({
+                intent: {
+                    desiredVersion: RELEASE.version,
+                    writableCollections: [claimedRef(CLAIMED_TASKS_V1)],
+                    revision: "1",
+                },
+            });
+        });
+
+        it("keeps another Account's release from squatting a plugin's Collection identity", async () => {
+            await seedAccountAndMachine();
+            const squatterAccountId = "account-plugin-availability-squatter";
+            await db.account.create({
+                data: { id: squatterAccountId, publicKey: null, encryptionMode: "plain" },
+            });
+            const service = operations();
+            const squattingCollection = {
+                ...CLAIMED_TASKS_V1,
+                schema: {
+                    ...CLAIMED_TASKS_V1.schema,
+                    properties: {
+                        ...CLAIMED_TASKS_V1.schema.properties,
+                        id: { type: "string", maxLength: 64 },
+                    },
+                },
+            };
+            await service.publishRelease({
+                accountId: squatterAccountId,
+                input: {
+                    facts: releaseFacts({
+                        normalizedManifest: {
+                            ...releaseFacts().normalizedManifest,
+                            contributes: { accountCollections: [squattingCollection] },
+                        },
+                        collectionContracts: [claimedRef(squattingCollection)],
+                    }),
+                    sourceClass: "registryPackage",
+                },
+            });
+
+            await expect(service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: claimManifest([CLAIMED_TASKS_V1]) },
+            })).resolves.toMatchObject({
+                intent: { writableCollections: [claimedRef(CLAIMED_TASKS_V1)] },
+            });
+        });
+    });
+
+    describe("release-less declarations for webhooks and automation Events", () => {
+        const DECLARED_VERSION = "2.0.0";
+        const MATERIALIZATION_ID = "daemon-selected-materialization";
+        const WEBHOOK_LOCAL_ID = "repository-events";
+        const EVENT_LOCAL_ID = "repository-event";
+        const SOURCE_CONFIG_SCHEMA = { type: "object", additionalProperties: false } as const;
+        const BUNDLED_CUSTODY = {
+            kind: "bundled_first_party",
+            packagedRuntime: { kind: "cli_version_root", versionRootId: "cli-2.0.0" },
+        } as const;
+
+        function declaredManifest(version = DECLARED_VERSION, eventTitle = "Repository event") {
+            return {
+                ...releaseFacts().normalizedManifest,
+                version,
+                entrypoints: { daemon: "./dist/index.js" },
+                contributes: {
+                    actions: [{
+                        id: "receive-repository-events",
+                        title: "Receive repository events",
+                        scopes: ["global"],
+                        surfaces: ["plugin"],
+                        dangerLevel: "safe",
+                        execution: { target: "daemon" },
+                    }, {
+                        id: "setup-repository-source",
+                        title: "Set up repository source",
+                        scopes: ["global"],
+                        surfaces: ["plugin"],
+                        dangerLevel: "safe",
+                        execution: { target: "daemon" },
+                        inputSchema: SOURCE_CONFIG_SCHEMA,
+                        resultSchema: createPluginEventAutomationSetupResultV1JsonSchema(1, SOURCE_CONFIG_SCHEMA),
+                    }],
+                    webhooks: [{
+                        id: WEBHOOK_LOCAL_ID,
+                        title: "Repository events",
+                        verifier: { kind: "github_hmac_sha256_v1", routing: "accountEndpoint" },
+                        handlerAction: { localId: "receive-repository-events" },
+                    }],
+                    events: [{
+                        id: EVENT_LOCAL_ID,
+                        kind: "event",
+                        title: eventTitle,
+                        payloadSchema: { type: "object", additionalProperties: false },
+                        automation: {
+                            v: 1,
+                            eligible: true,
+                            source: {
+                                sourceContractVersion: 1,
+                                supportedObservationTransports: ["checkpointedPull"],
+                                sourceConfigSchema: SOURCE_CONFIG_SCHEMA,
+                                setupActionRef: { pluginId: PLUGIN_ID, localId: "setup-repository-source" },
+                            },
+                        },
+                    }],
+                },
+            };
+        }
+
+        async function seedWebhookCapableMachine() {
+            await seedAccountAndMachine();
+            await db.machine.update({
+                where: { accountId_id: { accountId: ACCOUNT_ID, id: MACHINE_ID } },
+                data: {
+                    operationProtocolCapabilities: { pluginWebhookClaim: { protocolVersions: [1] } },
+                    operationProtocolCapabilitiesRevision: 1,
+                },
+            });
+        }
+
+        async function reportMaterialization(
+            service: ReturnType<typeof operations>,
+            materialization: Readonly<{
+                sourceClass: "bundledFirstParty" | "localPath" | "registryPackage";
+                version: string;
+                archiveDigestSha256?: string;
+            }>,
+        ) {
+            const portableRelease = materialization.sourceClass === "registryPackage";
+            const { pluginMaterializationRevision } = await db.machine.findUniqueOrThrow({
+                where: { accountId_id: { accountId: ACCOUNT_ID, id: MACHINE_ID } },
+                select: { pluginMaterializationRevision: true },
+            });
+            await service.reportMaterializations({
+                accountId: ACCOUNT_ID,
+                publisherMachineId: MACHINE_ID,
+                input: {
+                    expectedRevision: pluginMaterializationRevision === null
+                        ? null
+                        : Number(pluginMaterializationRevision),
+                    snapshot: {
+                        serverIdentityId: SERVER_IDENTITY_ID,
+                        machineId: MACHINE_ID,
+                        materializations: [{
+                            serverIdentityId: SERVER_IDENTITY_ID,
+                            machineId: MACHINE_ID,
+                            materializationId: MATERIALIZATION_ID,
+                            pluginId: PLUGIN_ID,
+                            version: materialization.version,
+                            sourceClass: materialization.sourceClass,
+                            portableRelease,
+                            ...(materialization.archiveDigestSha256
+                                ? { archiveDigestSha256: materialization.archiveDigestSha256 }
+                                : {}),
+                            uiArtifacts: [],
+                            enabled: true,
+                            trustState: "trusted" as const,
+                            observedAt: 1_700_000_000_000,
+                        }],
+                    },
+                },
+            });
+        }
+
+        const TARGET = {
+            materialization: { machineId: MACHINE_ID, materializationId: MATERIALIZATION_ID, pluginId: PLUGIN_ID },
+            machineInstallationId: "machine-installation-availability",
+        } as const;
+        const CALLER = {
+            pluginId: PLUGIN_ID,
+            machineId: MACHINE_ID,
+            machineInstallationId: "machine-installation-availability",
+            materializationId: MATERIALIZATION_ID,
+            sourceCustody: BUNDLED_CUSTODY,
+        } as const;
+
+        async function readCurrentness(version: string) {
+            return await inTx(async (tx) => {
+                const materialization = await resolveCurrentClaimablePluginMachineMaterializationTx({
+                    tx,
+                    accountId: ACCOUNT_ID,
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    machineInstallationId: TARGET.machineInstallationId,
+                    materializationId: MATERIALIZATION_ID,
+                    pluginId: PLUGIN_ID,
+                    version,
+                    requiredMachineOperationCapability: "pluginWebhookClaim",
+                });
+                const webhook = await resolveCurrentPluginWebhookContributionTxV1({
+                    tx,
+                    accountId: ACCOUNT_ID,
+                    contribution: { pluginId: PLUGIN_ID, localId: WEBHOOK_LOCAL_ID },
+                    target: { ...TARGET, pluginVersion: version },
+                });
+                const claimAuthorities = await resolveCurrentPluginWebhookClaimAuthoritiesTxV1({
+                    tx,
+                    accountId: ACCOUNT_ID,
+                    targets: [{ materializationId: MATERIALIZATION_ID, pluginId: PLUGIN_ID, version }],
+                });
+                return { materialization, webhook, claimAuthorities };
+            });
+        }
+
+        async function readEventCurrentness() {
+            return await inTx(async (tx) => {
+                const caller = await assertCurrentAutomationEventCallerMaterializationTx({
+                    tx,
+                    accountId: ACCOUNT_ID,
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    caller: CALLER,
+                });
+                const event = await resolveCurrentAutomationEventContributionTx({
+                    tx,
+                    accountId: ACCOUNT_ID,
+                    pluginId: PLUGIN_ID,
+                    version: caller.version,
+                    eventLocalId: EVENT_LOCAL_ID,
+                    sourceContractVersion: 1,
+                });
+                return { caller, event };
+            });
+        }
+
+        it.each([
+            ["bundled first-party", "bundledFirstParty"],
+            ["development", "localPath"],
+        ] as const)("admits a %s plugin's webhook and automation Event through its release-less claim", async (_label, sourceClass) => {
+            await seedWebhookCapableMachine();
+            const service = operations();
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest() },
+            });
+            await reportMaterialization(service, { sourceClass, version: DECLARED_VERSION });
+
+            const current = await readCurrentness(DECLARED_VERSION);
+            expect(current.materialization).toMatchObject({
+                kind: "current",
+                materialization: { materializationId: MATERIALIZATION_ID, sourceClass },
+            });
+            expect(current.webhook).toMatchObject({ pluginId: PLUGIN_ID, localId: WEBHOOK_LOCAL_ID });
+            expect(current.claimAuthorities).toMatchObject([{
+                materializationId: MATERIALIZATION_ID,
+                contribution: { localId: WEBHOOK_LOCAL_ID },
+            }]);
+            const first = await readEventCurrentness();
+            expect(first.caller.eventDeclarationRelease).toEqual({
+                release: { pluginId: PLUGIN_ID, version: DECLARED_VERSION },
+                archiveDigestSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+            });
+            expect(first.event).toMatchObject({ id: EVENT_LOCAL_ID, kind: "event" });
+
+            // A development edit that keeps its version re-claims in place, and
+            // the Event declaration identity follows the new declaration.
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest(DECLARED_VERSION, "Edited repository event") },
+            });
+            const edited = await readEventCurrentness();
+            expect(edited.event).toMatchObject({ title: "Edited repository event" });
+            expect(edited.caller.eventDeclarationRelease.archiveDigestSha256)
+                .not.toBe(first.caller.eventDeclarationRelease.archiveDigestSha256);
+        });
+
+        it("refuses a daemon-selected materialization whose version differs from the claimed declaration", async () => {
+            await seedWebhookCapableMachine();
+            const service = operations();
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest() },
+            });
+            await reportMaterialization(service, { sourceClass: "bundledFirstParty", version: "2.0.1" });
+
+            await expect(readCurrentness("2.0.1")).resolves.toEqual({
+                materialization: { kind: "notCurrent" },
+                webhook: null,
+                claimAuthorities: [],
+            });
+            await expect(readEventCurrentness()).rejects.toMatchObject({
+                code: "caller_materialization_not_current",
+            });
+
+            // A lagging machine's lower claim never replaces the newer declaration.
+            await reportMaterialization(service, { sourceClass: "bundledFirstParty", version: DECLARED_VERSION });
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest("1.9.0") },
+            });
+            await expect(readCurrentness(DECLARED_VERSION)).resolves.toMatchObject({
+                materialization: { kind: "current" },
+            });
+        });
+
+        it("lets a user-selected release win over the release-less claim", async () => {
+            await seedWebhookCapableMachine();
+            const service = operations();
+            await service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest() },
+            });
+            await reportMaterialization(service, { sourceClass: "bundledFirstParty", version: DECLARED_VERSION });
+            const facts = releaseFacts({
+                normalizedManifest: declaredManifest(RELEASE.version),
+                uiSlots: [],
+            });
+            await service.publishRelease({
+                accountId: ACCOUNT_ID,
+                input: { facts, sourceClass: "registryPackage" },
+            });
+            await service.setIntent({
+                accountId: ACCOUNT_ID,
+                input: {
+                    pluginId: PLUGIN_ID,
+                    desiredVersion: RELEASE.version,
+                    enabled: true,
+                    offlineUiHosting: "disabled",
+                    writableCollections: [],
+                    expectedRevision: "0",
+                },
+            });
+
+            await expect(readCurrentness(DECLARED_VERSION)).resolves.toEqual({
+                materialization: { kind: "notCurrent" },
+                webhook: null,
+                claimAuthorities: [],
+            });
+            await expect(service.claimCollectionWriters({
+                accountId: ACCOUNT_ID,
+                input: { manifest: declaredManifest() },
+            })).rejects.toMatchObject({ code: "plugin_intent_release_selected" });
+
+            await reportMaterialization(service, {
+                sourceClass: "registryPackage",
+                version: RELEASE.version,
+                archiveDigestSha256: facts.archiveDigestSha256,
+            });
+            await expect(readCurrentness(RELEASE.version)).resolves.toMatchObject({
+                materialization: { kind: "current" },
+                webhook: { localId: WEBHOOK_LOCAL_ID },
+            });
+            await expect(readEventCurrentness()).resolves.toMatchObject({
+                caller: {
+                    eventDeclarationRelease: {
+                        release: RELEASE,
+                        archiveDigestSha256: facts.archiveDigestSha256,
+                    },
+                },
+            });
+        });
+    });
 
     it("fails closed instead of paginating when selected Account intent discovery exceeds its bounded response", async () => {
         await seedAccountAndMachine();
@@ -1040,41 +1574,38 @@ describe("plugin Availability operations", () => {
         const first = {
             serverIdentityId: SERVER_IDENTITY_ID,
             machineId: MACHINE_ID,
-            revision: 1,
             materializations: [materialization],
         };
 
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot: first },
+            input: { expectedRevision: null, snapshot: first },
         })).resolves.toMatchObject({ outcome: "replaced" });
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot: first },
+            input: { expectedRevision: 1, snapshot: first },
         })).resolves.toMatchObject({ outcome: "rejoined" });
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: 0,
                 snapshot: {
                     ...first,
-                    revision: 1,
                     materializations: [{ ...materialization, version: "1.2.4" }],
                 },
             },
-        })).rejects.toMatchObject({
-            code: "plugin_materialization_snapshot_conflict",
-        });
+        })).resolves.toMatchObject({ outcome: "conflict", revision: 1 });
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: 1,
                 snapshot: {
                     serverIdentityId: SERVER_IDENTITY_ID,
                     machineId: MACHINE_ID,
-                    revision: 2,
                     materializations: [],
                 },
             },
@@ -1085,6 +1616,492 @@ describe("plugin Availability operations", () => {
             select: { pluginMaterializationRevision: true },
         })).resolves.toEqual({ pluginMaterializationRevision: BigInt(2) });
         await expect(db.pluginMachineMaterialization.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(0);
+    });
+
+    it("lets a current full-body report replace an unreadable refreshable projection without weakening CAS", async () => {
+        await seedAccountAndMachine();
+        await db.machine.update({
+            where: { id: MACHINE_ID },
+            data: { pluginMaterializationRevision: BigInt(1) },
+        });
+        await db.pluginMachineMaterialization.create({
+            data: {
+                accountId: ACCOUNT_ID,
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-1",
+                pluginId: PLUGIN_ID,
+                version: RELEASE.version,
+                sourceClass: "bundledFirstParty",
+                portableRelease: true,
+                archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+                uiArtifacts: [{
+                    contributionId: "hosted",
+                    tier: "hostedWeb",
+                    platform: "web",
+                    artifactDigest: `sha256:${"b".repeat(64)}`,
+                }],
+                enabled: true,
+                trustState: "trusted",
+                observedAt: new Date(1_700_000_000_000),
+            },
+        });
+        const service = operations();
+        const currentSnapshot = {
+            serverIdentityId: SERVER_IDENTITY_ID,
+            machineId: MACHINE_ID,
+            materializations: [{
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-1",
+                pluginId: PLUGIN_ID,
+                version: RELEASE.version,
+                sourceClass: "registryPackage" as const,
+                portableRelease: true,
+                archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+                uiArtifacts: [{
+                    contributionId: "hosted",
+                    artifactId: "hosted",
+                    tier: "hostedWeb" as const,
+                    platform: "web" as const,
+                    artifactDigest: `sha256:${"b".repeat(64)}`,
+                    hostUiApiRange: "^1.0.0",
+                }],
+                enabled: true,
+                trustState: "trusted" as const,
+                observedAt: 1_700_000_001_000,
+            }],
+        };
+
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: { expectedRevision: null, snapshot: currentSnapshot },
+        })).resolves.toEqual({ outcome: "conflict", revision: 1 });
+        await expect(db.pluginMachineMaterialization.findFirstOrThrow({
+            where: { accountId: ACCOUNT_ID, machineId: MACHINE_ID },
+            select: { sourceClass: true, uiArtifacts: true },
+        })).resolves.toMatchObject({ sourceClass: "bundledFirstParty" });
+
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: { expectedRevision: 1, snapshot: currentSnapshot },
+        })).resolves.toEqual({ outcome: "replaced", revision: 2 });
+        await expect(service.readMaterializations({
+            accountId: ACCOUNT_ID,
+            input: {},
+        })).resolves.toMatchObject({
+            snapshots: [{
+                machineId: MACHINE_ID,
+                materializations: [{
+                    materializationId: "install-epoch-1",
+                    sourceClass: "registryPackage",
+                    uiArtifacts: [{ artifactId: "hosted", hostUiApiRange: "^1.0.0" }],
+                }],
+            }],
+        });
+        await expect(db.accountChange.findMany({
+            where: { accountId: ACCOUNT_ID, kind: "pluginDomain" },
+            select: { cursor: true, hint: true },
+        })).resolves.toEqual([{
+            cursor: 1,
+            hint: { pluginDomain: "availability", pluginId: PLUGIN_ID },
+        }]);
+    });
+
+    it("keeps valid machine availability readable when an offline machine has unreadable projection rows", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const validMaterialization = {
+            serverIdentityId: SERVER_IDENTITY_ID,
+            machineId: MACHINE_ID,
+            materializationId: "install-epoch-current",
+            pluginId: PLUGIN_ID,
+            version: RELEASE.version,
+            sourceClass: "registryPackage" as const,
+            portableRelease: true,
+            archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+            uiArtifacts: [],
+            enabled: true,
+            trustState: "trusted" as const,
+            observedAt: 1_700_000_001_000,
+        };
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                expectedRevision: null,
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    materializations: [validMaterialization],
+                },
+            },
+        })).resolves.toMatchObject({ outcome: "replaced", revision: 1 });
+
+        const offlineMachineId = "machine-plugin-availability-offline";
+        await db.machine.create({
+            data: {
+                id: offlineMachineId,
+                accountId: ACCOUNT_ID,
+                metadata: "{}",
+                installationId: "machine-installation-availability-offline",
+                pluginMaterializationRevision: BigInt(7),
+            },
+        });
+        await db.pluginMachineMaterialization.create({
+            data: {
+                accountId: ACCOUNT_ID,
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: offlineMachineId,
+                materializationId: "install-epoch-offline",
+                pluginId: DISABLED_PLUGIN_ID,
+                version: DISABLED_RELEASE.version,
+                // A machine-bound local path can never claim a portable release.
+                sourceClass: "localPath",
+                portableRelease: true,
+                archiveDigestSha256: null,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted",
+                observedAt: new Date(1_700_000_000_000),
+            },
+        });
+
+        const result = await service.readMaterializations({
+            accountId: ACCOUNT_ID,
+            input: {},
+        });
+        expect(result.snapshots.map((snapshot) => ({
+            machineId: snapshot.machineId,
+            pluginIds: snapshot.materializations.map((row) => row.pluginId),
+        }))).toEqual([{
+            machineId: MACHINE_ID,
+            pluginIds: [PLUGIN_ID],
+        }]);
+    });
+
+    it("omits revoked and replaced machines from Account materialization availability, matching the claim rule", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                expectedRevision: null,
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    materializations: [{
+                        serverIdentityId: SERVER_IDENTITY_ID,
+                        machineId: MACHINE_ID,
+                        materializationId: "install-epoch-current",
+                        pluginId: PLUGIN_ID,
+                        version: RELEASE.version,
+                        sourceClass: "registryPackage" as const,
+                        portableRelease: true,
+                        archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+                        uiArtifacts: [],
+                        enabled: true,
+                        trustState: "trusted" as const,
+                        observedAt: 1_700_000_001_000,
+                    }],
+                },
+            },
+        })).resolves.toMatchObject({ outcome: "replaced" });
+
+        const retiredMachines = [
+            { id: "machine-plugin-availability-revoked", data: { revokedAt: new Date(1_700_000_002_000) } },
+            { id: "machine-plugin-availability-replaced", data: { replacedByMachineId: MACHINE_ID } },
+        ] as const;
+        for (const retired of retiredMachines) {
+            await db.machine.create({
+                data: {
+                    id: retired.id,
+                    accountId: ACCOUNT_ID,
+                    metadata: "{}",
+                    installationId: `${retired.id}-installation`,
+                    pluginMaterializationRevision: BigInt(3),
+                    ...retired.data,
+                },
+            });
+            await db.pluginMachineMaterialization.create({
+                data: {
+                    accountId: ACCOUNT_ID,
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: retired.id,
+                    materializationId: `${retired.id}-epoch`,
+                    pluginId: PLUGIN_ID,
+                    version: RELEASE.version,
+                    sourceClass: "registryPackage",
+                    portableRelease: true,
+                    archiveDigestSha256: `sha256:${"a".repeat(64)}`,
+                    uiArtifacts: [],
+                    enabled: true,
+                    trustState: "trusted",
+                    observedAt: new Date(1_700_000_000_000),
+                },
+            });
+        }
+
+        const result = await service.readMaterializations({
+            accountId: ACCOUNT_ID,
+            input: {},
+        });
+        expect(result.snapshots.map((snapshot) => snapshot.machineId)).toEqual([MACHINE_ID]);
+    });
+
+    it("hints only plugin materializations whose effective rows changed", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const materialization = (input: Readonly<{
+            materializationId: string;
+            pluginId: string;
+            version?: string;
+        }>) => ({
+            serverIdentityId: SERVER_IDENTITY_ID,
+            machineId: MACHINE_ID,
+            materializationId: input.materializationId,
+            pluginId: input.pluginId,
+            version: input.version ?? RELEASE.version,
+            sourceClass: "registryPackage" as const,
+            portableRelease: true,
+            uiArtifacts: [],
+            enabled: true,
+            trustState: "trusted" as const,
+            observedAt: 1_700_000_000_000,
+        });
+        const unchangedY = materialization({
+            materializationId: "install-epoch-y",
+            pluginId: DISABLED_PLUGIN_ID,
+        });
+        const x = materialization({
+            materializationId: "install-epoch-x",
+            pluginId: PLUGIN_ID,
+        });
+        const readChanges = () => db.accountChange.findMany({
+            where: { accountId: ACCOUNT_ID, kind: "pluginDomain" },
+            orderBy: { entityId: "asc" },
+            select: { entityId: true, cursor: true, hint: true },
+        });
+        const expectChanges = async (expected: readonly Readonly<{
+            pluginId: string;
+            cursor: number;
+        }>[]) => {
+            await expect(readChanges()).resolves.toEqual(expected.map(({ pluginId, cursor }) => ({
+                entityId: `pluginDomain/${pluginId}/availability`,
+                cursor,
+                hint: { pluginDomain: "availability", pluginId },
+            })));
+        };
+        const report = async (
+            expectedRevision: number | null,
+            materializations: readonly ReturnType<typeof materialization>[],
+        ) => await service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                expectedRevision,
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    materializations,
+                },
+            },
+        });
+
+        await expect(report(null, [unchangedY])).resolves.toMatchObject({ outcome: "replaced", revision: 1 });
+        await expectChanges([{ pluginId: DISABLED_PLUGIN_ID, cursor: 1 }]);
+
+        // Adding X to the newer full snapshot does not republish unchanged Y.
+        await expect(report(1, [unchangedY, x])).resolves.toMatchObject({ outcome: "replaced", revision: 2 });
+        await expectChanges([
+            { pluginId: DISABLED_PLUGIN_ID, cursor: 1 },
+            { pluginId: PLUGIN_ID, cursor: 2 },
+        ]);
+
+        // A changed X still leaves Y's prior hint untouched even when the
+        // reporter changes the input ordering.
+        await expect(report(2, [{ ...x, version: "1.2.4" }, unchangedY]))
+            .resolves.toMatchObject({ outcome: "replaced" });
+        await expectChanges([
+            { pluginId: DISABLED_PLUGIN_ID, cursor: 1 },
+            { pluginId: PLUGIN_ID, cursor: 3 },
+        ]);
+
+        // Omitting X from a newer full snapshot removes it and therefore
+        // republishes X, without republishing the retained Y row.
+        await expect(report(3, [unchangedY])).resolves.toMatchObject({ outcome: "replaced" });
+        await expectChanges([
+            { pluginId: DISABLED_PLUGIN_ID, cursor: 1 },
+            { pluginId: PLUGIN_ID, cursor: 4 },
+        ]);
+
+        // An equal complete body rejoins without changing either server revision
+        // or Account semantic availability.
+        await expect(report(4, [unchangedY])).resolves.toMatchObject({ outcome: "rejoined", revision: 4 });
+        await expectChanges([
+            { pluginId: DISABLED_PLUGIN_ID, cursor: 1 },
+            { pluginId: PLUGIN_ID, cursor: 4 },
+        ]);
+        await expect(db.account.findUnique({
+            where: { id: ACCOUNT_ID },
+            select: { seq: true },
+        })).resolves.toEqual({ seq: 4 });
+        await expect(db.machine.findUnique({
+            where: { id: MACHINE_ID },
+            select: { pluginMaterializationRevision: true },
+        })).resolves.toEqual({ pluginMaterializationRevision: BigInt(4) });
+    });
+
+    it("rejoins a two-plugin snapshot when only observation timestamps advance", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const observedAtT1 = 1_700_000_000_000;
+        const observedAtT2 = observedAtT1 + 1_000;
+        const materializations = [
+            {
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-x",
+                pluginId: PLUGIN_ID,
+                version: String(RELEASE.version),
+                sourceClass: "registryPackage" as const,
+                portableRelease: true,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted" as const,
+                observedAt: observedAtT1,
+            },
+            {
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-y",
+                pluginId: DISABLED_PLUGIN_ID,
+                version: String(DISABLED_RELEASE.version),
+                sourceClass: "registryPackage" as const,
+                portableRelease: true,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted" as const,
+                observedAt: observedAtT1,
+            },
+        ];
+        const snapshot = (rows: typeof materializations) => ({
+            serverIdentityId: SERVER_IDENTITY_ID,
+            machineId: MACHINE_ID,
+            materializations: rows,
+        });
+
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: { expectedRevision: null, snapshot: snapshot(materializations) },
+        })).resolves.toMatchObject({ outcome: "replaced", revision: 1 });
+        await expect(service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                expectedRevision: 1,
+                snapshot: snapshot(materializations.map((row) => ({ ...row, observedAt: observedAtT2 }))),
+            },
+        })).resolves.toMatchObject({ outcome: "rejoined", revision: 1 });
+
+        await expect(db.machine.findUnique({
+            where: { id: MACHINE_ID },
+            select: { pluginMaterializationRevision: true },
+        })).resolves.toEqual({ pluginMaterializationRevision: BigInt(1) });
+        await expect(db.account.findUnique({
+            where: { id: ACCOUNT_ID },
+            select: { seq: true },
+        })).resolves.toEqual({ seq: 2 });
+        await expect(db.pluginMachineMaterialization.findMany({
+            where: { accountId: ACCOUNT_ID, machineId: MACHINE_ID },
+            orderBy: { materializationId: "asc" },
+            select: { materializationId: true, observedAt: true },
+        })).resolves.toEqual(materializations.map((row) => ({
+            materializationId: row.materializationId,
+            observedAt: new Date(observedAtT1),
+        })));
+    });
+
+    it("changes only the semantic row and retains the sibling observation timestamp", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const observedAtT1 = 1_700_000_000_000;
+        const observedAtT2 = observedAtT1 + 1_000;
+        const initial = [
+            {
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-x",
+                pluginId: PLUGIN_ID,
+                version: String(RELEASE.version),
+                sourceClass: "registryPackage" as const,
+                portableRelease: true,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted" as const,
+                observedAt: observedAtT1,
+            },
+            {
+                serverIdentityId: SERVER_IDENTITY_ID,
+                machineId: MACHINE_ID,
+                materializationId: "install-epoch-y",
+                pluginId: DISABLED_PLUGIN_ID,
+                version: String(DISABLED_RELEASE.version),
+                sourceClass: "registryPackage" as const,
+                portableRelease: true,
+                uiArtifacts: [],
+                enabled: true,
+                trustState: "trusted" as const,
+                observedAt: observedAtT1,
+            },
+        ];
+        const report = async (
+            expectedRevision: number | null,
+            rows: typeof initial,
+        ) => await service.reportMaterializations({
+            accountId: ACCOUNT_ID,
+            publisherMachineId: MACHINE_ID,
+            input: {
+                expectedRevision,
+                snapshot: {
+                    serverIdentityId: SERVER_IDENTITY_ID,
+                    machineId: MACHINE_ID,
+                    materializations: rows,
+                },
+            },
+        });
+
+        await expect(report(null, initial)).resolves.toMatchObject({ outcome: "replaced", revision: 1 });
+        await expect(report(1, initial.map((row) => ({
+            ...row,
+            ...(row.materializationId === "install-epoch-x" ? { version: "1.2.4" } : {}),
+            observedAt: observedAtT2,
+        })))).resolves.toMatchObject({ outcome: "replaced", revision: 2 });
+
+        await expect(db.pluginMachineMaterialization.findMany({
+            where: { accountId: ACCOUNT_ID, machineId: MACHINE_ID },
+            orderBy: { materializationId: "asc" },
+            select: { materializationId: true, version: true, observedAt: true },
+        })).resolves.toEqual([
+            { materializationId: "install-epoch-x", version: "1.2.4", observedAt: new Date(observedAtT2) },
+            { materializationId: "install-epoch-y", version: DISABLED_RELEASE.version, observedAt: new Date(observedAtT1) },
+        ]);
+        await expect(db.accountChange.findMany({
+            where: { accountId: ACCOUNT_ID, kind: "pluginDomain" },
+            orderBy: { cursor: "asc" },
+            select: { cursor: true, hint: true },
+        })).resolves.toEqual([
+            { cursor: 1, hint: { pluginDomain: "availability", pluginId: DISABLED_PLUGIN_ID } },
+            { cursor: 3, hint: { pluginDomain: "availability", pluginId: PLUGIN_ID } },
+        ]);
+        await expect(db.account.findUnique({
+            where: { id: ACCOUNT_ID },
+            select: { seq: true },
+        })).resolves.toEqual({ seq: 3 });
     });
 
     it("deletes source and catalog status only for a materialization removed by an accepted snapshot replacement", async () => {
@@ -1120,10 +2137,10 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: null,
                 snapshot: {
                     serverIdentityId: SERVER_IDENTITY_ID,
                     machineId: MACHINE_ID,
-                    revision: 1,
                     materializations: [removed, retained],
                 },
             },
@@ -1176,7 +2193,7 @@ describe("plugin Availability operations", () => {
                     reporterMachineId: MACHINE_ID,
                     reporterMachineInstallationId: "machine-installation-availability",
                     reporterMaterializationId: materializationId,
-                    reporterImmutableGenerationId: `generation-${index}`,
+                    reporterSourceCustody: { kind: "development", registeredRootId: `generation-${index}` },
                     state: "observing",
                 },
             });
@@ -1187,7 +2204,7 @@ describe("plugin Availability operations", () => {
                     reporterMachineId: MACHINE_ID,
                     reporterMachineInstallationId: "machine-installation-availability",
                     reporterMaterializationId: materializationId,
-                    reporterImmutableGenerationId: `generation-${index}`,
+                    reporterSourceCustody: { kind: "development", registeredRootId: `generation-${index}` },
                     scopeKey: "checkpointedPull",
                     observedRevision: 1n,
                     adoptedRevision: 1n,
@@ -1201,10 +2218,10 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: 1,
                 snapshot: {
                     serverIdentityId: SERVER_IDENTITY_ID,
                     machineId: MACHINE_ID,
-                    revision: 2,
                     materializations: [retained],
                 },
             },
@@ -1237,7 +2254,6 @@ describe("plugin Availability operations", () => {
         const snapshot = {
             serverIdentityId: SERVER_IDENTITY_ID,
             machineId: MACHINE_ID,
-            revision: 1,
             materializations: [materialization],
         };
 
@@ -1246,7 +2262,7 @@ describe("plugin Availability operations", () => {
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: "machine-availability-other",
-            input: { snapshot },
+            input: { expectedRevision: null, snapshot },
         })).rejects.toMatchObject({ code: "plugin_materialization_machine_mismatch" });
 
         // A server alias change cannot be absorbed silently: portable identity
@@ -1256,6 +2272,7 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: null,
                 snapshot: {
                     ...snapshot,
                     serverIdentityId: aliasedServerIdentityId,
@@ -1275,7 +2292,7 @@ describe("plugin Availability operations", () => {
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot },
+            input: { expectedRevision: null, snapshot },
         })).resolves.toMatchObject({ outcome: "replaced" });
         await expect(db.pluginMachineMaterialization.count()).resolves.toBe(1);
     });
@@ -1308,7 +2325,6 @@ describe("plugin Availability operations", () => {
         const snapshotFor = (machineId: string) => ({
             serverIdentityId: SERVER_IDENTITY_ID,
             machineId,
-            revision: 1,
             materializations: [materializationFor(machineId)],
         });
 
@@ -1318,7 +2334,7 @@ describe("plugin Availability operations", () => {
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot: snapshotFor(SIBLING_MACHINE_ID) },
+            input: { expectedRevision: null, snapshot: snapshotFor(SIBLING_MACHINE_ID) },
         })).rejects.toMatchObject({ code: "plugin_materialization_machine_mismatch" });
         await expect(db.pluginMachineMaterialization.count()).resolves.toBe(0);
         await expect(db.machine.findUnique({
@@ -1335,12 +2351,12 @@ describe("plugin Availability operations", () => {
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: SIBLING_MACHINE_ID,
-            input: { snapshot: snapshotFor(SIBLING_MACHINE_ID) },
+            input: { expectedRevision: null, snapshot: snapshotFor(SIBLING_MACHINE_ID) },
         })).resolves.toMatchObject({ outcome: "replaced" });
         await expect(service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot: snapshotFor(MACHINE_ID) },
+            input: { expectedRevision: null, snapshot: snapshotFor(MACHINE_ID) },
         })).resolves.toMatchObject({ outcome: "replaced" });
         await expect(db.pluginMachineMaterialization.count({
             where: { machineId: SIBLING_MACHINE_ID },
@@ -1367,7 +2383,7 @@ describe("plugin Availability operations", () => {
             sourceClass: "registryPackage" as const,
             portableRelease: true,
             archiveDigestSha256: facts.archiveDigestSha256,
-            uiArtifacts: facts.uiSlots.map(({ compatibility: _compatibility, ...slot }) => slot),
+            uiArtifacts: facts.uiSlots,
             enabled: true,
             trustState: "trusted" as const,
             observedAt: 1_700_000_000_000,
@@ -1377,10 +2393,10 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: null,
                 snapshot: {
                     serverIdentityId: SERVER_IDENTITY_ID,
                     machineId: MACHINE_ID,
-                    revision: 1,
                     materializations: [{
                         ...materialization,
                         archiveDigestSha256: `sha256:${"c".repeat(64)}`,
@@ -1406,10 +2422,10 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
             input: {
+                expectedRevision: 1,
                 snapshot: {
                     serverIdentityId: SERVER_IDENTITY_ID,
                     machineId: MACHINE_ID,
-                    revision: 2,
                     materializations: [materialization],
                 },
             },
@@ -1434,7 +2450,6 @@ describe("plugin Availability operations", () => {
         const read = await service.readMaterializations({ accountId: ACCOUNT_ID, input: {} });
         expect(read).toMatchObject({
             snapshots: [expect.objectContaining({
-                revision: 2,
                 materializations: [expect.objectContaining({
                     materializationId: materialization.materializationId,
                 })],
@@ -1455,7 +2470,6 @@ describe("plugin Availability operations", () => {
         const snapshot = {
             serverIdentityId: SERVER_IDENTITY_ID,
             machineId: MACHINE_ID,
-            revision: 1,
             materializations: [{
                 serverIdentityId: SERVER_IDENTITY_ID,
                 machineId: MACHINE_ID,
@@ -1465,7 +2479,7 @@ describe("plugin Availability operations", () => {
                 sourceClass: "registryPackage" as const,
                 portableRelease: true,
                 archiveDigestSha256: facts.archiveDigestSha256,
-                uiArtifacts: facts.uiSlots.map(({ compatibility: _compatibility, ...slot }) => slot),
+                uiArtifacts: facts.uiSlots,
                 enabled: true,
                 trustState: "trusted" as const,
                 observedAt: 1_700_000_000_000,
@@ -1474,7 +2488,7 @@ describe("plugin Availability operations", () => {
         await service.reportMaterializations({
             accountId: ACCOUNT_ID,
             publisherMachineId: MACHINE_ID,
-            input: { snapshot },
+            input: { expectedRevision: null, snapshot },
         });
 
         await expect(inTx(async (tx) => (
@@ -1603,7 +2617,6 @@ describe("plugin Availability operations", () => {
             },
         });
         const artifactId = "00000000-0000-4000-8000-000000000001";
-        const hostCompatibility = hostedArtifactLinkCompatibility();
         const artifact = {
             header: encodePlainArtifactStoredContent(archive.header),
             body: encodePlainArtifactStoredContent({
@@ -1618,8 +2631,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId,
+                accountArtifactId: artifactId,
                 artifact: {
                     ...artifact,
                     body: encodePlainArtifactStoredContent({ body: "malformed archive" }),
@@ -1635,8 +2647,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId,
+                accountArtifactId: artifactId,
                 artifact,
             },
         });
@@ -1645,8 +2656,9 @@ describe("plugin Availability operations", () => {
             outcome: "created",
             link: {
                 release: RELEASE,
-                artifactId,
-                compatibility: hostCompatibility,
+                artifactId: slot.artifactId,
+                accountArtifactId: artifactId,
+                hostUiApiRange: slot.hostUiApiRange,
             },
         });
         await expect(service.readUiArtifact({
@@ -1654,13 +2666,15 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
         })).resolves.toMatchObject({
             link: {
-                artifactId,
-                compatibility: hostCompatibility,
+                artifactId: slot.artifactId,
+                accountArtifactId: artifactId,
+                hostUiApiRange: slot.hostUiApiRange,
             },
             artifact: {
                 header: artifact.header,
@@ -1674,8 +2688,9 @@ describe("plugin Availability operations", () => {
             release: { uiSlots: [slot] },
             uiArtifacts: [{
                 release: RELEASE,
-                artifactId,
-                compatibility: hostCompatibility,
+                artifactId: slot.artifactId,
+                accountArtifactId: artifactId,
+                hostUiApiRange: slot.hostUiApiRange,
             }],
         });
         await expect(db.accountPluginUiArtifact.count()).resolves.toBe(1);
@@ -1693,30 +2708,33 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility({ hostUiApiVersion: "2.0.0" }),
-                artifactId: "00000000-0000-4000-8000-000000000003",
+                accountArtifactId: "00000000-0000-4000-8000-000000000003",
                 artifact,
             },
-        })).rejects.toMatchObject({ code: "plugin_release_content_conflict" });
+        })).resolves.toMatchObject({
+            outcome: "rejoined",
+            link: { accountArtifactId: artifactId },
+        });
+        await expect(db.artifact.findUnique({
+            where: { id: "00000000-0000-4000-8000-000000000003" },
+        })).resolves.toBeNull();
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId,
+                accountArtifactId: artifactId,
                 artifact,
             },
-        })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
+        })).resolves.toMatchObject({ outcome: "rejoined", link: { accountArtifactId: artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: false,
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId: "00000000-0000-4000-8000-000000000002",
+                accountArtifactId: "00000000-0000-4000-8000-000000000002",
                 artifact,
             },
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_client_upgrade_required" });
@@ -1726,8 +2744,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId: "00000000-0000-4000-8000-000000000002",
+                accountArtifactId: "00000000-0000-4000-8000-000000000002",
                 artifact: {
                     header: Buffer.from([1, 2, 3]).toString("base64"),
                     body: Buffer.from([4, 5, 6]).toString("base64"),
@@ -1741,19 +2758,17 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId: "00000000-0000-4000-8000-000000000002",
+                accountArtifactId: "00000000-0000-4000-8000-000000000002",
                 artifact,
             },
-        })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
+        })).resolves.toMatchObject({ outcome: "rejoined", link: { accountArtifactId: artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility,
-                artifactId,
+                accountArtifactId: artifactId,
                 artifact: {
                     ...artifact,
                     // Same valid logical archive, deliberately encoded with
@@ -1784,6 +2799,7 @@ describe("plugin Availability operations", () => {
         const exactReadInput = {
             release: RELEASE,
             contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             tier: slot.tier,
             platform: slot.platform,
         } as const;
@@ -1802,7 +2818,8 @@ describe("plugin Availability operations", () => {
             link: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
-                artifactId,
+                artifactId: slot.artifactId,
+                accountArtifactId: artifactId,
                 artifactDigest: slot.artifactDigest,
             },
         });
@@ -1850,8 +2867,7 @@ describe("plugin Availability operations", () => {
         const publishInput = {
             release: RELEASE,
             slot,
-            hostCompatibility: hostedArtifactLinkCompatibility(),
-            artifactId,
+            accountArtifactId: artifactId,
             artifact: {
                 header: encodePlainArtifactStoredContent(archive.header),
                 body: encodePlainArtifactStoredContent({
@@ -1875,18 +2891,19 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
             input: publishInput,
-        })).resolves.toMatchObject({ outcome: "created", link: { artifactId } });
+        })).resolves.toMatchObject({ outcome: "created", link: { accountArtifactId: artifactId } });
 
         const exactReadInput = {
             release: RELEASE,
             contributionId: slot.contributionId,
+            artifactId: slot.artifactId,
             tier: slot.tier,
             platform: slot.platform,
         } as const;
         await expect(hostingEnabled.readUiArtifact({
             accountId: ACCOUNT_ID,
             input: exactReadInput,
-        })).resolves.toMatchObject({ link: { artifactId } });
+        })).resolves.toMatchObject({ link: { accountArtifactId: artifactId } });
         // A committed archive stays behind the same typed unsupported result.
         await expect(hostingDisabled.readUiArtifact({
             accountId: ACCOUNT_ID,
@@ -1925,8 +2942,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: "00000000-0000-4000-8000-000000000003",
+                accountArtifactId: "00000000-0000-4000-8000-000000000003",
                 artifact,
             },
         })).resolves.toMatchObject({ outcome: "created" });
@@ -1935,6 +2951,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -1947,13 +2964,12 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: "00000000-0000-4000-8000-000000000003",
+                accountArtifactId: "00000000-0000-4000-8000-000000000003",
                 artifact,
             },
         })).resolves.toMatchObject({
             outcome: "rejoined",
-            link: { artifactId: "00000000-0000-4000-8000-000000000003" },
+            link: { accountArtifactId: "00000000-0000-4000-8000-000000000003" },
         });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
@@ -1961,8 +2977,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: "00000000-0000-4000-8000-000000000004",
+                accountArtifactId: "00000000-0000-4000-8000-000000000004",
                 artifact: {
                     header: Buffer.from([11, 12, 13]).toString("base64"),
                     body: Buffer.from([14, 15, 16]).toString("base64"),
@@ -1971,7 +2986,7 @@ describe("plugin Availability operations", () => {
             },
         })).resolves.toMatchObject({
             outcome: "rejoined",
-            link: { artifactId: "00000000-0000-4000-8000-000000000003" },
+            link: { accountArtifactId: "00000000-0000-4000-8000-000000000003" },
         });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
@@ -1979,8 +2994,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: "00000000-0000-4000-8000-000000000003",
+                accountArtifactId: "00000000-0000-4000-8000-000000000003",
                 artifact: {
                     ...artifact,
                     body: Buffer.from([4, 5, 7]).toString("base64"),
@@ -1994,6 +3008,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -2005,6 +3020,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -2051,8 +3067,7 @@ describe("plugin Availability operations", () => {
                 input: {
                     release: RELEASE,
                     slot,
-                    hostCompatibility: hostedArtifactLinkCompatibility(),
-                    artifactId: "00000000-0000-4000-8000-000000000020",
+                    accountArtifactId: "00000000-0000-4000-8000-000000000020",
                     artifact: {
                         header: encodePlainArtifactStoredContent(archive.header),
                         body: encodePlainArtifactStoredContent({ body: encodePluginUiArtifactArchiveBodyV1(archive.body) }),
@@ -2067,8 +3082,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId,
+                accountArtifactId: artifactId,
                 artifact: {
                     header: encodePlainArtifactStoredContent(archive.header),
                     body: encodePlainArtifactStoredContent({
@@ -2094,8 +3108,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: fixture.ref,
                 slot: fixture.slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: fixture.uiArtifactId,
+                accountArtifactId: fixture.uiArtifactId,
                 artifact: fixture.uiArtifact,
             },
         };
@@ -2117,12 +3130,12 @@ describe("plugin Availability operations", () => {
         try {
             const retry = service.publishUiArtifact({
                 ...request,
-                input: { ...request.input, artifactId: "00000000-0000-4000-8000-000000000099" },
+                input: { ...request.input, accountArtifactId: "00000000-0000-4000-8000-000000000099" },
             });
             if (withdrawn) {
                 await expect(retry).rejects.toMatchObject({ code: "plugin_ui_artifact_hosting_not_opted_in" });
             } else {
-                await expect(retry).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId: fixture.uiArtifactId } });
+                await expect(retry).resolves.toMatchObject({ outcome: "rejoined", link: { accountArtifactId: fixture.uiArtifactId } });
             }
             await expect(db.artifact.count()).resolves.toBe(1);
             await expect(db.accountPluginUiArtifact.count()).resolves.toBe(1);
@@ -2560,6 +3573,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: fixture.ref,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -2603,8 +3617,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: uiArtifactId,
+                accountArtifactId: uiArtifactId,
                 artifact: encryptedArtifact,
             },
         });
@@ -2636,6 +3649,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -2796,8 +3810,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 slot,
-                hostCompatibility: hostedArtifactLinkCompatibility(),
-                artifactId: "00000000-0000-4000-8000-000000000004",
+                accountArtifactId: "00000000-0000-4000-8000-000000000004",
                 artifact: {
                     header: encodePlainArtifactStoredContent(archive.header),
                     body: encodePlainArtifactStoredContent({
@@ -2813,6 +3826,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 expectedArtifactDigest: graph.digest,
@@ -2848,11 +3862,23 @@ describe("plugin Availability operations", () => {
             }),
         });
 
+        await expect(service.readBrowserArtifactFrame({
+            capability,
+            requestPath: "assets/app.js",
+            request: {
+                protocol: "https",
+                host: "app.happier.test",
+            },
+        })).rejects.toMatchObject({
+            code: "plugin_ui_artifact_not_found",
+        });
+
         await service.removeUiArtifact({
             accountId: ACCOUNT_ID,
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
             },
@@ -2879,6 +3905,7 @@ describe("plugin Availability operations", () => {
             input: {
                 release: RELEASE,
                 contributionId: slot.contributionId,
+                artifactId: slot.artifactId,
                 tier: slot.tier,
                 platform: slot.platform,
                 expectedArtifactDigest: slot.artifactDigest,

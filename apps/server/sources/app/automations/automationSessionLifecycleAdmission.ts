@@ -4,6 +4,7 @@ import {
     deriveAutomationOccurrenceKeyV1,
     snapshotAutomationSessionLifecyclePolicy,
     type AutomationSessionLifecycleOccurrenceEvidenceV1,
+    type SessionTurnFactsV1,
 } from "@happier-dev/protocol";
 
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
@@ -17,6 +18,7 @@ import {
 } from "./automationRunAdmissionService";
 import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
+import { lockScopedAutomationTriggerInTx } from "./automationScopedTrigger";
 
 export type SessionLifecycleAdmissionResult = Readonly<{
     triggerId: string;
@@ -45,7 +47,7 @@ function buildLifecycleCause(params: Readonly<{
         evidence: {
             event: occurrence.event,
             sourceSessionId: occurrence.sourceSessionId,
-            sourceTurnId: occurrence.sourceTurnId,
+            ...("sourceTurnId" in occurrence ? { sourceTurnId: occurrence.sourceTurnId } : {}),
             ...(occurrence.event === "userActionRequired"
                 ? { requestId: occurrence.requestId, requestKind: occurrence.requestKind }
                 : {}),
@@ -59,7 +61,7 @@ function buildLifecycleCause(params: Readonly<{
 }
 
 function isTerminalLifecycleEvent(event: SessionLifecycleOccurrence["event"]): boolean {
-    return event !== "userActionRequired";
+    return event === "parentTurnCompleted" || event === "parentTurnFailed" || event === "parentTurnCancelled";
 }
 
 /**
@@ -94,10 +96,19 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
     tx: Tx;
     accountId: string;
     occurrence: SessionLifecycleOccurrence;
+    sourceTurnFacts?: SessionTurnFactsV1;
 }>): Promise<ReadonlyArray<SessionLifecycleAdmissionResult>> {
     const occurrence = AutomationSessionLifecycleOccurrenceEvidenceV1Schema.parse(
         params.occurrence,
     );
+    if (occurrence.event === "parentTurnCompleted" || occurrence.event === "parentTurnFailed"
+        || occurrence.event === "parentTurnCancelled") {
+        const turn = await params.tx.sessionTurn.findUnique({
+            where: { sessionId_turnId: { sessionId: occurrence.sourceSessionId, turnId: occurrence.sourceTurnId } },
+            select: { initiator: true },
+        });
+        if (turn?.initiator !== "user" && turn?.initiator !== "agent_session") return [];
+    }
     if (occurrence.event === "userActionRequired") {
         // A pending main-turn request can only be awaiting the user while its
         // exact host-stamped parent turn is still the Session's live turn. A
@@ -142,7 +153,7 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
             remainingOccurrences: true,
             sourceSessionId: true,
             sourceTurnId: true,
-            automation: { select: { enabled: true } },
+            automation: { select: { enabled: true, scopeSessionId: true } },
         },
     });
 
@@ -156,13 +167,16 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
         cause: ReturnType<typeof buildLifecycleCause>;
     }> = [];
     const budgetConsumedWithoutRun = new Set<string>();
-    for (const row of rows) {
+    for (const listedRow of rows) {
+        const scoped = listedRow.automation.scopeSessionId !== null
+            ? await lockScopedAutomationTriggerInTx(params.tx, params.accountId, listedRow.id) : null;
+        const row = scoped ? { ...listedRow, ...scoped } : listedRow;
         const stored = decodeAutomationSessionLifecycleConfiguration(row);
         const definition = stored.definition;
         const isCurrentTurn = definition.policy.kind === "currentTurn";
         if (
             definition.policy.kind === "currentTurn"
-            && definition.policy.sourceTurnId !== occurrence.sourceTurnId
+            && (!("sourceTurnId" in occurrence) || definition.policy.sourceTurnId !== occurrence.sourceTurnId)
         ) continue;
 
         const selected = definition.events.includes(occurrence.event);
@@ -182,12 +196,15 @@ export async function admitSessionLifecycleAutomationRunsTx(params: Readonly<{
             definition,
             occurrence,
         });
-        if (stored.remainingOccurrences === 0) {
+        const replacesPending = scoped !== null && await params.tx.automationRun.findFirst({
+            where: { accountId: params.accountId, triggerId: row.id, state: "queued" }, select: { id: true },
+        }) !== null;
+        if (stored.remainingOccurrences === 0 && !replacesPending) {
             exhausted.push({ row, cause });
             continue;
         }
 
-        const bounded = stored.remainingOccurrences !== null;
+        const bounded = stored.remainingOccurrences !== null && !replacesPending;
         if (bounded) {
             const reserved = await params.tx.automationTrigger.updateMany({
                 where: {

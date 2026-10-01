@@ -22,7 +22,7 @@ const BrowserTargetBaseV1Schema = z
 
 export const BrowserLocalServicePreviewTargetV1Schema = BrowserTargetBaseV1Schema.extend({
   kind: z.literal('localServicePreview'),
-  sessionId: z.string().trim().min(1).max(256),
+  sessionId: z.string().trim().min(1).max(256).optional(),
   machineId: z.string().trim().min(1).max(256),
 }).strict();
 export type BrowserLocalServicePreviewTargetV1 = z.infer<typeof BrowserLocalServicePreviewTargetV1Schema>;

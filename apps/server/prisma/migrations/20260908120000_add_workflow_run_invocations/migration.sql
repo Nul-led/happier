@@ -1,6 +1,5 @@
 CREATE TYPE "WorkflowRunCustodyState" AS ENUM ('pending', 'settled');
-CREATE TYPE "WorkflowInvocationLifecycle" AS ENUM ('pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'needs_attention', 'completed', 'failed', 'skipped', 'cancel_requested', 'cancelled', 'outcome_uncertain', 'superseded');
-CREATE TYPE "WorkflowRunResultDeliveryState" AS ENUM ('pending', 'accepted', 'unavailable', 'workflow_outcome_unresolved');
+CREATE TYPE "WorkflowInvocationLifecycle" AS ENUM ('pending', 'waiting_for_capacity', 'admitting', 'running', 'waiting_for_approval', 'waiting_for_review', 'needs_attention', 'completed', 'failed', 'skipped', 'cancel_requested', 'cancelled', 'outcome_uncertain', 'superseded');
 
 ALTER TABLE "AccountEncryptionTransitionAutomationStage"
     ALTER COLUMN "participantKind" TYPE VARCHAR(32),
@@ -24,6 +23,7 @@ ALTER TABLE "Automation" ALTER COLUMN "targetType" DROP NOT NULL;
 ALTER TYPE "AutomationRunState" ADD VALUE IF NOT EXISTS 'pause_requested';
 ALTER TYPE "AutomationRunState" ADD VALUE IF NOT EXISTS 'paused';
 ALTER TYPE "AutomationRunState" ADD VALUE IF NOT EXISTS 'interrupted';
+ALTER TYPE "AutomationRunState" ADD VALUE IF NOT EXISTS 'waiting_for_review';
 
 ALTER TABLE "AutomationRun"
     ALTER COLUMN "automationId" DROP NOT NULL,
@@ -33,7 +33,9 @@ ALTER TABLE "AutomationRun"
     ADD COLUMN "workflowAcceptedSnapshotEnvelope" TEXT,
     ADD COLUMN "workflowCheckpointEnvelope" TEXT,
     ADD COLUMN "workflowCustodyState" "WorkflowRunCustodyState",
-    ADD COLUMN "workflowResultDeliveryState" "WorkflowRunResultDeliveryState";
+    ADD COLUMN "workflowResumeRequestedRevision" INTEGER,
+    ADD COLUMN "originDeliveryAckRevision" INTEGER,
+    ADD COLUMN "visibleTeamId" TEXT;
 
 ALTER TABLE "AutomationRun" ADD CONSTRAINT "AutomationRun_originSessionId_fkey"
     FOREIGN KEY ("originSessionId") REFERENCES "Session"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -45,23 +47,36 @@ CREATE TABLE "WorkflowRunInvocation" (
     "parentRecordId" TEXT,
     "memberOrdinal" BIGINT NOT NULL,
     "attempt" BIGINT NOT NULL DEFAULT 0,
+    "contentRevision" BIGINT NOT NULL DEFAULT 0,
     "lifecycle" "WorkflowInvocationLifecycle" NOT NULL DEFAULT 'pending',
     "contentEnvelope" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "WorkflowRunInvocation_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "WorkflowRunInvocation_runId_fkey" FOREIGN KEY ("runId") REFERENCES "AutomationRun"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT "WorkflowRunInvocation_counter_check" CHECK ("sequence" >= 0 AND "memberOrdinal" >= 0 AND "attempt" >= 0)
+    CONSTRAINT "WorkflowRunInvocation_counter_check" CHECK ("sequence" >= 0 AND "memberOrdinal" >= 0 AND "attempt" >= 0 AND "contentRevision" >= 0)
 );
+
+CREATE TABLE "WorkflowRunDataKeyEnvelope" (
+    "runId" TEXT NOT NULL,
+    "recipientAccountId" TEXT NOT NULL,
+    "encryptedDataKey" BYTEA NOT NULL,
+    "recipientContentPublicKeyFingerprint" TEXT NOT NULL,
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_pkey" PRIMARY KEY ("runId", "recipientAccountId"),
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_runId_fkey" FOREIGN KEY ("runId") REFERENCES "AutomationRun"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "WorkflowRunDataKeyEnvelope_recipientAccountId_fkey" FOREIGN KEY ("recipientAccountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+CREATE INDEX "WorkflowRunDataKeyEnvelope_recipientAccountId_idx" ON "WorkflowRunDataKeyEnvelope"("recipientAccountId");
 
 CREATE UNIQUE INDEX "WorkflowRunInvocation_run_sequence_key" ON "WorkflowRunInvocation"("runId", "sequence");
 CREATE UNIQUE INDEX "WorkflowRunInvocation_slot_attempt_key" ON "WorkflowRunInvocation"("runId", "parentRecordId", "memberOrdinal", "attempt");
 CREATE INDEX "WorkflowRunInvocation_lifecycle_idx" ON "WorkflowRunInvocation"("runId", "lifecycle", "sequence");
 CREATE INDEX "AutomationRun_account_origin_created_id_idx" ON "AutomationRun"("accountId", "originKind", "createdAt" DESC, "id" DESC);
+CREATE INDEX "AutomationRun_account_created_id_idx" ON "AutomationRun"("accountId", "createdAt" DESC, "id" DESC);
 CREATE INDEX "AutomationRun_originSession_created_id_idx" ON "AutomationRun"("originSessionId", "createdAt" DESC, "id" DESC);
 
 ALTER TABLE "AutomationRun" ADD CONSTRAINT "AutomationRun_origin_kind_check" CHECK (
-    ("originKind" = 'automation' AND "automationId" IS NOT NULL AND "originSessionId" IS NULL AND "causeKind" IS NOT NULL)
+    ("originKind" = 'automation' AND "automationId" IS NOT NULL AND "causeKind" IS NOT NULL)
     OR ("originKind" = 'direct'
         AND "automationId" IS NULL
         AND "triggerId" IS NULL

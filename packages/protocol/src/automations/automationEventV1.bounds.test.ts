@@ -583,7 +583,8 @@ describe('Automation event V1 exact bounds', () => {
     const eventRef = { pluginId: 'com.acme.github', localId: 'pull-request-opened' } as const;
     const caller = {
       pluginId: eventRef.pluginId,
-      immutableGenerationId: 'generation-1',
+      occurrenceId: 'event-occurrence-1',
+      sourceCustody: { kind: 'development' as const, registeredRootId: 'event-root-1' },
       materialization: {
         pluginId: eventRef.pluginId,
         machineId: 'machine-1',

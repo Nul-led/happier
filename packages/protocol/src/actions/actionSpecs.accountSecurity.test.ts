@@ -6,6 +6,7 @@ import { resolveActionSurfaceAvailability } from './actionSurfaceAvailability.js
 
 const operations = [
   ['account.security.get', 'GET', '/v1/account/security'],
+  ['account.security.terminalPresentUser.set', 'POST', '/v1/account/security/terminal-present-user'],
   ['account.password.enroll', 'POST', '/v1/account/password/enroll'],
   ['account.password.change', 'POST', '/v1/account/password/change'],
   ['account.password.remove', 'POST', '/v1/account/password/remove'],
@@ -25,7 +26,9 @@ describe('Account Security Action admission', () => {
       // The safe read retains normal public API/plugin parity. Human-secret
       // mutations remain private to first-party interactive hosts.
       for (const surface of ['agent', 'mcp', 'voice', 'rpc'] as const) {
-        expect(resolveActionSurfaceAvailability({ actionId: id, surface }).available).toBe(false);
+        expect(resolveActionSurfaceAvailability({ actionId: id, surface }).available)
+          .toBe((surface === 'agent' && id === 'account.security.get')
+            || ((surface === 'agent' || surface === 'mcp') && id === 'account.security.terminalPresentUser.set'));
       }
       for (const surface of ['api', 'plugin'] as const) {
         expect(resolveActionSurfaceAvailability({ actionId: id, surface }).available)

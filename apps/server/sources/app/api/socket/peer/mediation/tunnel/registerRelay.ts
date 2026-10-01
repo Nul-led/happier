@@ -4,8 +4,11 @@ import {
     encodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
+    PEER_TCP_TUNNEL_MAX_WINDOW_BYTES,
     PeerTcpTunnelRelayEnvelopeSchema,
     PeerTcpTunnelRelayEnvelopeV1Schema,
+    isLiteralLoopbackHostname,
+    normalizeHostnameForLoopbackCheck,
     verifyPeerTcpTunnelRelayAuthorizationV2,
     type PeerTcpTunnelBinaryFrameHeaderV2,
     type PeerTcpTunnelEncoding,
@@ -48,10 +51,10 @@ type TunnelRelayIo = Readonly<{
 type TunnelKey = string;
 
 type RelayMeteringCaps = Readonly<{
-    maxBytes: number;
+    maxBytes?: number;
     maxFrameBytes: number;
-    maxIdleMs: number;
-    maxDurationMs: number;
+    maxIdleMs?: number;
+    maxDurationMs?: number;
 }>;
 
 type AuthorizedRelayState = Readonly<{
@@ -77,14 +80,7 @@ const observabilityIdentityByTunnelKey = new Map<TunnelKey, {
 const userSocketIdByTunnelKey = new Map<TunnelKey, string>();
 const tunnelStartedAtByKey = new Map<TunnelKey, number>();
 const tunnelLastActivityAtByKey = new Map<TunnelKey, number>();
-const substreamsByTunnelKey = new Map<TunnelKey, {
-    activeSubstreamIds: Set<string>;
-    terminalSubstreamIds: Set<string>;
-    totalOpened: number;
-    aggregateBytes: number;
-    bytesBySubstreamId: Map<string, number>;
-    lastActivityBySubstreamId: Map<string, number>;
-}>();
+const substreamsByTunnelKey = new Map<TunnelKey, Set<string>>();
 const tunnelTimersByKey = new Map<TunnelKey, Readonly<{
     idleTimer?: ReturnType<typeof setTimeout>;
     durationTimer?: ReturnType<typeof setTimeout>;
@@ -140,26 +136,6 @@ function participantMachineId(envelope: PeerTcpTunnelRelayEnvelope): string | un
     return undefined;
 }
 
-function normalizeHost(host: string): string {
-    const trimmed = host.trim().toLowerCase();
-    return trimmed.startsWith('[') && trimmed.endsWith(']') ? trimmed.slice(1, -1) : trimmed;
-}
-
-function isIpv4LoopbackHost(host: string): boolean {
-    const parts = host.split('.');
-    if (parts.length !== 4 || parts[0] !== '127') return false;
-    return parts.slice(1).every((part) => {
-        if (!/^\d+$/.test(part)) return false;
-        const value = Number(part);
-        return Number.isInteger(value) && value >= 0 && value <= 255;
-    });
-}
-
-function isLoopbackHost(host: string): boolean {
-    const normalized = normalizeHost(host);
-    return normalized === 'localhost' || normalized === '::1' || isIpv4LoopbackHost(normalized);
-}
-
 function validateOpenFramePolicy(input: Readonly<{
     envelope: PeerTcpTunnelRelayEnvelopeV1;
     caps: PeerTcpTunnelRelayCaps;
@@ -173,7 +149,7 @@ function validateOpenFramePolicy(input: Readonly<{
     if (frame.open.relayAuthorization?.payload.flowKind === 'provider_broker') {
         return frame.open.destination === undefined ? null : 'destination_host_not_allowed';
     }
-    if (!frame.open.destination || !isLoopbackHost(frame.open.destination.host)) return 'destination_host_not_allowed';
+    if (!frame.open.destination || !isLiteralLoopbackHostname(frame.open.destination.host)) return 'destination_host_not_allowed';
     if (!input.caps.allowedPorts.includes(frame.open.destination.port)) return 'destination_port_not_allowed';
     return null;
 }
@@ -191,7 +167,10 @@ function validateRelayAuthorizationBinding(input: Readonly<{
             : 'relay_authorization_invalid';
     }
     if (!input.payload.destination || !input.open.destination) return 'relay_authorization_invalid';
-    if (normalizeHost(input.payload.destination.host) !== normalizeHost(input.open.destination.host)) {
+    if (
+        normalizeHostnameForLoopbackCheck(input.payload.destination.host)
+        !== normalizeHostnameForLoopbackCheck(input.open.destination.host)
+    ) {
         return 'relay_authorization_invalid';
     }
     if (input.payload.destination.port !== input.open.destination.port) return 'relay_authorization_invalid';
@@ -428,14 +407,13 @@ function resolveEffectiveRelayMeteringCaps(
     caps: PeerTcpTunnelRelayCaps,
     authorization: PeerTcpTunnelRelayAuthorizationPayloadV2,
 ): RelayMeteringCaps {
-    // The signed grant can only narrow the process policy. Keep the resulting
-    // limits with the existing per-tunnel authorization state so every frame
-    // and timer uses the same admitted authority.
+    // Frames obey both process resources and signed authority. Lifetime/byte
+    // budgets belong only to the signed application, never a TCP relay default.
     return {
-        maxBytes: Math.min(caps.maxBytes, authorization.maxTotalBytes ?? caps.maxBytes),
+        maxBytes: authorization.maxTotalBytes,
         maxFrameBytes: Math.min(caps.maxFrameBytes, authorization.maxFrameBytes),
-        maxIdleMs: Math.min(caps.maxIdleMs, authorization.maxIdleMs),
-        maxDurationMs: Math.min(caps.maxDurationMs, authorization.maxDurationMs),
+        maxIdleMs: authorization.maxIdleMs,
+        maxDurationMs: authorization.maxDurationMs,
     };
 }
 
@@ -539,28 +517,6 @@ function clearTunnelState(tunnelKey: TunnelKey): void {
     substreamsByTunnelKey.delete(tunnelKey);
 }
 
-function substreamStateForTunnel(tunnelKey: TunnelKey): {
-    activeSubstreamIds: Set<string>;
-    terminalSubstreamIds: Set<string>;
-    totalOpened: number;
-    aggregateBytes: number;
-    bytesBySubstreamId: Map<string, number>;
-    lastActivityBySubstreamId: Map<string, number>;
-} {
-    const existing = substreamsByTunnelKey.get(tunnelKey);
-    if (existing) return existing;
-    const created = {
-        activeSubstreamIds: new Set<string>(),
-        terminalSubstreamIds: new Set<string>(),
-        totalOpened: 0,
-        aggregateBytes: 0,
-        bytesBySubstreamId: new Map<string, number>(),
-        lastActivityBySubstreamId: new Map<string, number>(),
-    };
-    substreamsByTunnelKey.set(tunnelKey, created);
-    return created;
-}
-
 function applyBinarySubstreamCaps(input: Readonly<{
     tunnelKey: TunnelKey;
     header: PeerTcpTunnelBinaryFrameHeaderV2;
@@ -571,74 +527,22 @@ function applyBinarySubstreamCaps(input: Readonly<{
 }>): string | null {
     const substreamId = input.header.substreamId;
     if (!substreamId) return null;
-
-    const state = substreamStateForTunnel(input.tunnelKey);
-    const lastActivity = state.lastActivityBySubstreamId.get(substreamId);
-    if (state.terminalSubstreamIds.has(substreamId)) return 'frame_invalid';
-    if (input.header.kind !== 'open' && (lastActivity === undefined || !state.activeSubstreamIds.has(substreamId))) {
-        if (!input.allowDataFirst || input.header.kind !== 'data') return 'frame_invalid';
-        if (
-            state.activeSubstreamIds.size >= input.caps.substreams.maxConcurrentSubstreams
-            || state.totalOpened >= input.caps.substreams.maxTotalSubstreams
-        ) {
-            return 'relay_cap_exceeded';
-        }
-        state.activeSubstreamIds.add(substreamId);
-        state.totalOpened += 1;
-        state.bytesBySubstreamId.set(substreamId, 0);
+    let active = substreamsByTunnelKey.get(input.tunnelKey);
+    if (!active) {
+        active = new Set<string>();
+        substreamsByTunnelKey.set(input.tunnelKey, active);
     }
-    if (
-        lastActivity !== undefined
-        && input.nowMs - lastActivity > input.caps.substreams.maxSubstreamIdleMs
-    ) {
-        state.activeSubstreamIds.delete(substreamId);
-        state.bytesBySubstreamId.delete(substreamId);
-        state.lastActivityBySubstreamId.delete(substreamId);
-        state.terminalSubstreamIds.add(substreamId);
-        return 'relay_cap_exceeded';
+    const admitsSubstream = input.header.kind === 'open'
+        || (input.allowDataFirst && input.header.kind === 'data' && !active.has(substreamId));
+    if (admitsSubstream) {
+        if (active.has(substreamId)) return 'frame_invalid';
+        if (active.size >= input.caps.substreams.maxConcurrentSubstreams) return 'relay_cap_exceeded';
+        active.add(substreamId);
+    } else if (!active.has(substreamId)) {
+        return 'frame_invalid';
     }
-
-    if (input.header.kind === 'open') {
-        if (state.activeSubstreamIds.has(substreamId)) return 'frame_invalid';
-        if (
-            state.activeSubstreamIds.size >= input.caps.substreams.maxConcurrentSubstreams
-            || state.totalOpened >= input.caps.substreams.maxTotalSubstreams
-        ) {
-            return 'relay_cap_exceeded';
-        }
-        state.activeSubstreamIds.add(substreamId);
-        state.totalOpened += 1;
-        state.bytesBySubstreamId.set(substreamId, 0);
-        state.lastActivityBySubstreamId.set(substreamId, input.nowMs);
-        return null;
-    }
-
-    if (input.header.kind === 'data') {
-        const nextSubstreamBytes = (state.bytesBySubstreamId.get(substreamId) ?? 0) + input.payloadBytes;
-        const nextAggregateBytes = state.aggregateBytes + input.payloadBytes;
-        if (
-            nextSubstreamBytes > input.caps.substreams.maxBytesPerSubstream
-            || nextAggregateBytes > input.caps.substreams.maxAggregateBytes
-        ) {
-            state.activeSubstreamIds.delete(substreamId);
-            state.bytesBySubstreamId.delete(substreamId);
-            state.lastActivityBySubstreamId.delete(substreamId);
-            state.terminalSubstreamIds.add(substreamId);
-            return 'relay_cap_exceeded';
-        }
-        state.bytesBySubstreamId.set(substreamId, nextSubstreamBytes);
-        state.aggregateBytes = nextAggregateBytes;
-    }
-
-    state.lastActivityBySubstreamId.set(substreamId, input.nowMs);
-    const closesSubstream =
-        input.header.kind === 'abort'
-        || (input.header.kind === 'close' && input.header.halfClose !== true);
-    if (closesSubstream) {
-        state.activeSubstreamIds.delete(substreamId);
-        state.bytesBySubstreamId.delete(substreamId);
-        state.lastActivityBySubstreamId.delete(substreamId);
-        state.terminalSubstreamIds.add(substreamId);
+    if (input.header.kind === 'abort' || (input.header.kind === 'close' && input.header.halfClose !== true)) {
+        active.delete(substreamId);
     }
     return null;
 }
@@ -748,8 +652,9 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         if (existing?.durationTimer) clearTimeout(existing.durationTimer);
         const now = ctx.nowMs?.() ?? Date.now();
         const startedAt = tunnelStartedAtByKey.get(tunnelKey) ?? now;
-        const durationRemainingMs = Math.max(1, meteringCaps.maxDurationMs - Math.max(0, now - startedAt));
-        const idleTimer = setTimeout(() => {
+        const durationRemainingMs = meteringCaps.maxDurationMs === undefined ? undefined
+            : Math.max(1, meteringCaps.maxDurationMs - Math.max(0, now - startedAt));
+        const idleTimer = meteringCaps.maxIdleMs === undefined ? undefined : setTimeout(() => {
             emitAbort({
                 io: ctx.io,
                 userId,
@@ -766,7 +671,7 @@ export function registerPeerTcpTunnelRelaySocketHandler(
                 reasonCode: 'relay_cap_exceeded',
             });
         }, Math.max(1, meteringCaps.maxIdleMs));
-        const durationTimer = setTimeout(() => {
+        const durationTimer = durationRemainingMs === undefined ? undefined : setTimeout(() => {
             emitAbort({
                 io: ctx.io,
                 userId,
@@ -783,8 +688,8 @@ export function registerPeerTcpTunnelRelaySocketHandler(
                 reasonCode: 'relay_cap_exceeded',
             });
         }, durationRemainingMs);
-        idleTimer.unref?.();
-        durationTimer.unref?.();
+        idleTimer?.unref?.();
+        durationTimer?.unref?.();
         tunnelTimersByKey.set(tunnelKey, { idleTimer, durationTimer });
     }
 
@@ -894,7 +799,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         ready: Promise<void>;
         resolveReady(): void;
         cancelledReason: 'relay_cap_exceeded' | 'relay_socket_disconnected' | null;
-        queuedFrames: number;
         queuedBytes: number;
     };
     const pendingOpenByTunnelKey = new Map<TunnelKey, PendingOpen>();
@@ -1032,14 +936,12 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             if (pending) {
                 const queuedBytes = envelope.v === 1
                     ? 0
-                    : decodedBinary?.payloadBytes ?? 0;
-                const maxQueuedFrames = Math.max(1, Math.ceil(caps.maxBytes / Math.max(1, caps.maxFrameBytes)));
-                pending.queuedFrames += 1;
+                    : envelope.frame.byteLength;
+                // Bound the admission buffer, including empty/control-frame headers, by existing child credit capacity.
+                const maxQueuedBytes = PEER_TCP_TUNNEL_MAX_WINDOW_BYTES * caps.substreams.maxConcurrentSubstreams;
                 pending.queuedBytes += queuedBytes;
                 if (
-                    pending.queuedFrames > maxQueuedFrames
-                    || pending.queuedBytes > caps.maxBytes
-                    || queuedBytes > caps.maxFrameBytes
+                    pending.queuedBytes > maxQueuedBytes
                 ) {
                     pending.cancelledReason = 'relay_cap_exceeded';
                     emitAbort({
@@ -1055,7 +957,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
                     return;
                 }
                 await pending.ready;
-                pending.queuedFrames -= 1;
                 pending.queuedBytes -= queuedBytes;
                 if (pending.cancelledReason || ownerSocketDisconnected) return;
             }
@@ -1225,7 +1126,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
                 ready,
                 resolveReady,
                 cancelledReason: null,
-                queuedFrames: 0,
                 queuedBytes: 0,
             };
             pendingOpenByTunnelKey.set(tunnelKey, pending);
@@ -1235,7 +1135,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
                 grantId: payload.grantId,
                 grantExpiresAt: payload.exp,
                 machineId: payload.targetMachineId,
-                maxDurationMs: authorizationState.meteringCaps.maxDurationMs,
                 nowMs: now,
                 onMachineEnvelope: (machineEnvelope, machineSocketId) => handleRelayPayload(
                     machineEnvelope,
@@ -1286,34 +1185,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         }
 
         const lastActivityAt = tunnelLastActivityAtByKey.get(tunnelKey) ?? now;
-        if (
-            envelope.v === 2
-            && decodedBinary?.ok === true
-            && decodedBinary.header.substreamId
-            && now - lastActivityAt > caps.substreams.maxSessionIdleMs
-        ) {
-            emitBinarySubstreamAbort({
-                io: ctx.io,
-                userId,
-                envelope,
-                tunnelId,
-                substreamId: decodedBinary.header.substreamId,
-                reasonCode: 'relay_cap_exceeded',
-                tunnelKey,
-                senderSocketId: socket.id,
-                notifyAttachedMachine: true,
-            });
-            clearTunnelWithClosedReceipt({
-                tunnelKey,
-                envelope,
-                tunnelId,
-                reasonCode: 'relay_cap_exceeded',
-            });
-            emitObservability({ envelope, tunnelId, kind: 'cap.exceeded', reasonCode: 'relay_cap_exceeded' });
-            emitSocketError(socket, 'Server-routed peer tunnel substream session idle cap exceeded');
-            return;
-        }
-
         const substreamDenyReason = envelope.v === 2 && decodedBinary?.ok === true
             ? applyBinarySubstreamCaps({
                 tunnelKey,
@@ -1363,7 +1234,8 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             : { in: currentBytes.in, out: currentBytes.out + decodedBytes };
         if (
             decodedBytes > authorizationState.meteringCaps.maxFrameBytes
-            || nextBytes.in + nextBytes.out > authorizationState.meteringCaps.maxBytes
+            || (authorizationState.meteringCaps.maxBytes !== undefined
+                && nextBytes.in + nextBytes.out > authorizationState.meteringCaps.maxBytes)
         ) {
             emitObservability({
                 envelope,
@@ -1395,7 +1267,8 @@ export function registerPeerTcpTunnelRelaySocketHandler(
 
         const startedAt = tunnelStartedAtByKey.get(tunnelKey) ?? now;
         tunnelStartedAtByKey.set(tunnelKey, startedAt);
-        if (now - startedAt > authorizationState.meteringCaps.maxDurationMs) {
+        if (authorizationState.meteringCaps.maxDurationMs !== undefined
+            && now - startedAt > authorizationState.meteringCaps.maxDurationMs) {
             emitAbort({
                 io: ctx.io,
                 userId,
@@ -1416,7 +1289,8 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             emitSocketError(socket, 'Server-routed peer tunnel duration cap exceeded');
             return;
         }
-        if (!isV1OpenFrame && now - lastActivityAt > authorizationState.meteringCaps.maxIdleMs) {
+        if (!isV1OpenFrame && authorizationState.meteringCaps.maxIdleMs !== undefined
+            && now - lastActivityAt > authorizationState.meteringCaps.maxIdleMs) {
             emitAbort({
                 io: ctx.io,
                 userId,

@@ -1,6 +1,30 @@
 import { z } from 'zod';
 
 import { StoredJsonContentEnvelopeSchema } from '../../storage/storedJsonContentEnvelope.js';
+import { ReviewFindingSeveritySchema } from '../reviewFindingClassification.js';
+import { ReviewFindingIdentityV1Schema } from './findingIdentity.js';
+import { ReviewTriageStatusSchema } from '../reviewTriageStatus.js';
+
+export const ReviewCommentWorkspaceV1Schema = z.object({
+  machineId: z.string().min(1),
+  path: z.string().min(1),
+}).strict();
+export type ReviewCommentWorkspaceV1 = z.infer<typeof ReviewCommentWorkspaceV1Schema>;
+
+export const ReviewCommentScopeV1Schema = z.object({
+  projectId: z.string().min(1).optional(),
+  workspace: ReviewCommentWorkspaceV1Schema.optional(),
+}).strict();
+export type ReviewCommentScopeV1 = z.infer<typeof ReviewCommentScopeV1Schema>;
+
+export function validateReviewCommentScopeV1(
+  value: { projectId?: string; workspace?: ReviewCommentWorkspaceV1 },
+  ctx: z.RefinementCtx,
+): void {
+  if (!value.projectId && !value.workspace) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['workspace'], message: 'A Project or machine workspace is required' });
+  }
+}
 
 export const REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1 = 'reviews.comments.write.direct' as const;
 
@@ -35,6 +59,7 @@ export const ReviewCommentActorRefV1Schema = z.union([
     agentId: z.string().min(1),
     sessionId: z.string().min(1),
   }).strict(),
+  z.object({ kind: z.literal('workflow'), runId: z.string().min(1) }).strict(),
 ]);
 export type ReviewCommentActorRefV1 = z.infer<typeof ReviewCommentActorRefV1Schema>;
 
@@ -99,6 +124,7 @@ export const ReviewCommentAnchorV1Schema = z.union([
 export type ReviewCommentAnchorV1 = z.infer<typeof ReviewCommentAnchorV1Schema>;
 
 export const ReviewCommentSnapshotV1Schema = z.union([
+  z.object({ kind: z.literal('none'), capturedAt: z.number().int().nonnegative() }).strict(),
   z.object({
     kind: z.literal('text'),
     selectedLines: z.array(z.string()),
@@ -225,6 +251,8 @@ export const ReviewCommentTransitionV1Schema = z.object({
   transitionId: z.string().min(1),
   fromState: ReviewCommentStateV1Schema.optional(),
   toState: ReviewCommentStateV1Schema,
+  reviewTriageStatus: ReviewTriageStatusSchema.optional(),
+  reviewGroupId: z.string().min(1).optional(),
   transitionedAt: z.number().int().nonnegative(),
   transitionedBy: ReviewCommentActorRefV1Schema,
   reason: z.string().min(1).optional(),
@@ -289,6 +317,8 @@ export const ReviewCommentSuggestedFixV1Schema = z.object({
 export type ReviewCommentSuggestedFixV1 = z.infer<typeof ReviewCommentSuggestedFixV1Schema>;
 
 export const ReviewCommentMetadataV1Schema = z.object({
+  /** Panels that materialized this semantic finding, including later deduplicated rounds. */
+  reviewGroupIds: z.array(z.string().min(1)).optional(),
   severity: z.enum(['info', 'warning', 'error', 'critical']).optional(),
   taxonomyIds: z.array(z.string().min(1)).optional(),
   tags: z.array(z.string().min(1)).optional(),
@@ -316,12 +346,15 @@ export const ReviewCommentV1Schema = z.object({
   v: z.literal(1),
   id: z.string().min(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   workspaceId: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
   runId: z.string().min(1).optional(),
   engineId: z.string().min(1).optional(),
   findingId: z.string().min(1).optional(),
+  findingIdentity: ReviewFindingIdentityV1Schema.optional(),
+  findingSeverity: ReviewFindingSeveritySchema.optional(),
+  reviewedFingerprint: z.string().min(1).nullable().optional(),
   anchor: ReviewCommentAnchorV1Schema,
   snapshot: ReviewCommentSnapshotContentV1Schema,
   body: ReviewCommentBodyContentV1Schema,
@@ -329,11 +362,13 @@ export const ReviewCommentV1Schema = z.object({
   edits: z.array(ReviewCommentEditV1Schema),
   author: ReviewCommentActorRefV1Schema,
   state: ReviewCommentStateV1Schema,
+  reviewTriageStatus: ReviewTriageStatusSchema.optional(),
   flags: z.object({
     stale: z.boolean().optional(),
     outdated: z.boolean().optional(),
     muted: z.boolean().optional(),
     redacted: z.boolean().optional(),
+    disputed: z.boolean().optional(),
   }).strict(),
   dispositions: z.record(z.string().min(1), ReviewCommentDispositionV1Schema),
   parentCommentId: z.string().min(1).optional(),
@@ -348,16 +383,19 @@ export const ReviewCommentV1Schema = z.object({
   updatedAt: z.number().int().nonnegative(),
   serverRevision: z.number().int().positive(),
   metadata: ReviewCommentMetadataV1Schema.optional(),
-}).strict().superRefine(validateThreadIdentity);
+}).strict().superRefine(validateThreadIdentity).superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentV1 = z.infer<typeof ReviewCommentV1Schema>;
 
 export const ReviewCommentCreateRequestV1Schema = z.object({
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   workspaceId: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
   runId: z.string().min(1).optional(),
   engineId: z.string().min(1).optional(),
   findingId: z.string().min(1).optional(),
+  findingIdentity: ReviewFindingIdentityV1Schema.optional(),
+  findingSeverity: ReviewFindingSeveritySchema.optional(),
+  reviewedFingerprint: z.string().min(1).nullable().optional(),
   anchor: ReviewCommentAnchorV1Schema,
   snapshot: ReviewCommentSnapshotContentV1Schema,
   body: ReviewCommentInputBodyContentV1Schema,
@@ -371,13 +409,15 @@ export const ReviewCommentCreateRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   metadata: ReviewCommentMetadataV1Schema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentCreateRequestV1 = z.infer<typeof ReviewCommentCreateRequestV1Schema>;
 
 export const ReviewCommentTransitionRequestV1Schema = z.object({
   commentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   toState: ReviewCommentStateV1Schema,
+  reviewTriageStatus: ReviewTriageStatusSchema.optional(),
+  reviewGroupId: z.string().min(1).optional(),
   reason: z.string().min(1).optional(),
   evidence: z.array(ReviewCommentEvidenceV1Schema).optional(),
   expectedState: ReviewCommentStateV1Schema,
@@ -386,8 +426,9 @@ export const ReviewCommentTransitionRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict().superRefine((value, ctx) => {
+}).strict().superRefine(validateReviewCommentScopeV1).superRefine((value, ctx) => {
   if (reviewCommentStateTransitionRequiresEvidenceV1(value.toState)
+    && !(value.toState === value.expectedState && (value.reviewTriageStatus !== undefined || value.reviewGroupId !== undefined))
     && !value.reason
     && (!value.evidence || value.evidence.length === 0)) {
     ctx.addIssue({
@@ -401,7 +442,7 @@ export type ReviewCommentTransitionRequestV1 = z.infer<typeof ReviewCommentTrans
 
 export const ReviewCommentEditRequestV1Schema = z.object({
   commentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   nextBody: ReviewCommentInputBodyContentV1Schema,
   expectedBodyVersion: z.number().int().positive(),
   expectedServerRevision: z.number().int().positive(),
@@ -410,12 +451,12 @@ export const ReviewCommentEditRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentEditRequestV1 = z.infer<typeof ReviewCommentEditRequestV1Schema>;
 
 export const ReviewCommentReplyRequestV1Schema = z.object({
   parentCommentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   expectedParentServerRevision: z.number().int().positive(),
   body: ReviewCommentInputBodyContentV1Schema,
   evidence: z.array(ReviewCommentEvidenceV1Schema).optional(),
@@ -423,12 +464,12 @@ export const ReviewCommentReplyRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentReplyRequestV1 = z.infer<typeof ReviewCommentReplyRequestV1Schema>;
 
 export const ReviewCommentRedactRequestV1Schema = z.object({
   commentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   expectedServerRevision: z.number().int().positive(),
   reason: z.string().min(1).optional(),
   redactBody: z.boolean().optional(),
@@ -436,31 +477,31 @@ export const ReviewCommentRedactRequestV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentRedactRequestV1 = z.infer<typeof ReviewCommentRedactRequestV1Schema>;
 
 export const ReviewCommentSetDispositionRequestV1Schema = z.object({
   commentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   expectedServerRevision: z.number().int().positive(),
   disposition: ReviewCommentDispositionV1Schema,
   clientMutationId: z.string().min(1),
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentSetDispositionRequestV1 = z.infer<typeof ReviewCommentSetDispositionRequestV1Schema>;
 
 export const ReviewCommentAttachEvidenceRequestV1Schema = z.object({
   commentId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   expectedServerRevision: z.number().int().positive(),
   evidence: z.array(ReviewCommentEvidenceV1Schema).min(1),
   clientMutationId: z.string().min(1),
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   eventEnvelope: StoredJsonContentEnvelopeSchema.optional(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentAttachEvidenceRequestV1 = z.infer<typeof ReviewCommentAttachEvidenceRequestV1Schema>;
 
 export const ReviewCommentEventKindV1Schema = z.enum([
@@ -478,7 +519,7 @@ export const ReviewCommentEventV1Schema = z.object({
   eventId: z.string().min(1),
   commentId: z.string().min(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   eventKind: ReviewCommentEventKindV1Schema,
   actor: ReviewCommentActorRefV1Schema,
   createdAt: z.number().int().nonnegative(),
@@ -487,5 +528,5 @@ export const ReviewCommentEventV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   event: z.record(z.string(), z.unknown()),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentEventV1 = z.infer<typeof ReviewCommentEventV1Schema>;

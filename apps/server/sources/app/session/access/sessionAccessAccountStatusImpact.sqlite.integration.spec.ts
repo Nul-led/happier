@@ -18,7 +18,6 @@ describe("Account-status Session access effects (SQLite integration)", () => {
             tempDirPrefix: "happier-account-status-session-impact-",
             initAuth: false,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
             },
         });

@@ -1,6 +1,9 @@
 import {
     deriveTeamInvitationStateV1,
+    decodeTeamInvitationsCursorV1,
+    encodeTeamInvitationsCursorV1,
     maskTeamInvitationRecipientEmail,
+    teamInvitationsQueryKeyV1,
     type TeamInvitationAdmissibleRoleV1,
     type TeamInvitationPreviewResultV1,
     type TeamInvitationPreviewV1,
@@ -56,7 +59,8 @@ export type TeamInvitationAuthorityError =
     | "team_archived"
     | "forbidden"
     | "team_authentication_required"
-    | "team_authentication_unavailable";
+    | "team_authentication_unavailable"
+    | "invalid_team_cursor";
 export type TeamInvitationTargetError = TeamInvitationAuthorityError | "invitation_not_found";
 export type TeamInvitationServiceError = TeamInvitationTargetError | "invitation_not_active";
 
@@ -323,14 +327,25 @@ export async function listTeamInvitationsForActorInTx(
     if (!authorized.ok) return authorized;
 
     const now = await readTransactionDatabaseTime(tx);
+    const queryKey = teamInvitationsQueryKeyV1({ teamId: input.teamId, state: input.state ?? null });
+    const cursor = input.cursor === null
+        ? null
+        : decodeTeamInvitationsCursorV1(input.cursor, queryKey);
+    if (cursor !== null && cursor.status !== "ok") return denied("invalid_team_cursor");
+    const cursorWhere = cursor === null ? {} : {
+        OR: [
+            { createdAt: { lt: new Date(cursor.cursor.createdAt) } },
+            { createdAt: new Date(cursor.cursor.createdAt), id: { lt: cursor.cursor.id } },
+        ],
+    };
     const records = await tx.teamInvitation.findMany({
         where: {
             teamId: input.teamId,
             ...(input.state ? invitationStateFilter(input.state, now) : {}),
+            ...cursorWhere,
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: input.limit + 1,
-        ...(input.cursor === null ? {} : { cursor: { id: input.cursor }, skip: 1 }),
     });
 
     const page = records.slice(0, input.limit);
@@ -338,7 +353,13 @@ export async function listTeamInvitationsForActorInTx(
         ok: true,
         value: {
             items: page.map((record) => projectTeamInvitationRowV1(record, now)),
-            nextCursor: records.length > input.limit ? (page[page.length - 1]?.id ?? null) : null,
+            nextCursor: records.length > input.limit && page[page.length - 1]
+                ? encodeTeamInvitationsCursorV1({
+                    queryKey,
+                    createdAt: page[page.length - 1]!.createdAt.getTime(),
+                    id: page[page.length - 1]!.id,
+                })
+                : null,
         },
     };
 }
@@ -556,7 +577,7 @@ async function readActiveTeamInvitationContextInTx(
     tx: Tx,
     token: unknown,
 ): Promise<ActiveTeamInvitationContext | null> {
-    if (!isTeamMembershipAdmissionEnabled()) return null;
+    if (!await isTeamMembershipAdmissionEnabled({ tx })) return null;
     const tokenHash = tryDigestTeamInvitationToken(token);
     if (tokenHash === null) return null;
 
@@ -641,31 +662,57 @@ export async function resolveTeamInvitationApprovalPreparationInTx(
 ): Promise<TeamInvitationApprovalPreparation | null> {
     const context = await readActiveTeamInvitationContextInTx(tx, input.token);
     if (context === null) return null;
-    const { record, now, team } = context;
-    const projected = projectTeamInvitationRowV1(record, now);
-    const inviterLabel = await readTeamInvitationInviterLabelInTx(tx, record.createdByAccountId);
+    const { record, team } = context;
     return {
         invitationId: record.id,
         teamId: team.id,
         tokenHash: Buffer.from(record.tokenHash).toString("hex"),
         expiresAt: record.expiresAt,
-        preview: {
-            home: input.home,
-            team: {
-                teamId: team.id,
-                name: team.name,
-                logo: projectTeamLogoRefV1(team),
-                // Accent is derived from the opaque Team id, never persisted, so a
-                // rename cannot change a Team's colour.
-                accentSeed: team.id,
-            },
-            role: projected.role,
-            historyAccess: projected.historyAccess,
-            state: "active",
-            expiresAt: projected.expiresAt,
-            recipientEmailMask: maskTeamInvitationRecipientEmail(record.recipientEmailNormalized),
-            inviterLabel,
+        preview: await projectTeamInvitationPreviewInTx(tx, context, input.home),
+    };
+}
+
+/** Held references share the public preview projection and active-offer checks. */
+export async function previewTeamInvitationByReferenceInTx(
+    tx: Tx,
+    input: Readonly<{ invitationId: string; tokenHash: string; teamId: string; home: JoinScreenHomeIdentity }>,
+): Promise<TeamInvitationPreviewV1 | null> {
+    if (!await isTeamMembershipAdmissionEnabled({ tx })) return null;
+    const record = await readActiveTeamInvitationAdmissionReferenceInTx(tx, input);
+    if (!record) return null;
+    const team = await tx.team.findUnique({
+        where: { id: record.teamId },
+        select: { id: true, name: true, logo: true, authenticationPolicy: true, archivedAt: true },
+    });
+    if (!team || team.archivedAt !== null) return null;
+    return projectTeamInvitationPreviewInTx(tx, {
+        record, team, now: await readTransactionDatabaseTime(tx),
+    }, input.home);
+}
+
+async function projectTeamInvitationPreviewInTx(
+    tx: Tx,
+    { record, now, team }: ActiveTeamInvitationContext,
+    home: JoinScreenHomeIdentity,
+): Promise<TeamInvitationPreviewV1> {
+    const projected = projectTeamInvitationRowV1(record, now);
+    const inviterLabel = await readTeamInvitationInviterLabelInTx(tx, record.createdByAccountId);
+    return {
+        home,
+        team: {
+            teamId: team.id,
+            name: team.name,
+            logo: projectTeamLogoRefV1(team),
+            // Accent is derived from the opaque Team id, never persisted, so a
+            // rename cannot change a Team's colour.
+            accentSeed: team.id,
         },
+        role: projected.role,
+        historyAccess: projected.historyAccess,
+        state: "active",
+        expiresAt: projected.expiresAt,
+        recipientEmailMask: maskTeamInvitationRecipientEmail(record.recipientEmailNormalized),
+        inviterLabel,
     };
 }
 

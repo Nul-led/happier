@@ -13,6 +13,7 @@ import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { readGitHubAppInstallationEvidence } from "./githubAppInstallationClient";
 import {
     authorizeGitHubAppManagementInTx,
+    type GitHubAppManagementRefusal,
     beginGitHubAppInstallationVerification,
     createGitHubAppRegistration,
     projectGitHubAppManagementAuthenticationV1,
@@ -102,15 +103,15 @@ const GitHubManifestConversionSchema = z.object({
 
 export type BeginGitHubAppManifestSetupResult =
     | Readonly<{ status: "ready"; authorizeUrl: string }>
-    | Readonly<{ status: "forbidden" | "github_app_not_configured" }>;
+    | Readonly<{ status: GitHubAppManagementRefusal | "github_app_not_configured" }>;
 
 export async function beginGitHubAppManifestSetup(params: GitHubAppManagementAuthorizationInput & Readonly<{
     appName: string;
     githubOwner: Readonly<{ kind: "account" }> | Readonly<{ kind: "organization"; login: string }>;
     env: NodeJS.ProcessEnv;
 }>): Promise<BeginGitHubAppManifestSetupResult> {
-    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, params));
-    if (!authorized) return { status: "forbidden" };
+    const authority = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, params));
+    if (authority.status !== "authorized") return { status: authority.status };
     const authentication = projectGitHubAppManagementAuthenticationV1(params);
     const publicServerUrl = resolveConfiguredPublicServerUrl(params.env);
     if (!publicServerUrl) return { status: "github_app_not_configured" };
@@ -283,12 +284,12 @@ export async function completeGitHubAppManifestInstallationSetup(input: Readonly
     const parsed = GitHubManifestSetupContinuationSchema.safeParse(decoded);
     if (!parsed.success || parsed.data.actorAccountId !== state.userId) return { status: "invalid_state" };
     const authentication = parsed.data.authentication;
-    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, {
+    const authority = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, {
         ...authentication,
         actorAccountId: state.userId!,
         owner: parsed.data.owner,
     }));
-    if (!authorized) return { status: "forbidden" };
+    if (authority.status !== "authorized") return { status: authority.status };
     const consumed = await db.repeatKey.deleteMany({
         where: { key, value: row.value, expiresAt: { gt: new Date() } },
     });
@@ -376,7 +377,7 @@ export function renderGitHubAppManifestSubmissionPage(
 
 export type CompleteGitHubAppManifestSetupResult =
     | Readonly<{ status: "created"; registration: GitHubAppRegistrationView }>
-    | Readonly<{ status: "forbidden" | "github_enterprise_origin_not_approved" | "github_manifest_exchange_failed" }>
+    | Readonly<{ status: GitHubAppManagementRefusal | "github_enterprise_origin_not_approved" | "github_manifest_exchange_failed" }>
     | Readonly<{ status: "github_app_already_registered" }>;
 
 export async function completeGitHubAppManifestSetup(
@@ -388,8 +389,9 @@ export async function completeGitHubAppManifestSetup(
     }>,
 ): Promise<CompleteGitHubAppManifestSetupResult> {
     const prepared = await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" as const };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         return await resolveManagedIdentityNetworkPolicyInTx(tx, { env: params.env, timeoutSeconds: 30 });
     });
@@ -435,7 +437,11 @@ export async function completeGitHubAppManifestSetup(
         },
     });
     if (result.status === "created") return result;
-    if (result.status === "forbidden") return result;
+    // Every administration refusal travels unchanged, so a Team owner who must
+    // re-authenticate is told that rather than that the App already exists.
+    if (result.status === "forbidden"
+        || result.status === "team_authentication_required"
+        || result.status === "team_authentication_unavailable") return result;
     return { status: "github_app_already_registered" };
 }
 

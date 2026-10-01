@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import fastify from 'fastify';
-import { ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER } from '@happier-dev/protocol';
+import {
+  ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
+  SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
+} from '@happier-dev/protocol';
 
 import {
   API_CORS_ALLOWED_HEADERS,
@@ -49,6 +52,7 @@ describe('API_CORS_ALLOWED_HEADERS', () => {
       ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
       'idempotency-key',
       'x-happier-session-list-timing',
+      SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
     ]));
   });
 });
@@ -62,11 +66,12 @@ describe('API_CORS_EXPOSED_HEADERS', () => {
 });
 
 describe('createApiCorsOptions', () => {
-  it('lets browser clients preflight canonical request headers and read Server-Timing', async () => {
+  it('lets browser clients preflight canonical request headers and read timing and retry metadata', async () => {
     const app = fastify();
     app.register(import('@fastify/cors'), createApiCorsOptions({}));
     app.get('/probe', async (_request, reply) => {
       reply.header('Server-Timing', 'happier_v2_sessions_total;dur=1.000');
+      reply.header('x-happier-retry-reason', 'server_unavailable');
       return { ok: true };
     });
 
@@ -82,6 +87,7 @@ describe('createApiCorsOptions', () => {
           ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
           'idempotency-key',
           'x-happier-session-list-timing',
+          SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
         ].join(','),
       },
     });
@@ -100,8 +106,13 @@ describe('createApiCorsOptions', () => {
     );
     expect(preflight.headers['access-control-allow-headers']).toContain('idempotency-key');
     expect(preflight.headers['access-control-allow-headers']).toContain('x-happier-session-list-timing');
+    expect(preflight.headers['access-control-allow-headers']).toContain(
+      SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER,
+    );
     expect(response.headers['server-timing']).toBe('happier_v2_sessions_total;dur=1.000');
     expect(response.headers['access-control-expose-headers']).toContain('server-timing');
+    expect(response.headers['x-happier-retry-reason']).toBe('server_unavailable');
+    expect(response.headers['access-control-expose-headers']).toContain('x-happier-retry-reason');
   });
 });
 

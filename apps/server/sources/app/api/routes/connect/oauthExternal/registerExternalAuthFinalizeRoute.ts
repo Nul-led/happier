@@ -67,6 +67,7 @@ import {
     claimTeamInvitationPostAuthContinuationInTx,
     discardClaimedTeamInvitationPostAuthContinuationInTx,
 } from "@/app/teams/invitations/postAuthContinuation";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 type ProviderResetAccountReplacementRejection = Extract<
     ProviderResetAccountReplacementResult,
@@ -113,8 +114,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const availableRuntime = await resolveOAuthRuntimeById(process.env, providerId);
+        const availableRuntime = await resolveOAuthRuntimeById(requestHomeEnv, providerId);
         if (!availableRuntime && !await loadValidOAuthPending(request.body.pending)) {
             return reply.code(404).send({ error: "unsupported-provider" });
         }
@@ -243,12 +245,13 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         }
 
         const bindingInput = {
+            env: requestHomeEnv,
             providerId, pendingKey, binding: parsedValue.securityBinding,
             purpose: isAccountDirectory ? "account_directory" : pendingPurpose,
         } as const;
         const provider = await requireCurrentOAuthPendingRuntime(bindingInput);
         if (!isAccountDirectory && !isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabled({
-            env: process.env,
+            env: requestHomeEnv,
             methodId: providerId,
             actionId: "provision",
             mode: "keyed",
@@ -315,7 +318,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             isAccountDirectory
             && (
                 parsedValue.securityBinding?.provider.source === "managed"
-                || !isAuthSignupProviderEnabled(process.env, providerId)
+                || !isAuthSignupProviderEnabled(requestHomeEnv, providerId)
             )
         ) {
             return reply.code(403).send({ error: "signup-provider-disabled" });
@@ -372,9 +375,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             return reply.send({ success: true, token });
         }
 
-        if (!existingAccount && !alreadyLinked) {
+        if (!existingAccount && !alreadyLinked && !homeAdmission) {
             const blocked = shouldDenyPublicSignupProvisioningAction({
-                env: process.env,
+                env: requestHomeEnv,
                 requestIp: request.ip,
                 methodId: providerId,
                 mode: "keyed",
@@ -403,7 +406,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         // from the row it rereads inside the replacement transaction.
         let oldAccountForReset: { id: string; username: string | null } | null = null;
         if (alreadyLinked && resetRequested) {
-            if (!isProviderResetEnabled(process.env)) {
+            if (!isProviderResetEnabled(requestHomeEnv)) {
                 return reply.code(403).send({ error: RECOVERY_DISABLED_ERROR });
             }
             oldAccountForReset = await db.account.findUnique({
@@ -416,7 +419,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         }
 
         if (usernameProvidedRaw) {
-            const validation = validateUsername(usernameProvidedRaw, process.env);
+            const validation = validateUsername(usernameProvidedRaw, requestHomeEnv);
             if (!validation.ok) return reply.code(400).send({ error: "invalid-username" });
             desiredUsername = validation.username;
         } else if (oldAccountForReset?.username) {
@@ -428,7 +431,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             const suggested = parsedValue.suggestedUsername?.toString().trim() || "";
             if (!suggested) return reply.code(400).send({ error: "username-required" });
 
-            const validation = validateUsername(suggested, process.env);
+            const validation = validateUsername(suggested, requestHomeEnv);
             if (!validation.ok) return reply.code(400).send({ error: "username-required" });
             desiredUsername = validation.username;
         }
@@ -483,7 +486,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 replacementOutcome = await inTx(async (tx) => {
                     await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
                     if (!isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: providerId,
                         actionId: "provision",
                         mode: "keyed",
@@ -623,7 +626,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     // the first transaction operations. Every durable effect
                     // below rolls back if either authority has gone stale.
                     if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: providerId,
                         actionId: "provision",
                         mode: "keyed",
@@ -634,8 +637,8 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                         }
                         return { status: "provider_disabled" as const };
                     }
-                    if (shouldDenyPublicSignupProvisioningAction({
-                        env: process.env,
+                    if (!homeAdmission && shouldDenyPublicSignupProvisioningAction({
+                        env: requestHomeEnv,
                         requestIp: request.ip,
                         methodId: providerId,
                         mode: "keyed",
@@ -654,7 +657,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                         directoryPreparation: sameServiceBootstrapPreparation,
                         ...(isTeamAdmission ? {
                             teamOAuthAdmission: {
-                                env: process.env,
+                                env: requestHomeEnv,
                                 provider: parsedValue.securityBinding?.provider,
                                 connection: parsedValue.securityBinding?.connection,
                                 source: parsedValue.securityBinding?.admission,
@@ -781,7 +784,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                         isAccountDirectory
                         && (
                             parsedValue.securityBinding?.provider.source === "managed"
-                            || !isAuthSignupProviderEnabled(process.env, providerId)
+                            || !isAuthSignupProviderEnabled(requestHomeEnv, providerId)
                         )
                     ) {
                         return { status: "provider_disabled" as const };
@@ -789,7 +792,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     if (!isAccountDirectory
                         && !isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
                         && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                            env: process.env,
+                            env: requestHomeEnv,
                             methodId: providerId,
                             actionId: "provision",
                             mode: "keyed",
@@ -846,7 +849,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     }
                     const teamAdmission = isTeamAdmission
                         ? await requireTeamOAuthAdmissionInTx(tx, {
-                            env: process.env,
+                            env: requestHomeEnv,
                             accountId: existingAccount.id,
                             provider: parsedValue.securityBinding?.provider,
                             connection: parsedValue.securityBinding?.connection,

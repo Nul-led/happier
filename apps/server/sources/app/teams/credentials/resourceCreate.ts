@@ -11,7 +11,7 @@ import { canonicalUsageLimitMaximum } from "./teamCredentialUsageLimits";
 import { resolveCurrentTeamCredentialUsageCapabilitiesForResource } from "./usageCapabilities";
 import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
 import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
-import { readTeamCredentialBrokerPlacement } from "./brokerPlacementResolver";
+import { readTeamCredentialBrokerPlacement, validateTeamCredentialBrokerPlacementForSaveInTx } from "./brokerPlacementResolver";
 import {
     isTeamCredentialRequestPolicySupportEvidenceCurrent,
     normalizeTeamCredentialRequestPolicyForPersistence,
@@ -93,10 +93,15 @@ export async function createTeamCredentialResourceInTx(tx: Tx, input: CreateTeam
         return { ok: false, error: "disclosure_not_allowed" };
     }
     const audience = await validateTeamCredentialAudienceDraftInTx(tx, {
-        teamId: body.teamId, custodianAccountId: input.actorAccountId, disclosureCeiling: body.disclosureCeiling,
+        teamId: body.teamId, disclosureCeiling: body.disclosureCeiling,
         brokerPlacement: body.brokerPlacement, audience: body,
     });
     if (!audience.ok) return audience;
+    const placement = await validateTeamCredentialBrokerPlacementForSaveInTx(tx, {
+        custodianAccountId: input.actorAccountId,
+        placement: body.brokerPlacement,
+    });
+    if (!placement.ok) return placement;
     const limitRows: { subjectKind: string; subjectId: string; period: string; metric: string; maximum: string; enabled: boolean }[] = [];
     const identities = new Set<string>();
     for (const limit of body.usageLimits) {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { ActionIdSchema } from '../../../actions/actionIds.js';
 import { asProtocolZod } from '../../actions/internalProtocolZodAdapter.js';
-import { CanonicalHttpOriginSchema } from '../../canonicalHttpOrigin.js';
+import { CanonicalHttpOriginSchema } from '../../../http/canonicalHttpOrigin.js';
 import {
   PluginContributionIdentityV1Schema,
   buildQualifiedPluginContributionKey,

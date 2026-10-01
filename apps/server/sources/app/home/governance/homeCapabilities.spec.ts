@@ -43,6 +43,7 @@ describe("Home capability resolution", () => {
             manageHomeRoles: true,
             manageTeamCreationPolicy: true,
             manageAuthentication: true,
+            manageHomeSettings: true,
             eraseAccounts: true,
             createTeam: true,
             manageAllTeams: true,
@@ -57,6 +58,7 @@ describe("Home capability resolution", () => {
         expect(admin.manageAllTeams).toBe(true);
         expect(admin.manageHomeRoles).toBe(false);
         expect(admin.manageAuthentication).toBe(false);
+        expect(admin.manageHomeSettings).toBe(false);
         expect(admin.eraseAccounts).toBe(false);
     });
 

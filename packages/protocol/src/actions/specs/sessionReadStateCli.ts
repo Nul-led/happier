@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ActionCliBindContext, ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliBindContext, type ActionCliProjection } from '../actionCliProjection.js';
 import type { ActionInputHints } from '../metadata.js';
 
 /**
@@ -23,7 +23,7 @@ export function bindSessionReadStateSetCliInput(
 ): Readonly<Record<string, unknown>> {
   return {
     sessionId: value.sessionId,
-    state: value.unread === true ? 'unread' : 'read',
+    state: value.unread === undefined ? actionCliDerivedDefault('read') : value.unread ? 'unread' : 'read',
   };
 }
 

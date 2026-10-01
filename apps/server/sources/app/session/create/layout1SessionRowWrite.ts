@@ -1,4 +1,7 @@
 import { initializeSessionOwnerReadStateInTx } from "@/app/session/personal/readState";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { attachCreatedSessionReportsToInTx, type SessionReportsToSetResult } from "@/app/session/relations/sessionReportsToService";
+import { workflowRunIdentityWhere } from "@/app/workflows/workflowRunService";
 import {
     encodeSessionOwnerMetadataEnvelopeV1,
     SESSION_METADATA_LAYOUT_VERSION_V1,
@@ -10,6 +13,8 @@ import type { SessionArchiveTransitionPublication } from "@/app/session/archive/
 import type { Tx } from "@/storage/inTx";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { publishSessionCreationInTx } from "./publishSessionCreationInTx";
+import type { ExternalActionExecutionAuthorizationBindingV1 } from "@happier-dev/protocol/actions";
+import { readSessionCreationApiTokenIdInTx } from "./apiTokenSessionCreationAuthorization";
 import {
     applyInitialSessionAccessInTx,
     type SessionAccessGrantErrorCode,
@@ -106,6 +111,20 @@ export class SessionTeamCredentialBindingError extends Error {
     }
 }
 
+export class SessionCreationOriginError extends Error {
+    constructor() {
+        super("session-origin-forbidden");
+        this.name = "SessionCreationOriginError";
+    }
+}
+
+export class SessionCreationReportsToError extends Error {
+    constructor(readonly result: Extract<SessionReportsToSetResult, { ok: false }>) {
+        super(result.error);
+        this.name = "SessionCreationReportsToError";
+    }
+}
+
 export function isSessionTeamCredentialBindingError(
     error: unknown,
 ): error is SessionTeamCredentialBindingError {
@@ -136,6 +155,7 @@ export async function insertLayout1SessionRowInTx(
         ownerAccountMode: "e2ee" | "plain";
         authentication: SessionAccessAuthentication;
         sessionId?: string;
+        sessionCreationAuthorization?: ExternalActionExecutionAuthorizationBindingV1;
     }>,
 ): Promise<CreatedSessionRow> {
     const { prepared, effectiveEncryptionMode } = params;
@@ -174,11 +194,33 @@ export async function insertLayout1SessionRowInTx(
             }
         }
     }
+    if (prepared.originSessionId !== undefined) {
+        const originAccess = await resolveSessionAccessForOperation(tx, {
+            accountId: prepared.accountId,
+            sessionId: prepared.originSessionId,
+            authentication: params.authentication,
+            capability: "readTranscript",
+        });
+        if (originAccess.status !== "allowed") throw new SessionCreationOriginError();
+    }
+    if (prepared.originRunId !== undefined) {
+        const run = await tx.automationRun.findFirst({
+            where: workflowRunIdentityWhere({ accountId: prepared.accountId, runId: prepared.originRunId }),
+            select: { id: true },
+        });
+        if (!run) throw new SessionCreationOriginError();
+    }
     const createdAt = new Date();
+    const createdByApiTokenId = await readSessionCreationApiTokenIdInTx(tx, prepared.accountId, params.sessionCreationAuthorization);
     const session = await tx.session.create({
         data: {
             ...(params.sessionId ? { id: params.sessionId } : {}),
             accountId: prepared.accountId,
+            createdByApiTokenId,
+            originKind: prepared.originKind ?? "none",
+            originSessionId: prepared.originSessionId ?? null,
+            originRunId: prepared.originRunId ?? null,
+            workDepth: prepared.workDepth ?? 0,
             tag: prepared.tag,
             encryptionMode: effectiveEncryptionMode,
             metadata: prepared.metadata,
@@ -217,6 +259,13 @@ export async function insertLayout1SessionRowInTx(
         authentication: params.authentication,
     });
     if (!accessResult.ok) throw new SessionInitialAccessError(accessResult.error);
+    if (prepared.reportsTo) {
+        const relation = await attachCreatedSessionReportsToInTx(tx, {
+            accountId: prepared.accountId, sessionId: session.id,
+            leadSessionId: prepared.reportsTo.sessionId, authentication: params.authentication,
+        });
+        if (!relation.ok) throw new SessionCreationReportsToError(relation);
+    }
     if (accessResult.directShares.length > 0) {
         const sharedByUser = await tx.account.findUnique({
             where: { id: prepared.accountId },

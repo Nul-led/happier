@@ -78,6 +78,8 @@ export const PinnedArchivePlatformSchema = ManagedPypiWheelAssetPlatformSchema;
 export const PinnedArchiveInstallableAssetSchema = z.object({
   archiveUrl: z.string().url().refine((value) => value.startsWith('https://'), 'Pinned archive URL must use HTTPS'),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  /** Known download bytes for this exact pinned archive; presentation metadata, not an extraction limit. */
+  sizeBytes: z.number().int().positive().optional(),
   executableSubpath: z.string().trim().min(1).refine((value) => {
     if (/^(?:[A-Za-z]:)?[\\/]/.test(value)) return false;
     return value.split(/[\\/]/).every((segment) => segment !== '' && segment !== '.' && segment !== '..');
@@ -94,6 +96,29 @@ export const PinnedArchiveAssetsByPlatformSchema = z.object({
   'win32-arm64': PinnedArchiveInstallableAssetSchema.optional(),
 }).strict().refine((assets) => Object.values(assets).some(Boolean), 'Pinned archive source requires at least one platform asset');
 
+export const PinnedArchiveExtractionLimitsSchema = z.object({
+  maxArchiveBytes: z.number().int().positive().optional(),
+  maxFileBytes: z.number().int().positive().optional(),
+  maxExpandedBytes: z.number().int().positive().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+}).strict().refine(
+  (limits) => Object.values(limits).some((value) => value !== undefined),
+  'Pinned archive extraction limits must override at least one default',
+).superRefine((limits, ctx) => {
+  if (
+    limits.maxFileBytes !== undefined
+    && limits.maxExpandedBytes !== undefined
+    && limits.maxFileBytes > limits.maxExpandedBytes
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['maxFileBytes'],
+      message: 'Per-file extraction limit must not exceed the cumulative expanded-byte limit',
+    });
+  }
+});
+export type PinnedArchiveExtractionLimits = z.infer<typeof PinnedArchiveExtractionLimitsSchema>;
+
 /**
  * One immutable, digest-pinned per-platform archive. The publishing artifact is
  * pinned, so there is no version discovery: the declared `version` is both the
@@ -102,6 +127,7 @@ export const PinnedArchiveAssetsByPlatformSchema = z.object({
 export const PinnedArchiveInstallableSourceSchema = z.object({
   kind: z.literal('pinned_archive'),
   version: z.string().trim().min(1),
+  archiveExtractionLimits: PinnedArchiveExtractionLimitsSchema.optional(),
   assetsByPlatform: PinnedArchiveAssetsByPlatformSchema,
 }).strict();
 

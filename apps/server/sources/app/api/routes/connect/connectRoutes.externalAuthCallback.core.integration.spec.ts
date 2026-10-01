@@ -75,6 +75,10 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             authority: "present_user",
             authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         });
+        const terminal = await auth.createToken(account.id, { session: "terminal-connect-authority" }, {
+            kind: "terminal",
+            authority: "account_automation",
+        });
         const profile = {
             id: 4815,
             login: "external-login",
@@ -94,9 +98,18 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         const app = createTestApp();
         connectRoutes(app as any);
         await app.ready();
-        const paramsRes = await app.inject({
+        const deniedStart = await app.inject({
             method: "GET",
             url: "/v1/connect/external/github/params?connectFinalization=credential_adoption_v1",
+            headers: { authorization: `Bearer ${terminal}` },
+        });
+        expect(deniedStart.statusCode, deniedStart.body).toBe(403);
+        expect(deniedStart.json()).toEqual({ error: "present_user_required" });
+        expect(await db.repeatKey.count()).toBe(0);
+
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: "/v1/connect/external/github/params",
             headers: { authorization: `Bearer ${initiating}` },
         });
         expect(paramsRes.statusCode, paramsRes.body).toBe(200);
@@ -116,6 +129,17 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         expect(pending).toMatch(/^oauth_pending_/);
         expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
 
+        const deniedFinalize = await app.inject({
+            method: "POST",
+            url: "/v1/connect/external/github/finalize",
+            headers: { authorization: `Bearer ${terminal}` },
+            payload: { pending, username: "account-owner" },
+        });
+        expect(deniedFinalize.statusCode, deniedFinalize.body).toBe(403);
+        expect(deniedFinalize.json()).toEqual({ error: "present_user_required" });
+        expect(await db.repeatKey.findUnique({ where: { key: pending! } })).not.toBeNull();
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
+
         const finalized = await app.inject({
             method: "POST",
             url: "/v1/connect/external/github/finalize",
@@ -123,7 +147,8 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
             payload: { pending, username: "account-owner" },
         });
         expect(finalized.statusCode, finalized.body).toBe(200);
-        const replacement = await auth.verifyToken((finalized.json() as { token: string }).token);
+        const replacementToken = (finalized.json() as { token: string }).token;
+        const replacement = await auth.verifyToken(replacementToken);
         expect(replacement?.userId).toBe(account.id);
         expect(replacement?.authenticationEvidence).toEqual([
             { kind: "home_method", methodId: "key_challenge" },
@@ -137,10 +162,27 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         expect((await auth.verifyToken(initiating))?.authenticationEvidence).toEqual([
             { kind: "home_method", methodId: "key_challenge" },
         ]);
+
+        const deniedDisconnect = await app.inject({
+            method: "DELETE",
+            url: "/v1/connect/external/github",
+            headers: { authorization: `Bearer ${terminal}` },
+        });
+        expect(deniedDisconnect.statusCode, deniedDisconnect.body).toBe(403);
+        expect(deniedDisconnect.json()).toEqual({ error: "present_user_required" });
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(1);
+
+        const disconnected = await app.inject({
+            method: "DELETE",
+            url: "/v1/connect/external/github",
+            headers: { authorization: `Bearer ${replacementToken}` },
+        });
+        expect(disconnected.statusCode, disconnected.body).toBe(200);
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
         await app.close();
     });
 
-    it("preserves legacy callback-side connect completion when the client omits adoption capability", async () => {
+    it("rejects a persisted connect attempt without adoption finalization before exchanging or linking", async () => {
         applyGithubExternalAuthCallbackEnv(harness);
         const account = await db.account.create({
             data: { publicKey: `pk-connect-legacy-${Date.now()}`, username: "legacy-owner" },
@@ -165,19 +207,31 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
 
         const paramsRes = await app.inject({
             method: "GET",
-            url: "/v1/connect/external/github/params",
+            url: "/v1/connect/external/github/params?connectFinalization=credential_adoption_v1",
             headers: { authorization: `Bearer ${initiating}` },
         });
         const state = new URL((paramsRes.json() as { url: string }).url).searchParams.get("state");
+        expect(state).toBeTruthy();
+        const verifiedState = await auth.verifyOauthStateToken(state!);
+        const attemptKey = `oauth_state_${verifiedState!.sid}`;
+        const attempt = await db.repeatKey.findUniqueOrThrow({ where: { key: attemptKey } });
+        const legacyAttempt = JSON.parse(attempt.value) as Record<string, unknown>;
+        delete legacyAttempt.connectFinalization;
+        await db.repeatKey.update({
+            where: { key: attemptKey },
+            data: { value: JSON.stringify(legacyAttempt) },
+        });
         const callback = await app.inject({
             method: "GET",
             url: `/v1/oauth/github/callback?code=legacy-connect&state=${encodeURIComponent(state!)}`,
         });
         const redirect = new URL(callback.headers.location as string);
-        expect(redirect.searchParams.get("error"), callback.headers.location).toBeNull();
-        expect(redirect.searchParams.get("status")).toBe("connected");
+        expect(redirect.searchParams.get("error"), callback.headers.location).toBe("invalid_state");
+        expect(redirect.searchParams.get("status")).toBeNull();
         expect(redirect.searchParams.get("pending")).toBeNull();
-        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(1);
+        expect(await db.repeatKey.count()).toBe(0);
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
+        expect(globalThis.fetch).not.toHaveBeenCalled();
         await app.close();
     });
 

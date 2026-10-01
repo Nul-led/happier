@@ -3,11 +3,16 @@ import { describe, expect, it } from 'vitest';
 import {
   SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
   ScmWorktreeCreateRequestSchema,
+  ScmWorktreeCreateResponseSchema,
   ScmWorktreePruneRequestSchema,
   ScmWorktreeRemoveRequestSchema,
 } from './worktrees.js';
 
 describe('scmWorktrees protocol contracts', () => {
+  it('accepts typed failed creation without fabricating success identities', () => {
+    expect(ScmWorktreeCreateResponseSchema.safeParse({ success: false, errorCode: 'NOT_REPOSITORY' }).success).toBe(true);
+    expect(ScmWorktreeCreateResponseSchema.safeParse({ success: true }).success).toBe(false);
+  });
   it('accepts a cwd-only prune request', () => {
     const parsed = ScmWorktreePruneRequestSchema.parse({
       cwd: '/repo',

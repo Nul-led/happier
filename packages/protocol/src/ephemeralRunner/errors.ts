@@ -24,6 +24,7 @@ export const RunnerServerErrorCodeV1Schema = z.enum([
   'runner_activation_unavailable',
   'runner_creator_currentness_unavailable',
   'runner_artifact_publication_unavailable',
+  'runner_artifact_publication_invalid',
   'runner_artifact_not_published',
   'runner_artifact_target_not_published',
   'runner_artifact_identity_mismatch',

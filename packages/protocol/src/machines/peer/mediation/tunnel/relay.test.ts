@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import * as tunnelRelayModule from './index.js';
 
 type TunnelRelayModule = typeof import('./index');
 
 async function loadTunnelRelayModule(): Promise<TunnelRelayModule | null> {
-  const modulePath = './index.js';
-  return import(modulePath).catch(() => null) as Promise<TunnelRelayModule | null>;
+  return tunnelRelayModule;
 }
 
 describe('peer TCP tunnel relay protocol', () => {
@@ -26,6 +26,8 @@ describe('peer TCP tunnel relay protocol', () => {
         resourceId: 'resource_1',
         requestId: 'request_1',
         externalApiKeyId: '550e8400-e29b-41d4-a716-446655440000',
+        operationId: '550e8400-e29b-41d4-a716-446655440001',
+        brokerPlacementFingerprint: 'a'.repeat(64),
         assignedAccountId: 'account_1',
         assignedTeamMembershipId: 'membership_1',
       },
@@ -124,9 +126,6 @@ describe('peer TCP tunnel relay protocol', () => {
         destination: { host: '127.0.0.1', port: 3000 },
         capProfileId: 'interactive',
         maxFrameBytes: 64 * 1024,
-        maxIdleMs: 30_000,
-        maxDurationMs: 300_000,
-        maxTotalBytes: 64 * 1024 * 1024,
         iat: 1_000,
         exp: 301_000,
         aud: 'happier-tcp-tunnel-relay-authorization',
@@ -199,9 +198,6 @@ describe('peer TCP tunnel relay protocol', () => {
       destination: { host: '127.0.0.1', port: 3000 },
       capProfileId: 'interactive',
       maxFrameBytes: 64 * 1024,
-      maxIdleMs: 30_000,
-      maxDurationMs: 300_000,
-      maxTotalBytes: 64 * 1024 * 1024,
       iat: 1_000,
       exp: 301_000,
       aud: 'happier-tcp-tunnel-relay-authorization',

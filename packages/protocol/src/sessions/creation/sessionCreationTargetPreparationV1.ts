@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { SessionAuthoringCheckoutCreationDraftV1Schema } from '../authoring/creationFieldsV1.js';
 import { SessionExecutionTargetV1Schema } from './sessionExecutionTargetV1.js';
+import { SessionDirectoryIntentV1Schema, refineSessionDirectoryIntentCheckoutV1 } from './sessionDirectoryIntentV1.js';
+import { SessionCreationTagV1Schema } from './sessionCreationIdentityV1.js';
 
 /**
  * Host-only evidence that a user approved creation of this exact canonical
@@ -19,9 +21,10 @@ export type SessionCreationDirectoryApprovalV1 = z.infer<
 >;
 
 export const SessionCreationTargetPreparationRequestV1Schema = z.object({
-  directory: z.string().trim().min(1),
+  directory: SessionDirectoryIntentV1Schema,
+  sessionCreationTag: SessionCreationTagV1Schema.optional(),
   checkoutCreationDraft: SessionAuthoringCheckoutCreationDraftV1Schema.nullable().optional(),
-}).strict();
+}).strict().superRefine(refineSessionDirectoryIntentCheckoutV1);
 export type SessionCreationTargetPreparationRequestV1 = z.infer<
   typeof SessionCreationTargetPreparationRequestV1Schema
 >;
@@ -46,6 +49,7 @@ export const SessionCreationTargetPreparationResultV1Schema = z.discriminatedUni
   z.object({
     ok: z.literal(true),
     directory: z.string().trim().min(1),
+    directoryKind: z.enum(['path', 'managed']),
     /** Whether this direct target requires user authorization before mkdir. */
     directoryCreationRequired: z.boolean(),
     checkout: SessionCreationPreparedCheckoutV1Schema.nullable(),

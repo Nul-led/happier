@@ -42,7 +42,7 @@ function storedRecipe(templateVersion: number): string {
             kind: "newSession",
             spawn: {
                 executionTarget: { serverId: "server", machineId: "machine" },
-                directory: "/tmp/automation-machine-assignment-removal",
+                directory: { kind: "path", path: "/tmp/automation-machine-assignment-removal" },
                 agentTarget: {
                     kind: "agent",
                     identity: { pluginId: "happier.agent.codex", localId: "codex" },
@@ -527,14 +527,14 @@ describe("automation machine-assignment removal (integration)", () => {
                     state: true,
                     revision: true,
                     workflowCustodyState: true,
-                    workflowResultDeliveryState: true,
+                    originDeliveryAckRevision: true,
                     finishedAt: true,
                 },
             })).resolves.toEqual({
                 state: terminalState,
                 revision: 1,
                 workflowCustodyState: "settled",
-                workflowResultDeliveryState: null,
+                originDeliveryAckRevision: null,
                 finishedAt: expect.any(Date),
             });
             if (invocationLifecycle === null) {
@@ -575,7 +575,7 @@ describe("automation machine-assignment removal (integration)", () => {
                 scheduledAt: now,
                 dueAt: now,
                 workflowCustodyState: "pending",
-                workflowResultDeliveryState: "pending",
+                originDeliveryAckRevision: 0,
                 workflowAcceptedSnapshotEnvelope: "{}",
                 workflowCheckpointEnvelope: "{}",
                 assignments: { create: { machineId, priority: 0 } },
@@ -608,13 +608,13 @@ describe("automation machine-assignment removal (integration)", () => {
             select: {
                 state: true,
                 workflowCustodyState: true,
-                workflowResultDeliveryState: true,
+                originDeliveryAckRevision: true,
                 finishedAt: true,
             },
         })).resolves.toEqual({
             state: "outcome_uncertain",
             workflowCustodyState: "settled",
-            workflowResultDeliveryState: "unavailable",
+            originDeliveryAckRevision: 0,
             finishedAt: expect.any(Date),
         });
         await expect(db.workflowRunInvocation.findUniqueOrThrow({

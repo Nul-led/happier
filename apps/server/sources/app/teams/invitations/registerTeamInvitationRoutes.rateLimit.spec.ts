@@ -16,7 +16,7 @@ describe("Team invitation route rate limits", () => {
                 hosting: null,
             }),
             email: {
-                delivery: { isReady: false, deliver: async () => ({ status: "sent" }) },
+                delivery: { isReady: async () => false, deliver: async () => ({ status: "sent" }) },
                 isDeliveryReady: () => false,
             },
         });

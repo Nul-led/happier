@@ -22,12 +22,11 @@ import { resolveTeamActorContextInTx, type TeamOperationAuthenticationContext } 
 import { resolveTeamCredentialCapabilities } from "../capabilities";
 import { publishTeamChangedInTx } from "../teamChanges";
 import { recordTeamCredentialActivityInTx } from "./resourceActivity";
-import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
-import { readTeamCredentialBrokerPlacement, resolveTeamCredentialBrokerPoolForSaveInTx } from "./brokerPlacementResolver";
+import { readTeamCredentialBrokerPlacement, validateTeamCredentialBrokerPlacementForSaveInTx } from "./brokerPlacementResolver";
 import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
-import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
 import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
 import { validateTeamCredentialAudienceDraftInTx } from "./resourceAudience";
+import { retainEntitledTeamCredentialRecipientMaterialInTx } from "./recipientMaterial";
 import { validateTeamCredentialUsageLimitDraftInTx } from "./resourceLimits";
 import {
     findTeamCredentialUsageLimitCapabilityRefusal,
@@ -60,19 +59,6 @@ function parseJson(value: string | null): unknown {
 function sortedAudience<T extends { deliveryMode: string }>(rows: readonly T[], id: keyof T): readonly (readonly string[])[] {
     return rows.map((row) => [String(row[id]), row.deliveryMode] as const)
         .sort(([left], [right]) => left.localeCompare(right));
-}
-
-function directAudience(
-    allMembersDeliveryMode: string | null,
-    groups: readonly Readonly<{ teamGroupId: string; deliveryMode: string }>[],
-    members: readonly Readonly<{ teamMembershipId: string; deliveryMode: string }>[],
-): readonly string[] {
-    const includesDirect = (mode: string | null) => mode === "direct" || mode === "both";
-    return [
-        ...(includesDirect(allMembersDeliveryMode) ? ["all"] : []),
-        ...groups.filter((grant) => includesDirect(grant.deliveryMode)).map((grant) => `group:${grant.teamGroupId}`),
-        ...members.filter((grant) => includesDirect(grant.deliveryMode)).map((grant) => `member:${grant.teamMembershipId}`),
-    ].sort();
 }
 
 type ResourceAudience = Pick<TeamCredentialResourceReplacementV1, "allMembersDeliveryMode" | "groupGrants" | "memberGrants">;
@@ -198,7 +184,7 @@ async function applyResourceReplacementInTx(
     }
     const nextSource = custodianBlock?.source ?? storedSource.data;
     const nextCeiling = custodianBlock?.disclosureCeiling ?? storedCeiling.data;
-    const nextPlacement = custodianBlock?.brokerPlacement ?? storedPlacement.placement;
+    const nextPlacement = custodianBlock === undefined ? storedPlacement.placement : custodianBlock.brokerPlacement;
     // The audience a custodian cannot edit arrives unchanged, so narrowing is
     // applied here rather than trusted to the caller: the persisted audience is
     // the one this narrowing leaves, never a direct grant under brokered_only.
@@ -253,12 +239,21 @@ async function applyResourceReplacementInTx(
     }
     const audience = await validateTeamCredentialAudienceDraftInTx(tx, {
         teamId: resource.teamId,
-        custodianAccountId: resource.custodianAccountId,
         disclosureCeiling: nextCeiling,
         brokerPlacement: nextPlacement,
         audience: nextAudience,
     });
     if (!audience.ok) return audience;
+    // Retained direct-only placement does not block withdrawal or repair, but
+    // selecting another location is always validated, even without brokered grants.
+    if (!isDeepStrictEqual(nextPlacement, storedPlacement.placement)
+        || requestedModes.some(mode => mode !== null && mode !== "direct")) {
+        const placement = await validateTeamCredentialBrokerPlacementForSaveInTx(tx, {
+            custodianAccountId: resource.custodianAccountId,
+            placement: nextPlacement,
+        });
+        if (!placement.ok) return placement;
+    }
     const deleteIds = new Set(replacement.usageLimitDelta.deleteIds);
     const existingLimitsById = new Map(currentLimits.map((limit) => [limit.id, limit]));
     if ([...deleteIds].some((id) => !existingLimitsById.has(id))) return { ok: false, error: "invalid_limit" };
@@ -332,13 +327,8 @@ async function applyResourceReplacementInTx(
     if (retainedLimitRefusal) return { ok: false, error: retainedLimitRefusal };
 
     const sourceChanged = !isDeepStrictEqual(storedSource.data, nextSource);
-    const directAudienceChanged = !isDeepStrictEqual(
-        directAudience(resource.allMembersDeliveryMode, currentGroups, currentMembers),
-        directAudience(nextAudience.allMembersDeliveryMode, nextAudience.groupGrants, nextAudience.memberGrants),
-    );
     const directAuthorityChanged = sourceChanged
         || resource.disclosureCeiling !== nextCeiling
-        || directAudienceChanged
         || (resource.enabled && !replacement.enabled);
     // `revision` is the authority revision: selection mutations and fresh
     // broker opens use it as their CAS precondition, and every request presents
@@ -414,6 +404,8 @@ async function applyResourceReplacementInTx(
     }
     if (directAuthorityChanged) {
         await tx.teamCredentialRecipientMaterial.deleteMany({ where: { resourceId: resource.id } });
+    } else if (nextAudienceChanged) {
+        await retainEntitledTeamCredentialRecipientMaterialInTx(tx, { resourceId: resource.id });
     }
     await recordTeamCredentialActivityInTx(tx, {
         teamId: resource.teamId,
@@ -579,7 +571,6 @@ export async function updateTeamCredentialResourceInTx(
     const existingBrokerAudience = resource.allMembersDeliveryMode !== null && resource.allMembersDeliveryMode !== "direct"
         || (await tx.teamCredentialGroupGrant.count({ where: { resourceId: resource.id, deliveryMode: { in: ["brokered", "both"] } } })) > 0
         || (await tx.teamCredentialMemberGrant.count({ where: { resourceId: resource.id, deliveryMode: { in: ["brokered", "both"] } } })) > 0;
-    if (existingBrokerAudience && brokerMachineId === null && brokerPoolId === null) return { ok: false, error: "broker_unavailable" };
     // Save readiness answers "may this placement be selected", so it is asked of
     // a placement this patch actually selects. A patch that only takes authority
     // away — disabling the resource, or narrowing its ceiling — keeps whatever
@@ -592,24 +583,17 @@ export async function updateTeamCredentialResourceInTx(
         && brokerPoolId === resource.brokerPoolId;
     const reducesAuthorityOnly = keepsStoredPlacement
         && !isWideningDisclosure
+        && !(patch.enabled === true && !resource.enabled)
+        && sessionPolicy.data === resource.sessionUsePolicy
+        && !requestPolicyChanged
         && (patch.enabled === false || isLoweringDisclosure);
-    if (brokerMachineId !== null && !reducesAuthorityOnly) {
-        const broker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
-            custodianAccountId: resource.custodianAccountId, brokerMachineId,
+    if (!reducesAuthorityOnly) {
+        if (existingBrokerAudience && brokerMachineId === null && brokerPoolId === null) return { ok: false, error: "broker_unavailable" };
+        const placement = await validateTeamCredentialBrokerPlacementForSaveInTx(tx, {
+            custodianAccountId: resource.custodianAccountId,
+            placement: parsedPlacement.data,
         });
-        if (!broker.ok) return broker;
-    }
-    if (brokerPoolId !== null && !reducesAuthorityOnly) {
-        const poolExists = await acquireMachinePoolMutationFenceInTx({
-            tx,
-            accountId: resource.custodianAccountId,
-            poolId: brokerPoolId,
-        });
-        if (!poolExists) return { ok: false, error: "broker_unavailable" };
-        const pool = await resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
-            custodianAccountId: resource.custodianAccountId, poolId: brokerPoolId,
-        });
-        if (!pool.ok) return pool;
+        if (!placement.ok) return placement;
     }
     // See applyResourceReplacementInTx: only authority facts advance `revision`.
     const authorityChanged = (patch.enabled !== undefined && patch.enabled !== resource.enabled)

@@ -1,9 +1,10 @@
 import {
-    PluginManifestV2Schema,
+    type PluginSourceCustodyV1,
     type AutomationEventDeclarationReleaseV1,
     type ParsedPluginManifestV2,
 } from "@happier-dev/protocol";
 
+import { resolveCurrentPluginDeclarationTx } from "@/app/plugins/availability/currentDeclaration";
 import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
 import { readCurrentPluginWebhookEndpointTargetTxV1 } from "@/app/plugins/webhooks/endpointStore";
 import type { Tx } from "@/storage/inTx";
@@ -14,8 +15,8 @@ export type AutomationEventCallerV1 = Readonly<{
     machineId: string;
     machineInstallationId: string;
     materializationId: string;
-    /** Exact host-stamped contributor generation. */
-    immutableGenerationId: string;
+    /** Durable host-stamped source custody. */
+    sourceCustody: PluginSourceCustodyV1;
 }>;
 
 export class AutomationEventCurrentnessError extends Error {
@@ -136,10 +137,10 @@ function resolveCurrentAutomationEventContributionFromManifest(params: Readonly<
  * Automation Event boundary. Source status and occurrence admission consume
  * this same currentness decision rather than resolving plugin inventory again.
  *
- * The caller generation remains mandatory provenance, but live immutable-
- * generation currentness belongs to the CLI runtime registry and is checked
- * immediately before transport. The server deliberately validates only the
- * persisted materialization/release facts it owns here.
+ * The caller source custody remains mandatory provenance, but live runtime-slot
+ * currentness belongs to the CLI runtime registry and is checked immediately
+ * before transport. The server deliberately validates only the persisted
+ * materialization/release facts it owns here.
  */
 export async function assertCurrentAutomationEventCallerMaterializationTx(params: Readonly<{
     tx: Tx;
@@ -177,8 +178,6 @@ export async function assertCurrentAutomationEventCallerMaterializationTx(params
         version: row.version,
     });
     if (current.kind !== "current") fail("caller_materialization_not_current");
-    const archiveDigestSha256 = current.materialization.archiveDigestSha256;
-    if (archiveDigestSha256 === undefined) fail("caller_materialization_not_current");
     return {
         version: current.materialization.version,
         eventDeclarationRelease: {
@@ -186,7 +185,9 @@ export async function assertCurrentAutomationEventCallerMaterializationTx(params
                 pluginId: current.materialization.pluginId,
                 version: current.materialization.version,
             },
-            archiveDigestSha256,
+            // The selected release archive digest, or the claimed manifest
+            // digest of a release-less (bundled/development) declaration.
+            archiveDigestSha256: current.declarationDigestSha256,
         },
     };
 }
@@ -197,35 +198,9 @@ export async function resolveCurrentAutomationEventManifestTx(params: Readonly<{
     pluginId: string;
     version: string;
 }>): Promise<ParsedPluginManifestV2> {
-    const [intent, release] = await Promise.all([
-        params.tx.accountPluginIntent.findUnique({
-            where: {
-                accountId_pluginId: {
-                    accountId: params.accountId,
-                    pluginId: params.pluginId,
-                },
-            },
-            select: { enabled: true, desiredVersion: true },
-        }),
-        params.tx.accountPluginRelease.findUnique({
-            where: {
-                accountId_pluginId_version: {
-                    accountId: params.accountId,
-                    pluginId: params.pluginId,
-                    version: params.version,
-                },
-            },
-            select: { normalizedManifest: true },
-        }),
-    ]);
-    if (!intent?.enabled || intent.desiredVersion !== params.version || !release) {
-        fail("event_contribution_not_current");
-    }
-    const manifest = PluginManifestV2Schema.safeParse(release.normalizedManifest);
-    if (!manifest.success || manifest.data.id !== params.pluginId) {
-        fail("event_contribution_not_current");
-    }
-    return manifest.data;
+    const declaration = await resolveCurrentPluginDeclarationTx(params);
+    if (!declaration) fail("event_contribution_not_current");
+    return declaration.manifest;
 }
 
 /**

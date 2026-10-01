@@ -4,7 +4,7 @@ import {
 } from "@happier-dev/cli-common/tailscale";
 
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
-import { inferAndApplyPublicServerUrlFromTailscaleStatus } from "./inferAndApplyPublicServerUrlFromTailscaleStatus";
+import { inferPublicServerUrlFromTailscaleStatus } from "./inferPublicServerUrlFromTailscaleStatus";
 
 type TailscaleServeStatusRunner = (params: Readonly<{
     timeoutMs: number;
@@ -35,11 +35,10 @@ function shouldInferFromEnv(env: NodeJS.ProcessEnv): boolean {
     return parseBooleanEnv(env.HAPPIER_TAILSCALE_INFER_PUBLIC_URL, true);
 }
 
-export async function inferAndApplyTailscaleServePublicServerUrl(
+export async function inferTailscaleServePublicServerUrl(
     env: NodeJS.ProcessEnv,
     deps?: Readonly<{ runTailscaleServeStatus?: TailscaleServeStatusRunner }>,
 ): Promise<string | null> {
-    if (String(env.HAPPIER_PUBLIC_SERVER_URL ?? "").trim()) return null;
     if (!shouldInferFromEnv(env)) return null;
 
     const statusTimeoutMs = resolveTailscaleServeStatusTimeoutMs(env);
@@ -49,7 +48,7 @@ export async function inferAndApplyTailscaleServePublicServerUrl(
             timeoutMs: statusTimeoutMs,
             env,
         });
-        return inferAndApplyPublicServerUrlFromTailscaleStatus(env, status);
+        return inferPublicServerUrlFromTailscaleStatus(env, status);
     } catch {
         return null;
     }

@@ -114,7 +114,6 @@ type EventWriterAccount = Readonly<{
     machineId: string;
     machineInstallationId: string;
     materializationId: string;
-    immutableGenerationId: string;
 }>;
 
 function eventExecutionRecipe(params: Readonly<{
@@ -250,7 +249,6 @@ async function seedEventWriterAccount(mode: "plain" | "e2ee" = "plain"): Promise
         machineId,
         machineInstallationId,
         materializationId,
-        immutableGenerationId: `generation-${suffix}`,
     };
 }
 

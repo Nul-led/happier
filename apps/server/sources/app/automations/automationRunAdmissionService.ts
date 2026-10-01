@@ -17,6 +17,7 @@ import {
 
 import { afterTx, type Tx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { invalidateSessionReviewProjectionsForAutomationInTx } from './sessionReviewProjectionInvalidation';
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 import { attachAutomationWorkflowBodyTx } from "@/app/workflows/workflowRunService";
 import {
@@ -26,6 +27,8 @@ import {
 
 import { automationRunItemSelect } from "./automationPersistenceSelect";
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
+import { lockScopedAutomationTriggerInTx } from "./automationScopedTrigger";
+import { applyAutomationRunTerminalEffectsTx } from "./automationRunSucceeded";
 import {
     decodeAutomationRunCause,
     encodeAutomationRunCause,
@@ -91,8 +94,6 @@ export type AutomationRunAdmissionRequest = Readonly<{
     occurrenceEvidenceEqualityTag?: string | null;
     /** Current V3 manual retry identity, projected to the canonical occurrence key. */
     manualIdempotencyKey?: string;
-    /** Released-V2-only predecessor retry column; never dual-written with V3. */
-    legacyV2ManualIdempotencyKey?: string;
     replyHandoff?: AutomationRunReplyHandoffAdmission;
 }>;
 
@@ -129,9 +130,8 @@ function triggerEvidenceMatchesCause(
  * The one persisted occurrence identity for an admission request. Trigger and
  * Conversation causes carry the key their evidence already derived; an
  * idempotent V3 manual invocation derives the canonical manual key so a lost
- * response rejoins the same Run. A non-idempotent V3 invocation and a retained
- * released-V2 manual retry hold no occurrence key: V2 keeps its narrow legacy
- * idempotency column instead.
+ * response rejoins the same Run. A non-idempotent invocation has no occurrence
+ * key. Retained predecessor rows keep their stored retry column unchanged.
  */
 function admissionOccurrenceKey(params: Readonly<{
     automationId: string;
@@ -151,16 +151,10 @@ function occurrenceDiscriminator(params: Readonly<{
     automationId: string;
     cause: AutomationRunCause;
     manualIdempotencyKey?: string;
-    legacyV2ManualIdempotencyKey?: string;
 }>): Prisma.AutomationRunWhereInput | null {
     const occurrenceKey = admissionOccurrenceKey(params);
     if (occurrenceKey !== null) return { automationId: params.automationId, occurrenceKey };
-    return params.legacyV2ManualIdempotencyKey
-        ? {
-            automationId: params.automationId,
-            legacyManualIdempotencyKey: params.legacyV2ManualIdempotencyKey,
-        }
-        : null;
+    return null;
 }
 
 function findExistingRun(params: Readonly<{
@@ -168,7 +162,6 @@ function findExistingRun(params: Readonly<{
     automationId: string;
     cause: AutomationRunCause;
     manualIdempotencyKey?: string;
-    legacyV2ManualIdempotencyKey?: string;
     occurrenceEvidenceEqualityTag?: string | null;
 }>): AutomationRunItem | null {
     // The `(automationId, occurrenceKey)` unique is the single rejoin owner,
@@ -179,9 +172,7 @@ function findExistingRun(params: Readonly<{
     const existing = params.rows.find((row) => {
         if (row.automationId !== params.automationId) return false;
         if (occurrenceKey !== null) return row.occurrenceKey === occurrenceKey;
-        return Boolean(params.legacyV2ManualIdempotencyKey)
-            && row.causeKind === "manual"
-            && row.legacyManualIdempotencyKey === params.legacyV2ManualIdempotencyKey;
+        return false;
     }) ?? null;
     if (!existing) return null;
     if (!sameOccurrenceCause(decodeAutomationRunCause(existing), params.cause)
@@ -194,6 +185,7 @@ function findExistingRun(params: Readonly<{
 const automationAdmissionDefinitionSelect = {
     id: true,
     enabled: true,
+    scopeSessionId: true,
     targetType: true,
     templateVersion: true,
     templateCiphertext: true,
@@ -368,7 +360,9 @@ function prepareAutomationRunAdmission(params: Readonly<{
         admission: {
             request: params.request,
             cause,
-            executionInputEnvelope,
+            // The queued row must already carry its frozen bytes; the Workflow
+            // attachment below changes custody under the same transaction.
+            executionInputEnvelope: executionInputEnvelope ?? workflowDefinitionEnvelope,
             workflowDefinitionEnvelope,
             automation: admissionAutomation,
         },
@@ -381,6 +375,21 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
     admission: PreparedAutomationRunAdmission;
 }>): Promise<AutomationRunAdmissionResult> {
     const { request, cause, executionInputEnvelope, workflowDefinitionEnvelope, automation } = params.admission;
+    const triggerId = cause.kind === "manual" ? undefined : cause.triggerId;
+    if (automation.scopeSessionId !== null && triggerId) {
+        const pending = await params.tx.automationRun.findMany({
+            where: { accountId: params.accountId, triggerId, state: "queued" }, select: { id: true, workflowCustodyState: true },
+        });
+        for (const previous of pending) {
+            await params.tx.automationRun.update({ where: { id: previous.id }, data: {
+                state: "skipped", errorCode: "superseded_by_newer_occurrence", finishedAt: request.now,
+                workflowCustodyState: previous.workflowCustodyState !== null ? "settled" : null,
+                revision: { increment: 1 },
+            } });
+            await applyAutomationRunTerminalEffectsTx({ tx: params.tx, accountId: params.accountId,
+                runId: previous.id, previousState: "queued", state: "skipped", now: request.now });
+        }
+    }
     const dueAt = cause.kind === "trigger" && cause.triggerKind === "schedule"
         ? new Date(cause.evidence.scheduledFor)
         : request.now;
@@ -405,17 +414,13 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
                 cause,
                 manualIdempotencyKey: request.manualIdempotencyKey,
             }),
-            legacyManualIdempotencyKey: cause.kind === "manual"
-                ? request.legacyV2ManualIdempotencyKey ?? null
-                : null,
             occurrenceEvidenceEqualityTag: request.occurrenceEvidenceEqualityTag ?? null,
             triggerEvidenceEnvelope: request.triggerEvidenceEnvelope ?? null,
             executionInputEnvelope,
             executionDispatchState: initialExecutionDispatchState,
             assignments: {
-                // Query index derived atomically from current strict recipe
-                // assignmentMachineIds. Released V2 cannot gain that field,
-                // so this child index is its isolated compatibility carrier.
+                // Frozen assignment index also serves retained predecessor
+                // inputs, which have no embedded assignmentMachineIds.
                 create: automation.assignments.map((assignment) => ({
                     machineId: assignment.machineId,
                     priority: assignment.priority,
@@ -460,6 +465,7 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
         where: { id: request.automationId },
         data: { lastRunAt: request.now },
     });
+    await invalidateSessionReviewProjectionsForAutomationInTx(params.tx, automation.id);
     const cursor = await markAccountChanged(params.tx, {
         accountId: params.accountId,
         kind: "automation",
@@ -498,17 +504,30 @@ export async function admitAutomationRunsTx(params: Readonly<{
     recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }>): Promise<readonly AutomationRunAdmissionResult[]> {
     if (params.admissions.length === 0) return [];
-    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? resolveAutomationRecipeFeaturePolicy();
+    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? await resolveAutomationRecipeFeaturePolicy({ tx: params.tx });
     const parsedAdmissions = params.admissions.map((request) => ({
         request,
         cause: AutomationRunCauseSchema.parse(request.cause),
     }));
+    // The same trigger row also serializes claims. Lock before mutable reads
+    // so concurrent admissions observe the incumbent pending reservation.
+    const scopedLockCandidates = [...new Set(parsedAdmissions.flatMap(({ cause }) => (
+        cause.kind !== "manual" && cause.triggerId ? [cause.triggerId] : []
+    )))].sort();
+    const scopedTriggerIds = (await Promise.all(automationPortableQueryChunks({
+        values: scopedLockCandidates, bindingsPerValue: 1,
+    }).map((ids) => params.tx.automationTrigger.findMany({
+        where: { id: { in: [...ids] }, automation: { accountId: params.accountId, scopeSessionId: { not: null } } },
+        select: { id: true },
+    })))).flat().map((row) => row.id).sort();
+    for (const triggerId of scopedTriggerIds) {
+        await lockScopedAutomationTriggerInTx(params.tx, params.accountId, triggerId);
+    }
     const occurrenceDiscriminators = [...new Map(parsedAdmissions.flatMap(({ request, cause }) => {
         const discriminator = occurrenceDiscriminator({
             automationId: request.automationId,
             cause,
             manualIdempotencyKey: request.manualIdempotencyKey,
-            legacyV2ManualIdempotencyKey: request.legacyV2ManualIdempotencyKey,
         });
         return discriminator === null ? [] : [[JSON.stringify(discriminator), discriminator] as const];
     })).values()];

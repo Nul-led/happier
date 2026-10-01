@@ -43,7 +43,7 @@ describe('Automation event V1 privacy projections', () => {
       eventRef: sourceReport.eventRef,
       sourceSelectorId,
       reporterMaterializationRef: materializationRef,
-      reporterImmutableGenerationId: immutableGenerationId,
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       state: 'observing',
       code: null,
       lastObservedAt: 10,
@@ -58,7 +58,7 @@ describe('Automation event V1 privacy projections', () => {
       accountId: 'account-1',
       eventPluginId: 'com.acme.github',
       reporterMaterializationRef: materializationRef,
-      reporterImmutableGenerationId: immutableGenerationId,
+      reporterSourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       scopeKey: 'checkpointedPull',
       observedRevision: '7',
       adoptedRevision: '7',
@@ -73,7 +73,7 @@ describe('Automation event V1 privacy projections', () => {
     expect(AutomationEventSourceStatusV1Schema.safeParse(sourceProjection).success).toBe(true);
     expect(AutomationEventSourceCatalogStatusV1Schema.safeParse(catalogProjection).success).toBe(true);
     const {
-      reporterImmutableGenerationId: _catalogGeneration,
+      reporterSourceCustody: _catalogGeneration,
       ...catalogProjectionWithoutGeneration
     } = catalogProjection;
     expect(AutomationEventSourceCatalogStatusV1Schema.safeParse(
@@ -108,7 +108,8 @@ describe('Automation event V1 privacy projections', () => {
         pluginId: 'com.acme.github',
         contributionLocalId: 'pull-request-opened',
         materialization: materializationRef,
-        immutableGenerationId,
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
       },
       input: {
         eventRef: { pluginId: 'com.acme.github', localId: 'pull-request-opened' },
@@ -159,7 +160,13 @@ describe('Automation event V1 privacy projections', () => {
       { accountId: 'account-1' },
       { eventPluginId: 'com.acme.github' },
       { reporterMaterializationRef: materializationRef },
-      { reporterImmutableGenerationId: immutableGenerationId },
+      {
+        reporterSourceCustody: {
+          kind: 'managed',
+          immutableGenerationId,
+          installSource: 'npm',
+        },
+      },
       { scopeKey: 'checkpointedPull' },
       { reportedAt: 12 },
       { revision: 1 },

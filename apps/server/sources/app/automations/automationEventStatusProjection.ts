@@ -64,7 +64,7 @@ function sourceStatusFromRow(row: Readonly<{
     reporterMachineId: string;
     reporterMachineInstallationId: string;
     reporterMaterializationId: string;
-    reporterImmutableGenerationId: string;
+    reporterSourceCustody: unknown;
     state: "uninitialized" | "baselined" | "observing" | "backingOff" | "attention";
     code: string | null;
     lastObservedAt: Date | null;
@@ -86,7 +86,7 @@ function sourceStatusFromRow(row: Readonly<{
             materializationId: row.reporterMaterializationId,
             pluginId: row.eventPluginId,
         },
-        reporterImmutableGenerationId: row.reporterImmutableGenerationId,
+        reporterSourceCustody: row.reporterSourceCustody,
         state: row.state,
         code: row.code,
         lastObservedAt: row.lastObservedAt?.getTime() ?? null,
@@ -189,7 +189,7 @@ export async function loadAutomationEventStatusProjections(params: Readonly<{
                 reporterMachineId: true,
                 reporterMachineInstallationId: true,
                 reporterMaterializationId: true,
-                reporterImmutableGenerationId: true,
+                reporterSourceCustody: true,
                 state: true,
                 code: true,
                 lastObservedAt: true,
@@ -297,11 +297,6 @@ export async function loadAutomationEventStatusProjections(params: Readonly<{
     for (const row of sourceStatusRows) {
         const entry = eventEntryByTriggerId.get(row.triggerId);
         const currentReporter = currentReporterByTriggerId.get(row.triggerId);
-        // Mandatory reporter-generation provenance: the final DTO contract is
-        // non-null, so this owner narrows the physical possibility of an
-        // absent generation explicitly instead of defaulting it. A row that
-        // fails any currentness fact is not projected at all.
-        const reporterImmutableGenerationId: string | null = row.reporterImmutableGenerationId;
         if (
             !entry
             || entry.trigger.eventPluginId !== row.eventPluginId
@@ -312,13 +307,12 @@ export async function loadAutomationEventStatusProjections(params: Readonly<{
             || currentReporter.reporterMachineId !== row.reporterMachineId
             || currentReporter.reporterMachineInstallationId !== row.reporterMachineInstallationId
             || currentReporter.reporterMaterializationId !== row.reporterMaterializationId
-            || reporterImmutableGenerationId === null
         ) continue;
         sourceStatusByTriggerId.set(row.triggerId, sourceStatusFromRow({
             ...row,
             automationId: entry.automation.id,
             triggerRevision: row.triggerRevision,
-            reporterImmutableGenerationId,
+            reporterSourceCustody: row.reporterSourceCustody,
         }));
     }
 

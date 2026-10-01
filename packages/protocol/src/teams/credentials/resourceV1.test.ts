@@ -602,7 +602,6 @@ describe('team credential resource errors', () => {
       resource_forbidden: 403,
       member_not_eligible: 403,
       session_policy_incompatible: 409,
-      external_api_restricted_team: 403,
       invalid_limit: 400,
       limit_identity_immutable: 400,
       subject_not_in_team: 400,

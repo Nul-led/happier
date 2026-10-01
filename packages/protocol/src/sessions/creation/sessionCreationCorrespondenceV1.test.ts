@@ -16,7 +16,7 @@ const correspondence = {
     creationKey: 'manual:attempt-1',
   }),
   recipe: {
-    execution: { machineId: 'machine-1', directory: '/workspace/project' },
+    execution: { machineId: 'machine-1', directory: { kind: 'path', path: '/workspace/project' } },
     organization: { folderId: null, tagIds: ['tag-a', 'tag-b'] },
     agentTarget: {
       kind: 'agent',
@@ -37,6 +37,17 @@ const correspondence = {
 } as const;
 
 describe('SessionCreationCorrespondenceV1', () => {
+  it('matches managed retries by intent and rejects a managed versus path correspondence', () => {
+    const managed = { ...correspondence, recipe: { ...correspondence.recipe,
+      execution: { ...correspondence.recipe.execution, directory: { kind: 'managed' } },
+    } };
+    expect(sessionCreationCorrespondenceMatchesV1(managed, managed)).toBe(true);
+    expect(sessionCreationCorrespondenceMatchesV1(managed, correspondence)).toBe(false);
+    expect(SessionCreationCorrespondenceV1Schema.safeParse({ ...managed, recipe: {
+      ...managed.recipe,
+      checkout: { kind: 'git_worktree', finalDirectory: '/checkout', baseRef: null, branchMode: 'new' },
+    } }).success).toBe(false);
+  });
   it('strictly validates one bounded immutable recipe', () => {
     expect(SessionCreationCorrespondenceV1Schema.parse(correspondence)).toEqual(correspondence);
     expect(SessionCreationCorrespondenceV1Schema.safeParse({

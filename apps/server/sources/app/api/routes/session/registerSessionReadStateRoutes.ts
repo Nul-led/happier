@@ -15,17 +15,19 @@ import { applySessionReadCursorOperation } from "@/app/session/sessionWriteServi
 import { loadSessionViewerProjection } from "@/app/session/personal/projection";
 import { type Fastify } from "../../types";
 import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import { requireRouteActionAuthority } from "@/app/api/utils/requireRouteActionAuthority";
+import { PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
 
 export function registerSessionReadStateRoutes(app: Fastify) {
     app.post(SESSION_READ_STATE_HTTP_PATHS_V1.set, {
-        preHandler: app.authenticate,
+        preHandler: [app.authenticate, requireRouteActionAuthority("session.read_state.set")],
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: SessionReadStateRouteRequestBodyV1Schema,
             response: {
                 200: SessionReadStateRouteSuccessResponseV1Schema,
                 400: SessionReadStateRouteInvalidRequestResponseV1Schema,
-                403: SessionReadStateRouteForbiddenResponseV1Schema,
+                403: z.union([SessionReadStateRouteForbiddenResponseV1Schema, PresentUserRequiredResponseSchema]),
                 409: SessionReadStateRouteNotTrackedResponseV1Schema,
                 404: SessionReadStateRouteNotFoundResponseV1Schema,
                 500: SessionReadStateRouteFailureResponseV1Schema,

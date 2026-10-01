@@ -27,7 +27,7 @@ export const SessionWorkStateGetResponseV1Schema = z
   .passthrough();
 export type SessionWorkStateGetResponseV1 = z.infer<typeof SessionWorkStateGetResponseV1Schema>;
 
-export const SessionGoalGetRequestV1Schema = z.object({}).passthrough();
+export const SessionGoalGetRequestV1Schema = z.object({ capabilitiesOnly: z.boolean().optional() }).passthrough();
 export type SessionGoalGetRequestV1 = z.infer<typeof SessionGoalGetRequestV1Schema>;
 
 const sessionGoalMutationHasField = (value: Readonly<{

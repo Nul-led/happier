@@ -6,18 +6,25 @@ import {
     PasswordCredentialMutationDigestV1Schema,
     AuthTokenProvenanceSchema,
     AuthTokenProvenanceV2Schema,
-    AuthTokenProvenanceAnySchema,
+    readAuthTokenProvenance,
     parseAccountApiTokenBearerV1,
     AccountApiTokenCreateEncryptionV1Schema,
     AccountApiTokenEncryptionAccessV1Schema,
     AuthTokenAuthenticationEvidenceSnapshotV1Schema,
+    ApiTokenGrantV1Schema,
+    API_TOKEN_FULL_GRANT_V1,
+    EmbedConfigV1Schema,
+    evaluateApiTokenGrantV1,
+    isApiTokenGrantWithinV1,
+    type ApiTokenGrantV1,
+    type EmbedConfigV1,
+    PluginContributionIdentityV1Schema,
     type AccountApiTokenCreateEncryptionV1,
     type AccountApiTokenEncryptionAccessV1,
     type AccountApiTokenEncryptionAccessResponseV1,
     type AccountStatusV1,
     type AuthTokenAuthority,
     type AuthTokenKind,
-    type AuthTokenProvenance,
     type AuthTokenProvenanceAny,
     type AuthTokenAuthenticationEvidenceV1,
     type ParsedAccountApiTokenBearerV1,
@@ -25,6 +32,8 @@ import {
 import {
     ExternalActionExecutionAuthorizationBindingV1Schema,
     ExternalActionExecutionAuthorizationV1Schema,
+    formatQualifiedPluginActionId,
+    parseQualifiedPluginActionId,
     type ExternalActionExecutionAuthorizationBindingV1,
     type ExternalActionExecutionAuthorizationV1,
 } from "@happier-dev/protocol/actions";
@@ -32,7 +41,7 @@ import {
     VerifiedEphemeralSessionRunnerPrincipalSchema,
     type VerifiedEphemeralSessionRunnerPrincipal,
 } from "@happier-dev/protocol/ephemeralRunner/principal";
-import { db, isPrismaErrorCode } from "@/storage/db";
+import { db, getActivePrismaRuntime, isPrismaErrorCode } from "@/storage/db";
 import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
@@ -51,6 +60,8 @@ import {
     resolveCurrentAuthenticationEvidenceInTx,
 } from "./authenticationEvidence";
 import { verifyCurrentMaterializedRunnerPrincipal } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
+import { effectiveCredentialAuthority } from "./effectiveCredentialAuthority";
+import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
 
 interface TokenGeneratorLike {
     new: (payload: Readonly<{
@@ -129,16 +140,23 @@ export type VerifiedApiTokenPrincipal = Readonly<{
     credentialId: string;
     authority: "account_automation";
     expiresAt: Date | null;
+    grant: ApiTokenGrantV1;
+    parentTokenId: string | null;
+    embedConfig: EmbedConfigV1 | null;
     authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
 }>;
 
 export type VerifiedAuthToken = Readonly<{
     userId: string;
+    /** Verified signed credential revocation selector; PATs have their own row lifecycle. */
+    tokenEpoch?: number;
     extras?: unknown;
     /** Canonical server-verified credential kind from the signed marker. */
     authTokenKind: AuthTokenKind;
-    /** Canonical server-verified authority from the signed marker. */
+    /** Effective authority after current Account terminal policy. */
     authority: AuthTokenAuthority;
+    /** Signed provenance floor, kept separate from effective invocation authority. */
+    authTokenMintedAuthority?: AuthTokenAuthority;
     /** Current credentials may carry bounded server-produced authentication facts. */
     authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     /** True only when the credential was accepted through the named
@@ -198,6 +216,10 @@ export type CreatedApiToken = Readonly<{
     expiresAt: Date | null;
     hasEncryptionAccess: boolean;
     hasUnattendedTeamAccess: boolean;
+    grant: ApiTokenGrantV1;
+    parentTokenId: string | null;
+    activeChildCount: number;
+    embedConfig: EmbedConfigV1 | null;
 }>;
 
 export type ApiTokenSummary = Readonly<{
@@ -209,10 +231,14 @@ export type ApiTokenSummary = Readonly<{
     expiresAt: Date | null;
     hasEncryptionAccess: boolean;
     hasUnattendedTeamAccess: boolean;
+    grant: ApiTokenGrantV1;
+    parentTokenId: string | null;
+    activeChildCount: number;
+    embedConfig: EmbedConfigV1 | null;
 }>;
 
 export class ApiTokenOperationError extends Error {
-    constructor(readonly code: "account-disabled" | "invalid_token" | "api_token_id_conflict" | "api_token_encryption_not_ready" | "api_token_encryption_stale" | "api_token_encryption_unavailable" | "credential_authentication_evidence_limit" | "credential_authentication_evidence_unavailable") {
+    constructor(readonly code: "account-disabled" | "invalid_token" | "api_token_id_conflict" | "api_token_encryption_not_ready" | "api_token_encryption_stale" | "api_token_encryption_unavailable" | "credential_authentication_evidence_limit" | "credential_authentication_evidence_unavailable" | "api_token_child_forbidden" | "api_token_child_invalid" | "credential_scope_denied") {
         super(code);
         this.name = "ApiTokenOperationError";
     }
@@ -243,6 +269,9 @@ export type VerifyPatResult =
         credentialId: string;
         expiresAt: Date | null;
         authority: "account_automation";
+        grant: ApiTokenGrantV1;
+        parentTokenId: string | null;
+        embedConfig: EmbedConfigV1 | null;
         authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     }>
     | Readonly<{
@@ -254,6 +283,9 @@ type VerifiedApiToken = Readonly<{
     accountId: string;
     credentialId: string;
     expiresAt: Date | null;
+    grant: ApiTokenGrantV1;
+    parentTokenId: string | null;
+    embedConfig: EmbedConfigV1 | null;
     authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
 }>;
 
@@ -263,8 +295,39 @@ type CurrentApiTokenRow = Readonly<{
     expiresAt: Date | null;
     lastUsedAt: Date | null;
     authenticationEvidence: unknown;
+    accessGrant: unknown;
+    embedConfig: unknown;
+    parentTokenId: string | null;
+    parent: Readonly<{ accountId: string; parentTokenId: string | null; expiresAt: Date | null; embedConfig: unknown }> | null;
     Account: Readonly<{ status: AccountStatusV1 }>;
 }>;
+
+const API_TOKEN_CURRENT_FIELDS = {
+    id: true, accountId: true, expiresAt: true, lastUsedAt: true,
+    authenticationEvidence: true, accessGrant: true, embedConfig: true, parentTokenId: true,
+    parent: { select: { accountId: true, parentTokenId: true, expiresAt: true, embedConfig: true } },
+    Account: { select: { status: true } },
+} as const;
+
+function readApiTokenGrant(value: unknown): ApiTokenGrantV1 {
+    // The sole upgrade reader for pre-grant rows. All current mints write an explicit V1 grant.
+    return value == null ? API_TOKEN_FULL_GRANT_V1 : ApiTokenGrantV1Schema.parse(value);
+}
+
+function readApiTokenEmbedConfig(value: unknown): EmbedConfigV1 | null {
+    return value == null ? null : EmbedConfigV1Schema.parse(value);
+}
+
+type CreateApiTokenParams = Readonly<{
+    accountId: string; tokenId: string; label: string; expiresAt?: Date | null;
+    encryption?: AccountApiTokenCreateEncryptionV1;
+    authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
+    grant?: ApiTokenGrantV1; embedConfig?: EmbedConfigV1;
+}>;
+
+export type ApiTokenRevocation = Readonly<{ revoked: boolean; revokedTokenIds: readonly string[] }>;
+export type ApiTokenRevokeAllResult = Readonly<{ revokedCount: number; revokedTokenIds: readonly string[] }>;
+export type ExternalActionGrantEvaluationContext = Readonly<{ input?: unknown }>;
 
 /** The API adapter maps this canonical creation rejection to `invalid_request`. */
 export class InvalidApiTokenExpiryError extends Error {
@@ -492,11 +555,29 @@ class AuthModule {
 
     async mintExternalActionExecutionAuthorization(
         input: ExternalActionExecutionAuthorizationBindingV1,
+        context: ExternalActionGrantEvaluationContext = {},
     ): Promise<ExternalActionExecutionAuthorizationV1> {
         if (!this.externalActionExecutionAuthorizationTokens) {
             throw new Error("Auth module not initialized");
         }
-        const binding = ExternalActionExecutionAuthorizationBindingV1Schema.parse(input);
+        const supplied = ExternalActionExecutionAuthorizationBindingV1Schema.parse(input);
+        const principal = await this.verifyCurrentApiTokenPrincipal(supplied);
+        if (!principal) throw new ApiTokenOperationError("invalid_token");
+        const qualifiedAction = parseQualifiedPluginActionId(supplied.actionId);
+        const inputRecord = typeof context.input === "object" && context.input !== null && !Array.isArray(context.input)
+            ? context.input as Readonly<Record<string, unknown>> : null;
+        const invokedAction = supplied.actionId === "action.invoke"
+            ? PluginContributionIdentityV1Schema.safeParse(inputRecord?.action) : null;
+        const contributedQualifiedId = qualifiedAction ? supplied.actionId
+            : invokedAction?.success ? formatQualifiedPluginActionId(invokedAction.data) : undefined;
+        const admission = evaluateApiTokenGrantV1({ grant: principal.grant,
+            actionId: qualifiedAction ? "action.invoke" : supplied.actionId, contributedQualifiedId,
+            contributedActionAdmission: 'pre_open',
+            target: supplied.target, targetMachineId: supplied.machineId,
+            ...(supplied.actionId === "session.spawn_new" && context.input !== undefined ? { spawnInput: context.input } : {}),
+        });
+        if (!admission.ok) throw new ApiTokenOperationError("credential_scope_denied");
+        const binding = ExternalActionExecutionAuthorizationBindingV1Schema.parse({ ...supplied, grant: principal.grant });
         const token = await this.externalActionExecutionAuthorizationTokens.generator.new({
             user: binding.accountId,
             extras: { externalActionExecutionAuthorizationV1: binding },
@@ -625,14 +706,30 @@ class AuthModule {
      * Mints an Account API token. Its plaintext bearer is intentionally
      * returned only here; all subsequent API-token operations use summaries.
      */
-    async createApiToken(params: Readonly<{
-        accountId: string;
-        tokenId: string;
-        label: string;
-        expiresAt?: Date | null;
-        encryption?: AccountApiTokenCreateEncryptionV1;
-        authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
-    }>, nowInput: Date = new Date()): Promise<CreatedApiToken> {
+    async createApiToken(params: CreateApiTokenParams, nowInput: Date = new Date()): Promise<CreatedApiToken> {
+        return this.mintApiToken(params, nowInput);
+    }
+
+    async createChildApiToken(params: Readonly<{
+        principal: VerifiedApiTokenPrincipal;
+        tokenId: string; label: string; expiresAt: Date; grant: ApiTokenGrantV1;
+        requireCreatedByChildTokenId?: string;
+        resolveSessionMachine?: (sessionId: string) => Promise<string | null>;
+    }>): Promise<CreatedApiToken> {
+        if (params.principal.parentTokenId !== null) throw new ApiTokenOperationError("api_token_child_forbidden");
+        return this.mintApiToken({ accountId: params.principal.accountId, tokenId: params.tokenId,
+            label: params.label, expiresAt: params.expiresAt, grant: params.grant }, new Date(), {
+            parentTokenId: params.principal.credentialId,
+            requireCreatedByChildTokenId: params.requireCreatedByChildTokenId,
+            resolveSessionMachine: params.resolveSessionMachine,
+        });
+    }
+
+    private async mintApiToken(params: CreateApiTokenParams, nowInput: Date, child?: Readonly<{
+        parentTokenId: string;
+        requireCreatedByChildTokenId?: string;
+        resolveSessionMachine?: (sessionId: string) => Promise<string | null>;
+    }>): Promise<CreatedApiToken> {
         const accountId = params.accountId.trim();
         const label = params.label.trim();
         if (!accountId) {
@@ -656,15 +753,65 @@ class AuthModule {
         const encryption = params.encryption
             ? AccountApiTokenCreateEncryptionV1Schema.parse(params.encryption)
             : null;
+        const grant = ApiTokenGrantV1Schema.parse(params.grant ?? API_TOKEN_FULL_GRANT_V1);
+        let embedConfig = params.embedConfig === undefined ? null : EmbedConfigV1Schema.parse(params.embedConfig);
         const serverIdentityId = encryption ? await getOrCreateServerIdentityId() : null;
         const tokenId = params.tokenId;
         const secret = randomBytes(API_TOKEN_SECRET_BYTES).toString("base64url");
         const displayPrefix = createApiTokenDisplayPrefix(tokenId);
         const secretDigest = createApiTokenSecretDigest(secret).toString("base64url");
+        // Discovery may cross Socket.IO's adapter boundary. Keep it outside the
+        // interactive transaction, then revalidate the exact access relationship
+        // under the same owner fence as the parent grant and child write.
+        const resolvedSessionMachines = new Map<string, string | null>();
+        if (child && grant.targets && child.resolveSessionMachine) {
+            for (const sessionId of grant.targets.sessions) {
+                resolvedSessionMachines.set(sessionId, await child.resolveSessionMachine(sessionId));
+            }
+        }
         const row = await inTx(async (tx) => {
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, accountId);
             const admission = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } });
             assertAccountActive(admission.status);
+            if (child) {
+                const parent = await tx.accountApiToken.findFirst({
+                    where: { id: child.parentTokenId, accountId },
+                    select: { parentTokenId: true, expiresAt: true, accessGrant: true, embedConfig: true },
+                });
+                if (!parent || (parent.expiresAt && parent.expiresAt <= now)) throw new ApiTokenOperationError("invalid_token");
+                if (parent.parentTokenId !== null) throw new ApiTokenOperationError("api_token_child_forbidden");
+                if (!expiresAt || (parent.expiresAt && expiresAt > parent.expiresAt)) throw new ApiTokenOperationError("api_token_child_invalid");
+                const parentGrant = readApiTokenGrant(parent.accessGrant);
+                let attenuationParent = parentGrant;
+                // Pure set attenuation cannot infer Session→Machine membership. Resolve only
+                // added Sessions through the same current-publisher owner as live admission.
+                if (parentGrant.targets && grant.targets) {
+                    const verifiedSessions = [...parentGrant.targets.sessions];
+                    for (const sessionId of grant.targets.sessions) {
+                        if (verifiedSessions.includes(sessionId)) continue;
+                        const machineId = resolvedSessionMachines.get(sessionId);
+                        if (!machineId || !parentGrant.targets.machines.includes(machineId)
+                            || !await hasCurrentSessionScopedMachineAccessInTx({ tx, accountId, machineId, sessionId })) {
+                            throw new ApiTokenOperationError("api_token_child_invalid");
+                        }
+                        verifiedSessions.push(sessionId);
+                    }
+                    attenuationParent = { ...parentGrant, targets: { ...parentGrant.targets, sessions: verifiedSessions } };
+                }
+                if (!isApiTokenGrantWithinV1(grant, attenuationParent)) throw new ApiTokenOperationError("api_token_child_invalid");
+                if (child.requireCreatedByChildTokenId !== undefined) {
+                    const creator = await tx.accountApiToken.findFirst({ where: {
+                        id: child.requireCreatedByChildTokenId, accountId, parentTokenId: child.parentTokenId,
+                    }, select: { id: true } });
+                    if (!creator || !grant.targets || grant.targets.machines.length || !grant.targets.sessions.length) {
+                        throw new ApiTokenOperationError("api_token_child_invalid");
+                    }
+                    const count = await tx.session.count({ where: { accountId, id: { in: grant.targets.sessions },
+                        createdByApiTokenId: creator.id } });
+                    if (count !== grant.targets.sessions.length) throw new ApiTokenOperationError("api_token_child_invalid");
+                }
+                embedConfig = readApiTokenEmbedConfig(parent.embedConfig);
+            }
             if (encryption) {
                 const account = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: {
                     publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true,
@@ -693,6 +840,9 @@ class AuthModule {
                     label,
                     createdAt: now,
                     expiresAt,
+                    accessGrant: grant,
+                    ...(child ? { parentTokenId: child.parentTokenId } : {}),
+                    ...(!child && embedConfig ? { embedConfig } : {}),
                     ...(encryption ? { encryptionAccess: encryption.access } : {}),
                     ...(authenticationEvidenceSnapshot ? { authenticationEvidence: authenticationEvidenceSnapshot } : {}),
                 },
@@ -719,13 +869,17 @@ class AuthModule {
             expiresAt: row.expiresAt,
             hasEncryptionAccess: encryption !== null,
             hasUnattendedTeamAccess: parseAuthenticationEvidenceSnapshot(row.authenticationEvidence) !== null,
+            grant,
+            parentTokenId: child?.parentTokenId ?? null,
+            activeChildCount: 0,
+            embedConfig,
         };
     }
 
     /** Summaries deliberately omit the bearer secret and its stored digest. */
     async listApiTokens(accountId: string): Promise<readonly ApiTokenSummary[]> {
         const rows = await db.accountApiToken.findMany({
-            where: { accountId: accountId.trim() },
+            where: { accountId: accountId.trim(), parentTokenId: null },
             orderBy: { createdAt: "desc" },
             select: {
                 id: true,
@@ -736,6 +890,8 @@ class AuthModule {
                 expiresAt: true,
                 encryptionAccess: true,
                 authenticationEvidence: true,
+                accessGrant: true, embedConfig: true, parentTokenId: true,
+                _count: { select: { children: { where: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } } } },
             },
         });
         return rows.map((row) => ({
@@ -747,7 +903,36 @@ class AuthModule {
             expiresAt: row.expiresAt,
             hasEncryptionAccess: row.encryptionAccess != null,
             hasUnattendedTeamAccess: parseAuthenticationEvidenceSnapshot(row.authenticationEvidence) !== null,
+            grant: readApiTokenGrant(row.accessGrant),
+            parentTokenId: row.parentTokenId,
+            activeChildCount: row._count.children,
+            embedConfig: readApiTokenEmbedConfig(row.embedConfig),
         }));
+    }
+
+    async updateApiToken(params: Readonly<{
+        accountId: string; tokenId: string; label?: string; grant?: ApiTokenGrantV1; embedConfig?: EmbedConfigV1 | null;
+    }>): Promise<Readonly<{ apiToken: ApiTokenSummary; revokedTokenIds: readonly string[]; grantChanged: boolean }>> {
+        const result = await inTx(async (tx) => {
+            await acquireAccountSessionOwnerMetadataFenceInTx(tx, params.accountId);
+            const row = await tx.accountApiToken.findFirst({ where: { id: params.tokenId, accountId: params.accountId, parentTokenId: null },
+                select: { accessGrant: true } });
+            if (!row) throw new ApiTokenOperationError("invalid_token");
+            const grant = params.grant === undefined ? undefined : ApiTokenGrantV1Schema.parse(params.grant);
+            const grantChanged = grant !== undefined && JSON.stringify(grant) !== JSON.stringify(readApiTokenGrant(row.accessGrant));
+            const children = grantChanged ? await tx.accountApiToken.findMany({ where: { parentTokenId: params.tokenId }, select: { id: true } }) : [];
+            if (grantChanged) await tx.accountApiToken.deleteMany({ where: { parentTokenId: params.tokenId } });
+            await tx.accountApiToken.update({ where: { id: params.tokenId }, data: {
+                ...(params.label !== undefined ? { label: params.label.trim() } : {}),
+                ...(grant !== undefined ? { accessGrant: grant } : {}),
+                ...(params.embedConfig !== undefined ? { embedConfig: params.embedConfig === null
+                    ? getActivePrismaRuntime().DbNull : EmbedConfigV1Schema.parse(params.embedConfig) } : {}),
+            } });
+            return { grantChanged, revokedTokenIds: children.map((child) => child.id) };
+        });
+        const apiToken = (await this.listApiTokens(params.accountId)).find((token) => token.tokenId === params.tokenId);
+        if (!apiToken) throw new ApiTokenOperationError("invalid_token");
+        return { ...result, apiToken };
     }
 
     /** Selects only the credential authenticated by the request; never admits or repairs keys. */
@@ -756,11 +941,12 @@ class AuthModule {
         return await inTx(async (tx) => {
             const row = await tx.accountApiToken.findFirst({
                 where: { id: principal.credentialId, accountId: principal.accountId },
-                select: { encryptionAccess: true, expiresAt: true, Account: { select: {
+                select: { parentTokenId: true, encryptionAccess: true, expiresAt: true, Account: { select: {
                     status: true, publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true,
                 } } },
             });
             if (!row || !isActiveHomeAccountStatus(row.Account.status) || (row.expiresAt && row.expiresAt <= new Date())) throw new ApiTokenOperationError("invalid_token");
+            if (row.parentTokenId !== null) throw new ApiTokenOperationError("api_token_encryption_unavailable");
             if (row.encryptionAccess == null) throw new ApiTokenOperationError("api_token_encryption_unavailable");
             const parsed = AccountApiTokenEncryptionAccessV1Schema.safeParse(row.encryptionAccess);
             if (!parsed.success || !matchesApiTokenEncryptionBinding(row.Account, parsed.data, serverIdentityId)) {
@@ -771,27 +957,36 @@ class AuthModule {
     }
 
     /** Revocation is deletion: the next verification cannot find this selector. */
-    async revokeApiToken(params: Readonly<{ accountId: string; tokenId: string }>): Promise<boolean> {
-        const result = await db.accountApiToken.deleteMany({
-            where: {
-                id: params.tokenId,
-                accountId: params.accountId.trim(),
-            },
+    async revokeApiToken(params: Readonly<{ accountId: string; tokenId: string; parentTokenId?: string }>): Promise<ApiTokenRevocation> {
+        return inTx(async (tx) => {
+            await acquireAccountSessionOwnerMetadataFenceInTx(tx, params.accountId);
+            const where = { id: params.tokenId, accountId: params.accountId.trim(),
+                ...(params.parentTokenId !== undefined ? { parentTokenId: params.parentTokenId } : {}) };
+            const row = await tx.accountApiToken.findFirst({ where, select: { id: true, children: { select: { id: true } } } });
+            if (!row) return { revoked: false, revokedTokenIds: [] };
+            await tx.accountApiToken.deleteMany({ where });
+            return { revoked: true, revokedTokenIds: [row.id, ...row.children.map((child) => child.id)] };
         });
-        return result.count > 0;
+    }
+
+    async revokeChildApiToken(principal: VerifiedApiTokenPrincipal, tokenId: string): Promise<ApiTokenRevocation> {
+        if (principal.parentTokenId !== null) throw new ApiTokenOperationError("api_token_child_forbidden");
+        return this.revokeApiToken({ accountId: principal.accountId, tokenId, parentTokenId: principal.credentialId });
     }
 
     /** Used by the present-user Action after its caller policy is registered. */
-    async revokeAllApiTokens(accountId: string): Promise<number> {
+    async revokeAllApiTokens(accountId: string): Promise<ApiTokenRevokeAllResult> {
         return inTx((tx) => this.revokeAllApiTokensInTx(tx, accountId));
     }
 
     /** Deletes complete PAT rows in the caller's Account transition. */
-    async revokeAllApiTokensInTx(tx: Tx, accountId: string): Promise<number> {
+    async revokeAllApiTokensInTx(tx: Tx, accountId: string): Promise<ApiTokenRevokeAllResult> {
+        await acquireAccountSessionOwnerMetadataFenceInTx(tx, accountId);
+        const rows = await tx.accountApiToken.findMany({ where: { accountId: accountId.trim() }, select: { id: true } });
         const result = await tx.accountApiToken.deleteMany({
             where: { accountId: accountId.trim() },
         });
-        return result.count;
+        return { revokedCount: result.count, revokedTokenIds: rows.map((row) => row.id) };
     }
 
     /**
@@ -885,6 +1080,9 @@ class AuthModule {
                     credentialId: verifiedPat.credentialId,
                     authority: verifiedPat.authority,
                     expiresAt: verifiedPat.expiresAt,
+                    grant: verifiedPat.grant,
+                    parentTokenId: verifiedPat.parentTokenId,
+                    embedConfig: verifiedPat.embedConfig,
                     ...(verifiedPat.authenticationEvidence ? { authenticationEvidence: verifiedPat.authenticationEvidence } : {}),
                 },
                 ...(verifiedPat.authenticationEvidence ? { authenticationEvidence: verifiedPat.authenticationEvidence } : {}),
@@ -911,11 +1109,8 @@ class AuthModule {
         }
 
         // The account row is authoritative for revocation, including cache hits.
-        const account = await db.account.findUnique({
-            where: { id: decoded.userId },
-            select: { tokenEpoch: true, status: true },
-        });
-        if (!account || !isActiveHomeAccountStatus(account.status) || decoded.tokenEpoch !== account.tokenEpoch) {
+        const account = await this.readCurrentSignedCredentialAccount(db, decoded.userId, decoded.tokenEpoch);
+        if (!account) {
             return decoded.provenance.kind === "ephemeral_session_runner"
                 ? REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL
                 : null;
@@ -930,20 +1125,44 @@ class AuthModule {
 
         return {
             userId: decoded.userId,
+            tokenEpoch: decoded.tokenEpoch,
             extras: decoded.extras,
             authTokenKind: decoded.provenance.kind,
-            authority: decoded.provenance.authority,
+            authTokenMintedAuthority: decoded.provenance.authority,
+            authority: effectiveCredentialAuthority({
+                credentialKind: decoded.provenance.kind,
+                mintedAuthority: decoded.provenance.authority,
+                terminalPresentUserPolicy: account.terminalPresentUserPolicy,
+            }),
             ...(decoded.provenance.v === 2 ? { authenticationEvidence: decoded.provenance.evidence } : {}),
             ...(ephemeralSessionRunnerPrincipal ? { ephemeralSessionRunnerPrincipal } : {}),
             legacy: decoded.legacy,
         };
     }
 
-    /**
-     * Verifies only the fixed PAT format for server-side introspection. The
-     * typed negative result is deliberately opaque; route boundaries serialize
-     * it as the same invalid_token response for every credential failure.
-     */
+    /** Same Account revocation owner for a bearer and its signed broker authority. */
+    async isSignedCredentialCurrent(
+        reader: Pick<Tx, 'account'>,
+        accountId: string,
+        tokenEpoch: number | undefined,
+    ): Promise<boolean> {
+        return await this.readCurrentSignedCredentialAccount(reader, accountId, tokenEpoch) !== null;
+    }
+
+    private async readCurrentSignedCredentialAccount(
+        reader: Pick<Tx, 'account'>,
+        accountId: string,
+        tokenEpoch: number | undefined,
+    ) {
+        if (tokenEpoch === undefined) return null;
+        const account = await reader.account.findUnique({
+            where: { id: accountId },
+            select: { tokenEpoch: true, status: true, terminalPresentUserPolicy: true },
+        });
+        return account && isActiveHomeAccountStatus(account.status) && account.tokenEpoch === tokenEpoch ? account : null;
+    }
+
+    /** Verifies the fixed PAT format through its independent credential-row lifecycle. */
     async verifyPat(token: string, signal?: AbortSignal): Promise<VerifyPatResult> {
         if (!this.tokens) {
             throw new Error('Auth module not initialized');
@@ -966,6 +1185,9 @@ class AuthModule {
             credentialId: verified.credentialId,
             expiresAt: verified.expiresAt,
             authority: "account_automation",
+            grant: verified.grant,
+            parentTokenId: verified.parentTokenId,
+            embedConfig: verified.embedConfig,
             ...(verified.authenticationEvidence ? { authenticationEvidence: verified.authenticationEvidence } : {}),
         };
     }
@@ -978,21 +1200,15 @@ class AuthModule {
     async verifyCurrentApiTokenPrincipal(
         principal: Readonly<{ accountId: string; principalId: string; credentialId: string }>,
         signal?: AbortSignal,
+        reader: Pick<Tx, "accountApiToken"> = db,
     ): Promise<VerifiedApiTokenPrincipal | null> {
         signal?.throwIfAborted();
         if (principal.accountId !== principal.principalId) return null;
-        const row = await db.accountApiToken.findFirst({
+        const row = await reader.accountApiToken.findFirst({
             where: { id: principal.credentialId, accountId: principal.accountId },
-            select: {
-                id: true,
-                accountId: true,
-                expiresAt: true,
-                lastUsedAt: true,
-                authenticationEvidence: true,
-                Account: { select: { status: true } },
-            },
+            select: API_TOKEN_CURRENT_FIELDS,
         });
-        const verified = await this.verifyCurrentApiTokenRow(row, signal);
+        const verified = await this.verifyCurrentApiTokenRow(row, signal, reader);
         return verified
             ? {
                 accountId: verified.accountId,
@@ -1000,6 +1216,9 @@ class AuthModule {
                 credentialId: verified.credentialId,
                 authority: "account_automation",
                 expiresAt: verified.expiresAt,
+                grant: verified.grant,
+                parentTokenId: verified.parentTokenId,
+                embedConfig: verified.embedConfig,
                 ...(verified.authenticationEvidence
                     ? { authenticationEvidence: verified.authenticationEvidence }
                     : {}),
@@ -1037,13 +1256,8 @@ class AuthModule {
         const row = await db.accountApiToken.findUnique({
             where: { id: parsed.tokenId },
             select: {
-                id: true,
-                accountId: true,
+                ...API_TOKEN_CURRENT_FIELDS,
                 secretDigest: true,
-                expiresAt: true,
-                lastUsedAt: true,
-                authenticationEvidence: true,
-                Account: { select: { status: true } },
             },
         });
         signal?.throwIfAborted();
@@ -1057,6 +1271,7 @@ class AuthModule {
     private async verifyCurrentApiTokenRow(
         row: CurrentApiTokenRow | null,
         signal?: AbortSignal,
+        reader: Pick<Tx, "accountApiToken"> = db,
     ): Promise<VerifiedApiToken | null> {
         signal?.throwIfAborted();
         if (!row || !isActiveHomeAccountStatus(row.Account.status)) return null;
@@ -1064,11 +1279,20 @@ class AuthModule {
         if (row.expiresAt && row.expiresAt <= now) {
             return null;
         }
+        if (row.parentTokenId !== null && (row.expiresAt === null || !row.parent || row.parent.accountId !== row.accountId
+            || row.parent.parentTokenId !== null || (row.parent.expiresAt && row.parent.expiresAt <= now))) return null;
+        let grant: ApiTokenGrantV1;
+        let embedConfig: EmbedConfigV1 | null;
+        try {
+            grant = readApiTokenGrant(row.accessGrant);
+            embedConfig = readApiTokenEmbedConfig(row.parentTokenId === null ? row.embedConfig : row.parent?.embedConfig);
+        } catch { return null; }
 
         await this.recordApiTokenLastUse({
             tokenId: row.id,
             lastUsedAt: row.lastUsedAt,
             now,
+            reader,
         });
         signal?.throwIfAborted();
         const authenticationEvidence = parseAuthenticationEvidenceSnapshot(row.authenticationEvidence)?.evidence;
@@ -1076,6 +1300,9 @@ class AuthModule {
             accountId: row.accountId,
             credentialId: row.id,
             expiresAt: row.expiresAt,
+            grant,
+            parentTokenId: row.parentTokenId,
+            embedConfig,
             ...(authenticationEvidence ? { authenticationEvidence } : {}),
         };
     }
@@ -1084,6 +1311,7 @@ class AuthModule {
         tokenId: string;
         lastUsedAt: Date | null;
         now: Date;
+        reader: Pick<Tx, "accountApiToken">;
     }>): Promise<void> {
         const threshold = new Date(params.now.getTime() - API_TOKEN_LAST_USED_UPDATE_INTERVAL_MS);
         if (params.lastUsedAt && params.lastUsedAt > threshold) {
@@ -1091,7 +1319,7 @@ class AuthModule {
         }
 
         try {
-            await db.accountApiToken.updateMany({
+            await params.reader.accountApiToken.updateMany({
                 where: {
                     id: params.tokenId,
                     OR: [
@@ -1125,37 +1353,9 @@ class AuthModule {
 
         const tokenExtras = this.asTokenExtras(payload.extras) ?? {};
 
-        const hasTopLevelProvenance = Object.prototype.hasOwnProperty.call(payload, "provenance");
-        const hasNestedProvenance = Object.prototype.hasOwnProperty.call(tokenExtras, "provenance");
-        const rawProvenance = hasTopLevelProvenance
-            ? payload.provenance
-            : tokenExtras.provenance;
-
-        let provenance: AuthTokenProvenanceAny;
-        let legacy = false;
-        if (
-            (!hasTopLevelProvenance && !hasNestedProvenance)
-            || typeof rawProvenance === "string"
-        ) {
-            if (!options.allowLegacyHome) return null;
-            // Released privacy-kit tokens used this name for opaque library
-            // metadata. A string carries no current provenance or evidence;
-            // only the strict structured V1/V2 union below has that meaning.
-            provenance = this.legacyAuthTokenProvenance(tokenExtras);
-            legacy = true;
-        } else {
-            const parsedProvenance = AuthTokenProvenanceAnySchema.safeParse(rawProvenance);
-            if (!parsedProvenance.success) {
-                return null;
-            }
-            // `api_token` is a database-backed bearer credential, not a
-            // privacy-kit signed session. Never let a signed token impersonate
-            // that direct consumer kind.
-            if (parsedProvenance.data.kind === "api_token") {
-                return null;
-            }
-            provenance = parsedProvenance.data;
-        }
+        const decodedProvenance = readAuthTokenProvenance(payload, options);
+        if (!decodedProvenance) return null;
+        const { provenance, legacy } = decodedProvenance;
 
         const rawTokenEpoch = payload.tokenEpoch ?? tokenExtras.tokenEpoch;
         if (rawTokenEpoch === undefined && !legacy) {
@@ -1179,21 +1379,6 @@ class AuthModule {
             tokenEpoch,
             provenance,
             legacy,
-        };
-    }
-
-    private legacyAuthTokenProvenance(
-        extras: Readonly<Record<string, unknown>>,
-    ): AuthTokenProvenance {
-        const session = extras.session;
-        const kind: AuthTokenKind =
-            typeof session === "string" && session.trim()
-                ? "terminal"
-                : "account";
-        return {
-            v: 1,
-            kind,
-            authority: kind === "terminal" ? "account_automation" : "present_user",
         };
     }
 

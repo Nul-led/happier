@@ -42,7 +42,7 @@ export const MachineLiveStreamCaptureSourceV1Schema = z
     supportedCodecs: z.array(MachineLiveStreamCodecIdV1Schema).min(1),
     maxWidth: PositiveIntSchema.optional(),
     maxHeight: PositiveIntSchema.optional(),
-    maxFramesPerSecond: PositiveIntSchema,
+    maxFramesPerSecond: PositiveIntSchema.optional(),
     inputMode: MachineLiveStreamInputModeV1Schema,
     sidebands: z.array(MachineLiveStreamCaptureSidebandKindV1Schema).default([]),
     health: MachineLiveStreamCaptureHealthV1Schema,

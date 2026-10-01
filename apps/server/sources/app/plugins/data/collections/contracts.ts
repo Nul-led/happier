@@ -10,6 +10,7 @@ import {
     normalizePluginAccountCollectionContractV1,
     normalizePluginAccountCollectionContractsV1,
     type NormalizedPluginAccountCollectionContractV1,
+    type PluginAccountCollectionContributionV1,
     type PluginCollectionContractRefV1,
     type PluginCollectionQuotaDimensionV1,
 } from "@happier-dev/protocol";
@@ -56,7 +57,7 @@ type StoredPluginCollectionContractRow = Readonly<{
 }>;
 
 export class PluginCollectionContractMaterializationError extends Error {
-    constructor(readonly code: "collection_contract_conflict" | "collection_contract_inconsistent") {
+    constructor(readonly code: "collection_contract_invalid" | "collection_contract_inconsistent") {
         super(code);
         this.name = "PluginCollectionContractMaterializationError";
     }
@@ -302,15 +303,22 @@ export function readMaterializedPluginCollectionContract(
     }
 }
 
+/**
+ * Contract identity is the digest: the same `(plugin, collection,
+ * schemaVersion)` may exist under several digests because each Account's
+ * writer pointer, not a global row, selects the one it writes. A global
+ * schemaVersion uniqueness would let any Account's first materialization
+ * squat that coordinate for every other Account on the server.
+ */
 async function assertExistingContract(
     tx: Tx,
     contract: NormalizedPluginAccountCollectionContractV1,
-): Promise<void> {
+): Promise<boolean> {
     const existing = await tx.pluginCollectionContract.findFirst({
         where: {
             pluginId: contract.pluginId,
             collectionId: contract.collectionId,
-            schemaVersion: contract.schemaVersion,
+            contractDigest: contract.contractDigest,
         },
         select: {
             pluginId: true,
@@ -323,35 +331,18 @@ async function assertExistingContract(
             privacyProjection: true,
         },
     });
-    if (!existing) {
-        throw new PluginCollectionContractMaterializationError("collection_contract_inconsistent");
-    }
-    if (existing.contractDigest !== contract.contractDigest) {
-        throw new PluginCollectionContractMaterializationError("collection_contract_conflict");
-    }
-    const reconstructed = readMaterializedPluginCollectionContract(existing);
-    if (reconstructed.contractDigest !== contract.contractDigest) {
-        throw new PluginCollectionContractMaterializationError("collection_contract_inconsistent");
-    }
+    if (!existing) return false;
+    // Reconstruction recomputes the digest from the stored columns, so a
+    // corrupt row is typed inconsistent rather than silently reused.
+    readMaterializedPluginCollectionContract(existing);
+    return true;
 }
 
 async function materializeOnePluginCollectionContractTx(
     tx: Tx,
     contract: NormalizedPluginAccountCollectionContractV1,
 ): Promise<void> {
-    const existing = await tx.pluginCollectionContract.findFirst({
-        where: {
-            pluginId: contract.pluginId,
-            collectionId: contract.collectionId,
-            schemaVersion: contract.schemaVersion,
-        },
-        select: { contractDigest: true },
-    });
-    if (existing) {
-        await assertExistingContract(tx, contract);
-        return;
-    }
-
+    if (await assertExistingContract(tx, contract)) return;
     try {
         await tx.pluginCollectionContract.create({
             data: {
@@ -367,28 +358,46 @@ async function materializeOnePluginCollectionContractTx(
         });
     } catch (error) {
         if (!isPrismaErrorCode(error, "P2002")) throw error;
-        await assertExistingContract(tx, contract);
+        if (!await assertExistingContract(tx, contract)) throw error;
     }
 }
 
 /**
- * The sole server ingress from an admitted normalized manifest declaration to
- * immutable Data contracts. It deliberately receives no Account, release,
- * artifact, generation, or package identity.
+ * The sole server ingress from admitted author declarations to immutable Data
+ * contracts. It deliberately receives no Account, release, artifact,
+ * generation, or package identity; the digest is always recomputed here.
  */
+export async function materializePluginCollectionContractsTx(input: Readonly<{
+    tx: Tx;
+    pluginId: string;
+    contributions: readonly PluginAccountCollectionContributionV1[];
+}>): Promise<readonly PluginCollectionContractRefV1[]> {
+    let contracts: readonly NormalizedPluginAccountCollectionContractV1[];
+    try {
+        contracts = normalizePluginAccountCollectionContractsV1({
+            pluginId: input.pluginId,
+            contributions: input.contributions,
+        });
+    } catch {
+        throw new PluginCollectionContractMaterializationError("collection_contract_invalid");
+    }
+    for (const contract of contracts) {
+        await materializeOnePluginCollectionContractTx(input.tx, contract);
+    }
+    return Object.freeze(contracts.map(contractRef));
+}
+
+/** Release publication's manifest wrapper over the declaration ingress. */
 export async function materializePluginCollectionContractsFromManifestTx(input: Readonly<{
     tx: Tx;
     manifest: unknown;
 }>): Promise<readonly PluginCollectionContractRefV1[]> {
     const manifest = PluginManifestV2Schema.parse(input.manifest);
-    const contracts = normalizePluginAccountCollectionContractsV1({
+    return await materializePluginCollectionContractsTx({
+        tx: input.tx,
         pluginId: manifest.id,
         contributions: manifest.contributes.accountCollections,
     });
-    for (const contract of contracts) {
-        await materializeOnePluginCollectionContractTx(input.tx, contract);
-    }
-    return Object.freeze(contracts.map(contractRef));
 }
 
 /**

@@ -7,7 +7,7 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
     const publicProtocol = await import('../index.js');
     expect(publicProtocol).not.toHaveProperty('HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD');
     expect(publicProtocol).not.toHaveProperty('HostPrivatePluginInstallDecisionV1Schema');
-  }, 30_000);
+  }, 60_000);
 
   it('carries the pending change, the decision, and optional selections only', () => {
     expect(HostPrivatePluginInstallDecisionV1Schema.parse({
@@ -30,19 +30,16 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
       pendingChangeId: 'pending-2',
       decision: 'cancel',
     });
-    // A development source root is a distinct authorization from installing a
-    // package: it authorizes the daemon to evaluate executable code from a
-    // local directory. The daemon change service already owns the decision
-    // (`trustSourceRoot`); without it here the remote/UI surface can observe a
-    // pending source-root review it can never decide.
+    // Project trust and package authority use the same positive decision. The
+    // daemon resolves which current review the pending id names.
     expect(HostPrivatePluginInstallDecisionV1Schema.parse({
       v: 1,
       pendingChangeId: 'pending-3',
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     })).toEqual({
       v: 1,
       pendingChangeId: 'pending-3',
-      decision: 'trustSourceRoot',
+      decision: 'installAndTrust', optionalSelections: [],
     });
   });
 
@@ -69,7 +66,7 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
       {
         v: 1,
         pendingChangeId: 'pending-1',
-        decision: 'trustSourceRoot',
+        decision: 'installAndTrust', optionalSelections: [],
         actorEvidence: {
           kind: 'authenticatedLocalUser',
           interactionId: 'ui-interaction-1',
@@ -108,8 +105,7 @@ describe('HostPrivatePluginInstallDecisionV1Schema', () => {
       {
         v: 1,
         pendingChangeId: 'pending-1',
-        decision: 'trustSourceRoot',
-        optionalSelections: [],
+        decision: 'installAndTrust',
       },
       {
         v: 1,

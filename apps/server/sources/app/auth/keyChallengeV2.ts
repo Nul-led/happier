@@ -1,5 +1,6 @@
 import * as privacyKit from "privacy-kit";
 import { randomBytes, randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
     canonicalizeKeyChallengeV2AudienceOrigin,
     createPasswordCredentialMutationDigestV1,
@@ -44,17 +45,27 @@ function isChallengeIdForPurpose(challengeId: string, purpose: KeyChallengeV2Log
 export type KeyChallengeV2VerifiedNativeMethodId = "email_password";
 const VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX = "email_password:v1:";
 
-export function encodeVerifiedNativePasswordEvidenceV1(credentialRevision: number): string {
-    if (!Number.isSafeInteger(credentialRevision) || credentialRevision < 1) {
-        throw new Error("Verified native password evidence requires a positive credential revision");
-    }
-    return `${VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX}${credentialRevision}`;
+// Native identities are generated CUIDs by AccountIdentityLifecycle (25 characters).
+// Together with the maximum credential revision this encodes to 98 characters,
+// within the existing MySQL VARCHAR(191) challenge evidence column.
+const VerifiedNativePasswordEvidenceV1Schema = z.object({
+    nativeIdentityId: z.string().min(1).max(256),
+    credentialRevision: z.number().int().min(1).max(2_147_483_647),
+}).strict();
+export type VerifiedNativePasswordEvidenceV1 = z.infer<typeof VerifiedNativePasswordEvidenceV1Schema>;
+
+export function encodeVerifiedNativePasswordEvidenceV1(evidence: VerifiedNativePasswordEvidenceV1): string {
+    return `${VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX}${JSON.stringify(VerifiedNativePasswordEvidenceV1Schema.parse(evidence))}`;
 }
 
-export function decodeVerifiedNativePasswordEvidenceV1(value: string | null): number | null {
+export function decodeVerifiedNativePasswordEvidenceV1(value: string | null): VerifiedNativePasswordEvidenceV1 | null {
     if (!value?.startsWith(VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX)) return null;
-    const revision = Number(value.slice(VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX.length));
-    return Number.isSafeInteger(revision) && revision >= 1 ? revision : null;
+    try {
+        const parsed = VerifiedNativePasswordEvidenceV1Schema.safeParse(JSON.parse(value.slice(VERIFIED_NATIVE_PASSWORD_EVIDENCE_PREFIX.length)));
+        return parsed.success ? parsed.data : null;
+    } catch {
+        return null;
+    }
 }
 
 /** Issues the incumbent five-minute challenge through its sole persistence owner. */
@@ -68,7 +79,7 @@ export async function issueKeyChallengeV2(params: Readonly<{
      * Account's native factor. It is never derived from request input.
      */
     verifiedNativeMethodId?: KeyChallengeV2VerifiedNativeMethodId;
-    verifiedNativePasswordCredentialRevision?: number;
+    verifiedNativePasswordEvidence?: VerifiedNativePasswordEvidenceV1;
     /** Keep verified-factor issuance in the caller's Account-fenced transaction. */
     writer?: Pick<Tx, "keyChallengeV2" | "simpleCache">;
 }>): Promise<IssuedKeyChallengeV2 | null> {
@@ -76,7 +87,7 @@ export async function issueKeyChallengeV2(params: Readonly<{
         || params.expectedAccountId !== params.passwordMutation.accountId)) {
         throw new Error("Password mutation challenge Account/purpose mismatch");
     }
-    if ((params.verifiedNativeMethodId || params.verifiedNativePasswordCredentialRevision !== undefined)
+    if ((params.verifiedNativeMethodId || params.verifiedNativePasswordEvidence !== undefined)
         && (params.purpose !== "account" || !params.expectedAccountId || params.passwordMutation)) {
         // Native evidence only makes sense on an ordinary Account-bound login
         // challenge. A mutation challenge mints no token, and a challenge with
@@ -84,8 +95,8 @@ export async function issueKeyChallengeV2(params: Readonly<{
         throw new Error("Verified native method evidence requires an Account-bound login challenge");
     }
     if (params.verifiedNativeMethodId === "email_password"
-        && params.verifiedNativePasswordCredentialRevision === undefined) {
-        throw new Error("Verified native password evidence requires its credential revision");
+        && params.verifiedNativePasswordEvidence === undefined) {
+        throw new Error("Verified native password evidence requires its identity lifetime and credential revision");
     }
     const audienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(params.env);
     if (!audienceOrigin) return null;
@@ -112,7 +123,7 @@ export async function issueKeyChallengeV2(params: Readonly<{
             operationDigest: params.passwordMutation
                 ? createPasswordCredentialMutationDigestV1(params.passwordMutation) : null,
             verifiedNativeMethodId: params.verifiedNativeMethodId === "email_password"
-                ? encodeVerifiedNativePasswordEvidenceV1(params.verifiedNativePasswordCredentialRevision!)
+                ? encodeVerifiedNativePasswordEvidenceV1(params.verifiedNativePasswordEvidence!)
                 : null,
         },
     });

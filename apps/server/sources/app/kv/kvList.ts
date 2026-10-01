@@ -8,6 +8,7 @@ import {
 
 export interface KVListOptions {
     prefix?: string;
+    afterKey?: string;
     limit?: number;
 }
 
@@ -29,7 +30,7 @@ export async function kvList(
 ): Promise<KVListResult> {
     assertPublicGenericKvPrefix(options?.prefix);
 
-    const where: any = {
+    const where = {
         accountId: ctx.uid,
         value: {
             not: null  // Exclude deleted entries (null values)
@@ -39,14 +40,13 @@ export async function kvList(
                 startsWith: ACCOUNT_SCOPED_KV_RESERVED_PREFIX,
             },
         },
+        ...(options?.prefix || options?.afterKey !== undefined ? {
+            key: {
+                ...(options.prefix ? { startsWith: options.prefix } : {}),
+                ...(options.afterKey !== undefined ? { gt: options.afterKey } : {}),
+            },
+        } : {}),
     };
-
-    // Add prefix filter if specified
-    if (options?.prefix) {
-        where.key = {
-            startsWith: options.prefix
-        };
-    }
 
     const results = await db.userKVStore.findMany({
         where,

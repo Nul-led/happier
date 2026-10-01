@@ -13,6 +13,8 @@ import {
 
 import { SESSION_CAPABILITY_RULES, SESSION_ACCESS_LEVEL_ORDER, projectSessionAccessCapabilitiesV1, isActiveHomeAccountStatus } from "@happier-dev/protocol";
 import type { EffectiveSessionAccessLevelV1, SessionCapabilityV1, SessionAccessSourceV1, SessionEffectiveAccessV1 } from "@happier-dev/protocol";
+import { evaluateApiTokenGrantV1, resolveApiTokenSessionCapabilityCeilingV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
+import type { ActionId } from "@happier-dev/protocol/actions";
 export { SESSION_CAPABILITY_RULES, SESSION_ACCESS_LEVEL_ORDER };
 export type SessionAccessLevel = EffectiveSessionAccessLevelV1;
 export type SessionCapability = SessionCapabilityV1;
@@ -239,6 +241,8 @@ export async function resolveSessionAccessForOperation(
          * can satisfy this operation.
          */
         capability?: SessionCapability;
+        /** A declared direct-token operation is admitted independently of its coarse UI ceiling. */
+        apiTokenAction?: Readonly<{ actionId: ActionId; targetMachineId?: string | null }>;
         /**
          * Which seam projection the caller is answering. `legacy_owner_or_direct`
          * leaves Team and Group grants out of the answer for a released reader;
@@ -254,6 +258,29 @@ export async function resolveSessionAccessForOperation(
         row?: SessionAccessProjectionRow;
     }>,
 ): Promise<SessionAccessOperationDecision> {
+    const grant = input.authentication.apiTokenGrant;
+    const exactTokenAction = grant && input.apiTokenAction;
+    if (grant && exactTokenAction && !evaluateApiTokenGrantV1({
+        grant, actionId: exactTokenAction.actionId,
+        target: { kind: "session", sessionId: input.sessionId },
+        targetMachineId: exactTokenAction.targetMachineId,
+    }).ok) return { status: "unavailable" };
+    const admitAccess = (resolved: EffectiveSessionAccess): SessionAccessOperationDecision => {
+        let access = resolved;
+        if (input.authentication.apiTokenGrant) {
+            const ceiling = new Set<string>(resolveApiTokenSessionCapabilityCeilingV1(input.authentication.apiTokenGrant));
+            const capabilities = { ...resolved.capabilities };
+            for (const capability of Object.keys(capabilities) as SessionCapability[]) {
+                capabilities[capability] = capabilities[capability] && ceiling.has(capability);
+            }
+            access = { ...resolved, capabilities };
+        }
+        // Exact Action admission still requires the underlying Account/share
+        // capability; the capped projection continues to describe the UI surface.
+        return input.capability === undefined || (exactTokenAction ? resolved : access).capabilities[input.capability]
+            ? { status: "allowed", access }
+            : { status: "unavailable" };
+    };
     const runtimePrincipal = input.authentication.sessionRuntimePrincipal;
     if (
         runtimePrincipal
@@ -272,9 +299,7 @@ export async function resolveSessionAccessForOperation(
     if (runtimePrincipal) {
         const access = projectExactSessionRuntimeAccess(row, input.accountId, input.authentication);
         if (!access) return { status: "unavailable" };
-        return input.capability === undefined || access.capabilities[input.capability]
-            ? { status: "allowed", access }
-            : { status: "unavailable" };
+        return admitAccess(access);
     }
 
     if (input.accessMode === "legacy_owner_or_direct") {
@@ -284,16 +309,14 @@ export async function resolveSessionAccessForOperation(
         // authentication continuation.
         const released = projectIndependentSessionAccess(row, input.accountId);
         if (!released) return { status: "unavailable" };
-        return input.capability === undefined || released.capabilities[input.capability]
-            ? { status: "allowed", access: released }
-            : { status: "unavailable" };
+        return admitAccess(released);
     }
 
     const independent = projectIndependentSessionAccess(row, input.accountId);
     // Ownership is already the strongest possible answer. A direct grant is not:
     // it must be combined with any credential-qualified collective grants so a
     // direct View row cannot mask an applicable Team Edit/Admin row.
-    if (independent?.level === "owner") return { status: "allowed", access: independent };
+    if (independent?.level === "owner") return admitAccess(independent);
     if (!isSessionTranscriptShareable(row)) return { status: "unavailable" };
 
     const grants: ApplicableSessionGrant[] = row.shares
@@ -366,17 +389,11 @@ export async function resolveSessionAccessForOperation(
     }
     const access = projectApplicableSessionGrants(input.accountId, row.id, false, grants);
     if (access && (input.capability === undefined || access.capabilities[input.capability])) {
-        return {
-            status: "allowed",
-            access: { ...access, primaryTeamId: row.primaryTeamId ?? null },
-        };
+        return admitAccess({ ...access, primaryTeamId: row.primaryTeamId ?? null });
     }
     if (sawAuthenticationRequired) return { status: "authentication_required" };
     if (sawAuthenticationUnavailable) return { status: "authentication_unavailable" };
-    if (access) return {
-        status: "allowed",
-        access: { ...access, primaryTeamId: row.primaryTeamId ?? null },
-    };
+    if (access && input.capability === undefined) return admitAccess({ ...access, primaryTeamId: row.primaryTeamId ?? null });
     return {
         status: input.capability === undefined && sawCollectiveEntitlement
             ? "authentication_unavailable"
@@ -501,6 +518,54 @@ export async function resolveSessionAccessForAccountsInTx(tx: Tx, input: Readonl
         }
     }
     return admitted;
+}
+
+/**
+ * Session-major sibling of the qualified Account-set reader. Personal
+ * attention pages already hold many Sessions; keep that path set-oriented
+ * while using the exact same projection and Team qualification owner as the
+ * single-Session reader above.
+ */
+export async function resolveSessionAccessForSessionsInTx(tx: Tx, input: Readonly<{
+    sessionIds: readonly string[];
+    accountIds: readonly string[];
+    authentication: SessionAccessAuthentication;
+}>): Promise<ReadonlyMap<string, ReadonlyMap<string, EffectiveSessionAccess>>> {
+    const result = new Map<string, Map<string, EffectiveSessionAccess>>();
+    const sessionIds = [...new Set(input.sessionIds)];
+    const accountIds = [...new Set(input.accountIds)];
+    if (sessionIds.length === 0 || accountIds.length === 0) return result;
+    if (input.authentication.sessionRuntimePrincipal) {
+        throw new Error("A Session runtime principal authorizes exactly one Session");
+    }
+    for (let accountOffset = 0; accountOffset < accountIds.length; accountOffset += 100) {
+        const accountBatch = accountIds.slice(accountOffset, accountOffset + 100);
+        for (let sessionOffset = 0; sessionOffset < sessionIds.length; sessionOffset += 200) {
+            const sessionBatch = sessionIds.slice(sessionOffset, sessionOffset + 200);
+            const rows = await tx.session.findMany({
+                where: { id: { in: sessionBatch } },
+                select: buildSessionAccessProjectionSelectForAccounts(accountBatch),
+            });
+            const teams = rows.flatMap(row => [
+                ...row.teamGrants.map(grant => ({ id: grant.teamId, authenticationPolicy: grant.team.authenticationPolicy })),
+                ...row.groupGrants.map(grant => ({ id: grant.teamGroup.teamId, authenticationPolicy: grant.teamGroup.team.authenticationPolicy })),
+            ]);
+            const qualifiedTeamIds = await resolveQualifiedSessionTeamIdsInTx(tx, {
+                accountIds: accountBatch,
+                teams,
+                authentication: input.authentication,
+            });
+            for (const row of rows) {
+                const perAccount = result.get(row.id) ?? new Map<string, EffectiveSessionAccess>();
+                for (const accountId of accountBatch) {
+                    const access = projectEffectiveSessionAccess(row, accountId, { qualifiedTeamIds });
+                    if (access) perAccount.set(accountId, access);
+                }
+                if (perAccount.size > 0) result.set(row.id, perAccount);
+            }
+        }
+    }
+    return result;
 }
 
 export async function resolveStructuralSessionAccessForAccountsInTx(tx: SessionAccessReader, input: {

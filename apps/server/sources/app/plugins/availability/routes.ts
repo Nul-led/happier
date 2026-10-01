@@ -5,6 +5,7 @@ import {
     PluginAvailabilityIntentReadActionInputV1Schema,
     PluginAvailabilityIntentsListActionInputV1Schema,
     PluginAvailabilityIntentSetActionInputV1Schema,
+    PluginAvailabilityCollectionWritersClaimActionInputV1Schema,
     PluginAvailabilityMaterializationsReadActionInputV1Schema,
     PluginAvailabilityMaterializationsReportActionInputV1Schema,
     PluginAvailabilityPackageAssetPublishActionInputV1Schema,
@@ -95,6 +96,8 @@ async function sendOperationError(
                     || error.code === "plugin_package_asset_hosting_unsupported"
                     || error.code === "plugin_release_content_conflict"
                     || error.code === "plugin_intent_revision_conflict"
+                    || error.code === "plugin_intent_release_selected"
+                    || error.code === "plugin_collection_contract_conflict"
                     || error.code === "plugin_package_asset_conflict"
                     || error.code === "collection_quota_incompatible"
                     ? 409
@@ -142,6 +145,9 @@ export function registerPluginAvailabilityRoutes(
     ];
     const intentSetPath = PluginAvailabilityActionHttpPathsV1[
         "account.plugins.availability.intent.set"
+    ];
+    const collectionWritersClaimPath = PluginAvailabilityActionHttpPathsV1[
+        "account.plugins.availability.collectionWriters.claim"
     ];
     const releaseReadPath = PluginAvailabilityActionHttpPathsV1[
         "account.plugins.availability.release.read"
@@ -255,6 +261,23 @@ export function registerPluginAvailabilityRoutes(
                 accountId: requestUserId(request),
                 input: parseOperationInput(
                     PluginAvailabilityIntentSetActionInputV1Schema,
+                    request.body,
+                ),
+            });
+        } catch (error) {
+            await sendOperationError(request, reply, error);
+            return;
+        }
+    });
+
+    app.post(collectionWritersClaimPath, {
+        preHandler: app.authenticate,
+    }, async (request, reply) => {
+        try {
+            return await operations.claimCollectionWriters({
+                accountId: requestUserId(request),
+                input: parseOperationInput(
+                    PluginAvailabilityCollectionWritersClaimActionInputV1Schema,
                     request.body,
                 ),
             });

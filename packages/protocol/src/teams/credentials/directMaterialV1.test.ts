@@ -2,6 +2,8 @@ import tweetnacl from 'tweetnacl';
 import { describe, expect, it } from 'vitest';
 
 import {
+  matchesTeamCredentialSourceVersionBasisV1,
+  parseTeamCredentialSourceVersionV1,
   computeTeamCredentialConnectedAccountSourceVersionV1,
   computeTeamCredentialPoolMemberSourceVersionV1,
   computeTeamCredentialProviderCredentialSlotSourceVersionV1,
@@ -52,6 +54,45 @@ function payload(): TeamCredentialDirectMaterialPayloadV1 {
 }
 
 describe('Team credential direct material v1', () => {
+  it('versions private service configuration for both accounts and Pool members without changing the Home basis', () => {
+    const source = {
+      sourceAccountId: 'source-account-1',
+      credentialIncarnation: 'credential-1',
+      sourceMember: {
+        kind: 'connected_account' as const,
+        service: { pluginId: 'happier.provider', localId: 'claude' },
+        connectedAccountId: 'source-account-1',
+      },
+      credentialRevision: 'credential-revision-1',
+      configurationRevision: null,
+      authenticationModeId: 'manual-token',
+      contributionContractVersion: 'contribution-1',
+    };
+    const version = (fingerprint: string) => computeTeamCredentialConnectedAccountSourceVersionV1({
+      ...source,
+      privateConfigurationFingerprint: fingerprint,
+    });
+    const original = version('configuration-fingerprint-1');
+    const rotated = version('configuration-fingerprint-2');
+    expect(rotated).not.toBe(original);
+    expect(version('configuration-fingerprint-1')).toBe(original);
+    const poolVersion = (connectedAccountSourceVersion: string) => computeTeamCredentialPoolMemberSourceVersionV1({
+      connectedAccountSourceVersion,
+      poolIncarnation: 'pool-1',
+      memberEnabled: true,
+    });
+    expect(poolVersion(rotated)).not.toBe(poolVersion(original));
+    const basis = computeTeamCredentialConnectedAccountSourceVersionV1(source);
+    expect(parseTeamCredentialSourceVersionV1(original)).toEqual({
+      sourceBasisVersion: basis, privateConfigurationFingerprint: 'configuration-fingerprint-1',
+    });
+    expect(matchesTeamCredentialSourceVersionBasisV1(rotated, basis)).toBe(true);
+    expect(matchesTeamCredentialSourceVersionBasisV1(poolVersion(rotated), poolVersion(basis))).toBe(true);
+    expect(parseTeamCredentialSourceVersionV1(poolVersion(rotated)).privateConfigurationFingerprint).toBe('configuration-fingerprint-2');
+    expect(matchesTeamCredentialSourceVersionBasisV1(original, 'other-basis')).toBe(false);
+    expect(matchesTeamCredentialSourceVersionBasisV1('v1:["basis"]', 'basis')).toBe(false);
+  });
+
   it('requires an exact Session or Execution Run consumer and connected-service purpose to open material', () => {
     const common = {
       resourceId: 'resource-1',

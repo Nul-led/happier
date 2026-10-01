@@ -164,11 +164,9 @@ export async function listTeamsForActorInTx(
             ownerRequired: !teamsWithActiveOwner.has(row.id),
         });
     });
-    // One qualification for the whole page. The member scope is the only one
-    // that carries Team-derived authority.
-    const qualifications = input.scope === "member"
-        ? await qualifyTeamProjectionReadAuthenticationsInTx(tx, { contexts, ...input.authentication })
-        : null;
+    // Either directory scope can include membership-derived authority. Qualify
+    // that arm in one batch while preserving independent Home administration.
+    const qualifications = await qualifyTeamProjectionReadAuthenticationsInTx(tx, { contexts, ...input.authentication });
 
     const items: TeamsPageV1["items"] = [];
     for (const context of contexts) {
@@ -182,7 +180,7 @@ export async function listTeamsForActorInTx(
         // Home authority is not Team-derived and is therefore not qualified,
         // so the withheld row is recomposed by the same capability owner with
         // the membership removed rather than re-decided here.
-        const qualified = qualifications === null || (qualifications.get(context.team.id)?.ok ?? false);
+        const qualified = qualifications.get(context.team.id)?.ok ?? false;
         items.push(projectTeamSummaryV1({
             team: context.team,
             viewerRole: context.membership?.role ?? null,

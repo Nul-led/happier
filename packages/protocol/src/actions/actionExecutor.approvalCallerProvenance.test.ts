@@ -20,7 +20,7 @@ import {
 const sessionSpawnInput = {
   creationKey: 'plugin-approval-1',
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-  directory: '/workspace/project',
+  directory: { kind: 'path', path: '/workspace/project' },
   organizationPlacement: { folderId: null, tagIds: [] },
   agentTarget: {
     kind: 'agent',
@@ -502,10 +502,14 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
       approvalsUpdate: async ({ request }: { request: ApprovalRequest }) => { storedRequest = request; return { ok: true as const }; },
       isApprovalExecutionOriginCurrent: async () => true,
       isActionApprovalRequired: (actionId: string) => actionId === 'session.spawn_new',
-      sessionSpawnNewAgentPolicyPreflight: async () => ({ type: 'allowed' }),
+      resolveAgentStartContext: async () => ({
+        caller: { kind: 'session', sessionId: 'parent-1', starterDepth: 0, turnDepth: 0 },
+        baseline: { machineId: 'machine-1', directory: sessionSpawnInput.directory.path, configuration: { agentTarget: sessionSpawnInput.agentTarget, permissionMode: 'safe-yolo' } },
+        ledSubtreeSessionIds: [], workDepthLimit: 4, roles: {}, callerPermissionCeiling: 'safe-yolo',
+      }),
       sessionSpawnNew,
     } as unknown as ActionExecutorDeps);
-    await expect(executor.execute('session.spawn_new', sessionSpawnInput, {
+    await expect(executor.execute('session.spawn_new', { ...sessionSpawnInput, permissionMode: 'read-only' }, {
       surface: 'agent', authority: 'account_automation', serverId: 'server-1',
       runtimeAccountId: 'account-1',
       defaultSessionId: 'parent-1', actionRequestId: 'spawn-request-1',
@@ -523,7 +527,7 @@ describe('createActionExecutor (durable plugin approval caller provenance)', () 
       sessionAgentSpawnPolicyV1: policy, permissionMode: 'read-only',
     }));
     const deferredSpawnArgs = sessionSpawnNew.mock.calls[0]?.[0];
-    await expect(executor.execute('session.spawn_new', sessionSpawnInput, {
+    await expect(executor.execute('session.spawn_new', { ...sessionSpawnInput, permissionMode: 'read-only' }, {
       surface: 'agent', authority: 'account_automation', serverId: 'server-1',
       runtimeAccountId: 'account-1', defaultSessionId: 'parent-1',
       actionRequestId: 'spawn-request-1', bypassApprovals: true,

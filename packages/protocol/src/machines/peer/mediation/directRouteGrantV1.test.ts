@@ -29,6 +29,30 @@ const basePayload = {
 } as const;
 
 describe('DirectRouteGrantV1', () => {
+  it('admits source-driven live-stream scope without implicit bitrate or duration caps', () => {
+    const payload = { ...basePayload, flowKind: 'live_stream', scope: {
+      kind: 'live_stream', streamId: 'stream_1', streamFamily: 'screen',
+    } };
+    expect(DirectRouteGrantPayloadV1Schema.safeParse(payload).success).toBe(true);
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({ ...payload, scope: {
+      ...payload.scope, maxBitrateBps: 0,
+    } }).success).toBe(false);
+  });
+
+  it('binds TCP admission to destination scope and grant expiry without imposing an active lifetime', () => {
+    const payload = {
+      ...basePayload,
+      flowKind: 'tcp_tunnel',
+      scope: { kind: 'tcp_tunnel', tunnelId: 'tunnel_1', allowedPorts: [3000] },
+    };
+    expect(DirectRouteGrantPayloadV1Schema.safeParse(payload).success).toBe(true);
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({ ...payload, exp: payload.iat }).success).toBe(false);
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({
+      ...payload,
+      scope: { ...payload.scope, maxDurationMs: 300_000 },
+    }).success).toBe(false);
+  });
+
   it('accepts a signed bounded-transfer direct-route grant', () => {
     const parsed = SignedDirectRouteGrantV1Schema.parse({
       payload: basePayload,
@@ -59,8 +83,6 @@ describe('DirectRouteGrantV1', () => {
         kind: 'tcp_tunnel',
         tunnelId: 'tunnel_1',
         allowedPorts: [3000],
-        maxIdleMs: 30_000,
-        maxDurationMs: 600_000,
       },
     }).success).toBe(false);
 

@@ -131,6 +131,11 @@ function generateProviderSchemaFromPostgres(
 	        body = body.replace(/^(\s*settingsDbValue\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*policyJson\s+String\b)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*stateJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+            body = body.replace(/^(\s*workspaceJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+	        body = body.replace(/^(\s*workflowAcceptedSnapshotEnvelope\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+	        body = body.replace(/^(\s*workflowCheckpointEnvelope\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+	        body = body.replace(/^(\s*workflowInvocationJson\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
+	        body = body.replace(/^(\s*contentEnvelope\s+String\b)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 
         body = annotateMySqlRepeatKeyFields(body);
 
@@ -535,6 +540,17 @@ function annotateMySqlPluginAvailabilityFields(schemaBody: string): string {
 
 function annotateMySqlEventAutomationFields(schemaBody: string): string {
     return schemaBody
+        .replace(
+            /^model\s+Automation\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                // Workflow reference grammar exceeds VARCHAR(191); the prefix
+                // narrows only this non-unique index, never the stored value.
+                .replace(/^(\s*workflowDefinitionId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.LongText")
+                .replace(
+                    /@@index\(\[accountId, workflowDefinitionId\], map: "Automation_account_workflow_idx"\)/u,
+                    '@@index([accountId, workflowDefinitionId(length: 191)], map: "Automation_account_workflow_idx")',
+                ),
+        )
         .replace(
             /^model\s+AutomationRun\s+\{[\s\S]*?^\}\s*$/gm,
             (model) => model

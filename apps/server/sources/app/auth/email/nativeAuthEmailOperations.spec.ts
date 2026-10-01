@@ -47,7 +47,7 @@ describe("native authentication email application links", () => {
                 serverId: "home-a",
             }),
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 deliver: async (next) => {
                     message = next;
                     return { status: "sent" as const };
@@ -75,7 +75,7 @@ describe("native authentication email application links", () => {
                 serverId: "home-a",
             }),
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 deliver: async (next) => {
                     message = next;
                     return { status: "sent" as const };
@@ -106,7 +106,7 @@ describe("native authentication email application links", () => {
                 throw new Error("application target unavailable");
             },
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 deliver: async (next) => {
                     message = next;
                     return { status: "sent" as const };
@@ -134,7 +134,7 @@ describe("native authentication email application links", () => {
                 serverId: "home-a",
             }),
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 deliver: async () => ({
                     status: "failed" as const,
                     reason: "transport_failed" as const,
@@ -166,7 +166,7 @@ describe("native authentication email application links", () => {
                 throw new Error("private-boundary@example.test must not escape");
             },
             delivery: {
-                isReady: true,
+                isReady: async () => true,
                 deliver: async () => {
                     throw new Error("capability-bearing transport detail must not escape");
                 },

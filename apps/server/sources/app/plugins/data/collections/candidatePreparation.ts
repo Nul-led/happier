@@ -16,6 +16,7 @@ import {
     encodeBase64,
     isPluginCollectionOptionalPrivateSchemaAdditionV1,
     measurePluginCollectionCandidatePreparationStageRequestEncodedBytesV1,
+    resolvePluginCollectionMigrationChainV1,
     PluginUiArtifactDigestV1Schema,
     type NormalizedPluginAccountCollectionContractV1,
     type PluginCollectionCandidatePreparationBindingV1,
@@ -161,6 +162,14 @@ type CandidatePreparationPromotionStageRow = Readonly<{
     sourceRevision: number;
     targetContentEnvelope: unknown;
     targetProjection: unknown;
+}>;
+
+type CandidatePromotionRow = Readonly<{
+    id: string;
+    rowId: string;
+    expectedRevision: number;
+    contentEnvelope: unknown;
+    projection: PluginCollectionProjectionV1;
 }>;
 
 type CandidatePreparationProspectiveStage = Readonly<{
@@ -375,21 +384,6 @@ async function readExactCandidateContractInTx(input: Readonly<{
     }
 }
 
-function hasDeclaredMigrationChain(input: Readonly<{
-    sourceSchemaVersion: number;
-    target: NormalizedPluginAccountCollectionContractV1;
-}>): boolean {
-    if (input.sourceSchemaVersion >= input.target.schemaVersion) return false;
-    if (!input.target.readableSchemaVersions.includes(input.sourceSchemaVersion)) return false;
-    let current = input.sourceSchemaVersion;
-    while (current < input.target.schemaVersion) {
-        const next = input.target.migrations.find((migration) => migration.fromSchemaVersion === current);
-        if (!next || next.toSchemaVersion <= current) return false;
-        current = next.toSchemaVersion;
-    }
-    return current === input.target.schemaVersion;
-}
-
 /**
  * Candidate callers need a declared callback chain only when there is a live
  * incumbent row to transform. An empty collection can adopt a new target
@@ -401,10 +395,12 @@ function assertCandidatePreparationMigrationAvailable(input: Readonly<{
     target: ResolvedCandidateContract;
 }>): void {
     if (refsMatch(input.source.ref, input.target.ref)) return;
-    if (!hasDeclaredMigrationChain({
+    if (resolvePluginCollectionMigrationChainV1({
         sourceSchemaVersion: input.source.ref.schemaVersion,
-        target: input.target.contract,
-    })) {
+        targetSchemaVersion: input.target.contract.schemaVersion,
+        readableSchemaVersions: input.target.contract.readableSchemaVersions,
+        migrations: input.target.contract.migrations,
+    }) === null) {
         throw new PluginCollectionCandidatePreparationOperationError(
             "collection_candidate_preparation_contract_mismatch",
         );
@@ -624,6 +620,34 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
     return JSON.parse(serialized) as Prisma.InputJsonValue;
 }
 
+function candidateStageBindingFacts(input: Readonly<{
+    accountId: string;
+    source: PluginCollectionContractRefV1;
+    target: PluginCollectionContractRefV1;
+    sourceContractId?: string;
+    targetContractId?: string;
+    candidateIdentity?: string;
+    candidateReleaseVersion: string;
+    candidateArtifactDigest?: string;
+}>): Readonly<Record<string, string | number>> {
+    return {
+        accountId: input.accountId,
+        pluginId: input.source.pluginId,
+        collectionId: input.source.collectionId,
+        sourceSchemaVersion: input.source.schemaVersion,
+        sourceContractDigest: input.source.contractDigest,
+        targetSchemaVersion: input.target.schemaVersion,
+        targetContractDigest: input.target.contractDigest,
+        candidateReleaseVersion: input.candidateReleaseVersion,
+        ...(input.sourceContractId === undefined ? {} : { sourceContractId: input.sourceContractId }),
+        ...(input.targetContractId === undefined ? {} : { targetContractId: input.targetContractId }),
+        ...(input.candidateIdentity === undefined ? {} : { candidateIdentity: input.candidateIdentity }),
+        ...(input.candidateArtifactDigest === undefined
+            ? {}
+            : { candidateArtifactDigest: input.candidateArtifactDigest }),
+    };
+}
+
 function exactStageWhere(input: Readonly<{
     accountId: string;
     resolved: ResolvedCandidatePreparationBinding;
@@ -632,20 +656,18 @@ function exactStageWhere(input: Readonly<{
     sourceRevision: number;
 }>): Prisma.PluginCollectionCandidatePreparationStageWhereInput {
     return {
-        accountId: input.accountId,
-        pluginId: input.resolved.source.ref.pluginId,
-        collectionId: input.resolved.source.ref.collectionId,
-        candidateIdentity: input.resolved.candidateIdentity,
+        ...candidateStageBindingFacts({
+            accountId: input.accountId,
+            source: input.resolved.source.ref,
+            target: input.resolved.target.ref,
+            sourceContractId: input.resolved.source.id,
+            targetContractId: input.resolved.target.id,
+            candidateIdentity: input.resolved.candidateIdentity,
+            candidateReleaseVersion: input.binding.candidate.releaseVersion,
+            candidateArtifactDigest: input.binding.candidate.artifactDigest,
+        }),
         sourceRowDbId: input.sourceRowDbId,
-        sourceContractId: input.resolved.source.id,
-        sourceSchemaVersion: input.resolved.source.ref.schemaVersion,
-        sourceContractDigest: input.resolved.source.ref.contractDigest,
         sourceRevision: input.sourceRevision,
-        targetContractId: input.resolved.target.id,
-        targetSchemaVersion: input.resolved.target.ref.schemaVersion,
-        targetContractDigest: input.resolved.target.ref.contractDigest,
-        candidateReleaseVersion: input.binding.candidate.releaseVersion,
-        candidateArtifactDigest: input.binding.candidate.artifactDigest,
     };
 }
 
@@ -657,21 +679,23 @@ function stageMatchesExactBinding(input: Readonly<{
     sourceRowDbId: string;
     sourceRevision: number;
 }>): boolean {
-    const { stage, resolved, binding } = input;
-    return stage.accountId === input.accountId
-        && stage.pluginId === resolved.source.ref.pluginId
-        && stage.collectionId === resolved.source.ref.collectionId
-        && stage.candidateIdentity === resolved.candidateIdentity
-        && stage.sourceRowDbId === input.sourceRowDbId
-        && stage.sourceContractId === resolved.source.id
-        && stage.sourceSchemaVersion === resolved.source.ref.schemaVersion
-        && stage.sourceContractDigest === resolved.source.ref.contractDigest
-        && stage.sourceRevision === input.sourceRevision
-        && stage.targetContractId === resolved.target.id
-        && stage.targetSchemaVersion === resolved.target.ref.schemaVersion
-        && stage.targetContractDigest === resolved.target.ref.contractDigest
-        && stage.candidateReleaseVersion === binding.candidate.releaseVersion
-        && stage.candidateArtifactDigest === binding.candidate.artifactDigest;
+    const expected = {
+        ...candidateStageBindingFacts({
+            accountId: input.accountId,
+            source: input.resolved.source.ref,
+            target: input.resolved.target.ref,
+            sourceContractId: input.resolved.source.id,
+            targetContractId: input.resolved.target.id,
+            candidateIdentity: input.resolved.candidateIdentity,
+            candidateReleaseVersion: input.binding.candidate.releaseVersion,
+            candidateArtifactDigest: input.binding.candidate.artifactDigest,
+        }),
+        sourceRowDbId: input.sourceRowDbId,
+        sourceRevision: input.sourceRevision,
+    };
+    return Object.entries(expected).every(([field, value]) => (
+        input.stage[field as keyof CandidatePreparationStageQuotaRecord] === value
+    ));
 }
 
 function stageProjectionEntries(value: unknown): readonly Readonly<{
@@ -874,6 +898,69 @@ function isExactPersistedRef(input: Readonly<{
         && input.row.contractDigest === input.materialized.ref.contractDigest;
 }
 
+function buildCandidatePromotionRows(input: Readonly<{
+    accountId: string;
+    source: ResolvedCandidateContract;
+    target: ResolvedCandidateContract;
+    targetReleaseVersion: string;
+    selectedCandidateIdentity: string;
+    encryptionMode: "plain" | "e2ee";
+    liveRows: readonly CandidatePreparationPromotableLiveRow[];
+    stages: readonly CandidatePreparationPromotionStageRow[];
+}>): readonly CandidatePromotionRow[] {
+    if (input.liveRows.some((row) => !isExactPersistedRef({ row, materialized: input.source }))) {
+        promotionNotReady();
+    }
+    if (input.stages.length !== input.liveRows.length) promotionNotReady();
+    const stageBySourceRowId = new Map(input.stages.map((stage) => [stage.sourceRowDbId, stage]));
+    if (stageBySourceRowId.size !== input.liveRows.length) promotionNotReady();
+    return input.liveRows.map((row) => {
+        const stage = stageBySourceRowId.get(row.id);
+        if (!stage || stage.sourceRevision !== row.revision || stage.rowId !== row.rowId) {
+            promotionNotReady();
+        }
+        const candidateArtifactDigest = PluginUiArtifactDigestV1Schema.safeParse(
+            stage.candidateArtifactDigest,
+        );
+        if (!candidateArtifactDigest.success) promotionNotReady();
+        const expectedIdentity = candidatePreparationBindingIdentity({
+            accountId: input.accountId,
+            binding: {
+                source: input.source.ref,
+                target: input.target.ref,
+                candidate: {
+                    releaseVersion: input.targetReleaseVersion,
+                    artifactDigest: candidateArtifactDigest.data,
+                },
+            },
+        });
+        if (
+            stage.candidateIdentity !== input.selectedCandidateIdentity
+            || stage.candidateIdentity !== expectedIdentity
+        ) promotionNotReady();
+        let targetValue: ReturnType<typeof validateCandidateTarget>;
+        try {
+            targetValue = validateCandidateTarget({
+                target: input.target,
+                encryptionMode: input.encryptionMode,
+                rowId: row.rowId,
+                content: stage.targetContentEnvelope,
+                projection: PluginCollectionProjectionV1Schema.parse(stage.targetProjection),
+            });
+        } catch (error) {
+            if (error instanceof PluginCollectionCandidatePreparationOperationError) promotionNotReady();
+            throw error;
+        }
+        return {
+            id: row.id,
+            rowId: row.rowId,
+            expectedRevision: row.revision,
+            contentEnvelope: targetValue.content,
+            projection: targetValue.projection,
+        };
+    });
+}
+
 /**
  * Adopts only the durable contract identity for the one evolution whose
  * physical row/index semantics are proven unchanged. Availability owns the
@@ -1017,9 +1104,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
     if (!input.currentIntent || input.targetReleaseVersion === null) return;
     const targetReleaseVersion = input.targetReleaseVersion;
     const currentIntent = promotionIntent(input.currentIntent);
-    if (currentIntent.pluginId !== input.pluginId || currentIntent.desiredVersion === null) {
-        promotionNotReady();
-    }
+    if (currentIntent.pluginId !== input.pluginId) promotionNotReady();
     const targetCollectionIdentities = new Set(input.targetContracts.map((ref) => (
         `${ref.pluginId}\u0000${ref.collectionId}`
     )));
@@ -1031,6 +1116,10 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
         // Collection, even when it currently has no live rows to promote.
         promotionNotReady();
     }
+    // A release-less (daemon-claimed) source has no candidate stages: staging
+    // binds release versions. The writable-contract readiness gate that
+    // follows admits the release only when live rows already match it.
+    if (currentIntent.desiredVersion === null) return;
     const fence = await acquireAccountEncryptionTransitionFenceInTx(input.tx, input.accountId);
     if (fence.status !== "ready") promotionNotReady();
 
@@ -1139,26 +1228,26 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             });
             continue;
         }
-        if (!hasDeclaredMigrationChain({
+        if (resolvePluginCollectionMigrationChainV1({
             sourceSchemaVersion: source.ref.schemaVersion,
-            target: target.contract,
-        })) {
+            targetSchemaVersion: target.contract.schemaVersion,
+            readableSchemaVersions: target.contract.readableSchemaVersions,
+            migrations: target.contract.migrations,
+        }) === null) {
             promotionNotReady();
         }
 
         const completeCandidateIdentities = await input.tx.pluginCollectionCandidatePreparationStage.groupBy({
             by: ["candidateIdentity"],
             where: {
-                accountId: input.accountId,
-                pluginId: input.pluginId,
-                collectionId: targetRef.collectionId,
-                sourceContractId: source.id,
-                sourceSchemaVersion: source.ref.schemaVersion,
-                sourceContractDigest: source.ref.contractDigest,
-                targetContractId: target.id,
-                targetSchemaVersion: target.ref.schemaVersion,
-                targetContractDigest: target.ref.contractDigest,
-                candidateReleaseVersion: targetReleaseVersion,
+                ...candidateStageBindingFacts({
+                    accountId: input.accountId,
+                    source: source.ref,
+                    target: target.ref,
+                    sourceContractId: source.id,
+                    targetContractId: target.id,
+                    candidateReleaseVersion: targetReleaseVersion,
+                }),
             },
             _count: { _all: true },
             having: { candidateIdentity: { _count: { equals: liveRowCount } } },
@@ -1194,17 +1283,15 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             }
             const stages: CandidatePreparationPromotionStageRow[] = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
-                    accountId: input.accountId,
-                    pluginId: input.pluginId,
-                    collectionId: targetRef.collectionId,
-                    sourceContractId: source.id,
-                    sourceSchemaVersion: source.ref.schemaVersion,
-                    sourceContractDigest: source.ref.contractDigest,
-                    targetContractId: target.id,
-                    targetSchemaVersion: target.ref.schemaVersion,
-                    targetContractDigest: target.ref.contractDigest,
-                    candidateReleaseVersion: targetReleaseVersion,
-                    candidateIdentity: selectedCandidateIdentity,
+                    ...candidateStageBindingFacts({
+                        accountId: input.accountId,
+                        source: source.ref,
+                        target: target.ref,
+                        sourceContractId: source.id,
+                        targetContractId: target.id,
+                        candidateReleaseVersion: targetReleaseVersion,
+                        candidateIdentity: selectedCandidateIdentity,
+                    }),
                     sourceRowDbId: { in: liveRows.map((row) => row.id) },
                 },
                 select: {
@@ -1217,52 +1304,15 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     targetProjection: true,
                 },
             });
-            if (stages.length !== liveRows.length) promotionNotReady();
-            const selectedStageBySourceRowId = new Map(stages.map((stage) => [stage.sourceRowDbId, stage]));
-            if (selectedStageBySourceRowId.size !== liveRows.length) promotionNotReady();
-            const promotionRows = liveRows.map((row) => {
-                const stage = selectedStageBySourceRowId.get(row.id);
-                if (!stage || stage.sourceRevision !== row.revision || stage.rowId !== row.rowId) {
-                    promotionNotReady();
-                }
-                const candidateArtifactDigest = PluginUiArtifactDigestV1Schema.safeParse(
-                    stage.candidateArtifactDigest,
-                );
-                if (!candidateArtifactDigest.success) promotionNotReady();
-                const expectedIdentity = candidatePreparationBindingIdentity({
-                    accountId: input.accountId,
-                    binding: {
-                        source: source.ref,
-                        target: target.ref,
-                        candidate: {
-                            releaseVersion: targetReleaseVersion,
-                            artifactDigest: candidateArtifactDigest.data,
-                        },
-                    },
-                });
-                if (stage.candidateIdentity !== expectedIdentity) promotionNotReady();
-                let targetValue: ReturnType<typeof validateCandidateTarget>;
-                try {
-                    targetValue = validateCandidateTarget({
-                        target,
-                        encryptionMode: fence.account.currentness.encryptionMode,
-                        rowId: row.rowId,
-                        content: stage.targetContentEnvelope,
-                        projection: PluginCollectionProjectionV1Schema.parse(stage.targetProjection),
-                    });
-                } catch (error) {
-                    if (error instanceof PluginCollectionCandidatePreparationOperationError) {
-                        promotionNotReady();
-                    }
-                    throw error;
-                }
-                return {
-                    id: row.id,
-                    rowId: row.rowId,
-                    expectedRevision: row.revision,
-                    contentEnvelope: targetValue.content,
-                    projection: targetValue.projection,
-                };
+            const promotionRows = buildCandidatePromotionRows({
+                accountId: input.accountId,
+                source,
+                target,
+                targetReleaseVersion,
+                selectedCandidateIdentity,
+                encryptionMode: fence.account.currentness.encryptionMode,
+                liveRows,
+                stages,
             });
             try {
                 prepareCandidatePromotionMaterializedRows({
@@ -1345,17 +1395,15 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             if (liveRows.length === 0) break;
             const stages: CandidatePreparationPromotionStageRow[] = await input.tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
-                    accountId: input.accountId,
-                    pluginId: input.pluginId,
-                    collectionId: targetRef.collectionId,
-                    sourceContractId: source.id,
-                    sourceSchemaVersion: source.ref.schemaVersion,
-                    sourceContractDigest: source.ref.contractDigest,
-                    targetContractId: target.id,
-                    targetSchemaVersion: target.ref.schemaVersion,
-                    targetContractDigest: target.ref.contractDigest,
-                    candidateReleaseVersion: targetReleaseVersion,
-                    candidateIdentity: selectedCandidateIdentity,
+                    ...candidateStageBindingFacts({
+                        accountId: input.accountId,
+                        source: source.ref,
+                        target: target.ref,
+                        sourceContractId: source.id,
+                        targetContractId: target.id,
+                        candidateReleaseVersion: targetReleaseVersion,
+                        candidateIdentity: selectedCandidateIdentity,
+                    }),
                     sourceRowDbId: { in: liveRows.map((row) => row.id) },
                 },
                 select: {
@@ -1368,52 +1416,15 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                     targetProjection: true,
                 },
             });
-            if (stages.length !== liveRows.length) promotionNotReady();
-            const selectedStageBySourceRowId = new Map(stages.map((stage) => [stage.sourceRowDbId, stage]));
-            if (selectedStageBySourceRowId.size !== liveRows.length) promotionNotReady();
-            const promotionRows = liveRows.map((row) => {
-                const stage = selectedStageBySourceRowId.get(row.id);
-                if (!stage || stage.sourceRevision !== row.revision || stage.rowId !== row.rowId) {
-                    promotionNotReady();
-                }
-                const candidateArtifactDigest = PluginUiArtifactDigestV1Schema.safeParse(
-                    stage.candidateArtifactDigest,
-                );
-                if (!candidateArtifactDigest.success) promotionNotReady();
-                const expectedIdentity = candidatePreparationBindingIdentity({
-                    accountId: input.accountId,
-                    binding: {
-                        source: source.ref,
-                        target: target.ref,
-                        candidate: {
-                            releaseVersion: targetReleaseVersion,
-                            artifactDigest: candidateArtifactDigest.data,
-                        },
-                    },
-                });
-                if (stage.candidateIdentity !== expectedIdentity) promotionNotReady();
-                let targetValue: ReturnType<typeof validateCandidateTarget>;
-                try {
-                    targetValue = validateCandidateTarget({
-                        target,
-                        encryptionMode: fence.account.currentness.encryptionMode,
-                        rowId: row.rowId,
-                        content: stage.targetContentEnvelope,
-                        projection: PluginCollectionProjectionV1Schema.parse(stage.targetProjection),
-                    });
-                } catch (error) {
-                    if (error instanceof PluginCollectionCandidatePreparationOperationError) {
-                        promotionNotReady();
-                    }
-                    throw error;
-                }
-                return {
-                    id: row.id,
-                    rowId: row.rowId,
-                    expectedRevision: row.revision,
-                    contentEnvelope: targetValue.content,
-                    projection: targetValue.projection,
-                };
+            const promotionRows = buildCandidatePromotionRows({
+                accountId: input.accountId,
+                source,
+                target,
+                targetReleaseVersion,
+                selectedCandidateIdentity,
+                encryptionMode: fence.account.currentness.encryptionMode,
+                liveRows,
+                stages,
             });
             let promoted: boolean;
             try {
@@ -1600,18 +1611,16 @@ export async function pagePluginCollectionCandidatePreparationSource(input: Read
             ? []
             : await tx.pluginCollectionCandidatePreparationStage.findMany({
                 where: {
-                    accountId: input.accountId,
-                    pluginId: resolved.source.ref.pluginId,
-                    collectionId: resolved.source.ref.collectionId,
-                    candidateIdentity: resolved.candidateIdentity,
-                    sourceContractId: resolved.source.id,
-                    sourceSchemaVersion: resolved.source.ref.schemaVersion,
-                    sourceContractDigest: resolved.source.ref.contractDigest,
-                    targetContractId: resolved.target.id,
-                    targetSchemaVersion: resolved.target.ref.schemaVersion,
-                    targetContractDigest: resolved.target.ref.contractDigest,
-                    candidateReleaseVersion: request.binding.candidate.releaseVersion,
-                    candidateArtifactDigest: request.binding.candidate.artifactDigest,
+                    ...candidateStageBindingFacts({
+                        accountId: input.accountId,
+                        source: resolved.source.ref,
+                        target: resolved.target.ref,
+                        sourceContractId: resolved.source.id,
+                        targetContractId: resolved.target.id,
+                        candidateIdentity: resolved.candidateIdentity,
+                        candidateReleaseVersion: request.binding.candidate.releaseVersion,
+                        candidateArtifactDigest: request.binding.candidate.artifactDigest,
+                    }),
                     sourceRowDbId: { in: pageRows.map((row) => row.id) },
                 },
                 select: { sourceRowDbId: true, sourceRevision: true },
@@ -1854,16 +1863,14 @@ export async function retirePluginCollectionCandidatePreparation(input: Readonly
     await inTx(async (tx) => {
         await tx.pluginCollectionCandidatePreparationStage.deleteMany({
             where: {
-                accountId: input.accountId,
-                pluginId: request.binding.source.pluginId,
-                collectionId: request.binding.source.collectionId,
-                candidateIdentity,
-                sourceSchemaVersion: request.binding.source.schemaVersion,
-                sourceContractDigest: request.binding.source.contractDigest,
-                targetSchemaVersion: request.binding.target.schemaVersion,
-                targetContractDigest: request.binding.target.contractDigest,
-                candidateReleaseVersion: request.binding.candidate.releaseVersion,
-                candidateArtifactDigest: request.binding.candidate.artifactDigest,
+                ...candidateStageBindingFacts({
+                    accountId: input.accountId,
+                    source: request.binding.source,
+                    target: request.binding.target,
+                    candidateIdentity,
+                    candidateReleaseVersion: request.binding.candidate.releaseVersion,
+                    candidateArtifactDigest: request.binding.candidate.artifactDigest,
+                }),
             },
         });
     });

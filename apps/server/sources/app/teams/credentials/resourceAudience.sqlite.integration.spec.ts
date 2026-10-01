@@ -3,6 +3,7 @@ import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { setTeamCredentialAudienceInTx, type TeamCredentialAudienceInput } from "./resourceAudience";
+import { updateTeamCredentialResourceInTx } from "./resourceUpdate";
 
 const TEST_AUTHENTICATION = { authenticationAuthority: "present_user", authenticationEvidence: [] } as const;
 
@@ -99,8 +100,28 @@ describe("Team credential audience mutation", () => {
         })).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 3 });
     });
 
-    it("ends prepared material only for the recipients the replaced audience no longer entitles", async () => {
+    it.each(["audience", "resource replacement"] as const)("ends prepared material only for recipients no longer entitled through %s", async (mutation) => {
         const f = await fixture();
+        const setAudience = (input: TeamCredentialAudienceInput) => mutation === "audience"
+            ? f.set(f.manager.id, input)
+            : inTx(tx => updateTeamCredentialResourceInTx(tx, {
+                actorAccountId: f.manager.id,
+                authentication: TEST_AUTHENTICATION,
+                patch: {
+                    resourceId: input.resourceId,
+                    expectedRevision: input.expectedRevision,
+                    replacement: {
+                        enabled: true,
+                        displayName: f.resource.displayName,
+                        sessionUsePolicy: "personal_allowed",
+                        requestPolicy: null,
+                        allMembersDeliveryMode: input.allMembersDeliveryMode,
+                        groupGrants: [...input.groupGrants],
+                        memberGrants: [...input.memberGrants],
+                        usageLimitDelta: { upserts: [], deleteIds: [] },
+                    },
+                },
+            }));
         // A second recipient holds two overlapping direct grants: the Group
         // grant and their own member grant.
         const overlapping = await db.account.create({ data: { encryptionMode: "plain" } });
@@ -139,7 +160,7 @@ describe("Team credential audience mutation", () => {
         // grant keeps their prepared row, and the source has not changed, so the
         // published source versions are untouched
         // (06-direct-credential-delivery.md:572, :579).
-        await expect(f.set(f.manager.id, {
+        await expect(setAudience({
             ...withOverlap,
             expectedRevision: 1,
             memberGrants: [{ teamMembershipId: overlappingMembership.id, deliveryMode: "direct" }],
@@ -151,7 +172,7 @@ describe("Team credential audience mutation", () => {
             .toMatchObject({ directSourceVersionsJson: published });
 
         // Removing the last effective direct grant ends that recipient's row too.
-        await expect(f.set(f.manager.id, {
+        await expect(setAudience({
             ...withOverlap, expectedRevision: 2, groupGrants: [], memberGrants: [],
         })).resolves.toEqual({ ok: true, resourceId: f.resource.id, revision: 3 });
         expect(await db.teamCredentialRecipientMaterial.count({ where: { resourceId: f.resource.id } })).toBe(0);

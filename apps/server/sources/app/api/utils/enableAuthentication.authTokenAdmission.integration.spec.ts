@@ -10,6 +10,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 
 import { enableAuthentication } from "./enableAuthentication";
 import { requirePresentUser } from "./requirePresentUser";
+import { AUTHORITY_CEILING_HEADER_V1 } from "@happier-dev/protocol";
 
 function createApp() {
     const app = Fastify({ logger: false }) as any;
@@ -21,6 +22,7 @@ function createApp() {
     app.get("/ordinary", { preHandler: app.authenticate }, async (request: any) => ({
         tokenKind: request.authTokenKind,
     }));
+    app.get("/ordinary-present", { preHandler: [app.authenticate, requirePresentUser] }, async () => ({ ok: true }));
     app.get(
         "/directory",
         {
@@ -194,6 +196,27 @@ describe("authentication token admission (integration)", () => {
             expect(directoryPresentOnly.statusCode).toBe(403);
             expect(patOrdinary.statusCode).toBe(403);
             expect(patRoute.statusCode).toBe(200);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("uses current terminal policy for HTTP admission and accepts only a lowering ceiling", async () => {
+        const account = await db.account.create({ data: { publicKey: "terminal-http-policy" } });
+        const token = await auth.createToken(account.id, undefined, { kind: "terminal", authority: "account_automation" });
+        const app = createApp();
+        try {
+            const response = (ceiling?: string) => app.inject({ method: "GET", url: "/ordinary-present", headers: {
+                authorization: `Bearer ${token}`,
+                ...(ceiling ? { [AUTHORITY_CEILING_HEADER_V1]: ceiling } : {}),
+            } });
+            expect((await response()).statusCode).toBe(200);
+            expect((await response("account_automation")).statusCode).toBe(403);
+            await db.account.update({ where: { id: account.id }, data: { terminalPresentUserPolicy: "disallowed" } });
+            expect((await response()).statusCode).toBe(403);
+            expect((await response("present_user")).statusCode).toBe(403);
+            await db.account.update({ where: { id: account.id }, data: { terminalPresentUserPolicy: "allowed" } });
+            expect((await response()).statusCode).toBe(200);
         } finally {
             await app.close();
         }

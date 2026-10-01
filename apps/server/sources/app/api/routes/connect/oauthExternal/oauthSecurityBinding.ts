@@ -69,19 +69,21 @@ export async function resolveOAuthSecurityBindingInTx(tx: Tx, input: Readonly<{
 
 /** Rechecks at each final mutation boundary; the route consumes stale pending state after rollback. */
 export async function requireCurrentOAuthPendingRuntime(input: Readonly<{
+    env: NodeJS.ProcessEnv;
     providerId: string;
     pendingKey: string;
     binding: OAuthSecurityBinding | undefined;
     purpose: OAuthSecurityBinding["purpose"];
 }>): Promise<OAuthFlowProvider> {
     const resolved = await resolveOAuthSecurityBinding({
-        ...input, env: process.env, stage: "oauth_finalize",
+        ...input, stage: "oauth_finalize",
     });
     if (!resolved) throw new OAuthProviderConfigurationChangedError(input.pendingKey);
     return resolved.provider;
 }
 
 export async function requireCurrentOAuthPendingRuntimeInTx(tx: Tx, input: Readonly<{
+    env: NodeJS.ProcessEnv;
     providerId: string;
     pendingKey: string;
     binding: OAuthSecurityBinding | undefined;
@@ -89,7 +91,6 @@ export async function requireCurrentOAuthPendingRuntimeInTx(tx: Tx, input: Reado
 }>): Promise<OAuthFlowProvider> {
     const resolved = await resolveOAuthSecurityBindingInTx(tx, {
         ...input,
-        env: process.env,
         stage: "oauth_finalize",
     });
     if (!resolved) throw new OAuthProviderConfigurationChangedError(input.pendingKey);

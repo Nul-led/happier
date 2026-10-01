@@ -11,6 +11,7 @@ export const ActivityWebhookTopicSchema = z.enum([
   'connected_service_quota_blocked',
   'connected_service_quota_recovered',
   'workflow_run_update',
+  'notify_me',
 ]);
 
 export type ActivityWebhookTopic = z.infer<typeof ActivityWebhookTopicSchema>;
@@ -22,6 +23,7 @@ export const WorkflowRunUpdateKindV1Schema = z.enum([
   'outcome_uncertain',
   'paused',
   'interrupted',
+  'review_required',
 ]);
 export type WorkflowRunUpdateKindV1 = z.infer<typeof WorkflowRunUpdateKindV1Schema>;
 
@@ -78,6 +80,7 @@ const ActivityWebhookOrdinaryPayloadV1Schema = z.object({
   navigation: z.object({
     sessionId: z.string().trim().min(1).optional(),
     requestId: z.string().trim().min(1).optional(),
+    runId: WorkflowRunIdV1Schema.optional(),
   }),
 });
 
@@ -118,6 +121,7 @@ export function buildActivityWebhookPayload(params: Readonly<{
     reason?: WorkflowRunUpdateReasonV1;
   }> | null;
   metadata?: Readonly<Record<string, unknown>> | undefined;
+  notificationOpen?: Readonly<{ kind: 'session'; sessionId: string }> | Readonly<{ kind: 'workflow_run'; runId: string }>;
 }>): ActivityWebhookPayloadV1 {
   const common = {
     v: 1,
@@ -156,6 +160,10 @@ export function buildActivityWebhookPayload(params: Readonly<{
     navigation: {
       sessionId: params.session?.sessionId,
       requestId: params.request?.requestId,
+      ...(params.topic === 'notify_me' && params.notificationOpen?.kind === 'session'
+        ? { sessionId: params.notificationOpen.sessionId } : {}),
+      ...(params.topic === 'notify_me' && params.notificationOpen?.kind === 'workflow_run'
+        ? { runId: params.notificationOpen.runId } : {}),
     },
   });
 }

@@ -235,6 +235,8 @@ describe('Team credential external Provider API v1', () => {
         resourceId: 'resource-1',
         requestId: 'models-1',
         externalApiKeyId: caller.keyId,
+        operationId: null,
+        brokerPlacementFingerprint: 'a'.repeat(64),
         assignedAccountId: caller.assignedAccountId,
         assignedTeamMembershipId: caller.assignedTeamMembershipId,
       },
@@ -257,6 +259,7 @@ describe('Team credential external Provider API v1', () => {
       },
       operation: {
         kind: 'external_api_key',
+        operationId: '550e8400-e29b-41d4-a716-446655440001',
         externalApiKeyId: caller.keyId,
         assignedAccountId: caller.assignedAccountId,
         assignedTeamMembershipId: caller.assignedTeamMembershipId,

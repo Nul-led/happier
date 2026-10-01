@@ -1,35 +1,39 @@
+import type { ServerConfigEnv } from '@happier-dev/protocol';
+
 import { maybeCaptureSentryMonitorCheckIn } from '@/app/monitoring/sentryMonitors';
 import { readRetentionPolicyFromEnv } from '@/app/retention/config/readRetentionPolicyFromEnv';
+import { hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled } from '@/app/retention/config/retentionDomains';
 import { resolveEffectiveRetentionEnabled } from '@/app/retention/config/retentionPolicyState';
 
-import { hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled } from './retentionRuleRegistry';
 import { runRetentionSweep } from './runRetentionSweep';
 import { logRetentionSweepCompleted, logRetentionSweepFailed } from './retentionRunLogging';
 import { acquireRetentionSweepLock } from './retentionSweepLock';
+import { retentionSweepLockTtlMs } from './retentionSweepLockTtl';
 
-const RETENTION_SWEEP_LOCK_TTL_FLOOR_MS = 30 * 60 * 1000;
-
-export function startRetentionWorker(): { stop: () => void } | null {
-    const policy = readRetentionPolicyFromEnv(process.env);
-    if (
-        !resolveEffectiveRetentionEnabled(policy)
-        && !hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled()
-    ) {
-        return null;
-    }
-
+/**
+ * The retention worker. The policy — switches, domain rules, cadence and resource caps — is
+ * resolved through the Home overlay at every sweep (plan §3.6), so a rule an owner stores from the
+ * console applies to the next sweep without a restart, and the next sweep is scheduled with the
+ * interval that sweep read.
+ */
+export function startRetentionWorker(params: Readonly<{
+    /** The Home-effective configuration for one sweep (startup passes the Home overlay over `process.env`). */
+    readEnv: () => Promise<ServerConfigEnv>;
+}>): { stop: () => void } {
+    const readEnv = params.readEnv;
     let stopped = false;
-    let running = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    /** The interval the last successful policy read set; the registry default until one succeeds. */
+    let intervalMs: number | null = null;
 
     const run = async (reason: 'startup' | 'interval') => {
-        if (running || stopped) return;
-        running = true;
         let lock: Awaited<ReturnType<typeof acquireRetentionSweepLock>> = null;
-
         try {
-            lock = await acquireRetentionSweepLock({
-                ttlMs: Math.max(RETENTION_SWEEP_LOCK_TTL_FLOOR_MS, policy.intervalMs),
-            });
+            const policy = readRetentionPolicyFromEnv(await readEnv());
+            intervalMs = policy.intervalMs;
+            if (!resolveEffectiveRetentionEnabled(policy) && !hasRetentionRulesThatRunWhenGlobalPolicyIsDisabled()) return;
+
+            lock = await acquireRetentionSweepLock({ ttlMs: retentionSweepLockTtlMs(policy) });
             if (!lock) return;
             await maybeCaptureSentryMonitorCheckIn({
                 env: process.env,
@@ -50,21 +54,23 @@ export function startRetentionWorker(): { stop: () => void } | null {
             logRetentionSweepFailed({ reason, error });
         } finally {
             await lock?.release();
-            running = false;
         }
     };
 
-    void run('startup');
+    const scheduleNext = () => {
+        if (stopped) return;
+        timer = setTimeout(() => {
+            void run('interval').then(scheduleNext);
+        }, intervalMs ?? readRetentionPolicyFromEnv({}).intervalMs);
+        timer.unref?.();
+    };
 
-    const timer = setInterval(() => {
-        void run('interval');
-    }, policy.intervalMs);
-    timer.unref?.();
+    void run('startup').then(scheduleNext);
 
     return {
         stop: () => {
             stopped = true;
-            clearInterval(timer);
+            if (timer) clearTimeout(timer);
         },
     };
 }

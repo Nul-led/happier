@@ -73,6 +73,13 @@ describe('Team credential resource persistence', () => {
                 INSERT INTO "SessionTeamCredentialBinding" ("sessionId","slotKind","slotKey","resourceId","resourceRevision","updatedAt") VALUES ('session','provider_model',${sqlite ? "X'70726f76696465725f6d6f64656c'" : "decode('70726f76696465725f6d6f64656c','hex')"},'resource',0,CURRENT_TIMESTAMP);`);
             expect(await query(`SELECT "resourceId","resourceRevision" FROM "SessionTeamCredentialBinding" WHERE "slotKind"='provider_model'`))
                 .toEqual([{ resourceId: 'resource', resourceRevision: 0 }]);
+            expect(await query(`SELECT "authenticationEvidence" FROM "TeamCredentialExternalApiKey" WHERE "id"='external'`))
+                .toEqual([{ authenticationEvidence: null }]);
+            const authenticationEvidence = { v: 1, evidence: [{ kind: 'home_method', methodId: 'key_challenge' }] };
+            await exec(`UPDATE "TeamCredentialExternalApiKey" SET "authenticationEvidence"='${JSON.stringify(authenticationEvidence)}' WHERE "id"='external'`);
+            const evidenceRows = await query(`SELECT "authenticationEvidence" FROM "TeamCredentialExternalApiKey" WHERE "id"='external'`);
+            expect(sqlite ? JSON.parse(String(evidenceRows[0].authenticationEvidence)) : evidenceRows[0].authenticationEvidence)
+                .toEqual(authenticationEvidence);
             // The binding writer persists the prefixed canonical slot encoding
             // (encodeSessionTeamCredentialSlotKeyV1), not the unprefixed purpose key.
             const purpose = { consumer: { pluginId: `${'a'.repeat(254)}.a`, localId: 'b'.repeat(256) }, purpose: '\u0001'.repeat(128) };

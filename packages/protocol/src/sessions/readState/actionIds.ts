@@ -3,10 +3,9 @@ import { z } from 'zod';
 /**
  * The one user-invocable Session read-state intent (Lane 09B §5.3).
  *
- * Only an explicit human mark-read/mark-unread is this Action. Automatic
- * viewport synchronization stays an internal owner operation and deliberately
- * has no separate id: an automatic foreground read observation must not become
- * a tool that lets an Agent mark a human's messages read.
+ * Explicit mark-read/mark-unread requests, including Agent requests, use this
+ * Action. Automatic viewport synchronization stays an internal observation
+ * operation and deliberately has no separate Action id.
  *
  * This leaf carries only the id so the canonical Action id registry can import
  * it without pulling the read-state content schemas into that module graph.

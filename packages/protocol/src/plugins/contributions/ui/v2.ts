@@ -385,8 +385,19 @@ export const PluginUiDestinationBadgeV1Schema = z.object({
 }).strict();
 export type PluginUiDestinationBadgeV1 = z.infer<typeof PluginUiDestinationBadgeV1Schema>;
 
-export const PluginUiDestinationGroupHintV1Schema = z.enum(['navigation', 'sessions']);
-export type PluginUiDestinationGroupHintV1 = z.infer<typeof PluginUiDestinationGroupHintV1Schema>;
+export const PluginUiDestinationPlacementV1Schema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('rail') }).strict(),
+  z.object({
+    kind: z.literal('column'),
+    column: asProtocolZod(PluginContributionLocalIdSchema),
+  }).strict(),
+]);
+export type PluginUiDestinationPlacementV1 = z.infer<typeof PluginUiDestinationPlacementV1Schema>;
+
+export const PluginUiAppPageColumnV1Schema = z.object({
+  renderer: asProtocolZod(PluginContributionLocalIdSchema),
+}).strict();
+export type PluginUiAppPageColumnV1 = z.infer<typeof PluginUiAppPageColumnV1Schema>;
 
 export const PluginUiDestinationRankHintV1Schema = z.number().int().min(
   MIN_PLUGIN_UI_DESTINATION_RANK_HINT_V1,
@@ -401,7 +412,6 @@ const PluginUiViewDestinationCommonShapeV2 = {
   title: PluginLocalizedStringV2Schema.optional(),
   icon: PluginUiIconTokenV1Schema.optional(),
   badge: PluginUiDestinationBadgeV1Schema.optional(),
-  groupHint: PluginUiDestinationGroupHintV1Schema.optional(),
   rankHint: PluginUiDestinationRankHintV1Schema,
   instancePolicy: PluginUiDestinationInstancePolicyV1Schema.default('singleton'),
 };
@@ -419,6 +429,34 @@ const PluginUiViewInlineCommonShapeV2 = {
   title: PluginLocalizedStringV2Schema.optional(),
   icon: PluginUiIconTokenV1Schema.optional(),
 };
+
+export const PluginUiWidgetHomeV1Schema = z.object({
+  default: z.enum(['shown', 'available']),
+}).strict();
+export type PluginUiWidgetHomeV1 = z.infer<typeof PluginUiWidgetHomeV1Schema>;
+
+/** Physical widget hosts; target-specific declarations stay closed. */
+export const PluginUiWidgetPlacementV1Schema = z.enum(['board', 'companion', 'home']);
+export type PluginUiWidgetPlacementV1 = z.infer<typeof PluginUiWidgetPlacementV1Schema>;
+export const PluginUiWidgetSessionPlacementsV1Schema = z.array(PluginUiWidgetPlacementV1Schema.extract(['board', 'companion']));
+export const PluginUiWidgetAppPlacementsV1Schema = z.array(PluginUiWidgetPlacementV1Schema.extract(['home']));
+
+const DEFAULT_SESSION_WIDGET_PLACEMENTS_V1 = Object.freeze(['board'] as const);
+const DEFAULT_APP_WIDGET_PLACEMENTS_V1 = Object.freeze(['home'] as const);
+
+/** Omission retains the incumbent host; malformed explicit declarations fail closed. */
+export function readPluginUiWidgetPlacementsV1(
+  targetKind: 'session' | 'app',
+  placements: unknown,
+): readonly PluginUiWidgetPlacementV1[] | null {
+  if (placements === undefined) {
+    return targetKind === 'session' ? DEFAULT_SESSION_WIDGET_PLACEMENTS_V1 : DEFAULT_APP_WIDGET_PLACEMENTS_V1;
+  }
+  const parsed = (targetKind === 'session'
+    ? PluginUiWidgetSessionPlacementsV1Schema
+    : PluginUiWidgetAppPlacementsV1Schema).safeParse(placements);
+  return parsed.success ? parsed.data : null;
+}
 
 /**
  * Page header actions are an `appPage` container capability, not a property of
@@ -453,16 +491,31 @@ function createPluginUiViewBindingSchemaV2() {
       headerActions: slot.container === 'appPage'
         ? PluginUiViewHeaderActionsSchemaV2.appPage
         : PluginUiViewHeaderActionsSchemaV2.unsupported,
+      ...(slot.targetKind === 'app'
+        && (slot.container === 'appPage' || slot.container === 'rightSidebarTab')
+        ? { placement: PluginUiDestinationPlacementV1Schema.optional() }
+        : {}),
+      ...(slot.container === 'appPage'
+        ? { column: PluginUiAppPageColumnV1Schema.optional() }
+        : {}),
       container: z.literal(slot.container),
       target: PluginUiViewTargetSchemaByKindV1[slot.targetKind],
     }).strict());
   const inlineVariants = Object.values(PLUGIN_UI_INLINE_SURFACE_SLOTS_V1)
     .filter((slot) => isPluginUiAuthoredViewInlineSurfaceRoleV1(slot.role))
-    .map((slot) => z.object({
+    .flatMap((slot) => Object.keys(slot.targets).map((targetKind) => z.object({
       ...PluginUiViewInlineCommonShapeV2,
       container: z.literal(slot.role),
-      target: PluginUiViewTargetSchemaByKindV1.session,
-    }).strict());
+      target: PluginUiViewTargetSchemaByKindV1[targetKind as keyof typeof PluginUiViewTargetSchemaByKindV1],
+      ...(slot.role === 'widget' && targetKind === 'app'
+        ? { home: PluginUiWidgetHomeV1Schema.optional() }
+        : {}),
+      ...(slot.role === 'widget'
+        ? { placements: (targetKind === 'session'
+          ? PluginUiWidgetSessionPlacementsV1Schema
+          : PluginUiWidgetAppPlacementsV1Schema).optional() }
+        : {}),
+    }).strict()));
   const variants = [...destinationVariants, ...inlineVariants];
   const [first, second, ...remaining] = variants;
   if (!first || !second) {
@@ -507,6 +560,14 @@ export type PluginUiViewDestinationBindingInputV2 = {
     headerActions?: TSlot['container'] extends 'appPage'
       ? PluginUiPageHeaderActionV1Input[]
       : [];
+    placement?: TSlot['targetKind'] extends 'app'
+      ? TSlot['container'] extends 'appPage' | 'rightSidebarTab'
+        ? PluginUiDestinationPlacementV1
+        : never
+      : never;
+    column?: TSlot['container'] extends 'appPage'
+      ? PluginUiAppPageColumnV1
+      : never;
   }>;
 }[keyof {
   [TSlot in Exclude<
@@ -517,10 +578,20 @@ export type PluginUiViewDestinationBindingInputV2 = {
 type PluginUiViewInlineSlotV1 =
   typeof PLUGIN_UI_INLINE_SURFACE_SLOTS_V1[PluginUiAuthoredViewInlineSurfaceRoleV1];
 export type PluginUiViewInlineBindingInputV2 = {
-  [TSlot in PluginUiViewInlineSlotV1 as TSlot['role']]: Readonly<{
-    container: TSlot['role'];
-    target: z.input<typeof PluginUiViewTargetSchemaByKindV1.session>;
-  }>;
+  [TSlot in PluginUiViewInlineSlotV1 as TSlot['role']]: {
+    [TTarget in keyof TSlot['targets'] & keyof typeof PluginUiViewTargetSchemaByKindV1]: Readonly<{
+      container: TSlot['role'];
+      target: z.input<typeof PluginUiViewTargetSchemaByKindV1[TTarget]>;
+      home?: TSlot['role'] extends 'widget'
+        ? TTarget extends 'app' ? PluginUiWidgetHomeV1 : never
+        : never;
+      placements?: TSlot['role'] extends 'widget'
+        ? TTarget extends 'session'
+          ? z.infer<typeof PluginUiWidgetSessionPlacementsV1Schema>
+          : z.infer<typeof PluginUiWidgetAppPlacementsV1Schema>
+        : never;
+    }>;
+  }[keyof TSlot['targets'] & keyof typeof PluginUiViewTargetSchemaByKindV1];
 }[PluginUiViewInlineSlotV1['role']];
 export type PluginUiViewV2Input = z.input<typeof PluginUiViewV2SchemaRaw>
   & (PluginUiViewDestinationBindingInputV2 | PluginUiViewInlineBindingInputV2);
@@ -535,6 +606,14 @@ export type PluginUiViewDestinationBindingV2 = z.output<typeof PluginUiViewV2Sch
     headerActions: TSlot['container'] extends 'appPage'
       ? PluginUiPageHeaderActionV1[]
       : [];
+    placement?: TSlot['targetKind'] extends 'app'
+      ? TSlot['container'] extends 'appPage' | 'rightSidebarTab'
+        ? PluginUiDestinationPlacementV1
+        : never
+      : never;
+    column?: TSlot['container'] extends 'appPage'
+      ? PluginUiAppPageColumnV1
+      : never;
   }>;
 }[keyof {
   [TSlot in Exclude<
@@ -543,10 +622,20 @@ export type PluginUiViewDestinationBindingV2 = z.output<typeof PluginUiViewV2Sch
   > as `${TSlot['container']}:${TSlot['targetKind']}`]: TSlot;
 }];
 export type PluginUiViewInlineBindingV2 = {
-  [TSlot in PluginUiViewInlineSlotV1 as TSlot['role']]: Readonly<{
-    container: TSlot['role'];
-    target: z.output<typeof PluginUiViewTargetSchemaByKindV1.session>;
-  }>;
+  [TSlot in PluginUiViewInlineSlotV1 as TSlot['role']]: {
+    [TTarget in keyof TSlot['targets'] & keyof typeof PluginUiViewTargetSchemaByKindV1]: Readonly<{
+      container: TSlot['role'];
+      target: z.output<typeof PluginUiViewTargetSchemaByKindV1[TTarget]>;
+      home?: TSlot['role'] extends 'widget'
+        ? TTarget extends 'app' ? PluginUiWidgetHomeV1 : never
+        : never;
+      placements?: TSlot['role'] extends 'widget'
+        ? TTarget extends 'session'
+          ? z.infer<typeof PluginUiWidgetSessionPlacementsV1Schema>
+          : z.infer<typeof PluginUiWidgetAppPlacementsV1Schema>
+        : never;
+    }>;
+  }[keyof TSlot['targets'] & keyof typeof PluginUiViewTargetSchemaByKindV1];
 }[PluginUiViewInlineSlotV1['role']];
 export type PluginUiViewV2 = z.output<typeof PluginUiViewV2SchemaRaw> & (
   PluginUiViewDestinationBindingV2 | PluginUiViewInlineBindingV2
@@ -635,38 +724,14 @@ export const PluginUiContributionsV2Schema = z.object({
   settingsPages: z.array(PluginUiSettingsPageV1Schema).default([]),
   translations: z.array(PluginUiTranslationBundleV2Schema).default([]),
 }).strict().superRefine((value, ctx) => {
-  const rendererIds = new Set<string>();
-  value.renderers.forEach((renderer, index) => {
-    if (rendererIds.has(renderer.id)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['renderers', index, 'id'],
-        message: 'Duplicate UI renderer id.',
-      });
-    }
-    rendererIds.add(renderer.id);
-  });
-  // Cross-contribution references are classified by manifest ingestion through
-  // the contribution catalog. Keeping them out of this structural schema lets
-  // the single reference owner distinguish dangling from wrong-family ids.
+  // Contribution ids and cross-contribution references are owned by manifest
+  // ingestion through the contribution catalog, which is the single owner of
+  // the plugin-wide id namespace and of dangling vs wrong-family references.
+  // Translation locales are outside that namespace and stay unique here.
   const seen = new Set<string>();
   value.translations.forEach((translation, index) => {
     if (seen.has(translation.locale)) ctx.addIssue({ code: 'custom', path: ['translations', index, 'locale'], message: 'Duplicate translation locale.' });
     seen.add(translation.locale);
-  });
-  const groupIds = new Set<string>();
-  value.settingsGroups.forEach((group, index) => {
-    if (groupIds.has(group.id)) {
-      ctx.addIssue({ code: 'custom', path: ['settingsGroups', index, 'id'], message: 'Duplicate Settings group id.' });
-    }
-    groupIds.add(group.id);
-  });
-  const pageIds = new Set<string>();
-  value.settingsPages.forEach((page, index) => {
-    if (pageIds.has(page.id)) {
-      ctx.addIssue({ code: 'custom', path: ['settingsPages', index, 'id'], message: 'Duplicate Settings page id.' });
-    }
-    pageIds.add(page.id);
   });
 }).default({ views: [], renderers: [], settingsGroups: [], settingsPages: [], translations: [] });
 export type PluginUiContributionsV2 = z.infer<typeof PluginUiContributionsV2Schema>;

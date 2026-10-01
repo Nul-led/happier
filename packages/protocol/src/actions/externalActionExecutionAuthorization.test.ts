@@ -1,6 +1,19 @@
 import { expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import { computeExternalActionRequestEnvelopeDigestV1, signExternalActionMachineRequestV1, verifyExternalActionMachineRequestV1, signExternalActionApprovalInputV1, verifyExternalActionApprovalInputV1, signExternalActionMachineRpcRequestV1, verifyExternalActionMachineRpcRequestV1 } from './externalActionExecutionAuthorization.js';
+import { computeExternalActionSocketRpcRequestDigestV1 } from './externalActionExecutionAuthorization.js';
+
+it('binds a Session input authorization to actual RPC bytes rather than an invented encryption envelope', () => {
+  const digestRpc = computeExternalActionSocketRpcRequestDigestV1;
+  const request = { method: 'session-a:session.userMessage.send', requestId: 'rpc-a', params: 'opaque-session-ciphertext', target: { kind: 'session' as const, sessionId: 'session-a' } };
+  const digest = digestRpc(request);
+  expect(digest).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  for (const changed of [ { method: 'session-a:abort' }, { requestId: 'rpc-b' }, { params: 'other-ciphertext' },
+    { target: { kind: 'session' as const, sessionId: 'session-b' } },
+  ]) expect(digestRpc({ ...request, ...changed })).not.toBe(digest);
+  expect(digestRpc({ ...request, params: { a: 1, b: 2 } })).toBe(digestRpc({ ...request, params: { b: 2, a: 1 } }));
+  expect(digestRpc({ ...request, params: undefined })).not.toBe(digestRpc({ ...request, params: null }));
+});
 
 it('binds auxiliary RPC to its exact invocation, installation, correlation and opaque payload', () => {
   const key = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(9));
@@ -11,6 +24,22 @@ it('binds auxiliary RPC to its exact invocation, installation, correlation and o
     expect(verifyExternalActionMachineRpcRequestV1({ ...request, ...changed, signature, publicKey: key.publicKey })).toBe(false);
   }
   expect(verifyExternalActionMachineRequestV1({ ...request, method: 'POST', path: request.method, body: request.params, signature, publicKey: key.publicKey })).toBe(false);
+});
+
+it('binds protected machine input admission to its own event and complete unsigned payload', () => {
+  const key = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(5));
+  const request = { authorizationToken: 'invocation', effectActionId: 'session.message.send',
+    target: { kind: 'session' as const, sessionId: 'session-1' }, installationId: 'installation-1',
+    event: 'session-pending-enqueue-by-machine-v1' as const, method: 'session-pending-enqueue-by-machine-v1',
+    requestId: 'request-1', params: { v: 1, sessionId: 'session-1', targetMachineId: 'machine-1',
+      localId: 'input-1', content: { t: 'encrypted', c: 'ciphertext' }, requestedAction: 'send_now' } };
+  const signature = signExternalActionMachineRpcRequestV1({ ...request, privateKey: key.secretKey });
+  expect(verifyExternalActionMachineRpcRequestV1({ ...request, signature, publicKey: key.publicKey })).toBe(true);
+  expect(verifyExternalActionMachineRpcRequestV1({ ...request, event: 'rpc-call', signature, publicKey: key.publicKey })).toBe(false);
+  expect(verifyExternalActionMachineRpcRequestV1({ ...request,
+    params: { ...request.params, localId: 'input-2' }, signature, publicKey: key.publicKey })).toBe(false);
+  expect(verifyExternalActionMachineRpcRequestV1({ ...request, event: 'other-event', signature, publicKey: key.publicKey })).toBe(false);
+  expect(() => signExternalActionMachineRpcRequestV1({ ...request, event: 'other-event', privateKey: key.secretKey })).toThrow();
 });
 
 it('keeps approval input signatures separate from network request signatures', () => {

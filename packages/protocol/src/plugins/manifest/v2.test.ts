@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   PluginManifestV2Schema,
+  ingestPluginManifestV2,
   type ParsedPluginManifestV2,
   type PluginManifestV2,
 } from '../../index.js';
@@ -21,6 +22,27 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 describe('plugin manifest v2 root contract', () => {
+  it('admits declarative roles with closed role fields and local contribution identities', () => {
+    const role = {
+      id: 'security-reviewer', name: 'Security reviewer', instructions: 'Review security boundaries.',
+      engine: { agentTargetKey: 'agent:codex', modelId: 'review-model', effort: 'high' },
+      runsAs: { kind: 'background_run', intent: 'review' },
+      workspaceWrites: 'deny', secondOpinion: 'encouraged', enabled: true,
+    };
+    const parse = (value: unknown) => PluginManifestV2Schema.safeParse(manifest({ contributes: { roles: [value] } }));
+    const result = parse(role);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.contributes).toMatchObject({ roles: [role] });
+    for (const invalid of [
+      { ...role, id: 'plugin:com.acme.fixture/security-reviewer' },
+      { ...role, unexpected: true },
+      { ...role, engine: { ...role.engine, fallback: 'other' } },
+      { ...role, runsAs: { kind: 'background_run' } },
+    ]) expect(parse(invalid).success).toBe(false);
+    expect(ingestPluginManifestV2(manifest({ contributes: { roles: [role, role] } })))
+      .toMatchObject({ ok: false, diagnostics: [{ code: 'plugin_manifest_duplicate_contribution_id' }] });
+  });
+
   it('admits at most the approved number of declared composer attachment types', () => {
     const composerAttachments = Array.from(
       { length: MAX_PLUGIN_COMPOSER_ATTACHMENTS_V1 },
@@ -161,7 +183,7 @@ describe('plugin manifest v2 root contract', () => {
     expect(PluginManifestV2Schema.safeParse(manifest({ engines: { happier: '*' } })).success).toBe(false);
   });
 
-  it('normalizes direct secret custody and keeps the secret namespace independent of Settings scope', () => {
+  it('normalizes direct secret custody and admits one non-secret field id per Settings scope', () => {
     const parsed = PluginManifestV2Schema.parse(manifest({
       secrets: [
         { id: 'direct-account-default' },
@@ -211,42 +233,8 @@ describe('plugin manifest v2 root contract', () => {
       'daemon',
     ]);
 
-    const sameScopeDuplicate = manifest({
-      contributes: {
-        settings: [{
-          id: 'one', title: 'One', target: { kind: 'plugin' }, scope: 'account',
-          fields: [{ id: 'same-scope', title: 'One', schema: { type: 'string' } }],
-        }, {
-          id: 'two', title: 'Two', target: { kind: 'plugin' }, scope: 'account',
-          fields: [{ id: 'same-scope', title: 'Two', schema: { type: 'string' } }],
-        }],
-      },
-    });
-    expect(PluginManifestV2Schema.safeParse(sameScopeDuplicate).success).toBe(false);
-
-    const secretCollision = manifest({
-      secrets: [{ id: 'credential' }],
-      contributes: {
-        settings: [{
-          id: 'daemon-settings', title: 'Daemon', target: { kind: 'plugin' }, scope: 'daemon',
-          fields: [{ id: 'credential', title: 'Credential label', schema: { type: 'string' } }],
-        }],
-      },
-    });
-    expect(PluginManifestV2Schema.safeParse(secretCollision).success).toBe(false);
-
-    const scopeQualifiedNonSecret = manifest({
-      contributes: {
-        settings: [{
-          id: 'account-settings', title: 'Account', target: { kind: 'plugin' }, scope: 'account',
-          fields: [{ id: 'shared-field', title: 'Shared', schema: { type: 'string' } }],
-        }, {
-          id: 'daemon-settings', title: 'Daemon', target: { kind: 'plugin' }, scope: 'daemon',
-          fields: [{ id: 'shared-field', title: 'Shared', schema: { type: 'boolean' } }],
-        }],
-      },
-    });
-    expect(PluginManifestV2Schema.safeParse(scopeQualifiedNonSecret).success).toBe(true);
+    // Settings id uniqueness (per-scope non-secret ids, plugin-global secret
+    // ids) is owned by manifest ingestion; see ingest.test.ts.
   });
 
   it('rejects retired own-secret HostAccess requests', () => {

@@ -17,6 +17,7 @@ import {
     assertHomeOwnershipSurvivesTransitionInTx,
     readHomeGovernanceAccountInTx,
 } from "./homeCapabilities";
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
 
 export type AccountLifecycleInput = Readonly<{
@@ -74,6 +75,13 @@ export async function setAccountStatusInTx(tx: Tx, input: AccountLifecycleInput)
     });
     await tx.account.update({ where: { id: target.accountId }, data: { status: input.status } });
     await applySessionAccessAccountStatusImpactInTx(tx, { impact: sessionAccessImpact });
+    if (input.authority === "home_administration") {
+        await recordHomeAdministrationEventInTx(tx, {
+            actor: { kind: "account", accountId: input.actorAccountId },
+            target: { kind: "account", id: target.accountId },
+            detail: { action: "account.status.set", summary: { from: target.status, to: input.status } },
+        });
+    }
     if (target.status === "active") await auth.revokeAllAccountCredentialsInTx(tx, target.accountId);
     await markAccountChanged(tx, { accountId: target.accountId, kind: "account", entityId: "self" });
     await publishHomeGovernanceChangedInTx(tx, {

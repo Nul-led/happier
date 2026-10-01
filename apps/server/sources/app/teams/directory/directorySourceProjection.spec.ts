@@ -110,6 +110,20 @@ describe("directory source projection", () => {
         }).sync.nextScheduledAt).toBe("2026-09-06T10:02:00.000Z");
     });
 
+    it.each(["directory_source_permission_lost", "unrecognized_persisted_error"])(
+        "does not advertise scheduled work for a failure the worker cannot retry: %s",
+        (lastErrorCode) => {
+            expect(projectTeamDirectorySourceSummary({
+                source: {
+                    ...base,
+                    lastErrorCode,
+                    retryNotBefore: new Date("2026-09-06T10:02:00.000Z"),
+                },
+                now: new Date("2026-09-06T10:06:00.000Z"),
+            }).sync.nextScheduledAt).toBeNull();
+        },
+    );
+
     it("honors provider retry hints and caps only fallback backoff at the regular source schedule", () => {
         expect(deriveDirectoryFailureSchedule({
             kind: "github_organization",

@@ -68,8 +68,30 @@ describe('forwardRpcCall', () => {
             expect.objectContaining({
                 method,
                 params: encryptedRequest,
+                callerAuthority: 'account_automation',
             }),
         );
+    });
+
+    it('stamps verified caller authority outside client-controlled params', async () => {
+        const emitWithAck = vi.fn().mockResolvedValue('ok');
+        const target = { id: 'receiver', data: { clientType: 'session-scoped' }, timeout: () => ({ emitWithAck }) };
+        const fetchSockets = vi.fn().mockResolvedValue([target]);
+        const io = { in: () => ({ timeout: () => ({ fetchSockets }), fetchSockets }) } as unknown as Server;
+        await expect(forwardRpcCall({
+            io,
+            targetUserId: 'user-1',
+            method: 'session-1:permission',
+            callParams: { callerAuthority: 'present_user', approved: true },
+            callerSocket: { data: { authAuthority: 'account_automation' } },
+        })).resolves.toMatchObject({ ok: true });
+        expect(emitWithAck).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.REQUEST, expect.objectContaining({
+            callerAuthority: 'account_automation',
+            params: { callerAuthority: 'present_user', approved: true },
+        }));
+        await forwardRpcCall({ io, targetUserId: 'user-1', method: 'session-1:permission', callParams: {},
+            callerSocket: { data: { authAuthority: 'present_user' } } });
+        expect(emitWithAck).toHaveBeenLastCalledWith(SOCKET_RPC_EVENTS.REQUEST, expect.objectContaining({ callerAuthority: 'present_user' }));
     });
 
     it.each([
@@ -337,6 +359,7 @@ describe('forwardRpcCall', () => {
                     method,
                     params: { applicationAttemptId: 'voice-attempt-1' },
                     timeoutMs: 2_147_483_647,
+                    callerAuthority: 'account_automation',
                 },
             );
         } finally {
@@ -401,6 +424,7 @@ describe('forwardRpcCall', () => {
                     method,
                     params: callParams,
                     timeoutMs: 2_147_483_647,
+                    callerAuthority: 'account_automation',
                 },
             );
         } finally {

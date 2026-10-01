@@ -15,7 +15,9 @@ import {
     ManagedGitHubAppsListOutputV1Schema,
     ManagedGitHubAppVerifyInstallationInputV1Schema,
     ManagedGitHubAppVerifyInstallationOutputV1Schema,
+    TeamIdentityErrorV1Schema,
     type ManagedGitHubAppErrorCodeV1,
+    type TeamIdentityErrorCodeV1,
 } from "@happier-dev/protocol";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
@@ -38,12 +40,22 @@ import {
     type GitHubAppInstallationAdministrationView,
     type GitHubAppRegistrationView,
 } from "./githubManagedAppLifecycle";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+
+/**
+ * GitHub App administration is Team identity administration when the App is
+ * Team-owned, so its refusals include the same two authentication outcomes the
+ * Home's managed identity provider routes already return. The response is the
+ * union of both existing contracts rather than a third error vocabulary.
+ */
+const ManagedGitHubAppRouteErrorV1Schema = ManagedGitHubAppErrorV1Schema.or(TeamIdentityErrorV1Schema);
 
 const ERROR_RESPONSES = {
-    403: ManagedGitHubAppErrorV1Schema,
-    404: ManagedGitHubAppErrorV1Schema,
-    409: ManagedGitHubAppErrorV1Schema,
-    502: ManagedGitHubAppErrorV1Schema,
+    403: ManagedGitHubAppRouteErrorV1Schema,
+    404: ManagedGitHubAppRouteErrorV1Schema,
+    409: ManagedGitHubAppRouteErrorV1Schema,
+    502: ManagedGitHubAppRouteErrorV1Schema,
+    503: ManagedGitHubAppRouteErrorV1Schema,
 } as const;
 
 /**
@@ -65,8 +77,9 @@ export function projectManagedGitHubAppRegistrationV1(row: GitHubAppRegistration
     };
 }
 
-function projectRegistration(row: GitHubAppRegistrationView) {
-    return projectManagedGitHubAppRegistrationV1(row, process.env);
+/** The callback is derived from the request's configuration overlay: a stored or inferred address counts (§3.2). */
+function projectRegistration(row: GitHubAppRegistrationView, env: NodeJS.ProcessEnv) {
+    return projectManagedGitHubAppRegistrationV1(row, env);
 }
 
 function projectInstallation(row: GitHubAppInstallationAdministrationView) {
@@ -79,8 +92,26 @@ function projectInstallation(row: GitHubAppInstallationAdministrationView) {
     });
 }
 
-function errorStatus(code: ManagedGitHubAppErrorCodeV1): 403 | 404 | 409 | 502 {
+type ManagedGitHubAppRouteErrorCode = ManagedGitHubAppErrorCodeV1 | Extract<TeamIdentityErrorCodeV1,
+    "team_authentication_required" | "team_authentication_unavailable">;
+
+/**
+ * One place decides how an administration refusal reaches the client. The Team
+ * authentication outcomes travel unchanged so the client can offer
+ * re-authentication; every other refusal keeps the GitHub App code it had.
+ */
+export function managedGitHubAppRefusalCode(
+    status: string,
+    otherwise: ManagedGitHubAppRouteErrorCode | "forbidden" = "github_app_forbidden",
+): ManagedGitHubAppRouteErrorCode {
+    if (status === "team_authentication_required" || status === "team_authentication_unavailable") return status;
+    return status === "forbidden" || otherwise === "forbidden" ? "github_app_forbidden" : otherwise;
+}
+
+function errorStatus(code: ManagedGitHubAppRouteErrorCode): 403 | 404 | 409 | 502 | 503 {
     if (code === "github_app_forbidden" || code === "github_enterprise_origin_not_approved") return 403;
+    if (code === "team_authentication_required") return 403;
+    if (code === "team_authentication_unavailable") return 503;
     if (code === "github_app_not_found") return 404;
     if (code === "github_administrator_evidence_unavailable" || code === "github_installation_evidence_invalid") {
         return 502;
@@ -124,13 +155,17 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const result = await completeGitHubAppManifestInstallationSetup({
                 state: request.query.state,
                 githubInstallationId: BigInt(request.query.installation_id),
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (result.status === "ready") return await reply.redirect(result.authorizeUrl);
-            return await reply.code(result.status === "forbidden" ? 403 : 409).send({ error: result.status });
+            const code = result.status === "forbidden" || result.status === "team_authentication_required"
+                ? 403
+                : result.status === "team_authentication_unavailable" ? 503 : 409;
+            return await reply.code(code).send({ error: result.status });
         },
     );
 
@@ -141,14 +176,18 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
             schema: { body: ManagedGitHubAppsListInputV1Schema, response: { 200: ManagedGitHubAppsListOutputV1Schema, ...ERROR_RESPONSES } },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const result = await listGitHubAppRegistrations({
                 ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: request.body.owner,
             });
-            if (result.status === "forbidden") return await reply.code(403).send({ error: "github_app_forbidden" });
+            if (result.status !== "ready") {
+                const error = managedGitHubAppRefusalCode(result.status);
+                return await reply.code(errorStatus(error)).send({ error });
+            }
             return await reply.send({
-                registrations: result.registrations.map(projectRegistration),
+                registrations: result.registrations.map((row) => projectRegistration(row, requestHomeEnv)),
                 installations: result.installations.map(projectInstallation),
             });
         },
@@ -177,10 +216,13 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
                 },
             });
             if (result.status !== "created") {
-                const error = result.status === "forbidden" ? "github_app_forbidden" : result.status;
+                const error = managedGitHubAppRefusalCode(
+                    result.status,
+                    result.status === "forbidden" ? "github_app_forbidden" : result.status,
+                );
                 return await reply.code(errorStatus(error)).send({ error });
             }
-            return await reply.send({ registration: projectRegistration(result.registration) });
+            return await reply.send({ registration: projectRegistration(result.registration, await readRequestHomeEnv(request)) });
         },
     );
 
@@ -194,18 +236,20 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
             },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const result = await beginGitHubAppManifestSetup({
                 ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: request.body.owner,
                 appName: request.body.appName,
                 githubOwner: request.body.githubOwner,
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (result.status !== "ready") {
-                const error: ManagedGitHubAppErrorCodeV1 = result.status === "forbidden"
-                    ? "github_app_forbidden"
-                    : result.status;
+                const error = managedGitHubAppRefusalCode(
+                    result.status,
+                    result.status === "forbidden" ? "github_app_forbidden" : result.status,
+                );
                 return await reply.code(errorStatus(error)).send({ error });
             }
             return await reply.send({ authorizeUrl: result.authorizeUrl });
@@ -229,16 +273,17 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
                 patch: input.patch,
             });
             if (result.status !== "updated") {
-                const error: ManagedGitHubAppErrorCodeV1 = result.status === "forbidden"
-                    ? "github_app_forbidden"
-                    : result.status === "not_found"
+                const error = managedGitHubAppRefusalCode(
+                    result.status,
+                    result.status === "not_found"
                         ? "github_app_not_found"
                         : result.status === "github_enterprise_origin_not_approved"
                             ? result.status
-                            : "github_app_revision_conflict";
+                            : "github_app_revision_conflict",
+                );
                 return await reply.code(errorStatus(error)).send({ error });
             }
-            return await reply.send({ registration: projectRegistration(result.registration) });
+            return await reply.send({ registration: projectRegistration(result.registration, await readRequestHomeEnv(request)) });
         },
     );
 
@@ -249,6 +294,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
             schema: { body: ManagedGitHubAppVerifyInstallationInputV1Schema, response: { 200: ManagedGitHubAppVerifyInstallationOutputV1Schema, ...ERROR_RESPONSES } },
         },
         async (request, reply) => {
+            const requestHomeEnv = await readRequestHomeEnv(request);
             const input = request.body;
             const result = await beginGitHubAppInstallationVerification({
                 ...readTeamOperationAuthenticationFromRequest(request),
@@ -259,13 +305,15 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
                 expectedInstallationRevision: input.expectedInstallationRevision,
                 githubInstallationId: BigInt(input.githubInstallationId),
                 githubOrganizationId: BigInt(input.githubOrganizationId),
-                env: process.env,
+                env: requestHomeEnv,
             });
             if (result.status !== "ready") {
-                const error: ManagedGitHubAppErrorCodeV1 = result.status === "forbidden" ? "github_app_forbidden"
-                    : result.status === "not_found" ? "github_app_not_found"
+                const error = managedGitHubAppRefusalCode(
+                    result.status,
+                    result.status === "not_found" ? "github_app_not_found"
                         : result.status === "registration_revision_conflict" ? "github_app_revision_conflict"
-                            : result.status;
+                            : result.status,
+                );
                 return await reply.code(errorStatus(error)).send({ error });
             }
             return await reply.send({
@@ -291,9 +339,12 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
                 expectedRevision: input.expectedRevision,
             });
             if (result.status !== "removed") {
-                const error: ManagedGitHubAppErrorCodeV1 = result.status === "forbidden" ? "github_app_forbidden"
-                    : result.status === "not_found" ? "github_app_not_found"
-                        : result.status === "revision_conflict" ? "github_app_revision_conflict" : "github_installation_in_use";
+                const error = managedGitHubAppRefusalCode(
+                    result.status,
+                    result.status === "not_found" ? "github_app_not_found"
+                        : result.status === "revision_conflict" ? "github_app_revision_conflict"
+                            : "github_installation_in_use",
+                );
                 return await reply.code(errorStatus(error)).send({ error, ...(result.status === "blocked" ? { blockers: result.blockers } : {}) });
             }
             return await reply.send({ removed: true as const });

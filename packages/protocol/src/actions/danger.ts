@@ -34,6 +34,7 @@ export const RUNTIME_SIDE_EFFECT_DANGER_ACTION_IDS: ReadonlySet<RuntimeActionIdV
 // `cancelActive` is also safe for this danger floor, but requires a present user because it takes
 // control away from an in-flight requester.
 export const RUNTIME_DANGER_ACTION_IDS: ReadonlySet<RuntimeActionIdV1> = new Set<RuntimeActionIdV1>([
+  'computer.input',
   ...RUNTIME_SIDE_EFFECT_DANGER_ACTION_IDS,
   'browser.navigate',
   'browser.reload',

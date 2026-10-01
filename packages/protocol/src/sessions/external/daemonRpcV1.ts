@@ -138,6 +138,11 @@ const ExternalSessionsCandidatesListCanonicalRequestSchema = z.object({
   limit: z.number().int().min(1).max(500).optional(),
   searchTerm: z.string().min(1).max(2000).optional(),
   searchMode: ExternalSessionsSearchModeSchema.optional(),
+  /**
+   * Include the Agent's internal threads (approval reviewers, spawned sub-agents). Absent: only
+   * top-level sessions, which is also what a daemon that predates the field lists.
+   */
+  includeThreads: z.boolean().optional(),
 }).strict();
 
 export const ExternalSessionsCandidatesListRequestSchema = z.preprocess<
@@ -320,6 +325,20 @@ export type ExternalSessionLinkEnsureResponse = z.infer<typeof ExternalSessionLi
 export const ExternalSessionActivityV1Schema = z.enum(['running', 'active_recently', 'idle', 'unknown']);
 export type ExternalSessionActivityV1 = z.infer<typeof ExternalSessionActivityV1Schema>;
 
+/**
+ * An Agent's internal thread rather than a session a person started: an approval reviewer judging
+ * another thread's action, or a sub-agent a session spawned. Classified by the Agent's own
+ * projection from its native markers; absent means a top-level session.
+ */
+export const ExternalSessionCandidateThreadV1Schema = z.object({
+  kind: z.enum(['reviewer', 'subagent']),
+  /** The thread that spawned or is reviewed by this one, when the Agent records it. */
+  parentRemoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000).nullable(),
+  /** The parent's title, when the Agent's index knows it without an extra read. */
+  parentTitle: z.string().min(1).max(10_000).optional(),
+}).strict();
+export type ExternalSessionCandidateThreadV1 = z.infer<typeof ExternalSessionCandidateThreadV1Schema>;
+
 export const ExternalSessionCandidateV1Schema = z
   .object({
     remoteSessionId: NonBlankOpaqueIdentifierSchema.max(2000),
@@ -334,6 +353,7 @@ export const ExternalSessionCandidateV1Schema = z
     linkedSessionId: z.string().min(1).max(2000).optional(),
     imported: z.boolean().optional(),
     materializedThrough: z.number().int().min(0).optional(),
+    thread: ExternalSessionCandidateThreadV1Schema.optional(),
   })
   .passthrough();
 export type ExternalSessionCandidateV1 = z.infer<typeof ExternalSessionCandidateV1Schema>;

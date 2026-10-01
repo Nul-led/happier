@@ -5,6 +5,7 @@ import {
 } from './availability.js';
 import {
   normalizeAwarenessTextV1,
+  normalizeAwarenessCountV1,
   type ProjectSessionAwarenessV1Input,
   type SessionLifecycleAwarenessInputV1,
 } from './inputV1.js';
@@ -87,6 +88,10 @@ export function projectSessionAwarenessV1(
   return {
     v: SESSION_AWARENESS_PROJECTION_VERSION_V1,
     sessionId: input.sessionId,
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.reportsTo ? { reportsTo: input.reportsTo } : {}),
+    ...(input.reports ? { reports: input.reports } : {}),
+    ...(input.pendingReviewRuns !== undefined && input.pendingReviewRuns !== null ? { pendingReviewRuns: normalizeAwarenessCountV1(input.pendingReviewRuns) } : {}),
     ...(title ? { title } : {}),
     lifecycle: resolveSessionAwarenessLifecycleV1(lifecycle, lifecycleUnavailable),
     runtime: runtimeFacts.runtime,

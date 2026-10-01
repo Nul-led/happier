@@ -21,7 +21,7 @@ import {
     type ReviewCommentMigrationStorageEventRow,
 } from "./accountEncryptionMigrationPersistence";
 
-function sourceComment(): ReviewCommentV1 {
+function sourceComment(): ReviewCommentV1 & { projectId: string } {
     return {
         v: 1,
         id: "comment-1",
@@ -88,7 +88,7 @@ function sourceComment(): ReviewCommentV1 {
     };
 }
 
-function sourceEvent(): ReviewCommentEventV1 {
+function sourceEvent(): ReviewCommentEventV1 & { projectId: string } {
     return {
         eventId: "event-1",
         commentId: "comment-1",
@@ -121,7 +121,7 @@ function requestBinding(event: ReviewCommentEventV1) {
     });
 }
 
-function legacyCommentRow(comment: ReviewCommentV1): ReviewCommentMigrationStorageCommentRow {
+function legacyCommentRow(comment: ReviewCommentV1 & { projectId: string }): ReviewCommentMigrationStorageCommentRow {
     return {
         id: comment.id,
         account_id: comment.accountId,
@@ -155,7 +155,7 @@ function legacyCommentRow(comment: ReviewCommentV1): ReviewCommentMigrationStora
     };
 }
 
-function legacyEventRow(event: ReviewCommentEventV1): ReviewCommentMigrationStorageEventRow {
+function legacyEventRow(event: ReviewCommentEventV1 & { projectId: string }): ReviewCommentMigrationStorageEventRow {
     return {
         event_id: event.eventId,
         comment_id: event.commentId,
@@ -174,6 +174,17 @@ function legacyEventRow(event: ReviewCommentEventV1): ReviewCommentMigrationStor
 }
 
 describe("Review Comment Account-encryption storage adapter", () => {
+    it("preserves workspace and finding structural currentness in the runtime canonical layout", () => {
+        const comment = { ...sourceComment(), workspace: { machineId: "machine-1", path: "/workspace" },
+            findingIdentity: "a".repeat(64), findingSeverity: "high" as const, reviewedFingerprint: "reviewed-1", reviewTriageStatus: "accept" as const };
+        const split = splitReviewCommentV1(comment);
+        const envelope = sealReviewCommentSensitiveEnvelopeV1({ ...split, mode: "plain" });
+        const row = { ...legacyCommentRow(comment), workspace_json: JSON.stringify(comment.workspace),
+            finding_identity: comment.findingIdentity, finding_severity: comment.findingSeverity,
+            reviewed_fingerprint: comment.reviewedFingerprint, review_triage_status: comment.reviewTriageStatus,
+            ...Object.fromEntries(Object.entries(buildReviewCommentCanonicalStorageValues({ structural: split.structural, targetSensitiveEnvelope: envelope })).map(([key, value]) => [key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), value])) };
+        expect(buildStoredReviewCommentFromStorageRow(row).structural).toEqual(split.structural);
+    });
     it("reconstructs the exact legacy split source and binds legacy event content to authoritative columns", () => {
         const comment = sourceComment();
         const event = sourceEvent();
@@ -255,7 +266,7 @@ describe("Review Comment Account-encryption storage adapter", () => {
             mode: "plain",
         });
 
-        const values = buildReviewCommentCanonicalStorageValues({ row, targetSensitiveEnvelope: target });
+        const values = buildReviewCommentCanonicalStorageValues({ structural: split.structural, targetSensitiveEnvelope: target });
         const { bodyEnvelopeJson: _sensitiveEnvelope, ...structuralColumns } = values;
         const serializedStructuralColumns = JSON.stringify(structuralColumns);
 
@@ -264,7 +275,7 @@ describe("Review Comment Account-encryption storage adapter", () => {
         expect(JSON.parse(values.anchorJson)).toEqual(split.structural.anchorIndex);
         expect(JSON.parse(values.editsJson)).toEqual(split.structural.editHistory);
         expect(JSON.parse(values.transitionsJson)).toEqual(split.structural.transitionHistory);
-        expect(JSON.parse(values.fingerprintJson!)).toEqual(split.structural.fingerprintIndex);
+        expect(values.fingerprintJson).toBeNull();
         expect(values.evidenceJson).toBeNull();
         expect(values.linkedRefsJson).toBeNull();
         expect(values.suggestedFixJson).toBeNull();
@@ -291,7 +302,7 @@ describe("Review Comment Account-encryption storage adapter", () => {
             ...legacyCommentRow(comment),
             ...(() => {
                 const values = buildReviewCommentCanonicalStorageValues({
-                    row: legacyCommentRow(comment),
+                    structural: split.structural,
                     targetSensitiveEnvelope: target,
                 });
                 return {

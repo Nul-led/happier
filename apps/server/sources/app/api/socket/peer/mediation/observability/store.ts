@@ -6,6 +6,11 @@ import {
     type PeerMediationObservabilitySnapshotV1,
 } from "@happier-dev/protocol";
 
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
+import { log } from "@/utils/logging/log";
+
+import type { PeerMediationObservabilityEmitter } from "./events";
+
 /**
  * Server-side peer-mediation observability store. The engine itself lives in the single shared
  * protocol owner (`createPeerMediationObservabilityFlowStore`); this module only binds the server's
@@ -43,4 +48,23 @@ export function createPeerMediationObservabilityStore(input: Readonly<{
         ...(input.eventPayloadMaxBytes !== undefined ? { eventPayloadMaxBytes: input.eventPayloadMaxBytes } : {}),
         ...(input.nowMs ? { nowMs: input.nowMs } : {}),
     });
+}
+
+/** The socket-owned collection seam, shared by relay and preview writers. */
+export function createPeerMediationObservabilityEmitter(store: PeerMediationObservabilityStore): PeerMediationObservabilityEmitter {
+    let publication = Promise.resolve();
+    return {
+        emit(event: PeerMediationObservabilityEventV1): void {
+            // Live Home reads may finish out of order. A late start must not revive a closed flow.
+            publication = publication
+                .then(async () => {
+                    if (await isServerFeatureEnabledForHome("machines.peerMediation.observability") === true) {
+                        store.publish(event);
+                    }
+                })
+                .catch(() => {
+                    log({ module: "peer-mediation-observability", level: "warn" }, "Home observability setting unavailable; observation dropped");
+                });
+        },
+    };
 }

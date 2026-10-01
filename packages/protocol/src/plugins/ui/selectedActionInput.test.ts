@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { reconstructPluginUiSelectedActionInput } from './selectedActionInput.js';
+import {
+  pluginUiSelectedActionInputMatchesOperation,
+  reconstructPluginUiSelectedActionInput,
+} from './selectedActionInput.js';
 
 describe('selected Action input reconstruction', () => {
   const account = {
@@ -38,5 +41,50 @@ describe('selected Action input reconstruction', () => {
       input: { repository: 'happier-dev/happier' },
       connectedAccount: { kind: 'selected', fieldPath: '__proto__.credentialRef', ref: account },
     })).toBeNull();
+  });
+
+  it('matches a submitted selection only to the contributor custody that admitted the operation', () => {
+    const operation = {
+      point: { pointId: 'connection', protocol: { id: 'connection', version: 1 } },
+      contributor: {
+        pluginId: 'acme.github',
+        contributionId: 'github',
+        occurrenceId: 'github-occurrence-a',
+        sourceCustody: { kind: 'development', registeredRootId: 'github-root-a' },
+      },
+      role: 'setup',
+      action: { pluginId: 'acme.github', localId: 'connection/setup' },
+    } as const;
+    const selection = {
+      kind: 'submitted',
+      action: operation.action,
+      input: {},
+      selection: {
+        target: {
+          pluginId: 'acme.channels',
+          sourceCustody: { kind: 'development', registeredRootId: 'channels-root-a' },
+        },
+        point: operation.point,
+        contributor: {
+          pluginId: operation.contributor.pluginId,
+          contributionId: operation.contributor.contributionId,
+          sourceCustody: operation.contributor.sourceCustody,
+        },
+      },
+      connectedAccount: { kind: 'none' },
+      presentation: { connectedAccountLabel: null, machineDisplayName: 'Development Mac' },
+    } as const;
+
+    expect(pluginUiSelectedActionInputMatchesOperation(selection, operation)).toBe(true);
+    expect(pluginUiSelectedActionInputMatchesOperation({
+      ...selection,
+      selection: {
+        ...selection.selection,
+        contributor: {
+          ...selection.selection.contributor,
+          sourceCustody: { kind: 'development', registeredRootId: 'github-root-b' },
+        },
+      },
+    }, operation)).toBe(false);
   });
 });

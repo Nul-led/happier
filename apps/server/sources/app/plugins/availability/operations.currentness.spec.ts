@@ -48,12 +48,11 @@ function releaseRow(input: Readonly<{
         collectionContracts: [],
         uiSlots: [{
             contributionId: "hosted",
+            artifactId: "hosted",
             tier: "hostedWeb",
             platform: "web",
             artifactDigest: input.artifactDigest,
-            compatibility: {
-                hostUiApiVersion: "1.0.0",
-            },
+            hostUiApiRange: "^1.0.0",
         }],
         packageAssetArchive: {
             archiveDigestSha256: `sha256:${"c".repeat(64)}`,
@@ -192,14 +191,14 @@ describe("plugin Availability read currentness", () => {
                 normalizedManifest: { displayName: "Transaction snapshot" },
             },
             uiArtifacts: [{
-                artifactId: "00000000-0000-4000-8000-000000000008",
+                artifactId: "hosted",
+                accountArtifactId: "00000000-0000-4000-8000-000000000008",
             }],
         });
         expect(materializations).toMatchObject({
             availabilityCursor: 8,
             snapshots: [{
                 machineId: "machine-transaction",
-                revision: 8,
                 materializations: [{
                     materializationId: "materialization-transaction",
                     archiveDigestSha256: `sha256:${"8".repeat(64)}`,

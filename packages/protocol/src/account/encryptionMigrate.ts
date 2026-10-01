@@ -1,6 +1,9 @@
 import { z } from 'zod';
+import { classifyAccountJsonKvKey } from './accountJsonKv.js';
+import { AuthoringMemoryContentV1Schema, AuthoringMemoryKeyV1Schema, AuthoringMemoryRowV1Schema } from './authoringMemory.js';
+import { ArtifactRecipientKeyEnvelopesV1Schema } from '../artifacts/artifactAccessV1.js';
 import { sha256 } from '@noble/hashes/sha2';
-import { hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { utf8ToBytes } from '@noble/hashes/utils';
 
 import { AccountEncryptionModeSchema } from '../features/payload/capabilities/encryptionCapabilities.js';
 import { AccountPasswordCredentialV1Schema } from '../auth/accountPasswordCredential.js';
@@ -18,7 +21,7 @@ import {
 } from '../connect/qualifiedConnectedAccountPersistence.js';
 import {
   QualifiedConnectedAccountCredentialMetadataV4Schema,
-} from '../connect/qualifiedConnectedAccountsV4.js';
+} from '../connect/qualifiedConnectedAccountProjectionsV4.js';
 import { PluginContributionLocalIdSchema } from '../plugins/contributionIdentity.js';
 import { PluginIdSchema } from '../plugins/pluginId.js';
 import {
@@ -29,15 +32,12 @@ import {
   PluginCollectionRowIdV1Schema,
   PluginCollectionSchemaVersionV1Schema,
 } from '../plugins/data/collectionsV1.js';
-import {
-  ContentPublicKeyFingerprintSchema,
-  type ContentPublicKeyFingerprint,
-} from '../machines/identity/installationIdentity.js';
+import { computeAccountEncryptionMigrateKeyFingerprintV1 } from './encryptionKeyFingerprintV1.js';
 import { StoredJsonContentEnvelopeSchema } from '../storage/storedJsonContentEnvelope.js';
 import {
   SESSION_METADATA_LAYOUT_VERSION_V1,
   SessionOwnerMetadataEnvelopeV1Schema,
-} from '../sessions/metadata/sessionMetadataEnvelopesV1.js';
+} from '../sessions/metadata/sessionMetadataSchemasV1.js';
 import {
   SESSION_ORGANIZATION_MAX_FOLDERS,
   SESSION_ORGANIZATION_MAX_ID_LENGTH,
@@ -65,18 +65,21 @@ import {
 import {
   WorkflowRunAutomationOriginV1Schema,
   WorkflowRunDirectOriginV1Schema,
+  WorkflowRunInvocationIndexV1Schema,
 } from '../workflows/workflowProgressV1.js';
+import { WorkflowRunRecipientCensusResponseV1Schema, WorkflowRunRecipientKeyEnvelopesV1Schema } from '../workflows/workflowRunKeyV1.js';
+import { SessionDataKeyEnvelopeBytesV1Schema } from '../sessions/encryption/sessionDataKeyEnvelopes.js';
 import {
   AutomationTriggerIdSchema,
   AutomationTriggerRevisionSchema,
 } from '../automations/automationTriggerIdentity.js';
 import {
   MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
-} from '../automations/automationEventV1.js';
+} from '../automations/automationStoredContentEnvelopeV1.js';
 import {
   AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS,
 } from '../automations/automationTemplateEnvelope.js';
-import { AccountSettingsStoredContentEnvelopeSchema } from './settings/index.js';
+import { AccountSettingsStoredContentEnvelopeSchema } from './settings/accountSettingsStoredContentEnvelope.js';
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
@@ -89,6 +92,11 @@ import {
   SessionDraftStoredContentEnvelopeV2Schema,
 } from '../drafts/sessionDraftsV2.js';
 
+export {
+  computeAccountEncryptionMigrateKeyFingerprintV1,
+  convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
+} from './encryptionKeyFingerprintV1.js';
+
 const NonNegativeSafeIntegerSchema =
   z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
@@ -96,27 +104,6 @@ export const AccountEncryptionMigrateToModeSchema = AccountEncryptionModeSchema;
 export type AccountEncryptionMigrateToMode = z.infer<
   typeof AccountEncryptionMigrateToModeSchema
 >;
-
-const AccountEncryptionMigratePredecessorKeyProofSchema = z
-  .object({
-    publicKey: z.string().min(1).max(4096),
-    challenge: z.string().min(1).max(4096),
-    signature: z.string().min(1).max(4096),
-    contentPublicKey: z.string().min(1).max(4096).optional(),
-    contentPublicKeySig: z.string().min(1).max(4096).optional(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    const hasContentKey = typeof value.contentPublicKey === 'string';
-    const hasContentSig = typeof value.contentPublicKeySig === 'string';
-    if (hasContentKey !== hasContentSig) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          'contentPublicKey and contentPublicKeySig must be provided together',
-      });
-    }
-  });
 
 const AccountEncryptionMigrateUnsignedKeyProofShape = {
   v: z.literal(1),
@@ -182,7 +169,7 @@ const ConnectedServiceCredentialMigrationItemShape = {
 
 function refineConnectedServiceCredentialMigrationItem(
   value: z.infer<
-    typeof AccountEncryptionMigratePredecessorConnectedServiceCredentialMigrationItemSchemaBase
+    z.ZodObject<typeof ConnectedServiceCredentialMigrationItemShape>
   >,
   ctx: z.RefinementCtx,
 ): void {
@@ -214,12 +201,6 @@ function refineConnectedServiceCredentialMigrationItem(
       }
     }
 }
-
-const AccountEncryptionMigratePredecessorConnectedServiceCredentialMigrationItemSchemaBase =
-  z.object(ConnectedServiceCredentialMigrationItemShape).strict();
-const AccountEncryptionMigratePredecessorConnectedServiceCredentialMigrationItemSchema =
-  AccountEncryptionMigratePredecessorConnectedServiceCredentialMigrationItemSchemaBase
-    .superRefine(refineConnectedServiceCredentialMigrationItem);
 
 const ConnectedServiceCredentialMigrationItemSchema = z
   .object({
@@ -274,25 +255,6 @@ export type AccountEncryptionMigrateConnectedServicesDirective = z.infer<
   typeof AccountEncryptionMigrateConnectedServicesDirectiveSchema
 >;
 
-const AccountEncryptionMigratePredecessorConnectedServicesDirectiveSchema =
-  z.discriminatedUnion('action', [
-    z.object({ action: z.literal('assert_empty') }).strict(),
-    z.object({ action: z.literal('clear') }).strict(),
-    z
-      .object({
-        action: z.literal('migrate'),
-        credentials:
-          z.array(
-            AccountEncryptionMigratePredecessorConnectedServiceCredentialMigrationItemSchema,
-          )
-            .default([]),
-        qualifiedCredentials:
-          z.array(QualifiedConnectedAccountCredentialMigrationItemSchema)
-            .default([]),
-      })
-      .strict(),
-  ]);
-
 /**
  * The one declaration of how large each retained Automation private-content
  * field may be. Every reader of the same persisted field binds here — the
@@ -346,10 +308,6 @@ const AutomationTriggerDefinitionEnvelopesMigrationSchema = z.array(
   });
 });
 
-const AccountEncryptionMigratePredecessorAutomationsMigrationItemSchema = z
-  .object(AutomationsMigrationItemShape)
-  .strict();
-
 const AutomationsMigrationItemSchema = z
   .object({
     ...AutomationsMigrationItemShape,
@@ -368,6 +326,22 @@ const AutomationsMigrationItemSchema = z
  * Automation owns the coupled envelope/tag validation and CAS while the
  * Account coordinator owns mode activation.
  */
+export const AccountEncryptionMigrateWorkflowRunDirectiveSchema = z.object({
+  sourceAcceptedSnapshotEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+  acceptedSnapshotEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+  sourceCheckpointEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
+  checkpointEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
+  expectedDataEncryptionKey: SessionDataKeyEnvelopeBytesV1Schema.nullable(),
+  recipientKeyEnvelopes: WorkflowRunRecipientKeyEnvelopesV1Schema,
+  invocations: z.array(z.object({
+    id: WorkflowInvocationRecordIdSchema,
+    expectedContentRevision: WorkflowRunInvocationIndexV1Schema.shape.contentRevision,
+    sourceContentEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+    contentEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+  }).strict()),
+}).strict();
+export type AccountEncryptionMigrateWorkflowRunDirective = z.infer<typeof AccountEncryptionMigrateWorkflowRunDirectiveSchema>;
+
 const AutomationRunMigrationItemSchema = z
   .object({
     runId: z.string().min(1).max(256),
@@ -384,6 +358,7 @@ const AutomationRunMigrationItemSchema = z
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.replyContextEnvelope.nullable(),
     failureDetailEnvelope:
       ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.failureDetailEnvelope.nullable(),
+    workflow: AccountEncryptionMigrateWorkflowRunDirectiveSchema.optional(),
   })
   .strict();
 
@@ -421,20 +396,28 @@ export type AccountEncryptionMigrateAutomationsDirectiveInput = z.input<
   typeof AccountEncryptionMigrateAutomationsDirectiveSchema
 >;
 
-const AccountEncryptionMigratePredecessorAutomationsDirectiveSchema =
-  z.discriminatedUnion('action', [
-    z.object({ action: z.literal('assert_empty') }).strict(),
-    z.object({ action: z.literal('clear') }).strict(),
-    z
-      .object({
-        action: z.literal('migrate'),
-        templates:
-          z.array(
-            AccountEncryptionMigratePredecessorAutomationsMigrationItemSchema,
-          ).max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
-      })
-      .strict(),
-  ]);
+/** Complete current owner inventory for the active V4 transition, not V5 staging. */
+export const AccountEncryptionMigrateAutomationsInventoryResponseSchema = z.object({
+  templates: z.array(AutomationsMigrationItemSchema.extend({
+    triggerDefinitionEnvelopes: AutomationTriggerDefinitionEnvelopesMigrationSchema,
+  })).max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
+  runs: z.array(AutomationRunMigrationItemSchema.omit({ workflow: true }).extend({
+    automationId: z.string().min(1).nullable(),
+    occurrenceKey: z.string().min(1).nullable(),
+    triggerId: z.string().min(1).nullable(),
+    summaryCiphertext: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.summaryCiphertext.nullable(),
+    workflow: z.object({
+      acceptedSnapshotEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+      checkpointEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope.nullable(),
+      keyCensus: WorkflowRunRecipientCensusResponseV1Schema,
+      invocations: z.array(z.object({
+        index: WorkflowRunInvocationIndexV1Schema,
+        contentEnvelope: ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATION_CONTENT_FIELDS.resultEnvelope,
+      }).strict()),
+    }).strict().optional(),
+  }).strict()).max(ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS),
+}).strict();
+export type AccountEncryptionMigrateAutomationsInventoryResponse = z.infer<typeof AccountEncryptionMigrateAutomationsInventoryResponseSchema>;
 
 const AccountEncryptionMigrateMachineItemSchema = z
   .object({
@@ -469,10 +452,7 @@ const AccountEncryptionMigrateTodoItemSchema = z
       .min(1)
       .max(512)
       .refine(
-        (key) => key === 'todo.index' || (
-          key.startsWith('todo.')
-          && key.length > 'todo.'.length
-        ),
+        (key) => classifyAccountJsonKvKey(key) === 'todo',
         { message: 'Todo migration keys must use the Todo namespace' },
       ),
     expectedVersion: NonNegativeSafeIntegerSchema,
@@ -494,6 +474,19 @@ export type AccountEncryptionMigrateTodosDirective = z.infer<
   typeof AccountEncryptionMigrateTodosDirectiveSchema
 >;
 
+/** Workspace replacements share the KV CAS and whole-request transport bound. */
+export const AccountEncryptionMigrateWorkspaceDirectiveSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('assert_empty') }).strict(),
+  z.object({
+    action: z.literal('migrate'),
+    items: z.array(AccountEncryptionMigrateTodoItemSchema.extend({
+      key: z.string().min(1).max(512).refine(key => classifyAccountJsonKvKey(key) === 'workspace',
+        { message: 'Workspace migration keys must use the Workspace namespace' }),
+    }).strict()),
+  }).strict(),
+]);
+export type AccountEncryptionMigrateWorkspaceDirective = z.infer<typeof AccountEncryptionMigrateWorkspaceDirectiveSchema>;
+
 const AccountEncryptionMigrateArtifactItemSchema = z
   .object({
     artifactId: z.string().uuid(),
@@ -502,6 +495,8 @@ const AccountEncryptionMigrateArtifactItemSchema = z
     header: z.string().min(1).max(4_000_000),
     body: z.string().min(1).max(4_000_000),
     dataEncryptionKey: z.string().min(1).max(16_384),
+    expectedDataEncryptionKey: z.string().min(1).max(16_384),
+    recipientKeyEnvelopes: ArtifactRecipientKeyEnvelopesV1Schema,
   })
   .strict();
 
@@ -670,23 +665,6 @@ export const AccountEncryptionMigrateSessionDraftItemSchema = z.object({
 export type AccountEncryptionMigrateSessionDraftItem = z.infer<
   typeof AccountEncryptionMigrateSessionDraftItemSchema
 >;
-
-// server-v0.2.11 and the prospective 0.2 caller use this frozen V1 directive.
-const AccountEncryptionMigratePredecessorSessionDraftsDirectiveSchema = z.object({
-  items: z.array(AccountEncryptionMigrateSessionDraftItemSchema).max(500),
-}).strict();
-
-const AccountEncryptionMigratePredecessorRequestShape = {
-  toMode: AccountEncryptionMigrateToModeSchema,
-  expectedSettingsVersion: NonNegativeSafeIntegerSchema,
-  settingsContent: AccountSettingsStoredContentEnvelopeSchema.nullable(),
-  connectedServices:
-    AccountEncryptionMigratePredecessorConnectedServicesDirectiveSchema,
-  automations:
-    AccountEncryptionMigratePredecessorAutomationsDirectiveSchema,
-  keyProof: AccountEncryptionMigratePredecessorKeyProofSchema.optional(),
-  sessionDrafts: AccountEncryptionMigratePredecessorSessionDraftsDirectiveSchema.optional(),
-} as const;
 
 function refineAccountEncryptionMigrateRequest(
   request: {
@@ -961,30 +939,6 @@ function refineAccountEncryptionMigrateRequest(
       });
     }
 }
-
-const AccountEncryptionMigratePredecessorRequestSchemaBase = z
-  .object(AccountEncryptionMigratePredecessorRequestShape)
-  .strict();
-
-/**
- * Exact prospective predecessor wire from remote-dev
- * fae505bdc6916b3c9fa7a67eac3c4c88df759e9b.
- *
- * Server ingress may admit it only while Machine, Todo, and Artifact inventories
- * are empty. New clients must use AccountEncryptionMigrateRequestSchema.
- */
-export const AccountEncryptionMigratePredecessorRequestSchema =
-  AccountEncryptionMigratePredecessorRequestSchemaBase.superRefine(
-    (request, context) => {
-      refineAccountEncryptionMigrateRequest(request, context, {
-        requireE2eeKeyProof: false,
-        requireCompleteCurrentContentBinding: false,
-      });
-    },
-  );
-export type AccountEncryptionMigratePredecessorRequest = z.infer<
-  typeof AccountEncryptionMigratePredecessorRequestSchema
->;
 
 export const AccountEncryptionMigrateExternalAuthProofSchema = AccountExternalAuthProofV1Schema;
 export type AccountEncryptionMigrateExternalAuthProof = z.infer<
@@ -1563,6 +1517,25 @@ export type AccountEncryptionMigrateSessionDraftsDirective = z.infer<
   typeof AccountEncryptionMigrateSessionDraftsDirectiveSchema
 >;
 
+/** Account-owned remembered rows travel through the existing atomic switch. */
+export const AccountEncryptionMigrateAuthoringMemoryDirectiveSchema = z.object({
+  items: z.array(z.object({
+    key: AuthoringMemoryKeyV1Schema,
+    expectedRevision: NonNegativeSafeIntegerSchema,
+    content: AuthoringMemoryContentV1Schema,
+  }).strict()),
+}).strict().superRefine((value, context) => {
+  const seen = new Set<string>();
+  value.items.forEach((item, index) => {
+    if (seen.has(item.key)) context.addIssue({
+      code: z.ZodIssueCode.custom, path: ['items', index, 'key'],
+      message: 'Account migration cannot replace the same authoring memory row twice',
+    });
+    seen.add(item.key);
+  });
+});
+export type AccountEncryptionMigrateAuthoringMemoryDirective = z.infer<typeof AccountEncryptionMigrateAuthoringMemoryDirectiveSchema>;
+
 const AccountEncryptionMigrateCurrentRequestShape = {
   toMode: AccountEncryptionMigrateToModeSchema,
   expectedAccountVersion: NonNegativeSafeIntegerSchema,
@@ -1578,6 +1551,7 @@ const AccountEncryptionMigrateCurrentRequestShape = {
   automations: AccountEncryptionMigrateAutomationsDirectiveSchema,
   machines: AccountEncryptionMigrateMachinesDirectiveSchema,
   todos: AccountEncryptionMigrateTodosDirectiveSchema,
+  workspace: AccountEncryptionMigrateWorkspaceDirectiveSchema.optional(),
   artifacts: AccountEncryptionMigrateArtifactsDirectiveSchema,
   sessions: AccountEncryptionMigrateSessionsDirectiveSchema,
   reviewComments: AccountEncryptionMigrateReviewCommentsDirectiveSchema,
@@ -1585,6 +1559,7 @@ const AccountEncryptionMigrateCurrentRequestShape = {
     AccountEncryptionMigrateSessionOrganizationDirectiveSchema,
   pets: AccountEncryptionMigratePetsDirectiveSchema,
   sessionDrafts: AccountEncryptionMigrateSessionDraftsDirectiveSchema.optional(),
+  authoringMemory: AccountEncryptionMigrateAuthoringMemoryDirectiveSchema.optional(),
   externalAuthProof:
     AccountEncryptionMigrateExternalAuthProofSchema.optional(),
   passwordCredential:
@@ -1622,22 +1597,6 @@ export const AccountEncryptionMigrateRequestSchema = z
 export type AccountEncryptionMigrateRequest = z.infer<
   typeof AccountEncryptionMigrateRequestSchema
 >;
-
-const ACCOUNT_ENCRYPTION_MIGRATE_KEY_FINGERPRINT_V1_PREFIX = 'aemk1_' as const;
-
-export function computeAccountEncryptionMigrateKeyFingerprintV1(
-  publicKey: Uint8Array,
-): string {
-  return `${ACCOUNT_ENCRYPTION_MIGRATE_KEY_FINGERPRINT_V1_PREFIX}${encodeBase64(sha256(publicKey), 'base64url')}`;
-}
-
-export function convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
-  fingerprint: ContentPublicKeyFingerprint,
-): string {
-  const canonical = ContentPublicKeyFingerprintSchema.parse(fingerprint);
-  const digestHex = canonical.slice(canonical.indexOf(':') + 1);
-  return `${ACCOUNT_ENCRYPTION_MIGRATE_KEY_FINGERPRINT_V1_PREFIX}${encodeBase64(hexToBytes(digestHex), 'base64url')}`;
-}
 
 const ACCOUNT_ENCRYPTION_MIGRATE_REQUEST_BINDING_DIGEST_V1_PREFIX =
   'aemrb1_';
@@ -1980,6 +1939,7 @@ export const AccountEncryptionMigrateSuccessResponseSchema = z
     mode: AccountEncryptionMigrateToModeSchema,
     accountVersion: NonNegativeSafeIntegerSchema,
     settingsVersion: NonNegativeSafeIntegerSchema,
+    authoringMemory: z.object({ rows: z.array(AuthoringMemoryRowV1Schema) }).strict().optional(),
     sessionDrafts: z.union([
       z.object({
         records: z.array(SessionDraftRecordV1Schema)
@@ -1996,28 +1956,6 @@ export const AccountEncryptionMigrateSuccessResponseSchema = z
 export type AccountEncryptionMigrateSuccessResponse = z.infer<
   typeof AccountEncryptionMigrateSuccessResponseSchema
 >;
-
-export const AccountEncryptionMigratePredecessorSuccessResponseSchema = z
-  .object({
-    success: z.literal(true),
-    mode: AccountEncryptionMigrateToModeSchema,
-    settingsVersion: NonNegativeSafeIntegerSchema,
-    sessionDrafts: z.object({ records: z.array(SessionDraftRecordV1Schema) }).strict().optional(),
-  })
-  .strict();
-export type AccountEncryptionMigratePredecessorSuccessResponse = z.infer<
-  typeof AccountEncryptionMigratePredecessorSuccessResponseSchema
->;
-
-/** Frozen draft failures emitted to server-v0.2.11 / prospective 0.2 callers. */
-export const AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema = z.object({
-  error: z.enum(['session_drafts_require_upgrade', 'session_drafts_migration_incomplete']),
-}).strict();
-export const AccountEncryptionMigratePredecessorDraftConflictResponseSchema = z.object({
-  error: z.literal('session_drafts_version_mismatch'),
-  address: AccountEncryptionMigrateSessionDraftItemSchema.shape.address,
-  currentRevision: NonNegativeSafeIntegerSchema,
-}).strict();
 
 export const AccountEncryptionMigrateInvalidParamsReasonSchema = z.enum([
   'restore_required',

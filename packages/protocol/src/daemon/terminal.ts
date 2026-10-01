@@ -8,6 +8,8 @@ export const DaemonTerminalErrorCodeSchema = z.enum([
   'terminal_invalid_request',
   'terminal_busy',
   'terminal_resize_unavailable',
+  'agent_login_unsupported',
+  'agent_cli_missing',
 ]);
 export type DaemonTerminalErrorCode = z.infer<typeof DaemonTerminalErrorCodeSchema>;
 
@@ -42,8 +44,21 @@ export type DaemonTerminalListResponseV1 = z.infer<typeof DaemonTerminalListResp
 
 export const DaemonTerminalLaunchIntentSchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('package_script'),
+    runTargetId: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    kind: z.literal('agent_login'),
+    agentId: z.string().trim().min(1),
+    launchId: z.enum(['primary', 'device_code']).optional(),
+  }).strict(),
+  z.object({
     kind: z.literal('session_attach'),
     sessionId: z.string().min(1).max(256),
+  }).strict(),
+  z.object({
+    kind: z.literal('happier_cli'),
+    args: z.array(z.string().min(1).max(1024)).min(1).max(64),
   }).strict(),
 ]);
 export type DaemonTerminalLaunchIntent = z.infer<typeof DaemonTerminalLaunchIntentSchema>;
@@ -183,28 +198,31 @@ export const DaemonTerminalRestartResponseSchema = DaemonTerminalEnsureResponseS
 export type DaemonTerminalRestartResponse = z.infer<typeof DaemonTerminalRestartResponseSchema>;
 
 export {
-  TerminalInputEventSchema,
   TerminalStreamAckRequestSchema,
   TerminalStreamAckResponseSchema,
   TerminalStreamBytesEncodingSchema,
   TerminalStreamBytesFrameSchema,
   TerminalStreamControlFrameSchema,
   TerminalStreamFrameSchema,
-  TerminalStreamInputRequestSchema,
-  TerminalStreamInputResponseSchema,
   TerminalStreamReadRequestSchema,
   TerminalStreamReadResponseSchema,
   decodeTerminalStreamBytesFrame,
   encodeTerminalStreamBytes,
-  type TerminalInputEvent,
   type TerminalStreamAckRequest,
   type TerminalStreamAckResponse,
   type TerminalStreamBytesEncoding,
   type TerminalStreamBytesFrame,
   type TerminalStreamControlFrame,
   type TerminalStreamFrame,
-  type TerminalStreamInputRequest,
-  type TerminalStreamInputResponse,
   type TerminalStreamReadRequest,
   type TerminalStreamReadResponse,
-} from '../terminal/index.js';
+} from '../terminal/stream.js';
+
+export {
+  TerminalInputEventSchema,
+  TerminalStreamInputRequestSchema,
+  TerminalStreamInputResponseSchema,
+  type TerminalInputEvent,
+  type TerminalStreamInputRequest,
+  type TerminalStreamInputResponse,
+} from '../terminal/input.js';

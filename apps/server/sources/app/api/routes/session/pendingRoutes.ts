@@ -174,8 +174,9 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                     .optional(),
             },
             config: {
-                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+                restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.transcript.get" as const } : {}),
             },
         },
         async (request, reply) => {
@@ -249,6 +250,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             },
             config: {
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.message.send" as const,
+                    restrictedCredentialBinding: { scope: "session" as const, session: "params.sessionId" } } : {}),
             },
         },
         async (request, reply) => {
@@ -408,6 +411,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             },
             config: {
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.message.send" as const,
+                    restrictedCredentialBinding: { scope: "session" as const, session: "params.sessionId" } } : {}),
             },
         },
         async (request, reply) => {
@@ -514,6 +519,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             },
             config: {
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.message.send" as const,
+                    restrictedCredentialBinding: { scope: "session" as const, session: "params.sessionId" } } : {}),
             },
         },
         async (request, reply) => {
@@ -592,6 +599,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             },
             config: {
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.message.send" as const,
+                    restrictedCredentialBinding: { scope: "session" as const, session: "params.sessionId" } } : {}),
             },
         },
         async (request, reply) => {
@@ -640,6 +649,8 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             },
             config: {
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
+                ...(!executionRunTarget ? { apiTokenSessionAction: "session.message.send" as const,
+                    restrictedCredentialBinding: { scope: "session" as const, session: "params.sessionId" } } : {}),
             },
         },
         async (request, reply) => {
@@ -765,7 +776,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 body: z.object({ reason: PendingDeliveryBlockedReasonSchema }),
             },
             config: {
-                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+                restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending.materialize"),
             },
         },
@@ -902,7 +913,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             preHandler: app.authenticate,
             schema: { params: z.object({ runId, sessionId: z.string(), localId: PendingLocalIdSchema }) },
             config: {
-                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+                restrictedCredentialBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending.materialize"),
             },
         },

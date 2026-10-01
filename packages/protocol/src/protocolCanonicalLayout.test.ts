@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
@@ -301,6 +301,8 @@ describe('protocol canonical layout', () => {
             './plugins/ui',
             './plugins/ui/client',
             './plugins/ui/targetedContributions',
+            './plugins/runtime/sourceCustody',
+            './plugins/public-toolchain-compatibility',
             './plugins/ui/composerRef',
             './plugins/actions/vocabulary',
             './plugins/actions/json-schema-validation',
@@ -471,6 +473,21 @@ describe('protocol canonical layout', () => {
             default: './dist/sessions/discussions/index.js',
         });
     });
+
+    it('emits current Follow, permission, and Board helpers through their declared public entrypoints', async () => {
+        // Vitest resolves workspace package specifiers to `src`; load the
+        // export-map targets directly so this checks the package consumers and
+        // dependent typechecks actually see after Protocol is built.
+        const [protocol, board] = await Promise.all([
+            import(pathToFileURL(requireFromTest.resolve('@happier-dev/protocol')).href),
+            import(pathToFileURL(requireFromTest.resolve('@happier-dev/protocol/sessions/board')).href),
+        ]);
+
+        expect(protocol.buildSessionFollowSourceKeyPrepareRequestV1).toBeTypeOf('function');
+        expect(protocol.pluginPermissionSubjectsEqualV1).toBeTypeOf('function');
+        expect(board.bindSessionBoardMutationRequestV1).toBeTypeOf('function');
+        expect(board.createSessionBoardFailureV1).toBeTypeOf('function');
+    }, 60_000);
 
     it('publishes the Session spawn-input owner through its narrow browser-safe subpath', () => {
         const protocolExports = readProtocolExports();

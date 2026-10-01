@@ -8,6 +8,7 @@ import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import { resolveLegacyServerDiagnosticsEntitlement } from "@/app/home/governance/serverDiagnosticsEntitlement";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 function resolveServerLogPath(): string | null {
     const explicit = (process.env.HAPPIER_BUG_REPORTS_SERVER_LOG_PATH ?? "").trim();
@@ -72,13 +73,14 @@ export function bugReportDiagnosticsRoutes(app: Fastify) {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "diagnostics.bugReportSnapshot"),
         },
     }, async (request, reply) => {
-        const enabled = parseBooleanEnv(process.env.HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ENABLED, false);
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        const enabled = parseBooleanEnv(requestHomeEnv.HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ENABLED, false);
         if (!enabled) {
             return reply.code(404).send({
                 error: "Server diagnostics snapshot is disabled",
             });
         }
-        const diagnosticsAccess = resolveDiagnosticsAccessMode(process.env.HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ACCESS_MODE);
+        const diagnosticsAccess = resolveDiagnosticsAccessMode(requestHomeEnv.HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ACCESS_MODE);
         if (diagnosticsAccess.invalid) {
             return reply.code(403).send({
                 error: "Invalid diagnostics access mode configuration",
@@ -86,7 +88,7 @@ export function bugReportDiagnosticsRoutes(app: Fastify) {
         }
         if (diagnosticsAccess.mode === "owner") {
             const entitlement = await resolveLegacyServerDiagnosticsEntitlement({
-                env: process.env,
+                env: requestHomeEnv,
                 accountId: request.userId,
             });
             if (entitlement.status === "not_configured") {
@@ -104,7 +106,7 @@ export function bugReportDiagnosticsRoutes(app: Fastify) {
         const query = request.query as { lines?: string | number | undefined };
         const linesRaw = typeof query?.lines === "number" ? String(query.lines) : query?.lines;
         const lines = parseIntEnv(linesRaw, 120, { min: 10, max: 500 });
-        const maxBytes = resolveServerLogMaxBytes(process.env.HAPPIER_BUG_REPORTS_SERVER_LOG_MAX_BYTES);
+        const maxBytes = resolveServerLogMaxBytes(requestHomeEnv.HAPPIER_BUG_REPORTS_SERVER_LOG_MAX_BYTES);
         const logPath = resolveServerLogPath();
         let tail = "";
         if (logPath && existsSync(logPath)) {

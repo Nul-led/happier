@@ -18,21 +18,26 @@ import { z } from 'zod';
  * archive URL + executable subpath, and the per-platform `integrityDigest` — the real sha256 of
  * the hosted CfT archive bytes for the pinned build (verified locally before unpack). The schema
  * still permits `null` so a future un-digested build fails closed, but the pinned
- * `127.0.6533.88` build records the real digest for every supported platform. A digest is NEVER
+ * default build and per-platform overrides record real digests. A digest is NEVER
  * trusted from a caller; it is pinned here and verified locally before unpack.
  *
  * The digests below were computed by downloading the four public Chrome-for-Testing archives for
  * `127.0.6533.88` from `storage.googleapis.com/chrome-for-testing-public` and running sha256 over
  * the archive bytes (cross-checked against the host-published md5 in the object headers).
+ * Linux ARM64 was first published upstream after that build; its stable 154.0.8037.92 archive
+ * was SHA256-verified on 2026-10-01 and matched upstream MD5 JiZ0GcpjMyhPJGtzqSN8/g==.
  */
 
 export const ChromiumForTestingPlatformSchema = z.enum([
   'darwin-arm64',
   'darwin-x64',
   'linux-x64',
+  'linux-arm64',
   'win32-x64',
 ]);
 export type ChromiumForTestingPlatform = z.infer<typeof ChromiumForTestingPlatformSchema>;
+
+const CfTVersionSchema = z.string().trim().regex(/^[0-9]+(?:\.[0-9]+){3}$/, 'CfT version must be an exact x.y.z.w build');
 
 const Sha256DigestSchema = z
   .string()
@@ -41,6 +46,8 @@ const Sha256DigestSchema = z
 
 export const ChromiumForTestingPlatformAssetSchema = z
   .object({
+    /** Exact platform build when upstream did not publish this platform at the default version. */
+    pinnedVersion: CfTVersionSchema.optional(),
     /** Exact, immutable archive URL for the pinned CfT build on this platform. */
     archiveUrl: z.string().trim().url(),
     /**
@@ -49,7 +56,7 @@ export const ChromiumForTestingPlatformAssetSchema = z
      * real digest of the pinned build is recorded here.
      */
     integrityDigest: Sha256DigestSchema.nullable(),
-    /** Relative path of the chrome executable inside the extracted archive root. */
+    /** Relative path of the chrome executable from the archive root. */
     executableSubpath: z.string().trim().min(1).refine((value) => {
       if (value.startsWith('/') || value.startsWith('\\')) return false;
       return !value.split(/[\\/]+/).some((segment) => segment === '' || segment === '.' || segment === '..');
@@ -63,7 +70,7 @@ export const ChromiumForTestingProductSourceV1Schema = z
     /** Stable managed-tools key; also the managed install dir under `<happyHomeDir>/tools/<key>`. */
     key: z.literal('browser-chromium'),
     /** Exact pinned CfT build (immutable version, never "latest"). */
-    pinnedVersion: z.string().trim().regex(/^[0-9]+(?:\.[0-9]+){3}$/, 'CfT version must be an exact x.y.z.w build'),
+    pinnedVersion: CfTVersionSchema,
     channel: z.enum(['stable', 'beta', 'dev', 'canary']),
     license: z.string().trim().min(1),
     assetsByPlatform: z.record(ChromiumForTestingPlatformSchema, ChromiumForTestingPlatformAssetSchema),
@@ -74,8 +81,8 @@ export type ChromiumForTestingProductSourceV1 = z.infer<typeof ChromiumForTestin
 /**
  * The single pinned managed Chrome-for-Testing descriptor. Version/channel/license + per-platform
  * archive URL + executable subpath are pinned here, together with the per-platform
- * `integrityDigest` (real sha256 of the pinned build's archive bytes). The CfT zip extracts to a
- * single `chrome-<platform>` root directory; the executable subpath is relative to that root.
+ * `integrityDigest` (real sha256 of the pinned build's archive bytes). Each CfT ZIP contains a
+ * single `chrome-<platform>` directory, which remains part of the archive-root-relative path.
  */
 export const CHROMIUM_FOR_TESTING_PRODUCT_SOURCE = ChromiumForTestingProductSourceV1Schema.parse({
   key: 'browser-chromium',
@@ -86,25 +93,36 @@ export const CHROMIUM_FOR_TESTING_PRODUCT_SOURCE = ChromiumForTestingProductSour
     'darwin-arm64': {
       archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/mac-arm64/chrome-mac-arm64.zip',
       integrityDigest: 'sha256:268ac56d0cdf3d64779f7c336a27defb81ec46e9c9d96dbc28dfb3739c0114b6',
-      executableSubpath: 'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      executableSubpath: 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
     },
     'darwin-x64': {
       archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/mac-x64/chrome-mac-x64.zip',
       integrityDigest: 'sha256:91a010d846597e068f63b0d6ebb56f6a242ced697bc2b8375e22a24fc668582a',
-      executableSubpath: 'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+      executableSubpath: 'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
     },
     'linux-x64': {
       archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/linux64/chrome-linux64.zip',
       integrityDigest: 'sha256:20e2000334f8cefa115ad3e2c55d6ad0e3e254be33a5fd0b9178c3d1a9c78ba9',
-      executableSubpath: 'chrome',
+      executableSubpath: 'chrome-linux64/chrome',
+    },
+    'linux-arm64': {
+      pinnedVersion: '154.0.8037.92',
+      archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.92/linux-arm64/chrome-linux-arm64.zip',
+      integrityDigest: 'sha256:c0af361aab66b24c72e36a4326dce4d7edf4bc23f9aede8af988c2cb6ea3fec0',
+      executableSubpath: 'chrome-linux-arm64/chrome',
     },
     'win32-x64': {
       archiveUrl: 'https://storage.googleapis.com/chrome-for-testing-public/127.0.6533.88/win64/chrome-win64.zip',
       integrityDigest: 'sha256:3c334d94c0f539e70d64aa46f5e117096f32ff5d3db5d6957f04e76d0746e7a0',
-      executableSubpath: 'chrome.exe',
+      executableSubpath: 'chrome-win64/chrome.exe',
     },
   },
 } satisfies ChromiumForTestingProductSourceV1);
+
+/** Shared version decision for installation, detection and provenance. */
+export function resolveChromiumForTestingAssetVersion(asset: ChromiumForTestingPlatformAsset): string {
+  return asset.pinnedVersion ?? CHROMIUM_FOR_TESTING_PRODUCT_SOURCE.pinnedVersion;
+}
 
 export function resolveChromiumForTestingPlatform(
   platform: string,
@@ -116,6 +134,7 @@ export function resolveChromiumForTestingPlatform(
     return null;
   }
   if (platform === 'linux' && arch === 'x64') return 'linux-x64';
+  if (platform === 'linux' && arch === 'arm64') return 'linux-arm64';
   if (platform === 'win32' && arch === 'x64') return 'win32-x64';
   return null;
 }

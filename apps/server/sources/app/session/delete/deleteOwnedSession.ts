@@ -5,6 +5,7 @@ import { markAccountChanged } from '@/app/changes/markAccountChanged';
 import { tombstoneSessionDraftForLifecycleInTx } from '@/app/account/sessionDrafts/sessionDraftService';
 import { SessionDeletedChangeHintV1Schema } from '@happier-dev/protocol/changes';
 import { resolveSessionGrantedAccountIdsInTx } from '@/app/session/access/sessionRecipients';
+import { deleteAutomationTx } from '@/app/automations/automationCrudService';
 
 import { deleteSessionTree, SessionDeleteConditionLostError } from './deleteSessionTree';
 import { emitSessionDeletedUpdate } from './emitSessionDeletedUpdate';
@@ -114,6 +115,15 @@ export async function deleteSessionWithRecipientsInTx(
             accountId,
             sessionId: params.sessionId,
         });
+    }
+    const scopedAutomations = await tx.automation.findMany({
+        where: { accountId: session.accountId, scopeSessionId: params.sessionId, deletedAt: null },
+        select: { id: true }, orderBy: { id: 'asc' },
+    });
+    for (const automation of scopedAutomations) {
+        if (!await deleteAutomationTx(tx, { accountId: session.accountId, automationId: automation.id })) {
+            throw new Error('Scoped Automation could not be retired during Session deletion');
+        }
     }
     const deleted = await deleteSessionTree(tx, {
         sessionId: params.sessionId,

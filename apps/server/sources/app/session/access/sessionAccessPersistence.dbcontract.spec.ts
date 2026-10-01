@@ -172,7 +172,6 @@ describe("Session access persistence provider contract", () => {
     });
 
     it("keeps the canonical grant writer, history horizons, and recipient expansion portable", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const suffix = randomUUID();
         const [owner, collaborator] = await Promise.all([
             db.account.create({
@@ -351,7 +350,6 @@ describe("Session access persistence provider contract", () => {
     });
 
     it("commits the required-Team floor and rolls back later grant effects atomically", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const suffix = randomUUID();
         const [owner, collaborator] = await Promise.all([
             db.account.create({
@@ -443,7 +441,6 @@ describe("Session access persistence provider contract", () => {
     });
 
     it("keeps restricted-Team point and relational qualification fail-closed on every provider", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const suffix = randomUUID();
         const [owner, collaborator] = await Promise.all([
             db.account.create({ data: { publicKey: `restricted-owner-${suffix}`, encryptionMode: "plain" } }),

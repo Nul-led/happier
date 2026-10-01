@@ -10,6 +10,7 @@ import {
     SessionSubagentCustodyRecordV1Schema,
     SessionSubagentCustodyRetirementRequestV1Schema,
     createSessionSubagentCustodyKeyV1,
+    createSessionSubagentSourceCustodyStorageIdentityV1,
     createSessionSubagentCustodyPlainContentFingerprintV1,
     isSessionSubagentStatusTransitionAllowed,
     isStoredContentKindAllowedForSessionByStoragePolicy,
@@ -37,7 +38,7 @@ export type MutateSessionSubagentCustodyParams = Readonly<{
 
 export type MutateSessionSubagentCustodyResult =
     | { ok: true; replayed: boolean; record: SessionSubagentCustodyRecordV1 }
-    | { ok: false; error: 'invalid-params' | 'session-not-found' | 'generation-retired' | 'idempotency-conflict' | 'capacity-exceeded' | 'cas-conflict' | 'terminal-regression' | 'internal'; code?: EncryptionPolicyRejectionCode };
+    | { ok: false; error: 'invalid-params' | 'session-not-found' | 'source-retired' | 'idempotency-conflict' | 'capacity-exceeded' | 'cas-conflict' | 'terminal-regression' | 'internal'; code?: EncryptionPolicyRejectionCode };
 
 type CustodyRow = Readonly<{
     id: string;
@@ -54,9 +55,9 @@ type CustodyRow = Readonly<{
 
 export type ListSessionSubagentCustodyResult =
     | { ok: true; records: SessionSubagentCustodyRecordV1[] }
-    | { ok: false; error: 'invalid-params' | 'session-not-found' | 'generation-retired' | 'internal' };
+    | { ok: false; error: 'invalid-params' | 'session-not-found' | 'source-retired' | 'internal' };
 
-export type RetireSessionSubagentCustodyGenerationResult =
+export type RetireSessionSubagentCustodySourceResult =
     | { ok: true }
     | { ok: false; error: 'invalid-params' | 'session-not-found' | 'retirement-capacity-exceeded' | 'internal' };
 
@@ -149,7 +150,7 @@ function hasValidCustodyKey(params: Readonly<{
         : {
             pluginId: params.request.pluginId,
             contributionId: params.request.contributionId,
-            immutableGenerationId: params.request.immutableGenerationId,
+            sourceCustody: params.request.sourceCustody,
         };
     return params.request.custodyKey === createSessionSubagentCustodyKeyV1({ ...scope, sessionId: params.sessionId });
 }
@@ -189,17 +190,19 @@ async function mutateInTx(params: Readonly<{
     const session = await tx.session.findUnique({ where: { id: sessionId }, select: { encryptionMode: true } });
     if (!session) return { ok: false, error: 'session-not-found' };
     if (!hasValidCustodyKey({ sessionId, request })) return { ok: false, error: 'invalid-params' };
-    const retiredGeneration = await tx.sessionSubagentCustodyRetiredGeneration.findUnique({
+    const sourceIdentity = createSessionSubagentSourceCustodyStorageIdentityV1(request.scope.sourceCustody);
+    const retiredSource = await tx.sessionSubagentCustodyRetiredSource.findUnique({
         where: {
-            accountId_pluginId_immutableGenerationId: {
+            accountId_pluginId_sourceCustodyKind_sourceCustodyId: {
                 accountId: actorUserId,
                 pluginId: request.scope.pluginId,
-                immutableGenerationId: request.scope.immutableGenerationId,
+                sourceCustodyKind: sourceIdentity.kind,
+                sourceCustodyId: sourceIdentity.id,
             },
         },
         select: { id: true },
     });
-    if (retiredGeneration) return { ok: false, error: 'generation-retired' };
+    if (retiredSource) return { ok: false, error: 'source-retired' };
 
     if (!hasValidContentFingerprint(request)) return { ok: false, error: 'invalid-params' };
 
@@ -259,7 +262,10 @@ async function mutateInTx(params: Readonly<{
         stored = await tx.sessionSubagentCustody.create({
             data: {
                 ...recordKey,
-                ...request.scope,
+                pluginId: request.scope.pluginId,
+                contributionId: request.scope.contributionId,
+                sourceCustodyKind: sourceIdentity.kind,
+                sourceCustodyId: sourceIdentity.id,
                 subagentId: request.subagentId,
                 groupId: request.groupId,
                 status: request.status,
@@ -294,7 +300,10 @@ async function mutateInTx(params: Readonly<{
     await tx.sessionSubagentCustodyReceipt.create({
         data: {
             ...receiptKey,
-            ...request.scope,
+            pluginId: request.scope.pluginId,
+            contributionId: request.scope.contributionId,
+            sourceCustodyKind: sourceIdentity.kind,
+            sourceCustodyId: sourceIdentity.id,
             requestDigest: digest,
             resultSubagentId: record.subagentId,
             resultGroupId: record.groupId,
@@ -355,17 +364,19 @@ export async function listSessionSubagentCustody(params: Readonly<{
     try {
         const rows = await inTx(async (tx) => {
             if (!(await assertSessionCapabilityInTx({ tx, accountId: params.actorUserId, sessionId: params.sessionId, capability: 'readTranscript', authentication: params.authentication })).ok) return null;
-            const retiredGeneration = await tx.sessionSubagentCustodyRetiredGeneration.findUnique({
+            const sourceIdentity = createSessionSubagentSourceCustodyStorageIdentityV1(parsed.data.sourceCustody);
+            const retiredSource = await tx.sessionSubagentCustodyRetiredSource.findUnique({
                 where: {
-                    accountId_pluginId_immutableGenerationId: {
+                    accountId_pluginId_sourceCustodyKind_sourceCustodyId: {
                         accountId: params.actorUserId,
                         pluginId: parsed.data.pluginId,
-                        immutableGenerationId: parsed.data.immutableGenerationId,
+                        sourceCustodyKind: sourceIdentity.kind,
+                        sourceCustodyId: sourceIdentity.id,
                     },
                 },
                 select: { id: true },
             });
-            if (retiredGeneration) return 'retired' as const;
+            if (retiredSource) return 'retired' as const;
             return tx.sessionSubagentCustody.findMany({
                 where: {
                     accountId: params.actorUserId,
@@ -373,14 +384,15 @@ export async function listSessionSubagentCustody(params: Readonly<{
                     custodyKey: parsed.data.custodyKey,
                     pluginId: parsed.data.pluginId,
                     contributionId: parsed.data.contributionId,
-                    immutableGenerationId: parsed.data.immutableGenerationId,
+                    sourceCustodyKind: sourceIdentity.kind,
+                    sourceCustodyId: sourceIdentity.id,
                 },
                 orderBy: [{ subagentKey: 'asc' }],
                 take: MAX_SESSION_SUBAGENT_CUSTODY_RECORDS,
             }) as Promise<CustodyRow[]>;
         });
         if (!rows) return { ok: false, error: 'session-not-found' };
-        if (rows === 'retired') return { ok: false, error: 'generation-retired' };
+        if (rows === 'retired') return { ok: false, error: 'source-retired' };
         const records = rows.map(toPublicRecord);
         if (records.some((record) => record === null)) return { ok: false, error: 'internal' };
         return {
@@ -396,42 +408,44 @@ async function retireInTx(params: Readonly<{
     tx: Tx;
     actorUserId: string;
     request: SessionSubagentCustodyRetirementRequestV1;
-}>): Promise<RetireSessionSubagentCustodyGenerationResult> {
+}>): Promise<RetireSessionSubagentCustodySourceResult> {
     const { tx, actorUserId, request } = params;
-    const generationKey = {
+    const sourceIdentity = createSessionSubagentSourceCustodyStorageIdentityV1(request.sourceCustody);
+    const sourceKey = {
         accountId: actorUserId,
         pluginId: request.pluginId,
-        immutableGenerationId: request.immutableGenerationId,
+        sourceCustodyKind: sourceIdentity.kind,
+        sourceCustodyId: sourceIdentity.id,
     };
-    const existing = await tx.sessionSubagentCustodyRetiredGeneration.findUnique({
-        where: { accountId_pluginId_immutableGenerationId: generationKey },
+    const existing = await tx.sessionSubagentCustodyRetiredSource.findUnique({
+        where: { accountId_pluginId_sourceCustodyKind_sourceCustodyId: sourceKey },
         select: { id: true },
     });
     if (!existing) {
-        const retiredGenerationCount = await tx.sessionSubagentCustodyRetiredGeneration.count({
+        const retiredSourceCount = await tx.sessionSubagentCustodyRetiredSource.count({
             where: { accountId: actorUserId },
         });
-        if (retiredGenerationCount >= MAX_SESSION_SUBAGENT_CUSTODY_RETIRED_GENERATIONS) {
+        if (retiredSourceCount >= MAX_SESSION_SUBAGENT_CUSTODY_RETIRED_GENERATIONS) {
             return { ok: false, error: 'retirement-capacity-exceeded' };
         }
-        await tx.sessionSubagentCustodyRetiredGeneration.create({
-            data: { ...generationKey, capacitySlot: retiredGenerationCount },
+        await tx.sessionSubagentCustodyRetiredSource.create({
+            data: { ...sourceKey, capacitySlot: retiredSourceCount },
         });
     }
-    await tx.sessionSubagentCustodyReceipt.deleteMany({ where: generationKey });
-    await tx.sessionSubagentCustody.deleteMany({ where: generationKey });
+    await tx.sessionSubagentCustodyReceipt.deleteMany({ where: sourceKey });
+    await tx.sessionSubagentCustody.deleteMany({ where: sourceKey });
     return { ok: true };
 }
 
 /**
- * Durably fences one host-declared immutable plugin generation for exactly
- * the authenticated actor. No server-side generation ordering is inferred;
+ * Durably fences one host-declared plugin source custody for exactly
+ * the authenticated actor. No server-side source ordering is inferred;
  * retries join the retained tombstone and stale writes fail closed.
  */
-export async function retireSessionSubagentCustodyGeneration(params: Readonly<{
+export async function retireSessionSubagentCustodySource(params: Readonly<{
     actorUserId: string;
     request: SessionSubagentCustodyRetirementRequestV1;
-}>): Promise<RetireSessionSubagentCustodyGenerationResult> {
+}>): Promise<RetireSessionSubagentCustodySourceResult> {
     const parsed = SessionSubagentCustodyRetirementRequestV1Schema.safeParse(params.request);
     if (!params.actorUserId || !parsed.success) return { ok: false, error: 'invalid-params' };
     for (let attempt = 0; attempt <= MAX_SESSION_SUBAGENT_CUSTODY_RETIRED_GENERATIONS; attempt += 1) {
@@ -442,8 +456,8 @@ export async function retireSessionSubagentCustodyGeneration(params: Readonly<{
                 request: parsed.data,
             }));
         } catch (error) {
-            // A concurrent different generation can claim the same next capacity
-            // slot. Recount under a new transaction until this exact generation
+            // A concurrent different source can claim the same next capacity
+            // slot. Recount under a new transaction until this exact source
             // joins its tombstone or the durable cap becomes visible.
             if (isPrismaErrorCode(error, 'P2002')) continue;
             return { ok: false, error: 'internal' };

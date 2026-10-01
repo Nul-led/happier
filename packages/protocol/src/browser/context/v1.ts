@@ -12,6 +12,7 @@ import {
 } from '../target/v1.js';
 import { BrowserEvidenceSessionMediaReferenceV1Schema } from '../recording/v1.js';
 import { rejectUnsafeBrowserEgressKeys } from '../diagnostics/egress/keyRejection.js';
+import { SessionImageMediaReferenceV1Schema } from '../../sessions/media/imageReferenceV1.js';
 
 const IdSchema = z.string().trim().min(1).max(256);
 const NonNegativeIntSchema = z.number().int().nonnegative();
@@ -57,15 +58,7 @@ export const BrowserContextRedactionLevelV1Schema = z.enum([
 ]);
 export type BrowserContextRedactionLevelV1 = z.infer<typeof BrowserContextRedactionLevelV1Schema>;
 
-export const BrowserScreenshotMediaReferenceV1Schema = z
-  .object({
-    mediaId: IdSchema,
-    mediaKind: z.literal('image'),
-    width: z.number().int().positive(),
-    height: z.number().int().positive(),
-    sizeBytes: z.number().int().positive(),
-  })
-  .strict();
+export const BrowserScreenshotMediaReferenceV1Schema = SessionImageMediaReferenceV1Schema;
 export type BrowserScreenshotMediaReferenceV1 = z.infer<typeof BrowserScreenshotMediaReferenceV1Schema>;
 
 const BrowserContextItemBaseV1Schema = z
@@ -463,6 +456,44 @@ export const BrowserContextAttachmentV1Schema = z
     }
   });
 export type BrowserContextAttachmentV1 = z.infer<typeof BrowserContextAttachmentV1Schema>;
+
+/** The selected, agent-bound projection; capture/grouping/redaction remain producer-owned. */
+export const BrowserContextMessagePayloadV1Schema = z.object({
+  contexts: z.array(BrowserContextItemV1Schema).min(1),
+  attachments: z.array(BrowserContextAttachmentV1Schema).min(1),
+}).strict().superRefine((value, context) => {
+  const byId = new Map(value.contexts.map((item) => [item.contextId, item]));
+  const selected = new Set<string>();
+  if (byId.size !== value.contexts.length) {
+    context.addIssue({ code: 'custom', message: 'Browser context identities must be unique.' });
+  }
+  for (const attachment of value.attachments) {
+    const ids = new Set([attachment.contextId, ...(attachment.structuredBlock?.contextIds ?? [])]);
+    for (const id of ids) {
+      selected.add(id);
+      const item = byId.get(id);
+      if (!item || item.sourceViewId !== attachment.sourceViewId
+        || item.navigationGeneration !== attachment.capturedNavigationGeneration
+        || item.lifecycleState !== 'available' || item.redactionLevel === 'blocked' || item.redactionLevel === 'none') {
+        context.addIssue({ code: 'custom', message: 'Browser context selection is unavailable or uncorrelated.' });
+      }
+    }
+    if (attachment.state !== 'available' || attachment.requiresReconfirmBeforeSend
+      || attachment.currentNavigationGeneration !== attachment.capturedNavigationGeneration
+      || !byId.has(attachment.contextId)) {
+      context.addIssue({ code: 'custom', message: 'Browser context attachment is unavailable or stale.' });
+    }
+  }
+  if ([...byId.keys()].some((id) => !selected.has(id))) {
+    context.addIssue({ code: 'custom', message: 'Browser context must be explicitly selected.' });
+  }
+});
+export type BrowserContextMessagePayloadV1 = z.infer<typeof BrowserContextMessagePayloadV1Schema>;
+
+export const BrowserContextMessageMetaV1Schema = z.object({
+  kind: z.literal('browser_context.v1'),
+  payload: BrowserContextMessagePayloadV1Schema,
+}).strict();
 
 export const BrowserContextRouteFailureV1Schema = z
   .object({

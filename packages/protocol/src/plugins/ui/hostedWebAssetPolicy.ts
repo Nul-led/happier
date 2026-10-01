@@ -9,7 +9,7 @@ import {
   normalizeHostedWebAssetArtifactPath,
   normalizeHostedWebAssetRequestPath,
 } from './hostedWebAssetPolicyPaths.js';
-import { PluginUiArtifactsManifestEntryV1Schema } from './uiArtifactsManifest.js';
+import { PluginUiArtifactsManifestEntryV2Schema } from './uiArtifactsManifest.js';
 
 export type HostedWebAssetPolicyFailureCode =
   | 'asset_not_declared'
@@ -70,11 +70,10 @@ export type GeneratedHostedWebAssetPolicyV1 = Readonly<{
 export function deriveGeneratedHostedWebAssetPolicyV1(
   artifactGraph: unknown,
 ): GeneratedHostedWebAssetPolicyV1 | null {
-  const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(artifactGraph);
+  const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(artifactGraph);
   if (
     !graph.success
     || graph.data.tier !== 'hostedWeb'
-    || graph.data.platform !== 'web'
   ) {
     return null;
   }

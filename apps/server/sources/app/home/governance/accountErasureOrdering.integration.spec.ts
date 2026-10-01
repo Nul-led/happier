@@ -1,8 +1,16 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
+import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 
+import type { Fastify as AppFastify } from "@/app/api/types";
+import { startSocket } from "@/app/api/socket";
+import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
+import { homeGovernanceRoutes } from "@/app/api/routes/home/homeGovernanceRoutes";
+import { registerAccountErasureRoute } from "@/app/api/routes/auth/registerAccountErasureRoute";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { TEAM_CHANGE_ENTITY_ID } from "@/app/teams/teamChanges";
+import { ACCOUNT_ENCRYPTION_TRANSITION_LIFECYCLE } from "@/app/encryption/accountEncryptionTransitionCoordinator";
 
 // Object storage is the one genuine system boundary here. Every Home
 // governance rule, transaction ordering, lifecycle transition and credential
@@ -111,6 +119,95 @@ afterEach(async () => {
 });
 
 describe("Account erasure ordering against Home ownership", () => {
+    it.each(["home", "self"] as const)("reports bounded encryption cleanup through the %s route before retirement or object deletion", async (route) => {
+        const { accountId: ownerId } = await createAccountWithBlob({ homeRole: "owner" });
+        const { accountId, path } = await createAccountWithBlob({ homeRole: "member" });
+        const transitionId = `erasure-transition-${sequence}`;
+        await db.accountEncryptionTransition.create({ data: {
+            id: transitionId,
+            accountId,
+            fromEncryptionMode: "plain",
+            toEncryptionMode: "e2ee",
+            sourceAccountVersion: 0,
+            sourceSettingsVersion: 0,
+            status: "authorized",
+            activeAccountId: accountId,
+            preparedAt: new Date(),
+            expiresAt: new Date("2100-01-01T00:00:00.000Z"),
+        } });
+        // Persisted transition stages are a database boundary fixture. Use the
+        // coordinator's real cleanup budget rather than a second test limit.
+        const stageCount = ACCOUNT_ENCRYPTION_TRANSITION_LIFECYCLE.cleanupBatchSize + 1;
+        await db.accountEncryptionTransitionCollectionStage.createMany({ data: Array.from(
+            { length: stageCount },
+            (_, index) => ({
+                transitionId,
+                pluginId: "example.erasure",
+                collectionId: "records",
+                rowId: `staged-${index}`,
+                sourceRevision: 1,
+                sourceEnvelope: { t: "plain", v: {} },
+                targetEnvelope: { t: "encrypted", c: "staged-target" },
+                schemaVersion: 1,
+                contractDigest: "A".repeat(43),
+                sourceEncodedBytes: 2n,
+                targetEncodedBytes: 13n,
+            }),
+        ) });
+
+        // A rejected administrative request may not cancel the transition
+        // merely because its actor and target identifiers coincide.
+        await expect(deleteAccountForErasure({ accountId,
+            actor: { kind: "home_administration", actorAccountId: accountId },
+        })).resolves.toEqual({ status: "failed", code: "home_governance_forbidden" });
+        expect(await db.accountEncryptionTransitionCollectionStage.count({ where: { transitionId } })).toBe(stageCount);
+
+        const erase = () => deleteAccountForErasure({ accountId,
+            actor: { kind: "home_administration", actorAccountId: ownerId },
+        });
+        const app = Fastify({ logger: false });
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        const typed = app.withTypeProvider<ZodTypeProvider>() as unknown as AppFastify;
+        enableAuthentication(typed);
+        startSocket(typed);
+        homeGovernanceRoutes(typed);
+        registerAccountErasureRoute(typed);
+        const token = await auth.createToken(route === "home" ? ownerId : accountId, undefined, {
+            kind: "account", authority: "present_user",
+        });
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: route === "home" ? "/v1/home/accounts/delete" : "/v1/auth/account/delete",
+                headers: { authorization: `Bearer ${token}` },
+                payload: route === "home" ? { accountId } : { confirmation: "DELETE" },
+            });
+            expect(response.statusCode).toBe(409);
+            expect(response.json()).toEqual({ error: "account_erasure_transition_cleanup_pending" });
+        } finally {
+            await app.close();
+        }
+        expect(blobCalls).toEqual([]);
+        expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true, tokenEpoch: true } }))
+            .toEqual({ status: "active", tokenEpoch: 0 });
+        expect(await db.accountEncryptionTransitionCollectionStage.count({ where: { transitionId } })).toBe(1);
+        expect(await db.uploadedFile.count({ where: { accountId } })).toBe(1);
+
+        failBlobDeletion = true;
+        await expect(erase()).resolves.toEqual({ status: "failed", code: "account_erasure_blob_delete_failed" });
+        expect(await db.accountEncryptionTransitionCollectionStage.count({ where: { transitionId } })).toBe(0);
+        expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } }))
+            .toEqual({ status: "disabled" });
+        failBlobDeletion = false;
+        await expect(erase()).resolves.toEqual({ status: "deleted" });
+        expect(blobCalls).toEqual([
+            { path, accountStatusAtCall: "disabled" },
+            { path, accountStatusAtCall: "disabled" },
+        ]);
+        expect(await db.account.findUnique({ where: { id: accountId } })).toBeNull();
+    });
+
     it("invalidates Team readers at retirement and again when retry removes the retained roster row", async () => {
         const { accountId: homeOwnerId } = await createAccountWithBlob({ homeRole: "owner" });
         const { accountId } = await createAccountWithBlob({ homeRole: "member" });
@@ -306,6 +403,21 @@ describe("Account erasure ordering against Home ownership", () => {
         expect(blobCalls).toEqual([]);
         expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } }))
             .toEqual({ status: "active" });
+    });
+
+    it.each(["member", "admin"] as const)("refuses a %s erasing their own Account through administrative admission", async (homeRole) => {
+        await createAccountWithBlob({ homeRole: "owner" });
+        const { accountId } = await createAccountWithBlob({ homeRole });
+
+        await expect(deleteAccountForErasure({
+            accountId,
+            actor: { kind: "home_administration", actorAccountId: accountId },
+        })).resolves.toEqual({ status: "failed", code: "home_governance_forbidden" });
+
+        expect(blobCalls).toEqual([]);
+        expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } }))
+            .toEqual({ status: "active" });
+        expect(await db.uploadedFile.count({ where: { accountId } })).toBe(1);
     });
 
     it("does not reveal an absent Account to an administrative actor without eraseAccounts authority", async () => {

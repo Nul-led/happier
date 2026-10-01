@@ -1,4 +1,8 @@
 export const SESSION_ORGANIZATION_SNAPSHOT_VERSION = 1;
+export const SESSION_ORGANIZATION_CURRENT_PROJECTION_VERSION = 2;
+// ui-web-v0.2.11 (98ea8fb76733b1dd785d38c31360179cafa84824) strict reader bound.
+// Read compatibility only: current standing writes and snapshots are unrestricted.
+export const SESSION_ORGANIZATION_LEGACY_MAX_ATTENTION_STANDINGS = 500;
 
 export const SESSION_ORGANIZATION_MAX_KEY_LENGTH = 10_000;
 // DB-facing ids and indexed sort keys must fit every provider's indexed string width.

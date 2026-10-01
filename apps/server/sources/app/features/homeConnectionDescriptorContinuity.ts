@@ -12,6 +12,7 @@ import {
     type HomeConnectionEndpointV1,
 } from '@happier-dev/protocol';
 import { compareAndSetSimpleCache, readFromSimpleCache } from '@/storage/cache/simpleCache';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
 export type HomeConnectionDescriptorContinuity = Readonly<{
     revision: number;
@@ -66,7 +67,7 @@ export function createHomeConnectionDescriptorContinuityStoreForServer(
     dependencies: HomeConnectionDescriptorContinuityStoreDependencies = defaultStoreDependencies,
 ): HomeConnectionDescriptorContinuityStore | null {
     const managedPurpose = String(env.HAPPIER_MANAGED_RELAY_PURPOSE ?? '').trim();
-    if (managedPurpose === 'personal-home') {
+    if (isPersonalHomeRuntimePurpose(managedPurpose)) {
         return createFileHomeConnectionDescriptorContinuityStore(
             resolveHomeConnectionDescriptorContinuityPath(
                 resolvePersonalHomeRuntimeLayout({ env }).irohEndpointKeyPath,

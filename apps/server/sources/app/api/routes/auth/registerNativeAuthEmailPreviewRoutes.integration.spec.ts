@@ -11,7 +11,7 @@ describe("native authentication email delivery readiness", () => {
         app.setSerializerCompiler(serializerCompiler);
         registerNativeAuthEmailOperationRoutes(app as never, {
             delivery: {
-                isReady: false,
+                isReady: async () => false,
                 deliver: async () => {
                     throw new Error("delivery must not be attempted while unavailable");
                 },

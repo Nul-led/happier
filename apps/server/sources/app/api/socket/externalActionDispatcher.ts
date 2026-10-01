@@ -23,7 +23,7 @@ import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 import type { Server } from "socket.io";
 
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
-import { auth } from "@/app/auth/auth";
+import { auth, ApiTokenOperationError, type ExternalActionGrantEvaluationContext } from "@/app/auth/auth";
 import { readMachineDaemonSocketIdentity } from "@/app/machines/machineDaemonPresence";
 import {
     readSessionPublisherAuthorityProjection,
@@ -50,6 +50,7 @@ export { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 };
  * requested relay.
  */
 export type ExternalActionPlacementErrorCode =
+    | "credential_scope_denied"
     | "target_required"
     | "target_not_local"
     | "target_unavailable"
@@ -93,6 +94,7 @@ type ResolveSessionMachine = (params: Readonly<{
 
 type MintExecutionAuthorization = (
     binding: ExternalActionExecutionAuthorizationBindingV1,
+    context?: ExternalActionGrantEvaluationContext,
 ) => Promise<ExternalActionExecutionAuthorizationV1>;
 
 type SessionPublisherPresenceForExternalAction = Pick<
@@ -184,7 +186,7 @@ function requiresSessionInputAdmissionV2(request: Readonly<{
         && parsed.data.recipient !== undefined;
 }
 
-async function resolveSessionMachineFromServer(params: Readonly<{
+export async function resolveCurrentSessionMachineFromServer(params: Readonly<{
     io: Server;
     presence?: SessionPublisherPresenceForExternalAction;
     accountId: string;
@@ -309,7 +311,7 @@ export function createExternalActionDaemonDispatcher(params: Readonly<{
     const forwardRpc = params.forwardRpc ?? forwardRpcCall;
     const resolveMachine = params.resolveMachine ?? resolveMachineFromServer;
     const resolveSessionMachine = params.resolveSessionMachine ?? (async ({ accountId, sessionId }) => (
-        await resolveSessionMachineFromServer({
+        await resolveCurrentSessionMachineFromServer({
             io: params.io,
             presence: params.sessionPublisherPresence,
             accountId,
@@ -317,7 +319,7 @@ export function createExternalActionDaemonDispatcher(params: Readonly<{
         })
     ));
     const mintExecutionAuthorization = params.mintExecutionAuthorization
-        ?? ((binding) => auth.mintExternalActionExecutionAuthorization(binding));
+        ?? ((binding, context) => auth.mintExternalActionExecutionAuthorization(binding, context));
     const getServerIdentityId = params.getServerIdentityId ?? getOrCreateServerIdentityId;
 
     return async (request, options = {}): Promise<ExternalActionDaemonDispatchResult> => {
@@ -394,13 +396,17 @@ export function createExternalActionDaemonDispatcher(params: Readonly<{
                 accountId: request.principal.accountId,
                 principalId: request.principal.principalId,
                 credentialId: request.principal.credentialId,
+                grant: request.principal.grant,
                 machineId,
                 actionId: request.actionId,
                 requestId: request.envelope.requestId ?? randomUUID(),
                 requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(request.envelope),
                 target,
-            });
-        } catch {
+            }, { ...(request.envelope.v === 1 ? { input: request.envelope.input } : {}) });
+        } catch (error) {
+            if (error instanceof ApiTokenOperationError && error.code === "credential_scope_denied") {
+                return { kind: "placement_error", code: "credential_scope_denied" };
+            }
             return { kind: "placement_error", code: "target_unavailable" };
         }
 

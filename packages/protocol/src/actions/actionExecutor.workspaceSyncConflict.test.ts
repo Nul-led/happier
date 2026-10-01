@@ -5,22 +5,19 @@ import type { ActionExecutorDeps } from './executor/types.js';
 
 const input = {
   controllerMachineId: 'machine-a',
-  request: {
-    relationshipId: 'relationship-1',
-    path: 'src/index.ts',
-    keep: 'alpha' as const,
-    expectedKind: 'file' as const,
-    expectedDigest: 'a'.repeat(40),
-  },
+  hubWorkspaceRefId: 'workspace-a',
+  path: 'src/index.ts',
+  source: { workspaceRefId: 'workspace-a', expected: { kind: 'file' as const, digest: 'a'.repeat(40), executable: false, size: 12 } },
+  targets: [{ workspaceRefId: 'workspace-b', expected: { kind: 'file' as const, digest: 'b'.repeat(40), executable: false, size: 12 } }],
+  relationshipIds: ['relationship-1'],
+  strategy: 'use_source' as const,
 };
 
 describe('workspace.sync.conflict.resolve Action authority', () => {
   it('forces canonical deferred approval and replays the approved artifact receipt', async () => {
     const approvals = new Map<string, Record<string, unknown>>();
     const workspaceSyncConflictResolve = vi.fn(async () => ({
-      relationshipId: 'relationship-1', controllerMachineId: 'machine-a', state: 'watching' as const,
-      alphaPath: '/alpha', betaPath: '/beta', mode: 'keep_both_in_sync' as const,
-      changedFiles: 0, conflictCount: 0, lastSuccessfulSyncAtMs: 1,
+      endpoints: [{ workspaceRefId: 'workspace-b', status: 'applied' as const }],
     }));
     const executor = createActionExecutor({
       workspaceSyncConflictResolve,
@@ -64,6 +61,53 @@ describe('workspace.sync.conflict.resolve Action authority', () => {
     await expect(executor.execute('workspace.sync.conflict.resolve', input, {
       surface: 'ui', authority: 'present_user', bypassApprovals: true,
     })).resolves.toEqual({ ok: false, errorCode: 'approval_stale', error: 'approval_stale' });
+    expect(workspaceSyncConflictResolve).not.toHaveBeenCalled();
+  });
+
+  it('leaves a denied or stale Agent-origin request without a controller effect', async () => {
+    const approvals = new Map<string, Record<string, unknown>>();
+    const workspaceSyncConflictResolve = vi.fn();
+    let nextArtifact = 0;
+    let originCurrent = true;
+    const executor = createActionExecutor({
+      workspaceSyncConflictResolve,
+      isActionApprovalRequired: () => false,
+      approvalsCreate: async ({ request }) => {
+        const artifactId = `approval-${++nextArtifact}`;
+        approvals.set(artifactId, request as unknown as Record<string, unknown>);
+        return { artifactId };
+      },
+      approvalsGet: async ({ artifactId }) => approvals.get(artifactId) as never,
+      approvalsUpdate: async ({ artifactId, request }) => {
+        approvals.set(artifactId, request as unknown as Record<string, unknown>);
+        return { ok: true as const };
+      },
+      isApprovalExecutionOriginCurrent: async () => originCurrent,
+    } as unknown as ActionExecutorDeps);
+    const origin = {
+      surface: 'agent' as const, authority: 'account_automation' as const,
+      serverId: 'server-1', defaultSessionId: 'session-c',
+    };
+
+    await expect(executor.execute('workspace.sync.conflict.resolve', input, {
+      ...origin, actionRequestId: 'agent-request-denied',
+    })).resolves.toMatchObject({ ok: true, result: { kind: 'approval_request_created', artifactId: 'approval-1' } });
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'approval-1', decision: 'reject',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server-1' }))
+      .resolves.toMatchObject({ ok: true, result: { status: 'rejected' } });
+
+    await expect(executor.execute('workspace.sync.conflict.resolve', input, {
+      ...origin, actionRequestId: 'agent-request-stale',
+    })).resolves.toMatchObject({ ok: true, result: { kind: 'approval_request_created', artifactId: 'approval-2' } });
+    originCurrent = false;
+    await expect(executor.execute('approval.request.decide', {
+      artifactId: 'approval-2', decision: 'approve',
+    }, { surface: 'ui', authority: 'present_user', serverId: 'server-1' }))
+      .resolves.toMatchObject({
+        ok: true,
+        result: { status: 'failed', execution: { ok: false, errorCode: 'approval_stale' } },
+      });
     expect(workspaceSyncConflictResolve).not.toHaveBeenCalled();
   });
 });

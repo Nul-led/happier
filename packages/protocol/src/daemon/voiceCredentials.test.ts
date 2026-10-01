@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { PluginInstallReviewPrincipalDigestSchema } from '../plugins/permissions/grants.js';
 import {
   DaemonVoiceClientRawCredentialAuthorizationInspectResponseV1Schema,
   DaemonVoiceClientRawCredentialAuthorizationRequestV1Schema,
@@ -22,19 +21,11 @@ const rawGrant = {
 describe('daemon Voice raw credential authorization wire', () => {
   it('preserves the legacy raw-materialization shape while carrying an optional host callback receipt', () => {
     const cacheIdentity = {
-      pluginId: contribution.pluginId,
-      contributionId: contribution.localId,
       artifactDigest: `sha256:${'b'.repeat(64)}`,
-      hostAppVersion: '2.0.0',
-      hostUiApiVersion: '1.0.0',
-      reactVersion: '19.0.0',
-      reactNativeVersion: '0.83.4',
-      platform: 'web' as const,
-      channel: 'internal' as const,
-      nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-      projectionGeneration: 12,
     };
     const request = {
+      contribution,
+      platform: 'web' as const,
       cacheIdentity,
       phase: 'connection' as const,
       request: {
@@ -98,8 +89,6 @@ describe('daemon Voice raw credential authorization wire', () => {
           accessDeclarationDigest: 'b'.repeat(64),
           selectedAuthorityDigest: 'c'.repeat(64),
           selectedRawAccessDigest: 'd'.repeat(64),
-          installedGenerationId: 'generation-1',
-          installReviewPrincipalDigest: PluginInstallReviewPrincipalDigestSchema.parse('a'.repeat(64)),
         },
         authoritySource: {
           kind: 'machine_installation',

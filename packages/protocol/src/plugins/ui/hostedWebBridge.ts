@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import {
+  FrameBridgeEnvelopeBaseV1Schema,
+  FrameBridgeHostToFrameEnvelopeBaseV1Schema,
+  FrameBridgeResponseEnvelopeBaseV1Schema,
+  FrameBridgeResponseKindV1Schema,
+  isExactBridgeOriginV1,
+} from '../../frameBridge/frameBridgeEnvelopeV1.js';
 
 import {
   PluginHostedWebBridgeMessageKindV1Schema,
@@ -72,7 +79,7 @@ function isExactNativeArtifactBridgeOrigin(value: string, parsed: URL): boolean 
 export function isExactPluginHostedWebBridgeOriginV1(value: string): boolean {
   try {
     const parsed = new URL(value);
-    return (parsed.origin === value && parsed.origin !== 'null')
+    return isExactBridgeOriginV1(value)
       || isExactNativeArtifactBridgeOrigin(value, parsed);
   } catch {
     return false;
@@ -119,11 +126,7 @@ export const PluginHostedWebBridgeBootstrapConfigV1Schema = z.object({
 }).strict();
 export type PluginHostedWebBridgeBootstrapConfigV1 = z.infer<typeof PluginHostedWebBridgeBootstrapConfigV1Schema>;
 
-const PluginHostedWebBridgeEnvelopeBaseV1Schema = z.object({
-  version: z.literal(1),
-  identity: PluginUiHostApiWireIdentityV1Schema,
-  sequence: z.number().int().nonnegative(),
-}).strict();
+const PluginHostedWebBridgeEnvelopeBaseV1Schema = FrameBridgeEnvelopeBaseV1Schema;
 
 export const PluginHostedWebBridgeEnvelopeV1Schema =
   PluginHostedWebBridgeEnvelopeBaseV1Schema.extend({
@@ -137,18 +140,12 @@ export const PluginHostedFrameOpenExternalPayloadV1Schema = z.object({
   url: z.string().trim().min(1),
 }).strict();
 
-export const PluginHostedWebBridgeResponseKindV1Schema = z.enum([
-  'ack',
-  'result',
-  'error',
-]);
+export const PluginHostedWebBridgeResponseKindV1Schema = FrameBridgeResponseKindV1Schema;
 export type PluginHostedWebBridgeResponseKindV1 =
   z.infer<typeof PluginHostedWebBridgeResponseKindV1Schema>;
 
 export const PluginHostedWebBridgeResponseEnvelopeV1Schema =
-  PluginHostedWebBridgeEnvelopeBaseV1Schema.extend({
-    requestSequence: z.number().int().nonnegative(),
-    kind: PluginHostedWebBridgeResponseKindV1Schema,
+  FrameBridgeResponseEnvelopeBaseV1Schema.extend({
     payload: PluginUiJsonValueV1Schema,
   }).strict();
 export type PluginHostedWebBridgeResponseEnvelopeV1 =
@@ -194,8 +191,7 @@ export type PluginHostedWebBridgeHostMessageKindV1 =
  * two apart.
  */
 export const PluginHostedWebBridgeHostApiMessageEnvelopeV1Schema =
-  PluginHostedWebBridgeEnvelopeBaseV1Schema.extend({
-    direction: z.literal('hostToFrame'),
+  FrameBridgeHostToFrameEnvelopeBaseV1Schema.extend({
     kind: z.literal('hostApi'),
     payload: PluginUiHostApiWireEnvelopeV1Schema,
   }).strict();
@@ -223,8 +219,7 @@ export type PluginHostedWebBridgeBootstrapPayloadV1 =
   z.infer<typeof PluginHostedWebBridgeBootstrapPayloadV1Schema>;
 
 export const PluginHostedWebBridgeBootstrapEnvelopeV1Schema =
-  PluginHostedWebBridgeEnvelopeBaseV1Schema.extend({
-    direction: z.literal('hostToFrame'),
+  FrameBridgeHostToFrameEnvelopeBaseV1Schema.extend({
     origin: BridgeOriginSchema,
     kind: z.literal('bootstrap'),
     payload: PluginHostedWebBridgeBootstrapPayloadV1Schema,
@@ -238,8 +233,7 @@ export type PluginHostedWebBridgeBootstrapEnvelopeV1 =
  * strict Data payload rather than borrowing the host-API wire envelope.
  */
 export const PluginHostedWebBridgeAccountDataMessageEnvelopeV1Schema =
-  PluginHostedWebBridgeEnvelopeBaseV1Schema.extend({
-    direction: z.literal('hostToFrame'),
+  FrameBridgeHostToFrameEnvelopeBaseV1Schema.extend({
     kind: z.literal(PLUGIN_HOSTED_WEB_ACCOUNT_DATA_BRIDGE_KIND_V1),
     payload: PluginHostedWebAccountDataBridgeChangeV1Schema,
   }).strict();

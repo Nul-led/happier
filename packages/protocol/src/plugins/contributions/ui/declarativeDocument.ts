@@ -85,7 +85,7 @@ export {
 } from './declarativeDocumentPreflightV1.js';
 export { parsePluginDeclarativeDocumentResourceBytesV1 } from './declarativeDocumentPreflightV1.js';
 
-export const MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1 = 256;
+export const MAX_PLUGIN_DECLARATIVE_DOCUMENT_OCCURRENCE_LENGTH_V1 = 256;
 
 export type PluginDeclarativeDocumentNormalizationErrorCodeV1 =
   | 'plugin_declarative_identity_invalid'
@@ -139,7 +139,7 @@ export class PluginDeclarativeDocumentNormalizationErrorV1 extends Error {
 export type PluginDeclarativeQualifiedReferenceV1 = Readonly<{
   identity: PluginContributionIdentityV1;
   qualifiedId: string;
-  generation: string;
+  occurrenceId: string;
 }>;
 
 /**
@@ -328,7 +328,7 @@ export type PluginDeclarativeDocumentNormalizationV1 = Readonly<{
 
 export type NormalizePluginDeclarativeDocumentV1Input = Readonly<{
   pluginId: string;
-  generation: string;
+  occurrenceId: string;
   document: unknown;
   /** The immutable admitted Action inventory for this candidate's plugin. */
   actions: readonly PluginContributionIdentityV1[];
@@ -352,7 +352,7 @@ export type NormalizePluginDeclarativeDocumentV1Input = Readonly<{
   uiQueries?: readonly unknown[];
   /**
    * Host-private prepared current target-local surface admission supplied only
-   * by a generation owner. The executable validator is never wire data: the
+   * by a occurrenceId owner. The executable validator is never wire data: the
    * owner prepares it once with the exact admitted schema and consumers reuse
    * that same pair for document normalization and physical mounting.
    * Static/global/session callers omit it, so an authored targeted Surface
@@ -430,13 +430,13 @@ function normalizePluginId(pluginId: string): string {
   return parsed.data;
 }
 
-function normalizeGeneration(generation: string): string {
-  if (typeof generation !== 'string'
-    || generation.trim().length === 0
-    || generation.length > MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1) {
-    return fail('plugin_declarative_generation_invalid', 'Plugin generation is invalid');
+function normalizeOccurrenceId(occurrenceId: string): string {
+  if (typeof occurrenceId !== 'string'
+    || occurrenceId.trim().length === 0
+    || occurrenceId.length > MAX_PLUGIN_DECLARATIVE_DOCUMENT_OCCURRENCE_LENGTH_V1) {
+    return fail('plugin_declarative_generation_invalid', 'Plugin occurrenceId is invalid');
   }
-  return generation;
+  return occurrenceId;
 }
 
 function buildContributionIdentityInventory(input: Readonly<{
@@ -564,7 +564,7 @@ function normalizeSettingReference(
 }
 
 /**
- * Host-private generation-local input retained beside an admitted embedded
+ * Host-private occurrenceId-local input retained beside an admitted embedded
  * Surface. It deliberately extends no wire or manifest schema: `validate` is
  * executable state and cannot cross a serialization boundary.
  */
@@ -573,9 +573,9 @@ export type PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1 = Readonly<
   handle: PluginDeclarativeTargetedSurfaceHandleV1;
   /** The exact canonical schema owned by `inputValidation`. */
   inputSchema: PluginJsonSchemaV2;
-  /** One validator compiled by the admitted target/contributor generation owner. */
+  /** One validator compiled by the admitted target/contributor occurrenceId owner. */
   inputValidation: PreparedPluginJsonSchema;
-  /** Exact target-owned normalizer retained by cold admission for this generation. */
+  /** Exact target-owned normalizer retained by cold admission for this occurrenceId. */
   inputNormalizer: ProtocolComposableSchema<ProtocolJsonValue, ProtocolJsonValue>;
 }>;
 
@@ -618,7 +618,7 @@ function isPreparedTargetedSurfaceInventoryEntry(
     || typeof entry.inputNormalizer.safeParse !== 'function') {
     return false;
   }
-  // The generation owner retains one exact pair. A sibling schema plus an
+  // The occurrenceId owner retains one exact pair. A sibling schema plus an
   // arbitrary validator would recreate the split schema/validator ownership
   // this host-private seam replaces.
   return entry.inputValidation.jsonSchema === entry.inputSchema;
@@ -641,7 +641,7 @@ function buildPreparedTargetedSurfaceInventory(
     }
     const key = targetedSurfaceSymbolicKey(entry.handle);
     if (inventory.has(key)) {
-      // A symbolic document reference cannot choose which generation wins.
+      // A symbolic document reference cannot choose which occurrenceId wins.
       // Preserve the collision so a stale or forged duplicate never retargets.
       inventory.set(key, null);
       continue;
@@ -688,7 +688,7 @@ function normalizeTargetedSurfaceNode(input: Readonly<{
   if (admitted === null) {
     return fail(
       'plugin_declarative_targeted_surface_ambiguous',
-      `Targeted Surface '${key}' has more than one admitted generation`,
+      `Targeted Surface '${key}' has more than one admitted occurrenceId`,
     );
   }
   if (!admitted) {
@@ -801,7 +801,7 @@ function normalizeCollectionProjectionField(
 
 function normalizeCollectionListBinding(input: Readonly<{
   pluginId: string;
-  generation: string;
+  occurrenceId: string;
   source: Extract<PluginDeclarativeNodeV2, { kind: 'collectionList' }>;
   inventory: CollectionUiQueryInventory;
   actions: ReadonlySet<string>;
@@ -840,7 +840,7 @@ function normalizeCollectionListBinding(input: Readonly<{
     ? undefined
     : normalizeCollectionRowCommand({
       pluginId: input.pluginId,
-      generation: input.generation,
+      occurrenceId: input.occurrenceId,
       actions: input.actions,
       destinations: input.destinations,
       command: input.source.primaryCommand,
@@ -849,7 +849,7 @@ function normalizeCollectionListBinding(input: Readonly<{
     ? undefined
     : Object.freeze(input.source.secondaryCommands.map((command) => normalizeCollectionRowCommand({
       pluginId: input.pluginId,
-      generation: input.generation,
+      occurrenceId: input.occurrenceId,
       actions: input.actions,
       destinations: input.destinations,
       command,
@@ -883,7 +883,7 @@ function normalizeCollectionListBinding(input: Readonly<{
 
 function normalizeContributionReference(input: Readonly<{
   pluginId: string;
-  generation: string;
+  occurrenceId: string;
   inventory: ReadonlySet<string>;
   reference: PluginContributionReferenceV2;
   label: string;
@@ -893,7 +893,7 @@ function normalizeContributionReference(input: Readonly<{
 }>): PluginDeclarativeQualifiedReferenceV1 {
   const {
     pluginId,
-    generation,
+    occurrenceId,
     inventory,
     reference,
     label,
@@ -918,19 +918,19 @@ function normalizeContributionReference(input: Readonly<{
   return Object.freeze({
     identity: Object.freeze({ ...identity }),
     qualifiedId,
-    generation,
+    occurrenceId,
   });
 }
 
 function normalizeActionReference(
   pluginId: string,
-  generation: string,
+  occurrenceId: string,
   inventory: ReadonlySet<string>,
   reference: PluginContributionReferenceV2,
 ): PluginDeclarativeQualifiedReferenceV1 {
   return normalizeContributionReference({
     pluginId,
-    generation,
+    occurrenceId,
     inventory,
     reference,
     label: 'Action',
@@ -941,7 +941,7 @@ function normalizeActionReference(
 
 function normalizeCollectionRowCommand(input: Readonly<{
   pluginId: string;
-  generation: string;
+  occurrenceId: string;
   actions: ReadonlySet<string>;
   destinations: ReadonlySet<string>;
   command: PluginCollectionRowCommandV1;
@@ -951,7 +951,7 @@ function normalizeCollectionRowCommand(input: Readonly<{
       kind: 'action',
       action: normalizeContributionReference({
         pluginId: input.pluginId,
-        generation: input.generation,
+        occurrenceId: input.occurrenceId,
         inventory: input.actions,
         reference: input.command.action,
         label: 'Collection row command Action',
@@ -964,7 +964,7 @@ function normalizeCollectionRowCommand(input: Readonly<{
     kind: 'openSurface',
     destination: normalizeContributionReference({
       pluginId: input.pluginId,
-      generation: input.generation,
+      occurrenceId: input.occurrenceId,
       inventory: input.destinations,
       reference: input.command.destination,
       label: 'Collection row command destination',
@@ -986,7 +986,7 @@ export function normalizeDeclarativeDocumentV1Core(
 ): PluginDeclarativeDocumentNormalizationV1 {
   const pluginInput = input.kind === 'plugin' ? input : null;
   const pluginId = pluginInput === null ? null : normalizePluginId(pluginInput.pluginId);
-  const generation = pluginInput === null ? null : normalizeGeneration(pluginInput.generation);
+  const occurrenceId = pluginInput === null ? null : normalizeOccurrenceId(pluginInput.occurrenceId);
   if (pluginInput?.resourceContentTypes) {
     assertPluginDeclarativeDocumentResourceContentTypesV1(
       pluginInput.resourceContentTypes.declaredContentType,
@@ -1129,7 +1129,7 @@ export function normalizeDeclarativeDocumentV1Core(
             }),
           });
         } else {
-          if (pluginInput === null || pluginId === null || generation === null) {
+          if (pluginInput === null || pluginId === null || occurrenceId === null) {
             return fail('plugin_declarative_action_scope_invalid', `Session declarative node '${path}' cannot invoke a plugin Action`);
           }
           if (source.action === undefined) {
@@ -1139,7 +1139,7 @@ export function normalizeDeclarativeDocumentV1Core(
             kind: 'action',
             path,
             order,
-            action: normalizeActionReference(pluginId, generation, actions, source.action),
+            action: normalizeActionReference(pluginId, occurrenceId, actions, source.action),
             label: source.label,
             ...(source.variant ? { variant: source.variant } : {}),
             ...(source.input === undefined ? {} : { input: source.input }),
@@ -1147,12 +1147,12 @@ export function normalizeDeclarativeDocumentV1Core(
         }
         break;
       case 'collectionList': {
-        if (pluginInput === null || pluginId === null || generation === null) {
+        if (pluginInput === null || pluginId === null || occurrenceId === null) {
           return fail('plugin_declarative_document_invalid', `Session declarative node '${path}' requires plugin Collection authority`);
         }
         const binding = normalizeCollectionListBinding({
           pluginId,
-          generation,
+          occurrenceId,
           source,
           inventory: uiQueries,
           actions,
@@ -1174,7 +1174,7 @@ export function normalizeDeclarativeDocumentV1Core(
       case 'item': {
         if (
           (source.action !== undefined || source.input !== undefined)
-          && (pluginInput === null || pluginId === null || generation === null)
+          && (pluginInput === null || pluginId === null || occurrenceId === null)
         ) {
           return fail('plugin_declarative_item_action_missing', `Session item '${path}' cannot invoke a plugin Action`);
         }
@@ -1186,10 +1186,10 @@ export function normalizeDeclarativeDocumentV1Core(
           // The shared guard above establishes this invariant at runtime. Keep
           // the branch explicit so TypeScript preserves the same narrowing at
           // the Action-reference boundary.
-          if (pluginId === null || generation === null) {
+          if (pluginId === null || occurrenceId === null) {
             return fail('plugin_declarative_item_action_missing', `Session item '${path}' cannot invoke a plugin Action`);
           }
-          action = normalizeActionReference(pluginId, generation, actions, source.action);
+          action = normalizeActionReference(pluginId, occurrenceId, actions, source.action);
         }
         normalized = Object.freeze({
           kind: 'item',

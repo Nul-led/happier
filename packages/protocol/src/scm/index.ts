@@ -17,6 +17,16 @@ import {
   type ScmOperationErrorCode,
 } from './operationError.js';
 import { ScmRequestBaseSchema } from './requestBase.js';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
+import { ScmRepositoryOperationKindSchema } from './operationState.js';
+import { ScmRemotePolicyFields, validateScmRemoteLeaseAuthority } from './remotePolicy.js';
+export { admitScmRemotePolicy, type ScmRemotePolicy } from './remotePolicy.js';
+export * from './operationOutcome.js';
+export * from './branches.js';
+export * from './stash.js';
+export * from './pullRequests.js';
+export * from './repositoryProvisioning.js';
+export * from './worktrees.js';
 import {
   ScmBranchSourceRefSchema,
   ScmRemoteManagementNameSchema,
@@ -36,6 +46,7 @@ import {
   ScmWorkingEntrySchema,
   ScmWorkingSnapshotSchema,
   type ScmWorkingSnapshot,
+  type ScmWorkingSnapshotInput,
 } from './workingSnapshot.js';
 
 export {
@@ -94,6 +105,7 @@ export {
 } from './remoteResponse.js';
 export * from './workingSnapshot.js';
 export {
+  admitScmCommitPolicy,
   createScmCapabilities,
   createScmCapabilitiesFromBackendCapabilities,
 } from './capabilities.js';
@@ -153,6 +165,7 @@ export type ScmBackendDescribeResponse = z.infer<typeof ScmBackendDescribeRespon
 
 export const ScmStatusSnapshotRequestSchema = ScmRequestBaseSchema.extend({
   includeWorktreeStatus: z.boolean().optional(),
+  operationStateVersion: z.literal(1).optional(),
 });
 export type ScmStatusSnapshotRequest = z.infer<typeof ScmStatusSnapshotRequestSchema>;
 
@@ -190,6 +203,9 @@ export const ScmStatusSnapshotResponseSchema = z.object({
   errorCode: ScmOperationErrorCodeSchema.optional(),
 });
 export type ScmStatusSnapshotResponse = z.infer<typeof ScmStatusSnapshotResponseSchema>;
+export type ScmStatusSnapshotTransportResponse = Omit<z.input<typeof ScmStatusSnapshotResponseSchema>, 'snapshot'> & {
+  snapshot?: ScmWorkingSnapshotInput;
+};
 
 export const ScmDiffFileRequestSchema = ScmRequestBaseSchema.extend({
   path: z.string(),
@@ -226,6 +242,7 @@ export type ScmChangeApplyRequest = z.infer<typeof ScmChangeApplyRequestSchema>;
 
 export const ScmChangeApplyResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -246,6 +263,7 @@ export type ScmChangeDiscardRequest = z.infer<typeof ScmChangeDiscardRequestSche
 
 export const ScmChangeDiscardResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -261,6 +279,9 @@ export type ScmCommitPatch = z.infer<typeof ScmCommitPatchSchema>;
 
 export const ScmCommitCreateRequestSchema = ScmRequestBaseSchema.extend({
   message: z.string().max(SCM_COMMIT_MESSAGE_MAX_LENGTH),
+  mode: z.enum(['commit', 'amend']).optional(),
+  signOff: z.boolean().optional(),
+  allowPublishedAmend: z.boolean().optional(),
   scope: z
     .union([
       z.object({
@@ -274,11 +295,16 @@ export const ScmCommitCreateRequestSchema = ScmRequestBaseSchema.extend({
     ])
     .optional(),
   patches: z.array(ScmCommitPatchSchema).min(1).max(SCM_COMMIT_PATCH_MAX_COUNT).optional(),
+}).superRefine((request, context) => {
+  if (request.allowPublishedAmend === true && request.mode !== 'amend') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['allowPublishedAmend'], message: 'Published-head acknowledgment requires explicit amend mode' });
+  }
 });
 export type ScmCommitCreateRequest = z.infer<typeof ScmCommitCreateRequestSchema>;
 
 export const ScmCommitCreateResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   commitSha: z.string().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
@@ -386,6 +412,7 @@ export const ScmLogListRequestSchema = ScmRequestBaseSchema.extend({
    * why the response carries `queryApplied`.
    */
   query: z.string().max(SCM_LOG_QUERY_MAX_LENGTH).optional(),
+  range: z.literal('incoming').optional(),
 }).strict();
 export type ScmLogListRequest = z.infer<typeof ScmLogListRequestSchema>;
 
@@ -398,6 +425,7 @@ export const ScmLogListResponseSchema = z.object({
    * page), so a consumer must never present that page as query matches.
    */
   queryApplied: z.boolean().optional(),
+  rangeApplied: z.boolean().optional(),
   error: z.string().optional(),
   errorCode: ScmOperationErrorCodeSchema.optional(),
 }).strict();
@@ -410,6 +438,7 @@ export type ScmCommitBackoutRequest = z.infer<typeof ScmCommitBackoutRequestSche
 
 export const ScmCommitBackoutResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   error: z.string().optional(),
@@ -420,6 +449,10 @@ export type ScmCommitBackoutResponse = z.infer<typeof ScmCommitBackoutResponseSc
 export const ScmRemoteRequestSchema = ScmRequestBaseSchema.extend({
   remote: z.string().optional(),
   branch: z.string().optional(),
+  ...ScmRemotePolicyFields,
+}).strict().superRefine((request, ctx) => {
+  const error = validateScmRemoteLeaseAuthority(request);
+  if (error) ctx.addIssue({ code: z.ZodIssueCode.custom, message: error, path: ['pushMode'] });
 });
 export type ScmRemoteRequest = z.infer<typeof ScmRemoteRequestSchema>;
 
@@ -457,6 +490,7 @@ export function inferScmRemoteTarget(input: {
 export type ScmRemoteMutationKind = 'push' | 'pull';
 
 export type ScmRemoteMutationReason =
+  | 'operation_in_progress'
   | 'conflicts_present'
   | 'upstream_required'
   | 'detached_head'
@@ -465,6 +499,7 @@ export type ScmRemoteMutationReason =
 
 export type ScmRemoteMutationSnapshot = {
   hasConflicts: boolean;
+  operationState?: z.infer<typeof ScmOperationStateSchema> | null;
   branch: Pick<ScmWorkingSnapshot['branch'], 'head' | 'upstream' | 'behind' | 'detached'>;
   totals: Pick<ScmWorkingSnapshot['totals'], 'includedFiles' | 'pendingFiles' | 'untrackedFiles'>;
 };
@@ -475,6 +510,8 @@ export type ScmRemoteMutationPolicy = {
   blockPushOnConflicts: boolean;
   blockPushWhenBehind: boolean;
   requireCleanPull: boolean;
+  blockActiveOperation?: boolean;
+  allowDetachedPushWithExplicitSource?: boolean;
 };
 
 export type ScmRemoteMutationResult =
@@ -510,6 +547,7 @@ export type ScmRemoteRemoveRequest = z.infer<typeof ScmRemoteRemoveRequestSchema
 
 export const ScmRemoteManagementResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   remotes: z.array(ScmRemoteInfoSchema).optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
@@ -524,12 +562,13 @@ export const ScmBranchIntegrationRequestSchema = ScmRequestBaseSchema.extend({
 export type ScmBranchIntegrationRequest = z.infer<typeof ScmBranchIntegrationRequestSchema>;
 
 export const ScmBranchOperationControlRequestSchema = ScmRequestBaseSchema.extend({
-  operation: ScmBranchIntegrationOperationSchema,
+  operation: ScmRepositoryOperationKindSchema,
 });
 export type ScmBranchOperationControlRequest = z.infer<typeof ScmBranchOperationControlRequestSchema>;
 
 export const ScmBranchIntegrationResponseSchema = z.object({
   success: z.boolean(),
+  outcome: ScmOperationOutcomeSchema.optional(),
   operationState: ScmOperationStateSchema.nullable().optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
@@ -537,6 +576,20 @@ export const ScmBranchIntegrationResponseSchema = z.object({
   errorCode: ScmOperationErrorCodeSchema.optional(),
 });
 export type ScmBranchIntegrationResponse = z.infer<typeof ScmBranchIntegrationResponseSchema>;
+
+export const ScmConflictAcceptSideRequestSchema = ScmRequestBaseSchema.extend({
+  path: ScmSelectedMutationPathSchema,
+  side: z.enum(['ours', 'theirs']),
+});
+export type ScmConflictAcceptSideRequest = z.infer<typeof ScmConflictAcceptSideRequestSchema>;
+export const ScmConflictMarkResolvedRequestSchema = ScmRequestBaseSchema.extend({
+  paths: z.array(ScmSelectedMutationPathSchema).min(1),
+});
+export type ScmConflictMarkResolvedRequest = z.infer<typeof ScmConflictMarkResolvedRequestSchema>;
+export const ScmConflictAcceptSideResponseSchema = ScmBranchIntegrationResponseSchema;
+export type ScmConflictAcceptSideResponse = ScmBranchIntegrationResponse;
+export const ScmConflictMarkResolvedResponseSchema = ScmBranchIntegrationResponseSchema;
+export type ScmConflictMarkResolvedResponse = ScmBranchIntegrationResponse;
 
 export function hasAnyPendingScmChanges(snapshot: Pick<ScmRemoteMutationSnapshot, 'totals'>): boolean {
   return (
@@ -554,6 +607,10 @@ export function evaluateScmRemoteMutationPolicy(input: {
 }): ScmRemoteMutationResult {
   const { kind, snapshot, hasExplicitTarget, policy } = input;
 
+  if (policy.blockActiveOperation && snapshot.operationState) {
+    return { ok: false, reason: 'operation_in_progress' };
+  }
+
   if (kind === 'push' && policy.blockPushOnConflicts && snapshot.hasConflicts) {
     return { ok: false, reason: 'conflicts_present' };
   }
@@ -562,7 +619,8 @@ export function evaluateScmRemoteMutationPolicy(input: {
     return { ok: false, reason: 'upstream_required' };
   }
 
-  if (snapshot.branch.detached || (policy.requireActiveHead && !snapshot.branch.head)) {
+  const hasExplicitPushSource = kind === 'push' && hasExplicitTarget && policy.allowDetachedPushWithExplicitSource === true;
+  if (!hasExplicitPushSource && (snapshot.branch.detached || (policy.requireActiveHead && !snapshot.branch.head))) {
     return { ok: false, reason: 'detached_head' };
   }
 
@@ -601,14 +659,30 @@ export function classifyScmOperationErrorCode(
     case SCM_OPERATION_ERROR_CODES.INVALID_REQUEST:
       return 'request';
     case SCM_OPERATION_ERROR_CODES.COMMAND_FAILED:
+    case SCM_OPERATION_ERROR_CODES.COMMAND_CANCELLED:
+    case SCM_OPERATION_ERROR_CODES.COMMAND_TIMEOUT:
+    case SCM_OPERATION_ERROR_CODES.COMMAND_OUTPUT_LIMIT_EXCEEDED:
+    case SCM_OPERATION_ERROR_CODES.COMMAND_OUTCOME_UNKNOWN:
+    case SCM_OPERATION_ERROR_CODES.REPOSITORY_REFRESH_FAILED:
       return 'command';
     case SCM_OPERATION_ERROR_CODES.CHANGE_APPLY_FAILED:
       return 'change';
     case SCM_OPERATION_ERROR_CODES.COMMIT_REQUIRED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_HOOK_FAILED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_SIGNING_FAILED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_IDENTITY_REQUIRED:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_EMPTY:
+    case SCM_OPERATION_ERROR_CODES.COMMIT_AMEND_PUBLISHED:
+    case SCM_OPERATION_ERROR_CODES.INDEX_RECONCILIATION_FAILED:
       return 'commit';
     case SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE:
+    case SCM_OPERATION_ERROR_CODES.INDEX_LOCKED:
+    case SCM_OPERATION_ERROR_CODES.STASH_CREATE_FAILED:
+    case SCM_OPERATION_ERROR_CODES.STASH_APPLY_FAILED:
+    case SCM_OPERATION_ERROR_CODES.STASH_DROP_FAILED:
       return 'worktree';
     case SCM_OPERATION_ERROR_CODES.REMOTE_AUTH_REQUIRED:
+    case SCM_OPERATION_ERROR_CODES.REMOTE_NETWORK_FAILED:
     case SCM_OPERATION_ERROR_CODES.REMOTE_UPSTREAM_REQUIRED:
     case SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD:
     case SCM_OPERATION_ERROR_CODES.REMOTE_FF_ONLY_REQUIRED:
@@ -659,6 +733,29 @@ export function mapSaplingScmErrorCode(stderr: string): ScmOperationErrorCode {
 
 export function mapGitScmErrorCode(stderr: string): ScmOperationErrorCode {
   const lower = String(stderr ?? '').toLowerCase();
+  if (lower.includes('gpg failed to sign') || lower.includes('failed to sign the data') || lower.includes('signing failed')) {
+    return SCM_OPERATION_ERROR_CODES.COMMIT_SIGNING_FAILED;
+  }
+  if (lower.includes('author identity unknown') || lower.includes('committer identity unknown') || lower.includes('unable to auto-detect email address')) {
+    return SCM_OPERATION_ERROR_CODES.COMMIT_IDENTITY_REQUIRED;
+  }
+  if (lower.includes('index.lock') && (lower.includes('file exists') || lower.includes('unable to create'))) {
+    return SCM_OPERATION_ERROR_CODES.INDEX_LOCKED;
+  }
+  if (
+    lower.includes('could not resolve host') ||
+    lower.includes('failed to connect to') ||
+    lower.includes('connection timed out') ||
+    lower.includes('network is unreachable') ||
+    lower.includes('remote end hung up unexpectedly') ||
+    lower.includes('unexpected disconnect') ||
+    lower.includes('connection reset by peer')
+  ) {
+    return SCM_OPERATION_ERROR_CODES.REMOTE_NETWORK_FAILED;
+  }
+  if (lower.includes('would be overwritten by merge') || lower.includes('would be overwritten by checkout')) {
+    return SCM_OPERATION_ERROR_CODES.CONFLICTING_WORKTREE;
+  }
   if (lower.includes('not a git repository')) {
     return SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY;
   }
@@ -684,7 +781,7 @@ export function mapGitScmErrorCode(stderr: string): ScmOperationErrorCode {
   if (
     lower.includes('non-fast-forward') ||
     lower.includes('fetch first') ||
-    lower.includes('tip of your current branch is behind')
+    lower.includes('tip of your current branch is behind') || lower.includes('(stale info)')
   ) {
     return SCM_OPERATION_ERROR_CODES.REMOTE_NON_FAST_FORWARD;
   }

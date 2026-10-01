@@ -72,6 +72,7 @@ describe('team credential source candidates', () => {
         manageLimits: false,
         updateBrokerPlacement: true,
         narrowDisclosure: true,
+        widenDisclosure: false,
         refreshDirectMaterial: false,
         disable: true,
         enable: false,

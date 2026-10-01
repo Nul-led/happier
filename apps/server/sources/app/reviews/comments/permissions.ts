@@ -4,6 +4,8 @@ import {
     type ReviewCommentCurrentIntentV1,
     type ReviewCommentStateV1,
     type ReviewCommentV1,
+    type ReviewCommentStoredSourceV1,
+    reviewCommentActorsEqualV1,
 } from "@happier-dev/protocol";
 
 import type { AccountEncryptionCurrentness } from "@/app/encryption/accountContentKeyAdmission";
@@ -17,7 +19,37 @@ export type ReviewCommentPrincipal = Readonly<{
     storageMode?: "plain" | "e2ee";
     accountVersion?: number;
     accountEncryptionCurrentness?: AccountEncryptionCurrentness;
+    workflowOriginSessionId?: string;
+    /** Current readable subtree proved by the server's Session relation owner. */
+    ledSubtreeSessionIds?: readonly string[];
 }>;
+
+/** Ordinary CRUD may expose only canonical encrypted records; legacy split recovery belongs to Account migration. */
+export function assertReviewCommentOrdinarySourceAdmission(source: ReviewCommentStoredSourceV1, mode: "plain" | "e2ee"): void {
+    const actualMode = source.source.layout === "canonical_v1"
+        ? source.source.envelope.t === "plain" ? "plain" : "e2ee"
+        : source.source.sourceMode;
+    if (actualMode !== mode || (mode === "e2ee" && source.source.layout !== "canonical_v1")) {
+        throw new ReviewCommentOperationError("review_comment_encryption_mode_mismatch", "Review Comment content requires canonical Account encryption migration");
+    }
+}
+
+export function reviewCommentPrincipalSessionId(principal: Pick<ReviewCommentPrincipal, "actor" | "workflowOriginSessionId">): string | undefined {
+    if (principal.actor.kind === "agent") return principal.actor.sessionId;
+    if (principal.actor.kind === "workflow") {
+        if (principal.workflowOriginSessionId) return principal.workflowOriginSessionId;
+        throw new ReviewCommentOperationError("review_comment_permission_denied", "Workflow review scope requires its server-owned origin Session");
+    }
+    return undefined;
+}
+
+export function assertReviewCommentSessionScope(principal: Pick<ReviewCommentPrincipal, "actor" | "workflowOriginSessionId" | "ledSubtreeSessionIds">, sessionId: string | undefined): void {
+    const ownSessionId = reviewCommentPrincipalSessionId(principal);
+    if (ownSessionId && ownSessionId !== sessionId
+        && !(principal.actor.kind === "agent" && sessionId && principal.ledSubtreeSessionIds?.includes(sessionId))) {
+        throw new ReviewCommentOperationError("review_comment_permission_denied", "Review comment is outside the principal Session scope");
+    }
+}
 
 export function hasReviewCommentDirectWriteGrant(params: ReviewCommentPrincipal): boolean {
     return params.grants?.includes(REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1) === true;
@@ -32,26 +64,13 @@ export function assertReviewCommentDirectWriteGrant(params: ReviewCommentPrincip
     }
 }
 
-export function assertReviewCommentPlainWriteStorageMode(params: ReviewCommentPrincipal): void {
-    if ((params.storageMode ?? "plain") === "plain") return;
-    throw new ReviewCommentOperationError(
-        "review_comment_encryption_mode_mismatch",
-        "Durable review comments cannot persist plain body, snapshot, or event envelopes for e2ee accounts",
-    );
-}
-
 export function isSameReviewCommentActor(left: ReviewCommentActorRefV1, right: ReviewCommentActorRefV1): boolean {
-    if (left.kind === "user" && right.kind === "user") return left.userId === right.userId;
-    if (left.kind === "plugin" && right.kind === "plugin") return left.pluginId === right.pluginId;
-    if (left.kind === "agent" && right.kind === "agent") {
-        return left.agentId === right.agentId && left.sessionId === right.sessionId;
-    }
-    return false;
+    return reviewCommentActorsEqualV1(left, right);
 }
 
 export function assertReviewCommentUserOrOriginalAuthor(params: Readonly<{
     actor: ReviewCommentActorRefV1;
-    comment: ReviewCommentV1;
+    comment: Pick<ReviewCommentV1, "author">;
 }>): void {
     if (params.actor.kind === "user" || isSameReviewCommentActor(params.actor, params.comment.author)) {
         return;
@@ -64,11 +83,17 @@ export function assertReviewCommentUserOrOriginalAuthor(params: Readonly<{
 
 export function assertReviewCommentTransitionActorAllowed(params: Readonly<{
     actor: ReviewCommentActorRefV1;
-    comment: ReviewCommentV1;
+    comment: Pick<ReviewCommentV1, "author" | "sessionId">;
     fromState: ReviewCommentStateV1;
     toState: ReviewCommentStateV1;
+    workflowOriginSessionId?: string;
+    ledSubtreeSessionIds?: readonly string[];
 }>): void {
     if (params.actor.kind === "user") return;
+    if (params.actor.kind === "agent" || params.actor.kind === "workflow") {
+        assertReviewCommentSessionScope(params, params.comment.sessionId);
+        return;
+    }
     if (
         params.fromState === "delegated"
         && (params.toState === "pending_review" || params.toState === "resolved")
@@ -93,5 +118,6 @@ export function assertReviewCommentRedactionActorAllowed(actor: ReviewCommentAct
 export function formatReviewCommentActorDispositionKey(actor: ReviewCommentActorRefV1): string {
     if (actor.kind === "plugin") return `plugin:${actor.pluginId}`;
     if (actor.kind === "agent") return `agent:${actor.agentId}:${actor.sessionId}`;
+    if (actor.kind === "workflow") return `workflow:${actor.runId}`;
     return `user:${actor.userId}`;
 }

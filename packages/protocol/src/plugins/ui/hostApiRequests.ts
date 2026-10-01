@@ -51,6 +51,12 @@ import {
   PluginUiTargetedContributionOperationV1Schema,
 } from './targetedContributions.js';
 import { SessionServerStartSpawnDraftV1Schema } from '../../sessions/creation/sessionSpawnNewInputV2.js';
+import {
+  SessionAwarenessLifecycleV1Schema,
+  SessionAwarenessOperationalPrimaryV1Schema,
+  SessionAwarenessRuntimeV1Schema,
+  SessionAwarenessWorkspaceV1Schema,
+} from '../../sessions/awareness/projectionV1.js';
 import { ProjectKeyV1Schema } from '../../workspaces/workspaceRefV1.js';
 
 export {
@@ -219,6 +225,82 @@ export const PluginUiReleaseComposerContentRequestV1Schema = z.object({
 }).strict();
 export type PluginUiReleaseComposerContentRequestV1 =
   z.infer<typeof PluginUiReleaseComposerContentRequestV1Schema>;
+
+/**
+ * The shared answer vocabulary for one pending Session permission request.
+ * The mounted host maps it through the same decision owner the Session UI's
+ * footer uses; it is not a second permission authority.
+ */
+export const PluginUiSessionPermissionAnswerV1Schema = z.enum(['allowOnce', 'allowForSession', 'deny']);
+export type PluginUiSessionPermissionAnswerV1 =
+  z.infer<typeof PluginUiSessionPermissionAnswerV1Schema>;
+
+/**
+ * One pending permission request as the plugin UI sees it: what the Agent wants
+ * to run, when it asked, and which answers this viewer may give (empty when the
+ * viewer may not approve for this Session).
+ */
+export const PluginUiSessionPendingPermissionV1Schema = z.object({
+  requestId: z.string().trim().min(1),
+  toolName: z.string().trim().min(1),
+  summary: z.string(),
+  command: z.string().min(1).optional(),
+  createdAtMs: z.number().int().nonnegative().optional(),
+  answers: z.array(PluginUiSessionPermissionAnswerV1Schema),
+}).strict();
+export type PluginUiSessionPendingPermissionV1 =
+  z.infer<typeof PluginUiSessionPendingPermissionV1Schema>;
+
+/**
+ * The live state of one Session this Account's client can open. Lifecycle,
+ * runtime, operational state, title and workspace are the canonical Session
+ * awareness projection's own fields, never a second derivation. The object is
+ * closed.
+ */
+export const PluginUiSessionStateV1Schema = z.object({
+  sessionId: z.string().trim().min(1),
+  title: z.string().min(1).optional(),
+  lifecycle: SessionAwarenessLifecycleV1Schema,
+  runtime: SessionAwarenessRuntimeV1Schema,
+  operational: SessionAwarenessOperationalPrimaryV1Schema,
+  workspace: SessionAwarenessWorkspaceV1Schema.optional(),
+  pendingPermissions: z.array(PluginUiSessionPendingPermissionV1Schema),
+}).strict();
+export type PluginUiSessionStateV1 = z.infer<typeof PluginUiSessionStateV1Schema>;
+
+export const PluginUiReadSessionRequestV1Schema = z.object({
+  sessionId: z.string().trim().min(1),
+}).strict();
+export type PluginUiReadSessionRequestV1 = z.infer<typeof PluginUiReadSessionRequestV1Schema>;
+/** `null` is a Session this Account's client cannot reach, never an error. */
+export const PluginUiReadSessionResultV1Schema = PluginUiSessionStateV1Schema.nullable();
+export type PluginUiReadSessionResultV1 = z.infer<typeof PluginUiReadSessionResultV1Schema>;
+
+/**
+ * A Session watch is the same bounded invalidation signal as `watchResource`:
+ * events are `PluginUiResourceSubscriptionEventV1`, and `readSession` remains
+ * the one snapshot authority.
+ */
+export const PluginUiWatchSessionRequestV1Schema = PluginUiReadSessionRequestV1Schema;
+export type PluginUiWatchSessionRequestV1 = z.infer<typeof PluginUiWatchSessionRequestV1Schema>;
+
+export const PluginUiRespondToSessionPermissionRequestV1Schema = z.object({
+  sessionId: z.string().trim().min(1),
+  requestId: z.string().trim().min(1),
+  answer: PluginUiSessionPermissionAnswerV1Schema,
+}).strict();
+export type PluginUiRespondToSessionPermissionRequestV1 =
+  z.infer<typeof PluginUiRespondToSessionPermissionRequestV1Schema>;
+
+export const PluginUiRespondToSessionPermissionResultV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('answered') }).strict(),
+  z.object({
+    status: z.literal('refused'),
+    reason: z.enum(['sessionUnavailable', 'requestNotPending', 'answerUnavailable']),
+  }).strict(),
+]);
+export type PluginUiRespondToSessionPermissionResultV1 =
+  z.infer<typeof PluginUiRespondToSessionPermissionResultV1Schema>;
 
 /**
  * Diagnostic data is part of the public mounted Host API, not a daemon-only

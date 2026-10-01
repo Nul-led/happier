@@ -7,6 +7,7 @@ import { sendFriendRequestNotification, sendFriendshipEstablishedNotification } 
 import { RelationshipStatus } from "@/storage/prisma";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { resolveFriendsPolicyFromServerFeatures } from "./resolveFriendsPolicyFromServerFeatures";
+import { readHomeEffectiveEnv } from "@/app/features/catalog/serverFeatureGate";
 
 export class FriendsIdentityProviderRequiredError extends Error {
     readonly provider: string;
@@ -44,7 +45,8 @@ export async function friendAdd(ctx: Context, uid: string): Promise<UserProfile 
         return null;
     }
 
-    const friendsPolicy = resolveFriendsPolicyFromServerFeatures(process.env);
+    // Read before the relationship transaction opens: the Home's configuration decides the policy.
+    const friendsPolicy = resolveFriendsPolicyFromServerFeatures(await readHomeEffectiveEnv());
     if (!friendsPolicy.enabled) {
         throw new FriendsDisabledError();
     }

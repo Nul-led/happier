@@ -9,7 +9,7 @@ import {
     type TeamRole,
 } from "@/storage/enums.generated";
 import { readTransactionDatabaseTime } from "@/storage/transactionDatabaseTime";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome, type HomeConfigSource } from "@/app/features/catalog/serverFeatureGate";
 import { mintSessionAccessStartsAt, sessionHistoryAccessOf } from "./sessionHistory";
 import {
     isEffectiveTeamMembership,
@@ -69,7 +69,7 @@ export async function admitTeamMemberInTx(
     // same function below as a cheap preflight before starting an external flow,
     // but this final check is what prevents a feature change between start and
     // commit from creating membership or consuming its enclosing transaction.
-    if (!isTeamMembershipAdmissionEnabled(params.env ?? process.env)) {
+    if (!await isTeamMembershipAdmissionEnabled({ tx, env: params.env })) {
         return { ok: false, error: "teams_unavailable" };
     }
     const team = await tx.team.findUnique({
@@ -147,9 +147,12 @@ export async function admitTeamMemberInTx(
     });
 }
 
-/** The single Teams feature decision used by admission preflight and effect time. */
-export function isTeamMembershipAdmissionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-    return isServerFeatureEnabledForRequest("teams", env);
+/**
+ * The single Teams feature decision used by admission preflight and effect time, on the Home-effective
+ * configuration: pass the transaction when inside one, the request overlay otherwise.
+ */
+export async function isTeamMembershipAdmissionEnabled(source: HomeConfigSource): Promise<boolean> {
+    return await isServerFeatureEnabledForHome("teams", source);
 }
 
 /**

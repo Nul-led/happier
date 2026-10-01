@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import { ScmBackendIdSchema } from './backendIdentity.js';
 import { ScmDefaultBranchPushPolicySchema } from './defaultBranchPushPolicy.js';
+import { ScmOperationStateSchema } from './operationState.js';
+export * from './operationState.js';
 import {
   ProviderRefreshPolicySchema,
   VcsLocalStateFreshnessSchema,
@@ -20,9 +22,6 @@ export type ScmDiffArea = z.infer<typeof ScmDiffAreaSchema>;
 export const ScmChangeSetModelSchema = z.enum(['index', 'working-copy']);
 export type ScmChangeSetModel = z.infer<typeof ScmChangeSetModelSchema>;
 
-export const ScmBranchIntegrationOperationSchema = z.enum(['merge', 'rebase']);
-export type ScmBranchIntegrationOperation = z.infer<typeof ScmBranchIntegrationOperationSchema>;
-
 export {
   ScmDefaultBranchPushPolicySchema,
   type ScmDefaultBranchPushPolicy,
@@ -40,6 +39,8 @@ const ScmCapabilitiesSchemaCore = z.object({
   writeExclude: z.boolean(),
   writeDiscard: z.boolean().optional(),
   writeCommit: z.boolean(),
+  writeCommitAmend: z.boolean().optional(),
+  writeCommitSignOff: z.boolean().optional(),
   writeCommitPathSelection: z.boolean(),
   writeCommitLineSelection: z.boolean(),
   writeBackout: z.boolean(),
@@ -48,6 +49,8 @@ const ScmCapabilitiesSchemaCore = z.object({
   writeBranchMerge: z.boolean().optional(),
   writeBranchRebase: z.boolean().optional(),
   writeBranchOperationControl: z.boolean().optional(),
+  writeBranchOperationSkip: z.boolean().optional(),
+  writeConflictResolution: z.boolean().optional(),
   writeRemoteAdd: z.boolean().optional(),
   writeRemoteSetUrl: z.boolean().optional(),
   writeRemoteRemove: z.boolean().optional(),
@@ -55,9 +58,12 @@ const ScmCapabilitiesSchemaCore = z.object({
   writeRemotePull: z.boolean(),
   writeRemotePush: z.boolean(),
   writeRemotePublish: z.boolean().optional(),
+  writeRemotePolicies: z.boolean().optional(),
+  writeRemoteForceWithLease: z.boolean().optional(),
   readHostingProvider: z.boolean().optional(),
   readPullRequestStatus: z.boolean().optional(),
   writePullRequestCreate: z.boolean().optional(),
+  writePullRequestDraftCreate: z.boolean().optional(),
   writePullRequestCheckout: z.boolean().optional(),
   writePullRequestPrepareWorktree: z.boolean().optional(),
   writePullRequestRunStacked: z.boolean().optional(),
@@ -67,6 +73,7 @@ const ScmCapabilitiesSchemaCore = z.object({
   writeHostingRepositoryPublish: z.boolean().optional(),
   writeRepositoryRemoveIndexLock: z.boolean().optional(),
   writeStash: z.boolean().optional(),
+  writeStashCreate: z.boolean().optional(),
   worktreeCreate: z.boolean(),
   changeSetModel: ScmChangeSetModelSchema,
   supportedDiffAreas: z.array(ScmDiffAreaSchema).min(1),
@@ -109,11 +116,11 @@ export const ScmEntryKindSchema = z.enum([
 export type ScmEntryKind = z.infer<typeof ScmEntryKindSchema>;
 
 export const ScmPathStatsSchema = z.object({
-  includedAdded: z.number().int().nonnegative(),
-  includedRemoved: z.number().int().nonnegative(),
-  pendingAdded: z.number().int().nonnegative(),
-  pendingRemoved: z.number().int().nonnegative(),
-  isBinary: z.boolean(),
+  includedAdded: z.number().int().nonnegative().default(0),
+  includedRemoved: z.number().int().nonnegative().default(0),
+  pendingAdded: z.number().int().nonnegative().default(0),
+  pendingRemoved: z.number().int().nonnegative().default(0),
+  isBinary: z.boolean().default(false),
   // False means bounded enrichment could not measure all line counts.
   isComplete: z.boolean().optional(),
 });
@@ -121,13 +128,13 @@ export type ScmPathStats = z.infer<typeof ScmPathStatsSchema>;
 
 export const ScmWorkingEntrySchema = z.object({
   path: z.string(),
-  previousPath: z.string().nullable(),
+  previousPath: z.string().nullable().default(null),
   kind: ScmEntryKindSchema,
   includeStatus: z.string(),
   pendingStatus: z.string(),
-  hasIncludedDelta: z.boolean(),
-  hasPendingDelta: z.boolean(),
-  stats: ScmPathStatsSchema,
+  hasIncludedDelta: z.boolean().default(false),
+  hasPendingDelta: z.boolean().default(false),
+  stats: ScmPathStatsSchema.prefault({}),
 });
 export type ScmWorkingEntry = z.infer<typeof ScmWorkingEntrySchema>;
 
@@ -149,14 +156,6 @@ export const ScmRemoteInfoSchema = z.object({
   pushUrl: z.string().optional(),
 });
 export type ScmRemoteInfo = z.infer<typeof ScmRemoteInfoSchema>;
-
-export const ScmOperationStateSchema = z.object({
-  kind: ScmBranchIntegrationOperationSchema,
-  sourceRef: z.string().nullable().optional(),
-  canContinue: z.boolean(),
-  canAbort: z.boolean(),
-});
-export type ScmOperationState = z.infer<typeof ScmOperationStateSchema>;
 
 export const ScmWorkingSnapshotSchema = z.object({
   projectKey: z.string(),
@@ -182,6 +181,7 @@ export const ScmWorkingSnapshotSchema = z.object({
   }),
   stashCount: z.number().int().nonnegative().optional(),
   operationState: ScmOperationStateSchema.nullable().optional(),
+  operationStateVersion: z.literal(1).optional(),
   hostingProvider: ScmHostingProviderRefSchema.nullable().optional(),
   pullRequestStatus: ScmPullRequestStatusProjectionSchema.nullable().optional(),
   hasConflicts: z.boolean(),
@@ -198,3 +198,8 @@ export const ScmWorkingSnapshotSchema = z.object({
   }),
 });
 export type ScmWorkingSnapshot = z.infer<typeof ScmWorkingSnapshotSchema>;
+/** RPC input may omit neutral facts; parsed/domain snapshots remain fully populated. */
+export type ScmWorkingSnapshotInput = Omit<z.input<typeof ScmWorkingSnapshotSchema>, 'capabilities'> & {
+  // The producer supplies canonical capabilities; the schema's preprocess input is unknown.
+  capabilities: ScmCapabilities;
+};

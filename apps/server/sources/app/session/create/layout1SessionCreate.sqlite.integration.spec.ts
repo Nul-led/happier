@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
+import { randomUUID } from "node:crypto";
 import {
     sealEncryptedDataKeyEnvelopeV1,
     signAccountContentKeyBindingV1,
@@ -25,6 +26,12 @@ import {
     type PreparedLayout1SessionCreate,
 } from "./prepareLayout1SessionCreate";
 import type { Layout1SessionCreateOutcome } from "./layout1SessionRowWrite";
+import { admitWorkflowRun } from "@/app/workflows/workflowRunService";
+import { fetchAutomationAccountCurrentnessWitnessTx } from "@/app/automations/automationAccountCurrentness";
+import {
+    sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
+    serializeWorkflowStoredContentEnvelopeV1,
+} from "@happier-dev/protocol/workflows";
 
 const PLAIN_OWNER_METADATA = { t: "plain", v: { v: 1 } } as const;
 const ENCRYPTED_OWNER_METADATA = {
@@ -81,8 +88,13 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
         harness.resetEnv();
         await harness.resetDbTables([
             () => db.accountChange.deleteMany(),
+            () => db.automationRunAssignment.deleteMany(),
+            () => db.automationRun.deleteMany(),
+            () => db.automation.deleteMany(),
             () => db.session.deleteMany(),
+            () => db.machine.deleteMany(),
             () => db.account.deleteMany(),
+            () => db.homeSettings.deleteMany(),
         ]);
     });
 
@@ -101,6 +113,11 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
         dataEncryptionKey?: string | null;
         teamCredentialBindings?: import("@happier-dev/protocol/teams").SessionTeamCredentialBindingIntentListV1;
         initialAccess?: SessionInitialAccessMaterializedV1;
+        originKind?: "none" | "session" | "execution_run" | "run_step";
+        originSessionId?: string;
+        originRunId?: string;
+        workDepth?: number;
+        reportsTo?: { sessionId: string };
     }>): PreparedLayout1SessionCreate {
         const accountEncryptionMode = params.accountEncryptionMode ?? "plain";
         const result = prepareLayout1SessionCreate({
@@ -119,6 +136,11 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
             organizationPlacement: undefined,
             teamCredentialBindings: params.teamCredentialBindings,
             initialAccess: params.initialAccess,
+            originKind: params.originKind,
+            originSessionId: params.originSessionId,
+            originRunId: params.originRunId,
+            workDepth: params.workDepth,
+            ...(params.reportsTo ? { reportsTo: params.reportsTo } : {}),
             accountEncryptionMode,
             storagePolicy: "optional",
             defaultAccountMode: "e2ee",
@@ -128,6 +150,126 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
         }
         return result.prepared;
     }
+
+    it("atomically attaches ordinary and reserved-identity children without reattaching a rejoin", async () => {
+        const owner = await createPlainAccount("pk-reports-to-create");
+        const lead = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "reports-to-lead" })));
+        if (lead.kind !== "created") throw new Error("Lead fixture was not created");
+        const ordinary = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "reports-to-child", reportsTo: { sessionId: lead.session.id } })));
+        if (ordinary.kind !== "created") throw new Error("Child was not created");
+        const edge = await db.sessionReportsTo.findUniqueOrThrow({ where: { sessionId: ordinary.session.id } });
+        expect(edge.leadSessionId).toBe(lead.session.id);
+        // The constructor's publication/result must describe the committed row.
+        expect((await db.session.findUniqueOrThrow({ where: { id: ordinary.session.id } })).updatedAt)
+            .toEqual(ordinary.session.updatedAt);
+        const reserved = await inTx((tx) => createFreshBoundLayout1SessionInTx(tx, {
+            sessionId: "reports-to-reserved-child",
+            prepared: prepared({ accountId: owner.id, tag: "reports-to-reserved", reportsTo: { sessionId: lead.session.id } }),
+        }));
+        expect(reserved.kind).toBe("created");
+        if (reserved.kind === "created") {
+            expect((await db.session.findUniqueOrThrow({ where: { id: reserved.session.id } })).updatedAt)
+                .toEqual(reserved.session.updatedAt);
+        }
+        expect(await db.sessionReportsTo.findUnique({ where: { sessionId: "reports-to-reserved-child" } }))
+            .toMatchObject({ leadSessionId: lead.session.id });
+        const rejoined = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "reports-to-child", reportsTo: { sessionId: "absent-lead" } })));
+        expect(rejoined.kind).toBe("rejoined");
+        expect(await db.sessionReportsTo.findUniqueOrThrow({ where: { sessionId: ordinary.session.id } })).toEqual(edge);
+        expect(await db.homeSettings.count()).toBe(0);
+    });
+
+    it("rolls back Session creation when the requested reportsTo lead is unreadable", async () => {
+        const owner = await createPlainAccount("pk-reports-to-create-denied");
+        await expect(inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "reports-to-denied", reportsTo: { sessionId: "absent-lead" } }))))
+            .rejects.toMatchObject({ name: "SessionCreationReportsToError" });
+        expect(await db.session.count({ where: { accountId: owner.id } })).toBe(0);
+        expect(await db.sessionReportsTo.count()).toBe(0);
+    });
+
+    it("persists host-stamped origin and depth and keeps the first values on rejoin", async () => {
+        const owner = await createPlainAccount("pk-origin-rejoin");
+        const origin = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "origin-parent" })));
+        if (origin.kind !== "created") throw new Error("Origin fixture was not created");
+        const created = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "origin-child", originKind: "execution_run",
+                originSessionId: origin.session.id, workDepth: 37 })));
+        if (created.kind !== "created") throw new Error("Child was not created");
+        const firstFacts = { originKind: "execution_run", originSessionId: origin.session.id,
+            originRunId: null, workDepth: 37 };
+        expect(created.session).toMatchObject(firstFacts);
+        const rejoined = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "origin-child", originKind: "none", workDepth: 0 })));
+        expect(rejoined.kind).toBe("rejoined");
+        if (rejoined.kind === "rejoined") expect(rejoined.session).toMatchObject(firstFacts);
+        expect(await db.session.findUniqueOrThrow({ where: { id: created.session.id } })).toMatchObject(firstFacts);
+    });
+
+    it("refuses an unreadable origin without inserting a child", async () => {
+        const owner = await createPlainAccount("pk-origin-owner");
+        const other = await createPlainAccount("pk-origin-other");
+        const origin = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: other.id, tag: "private-origin" })));
+        if (origin.kind !== "created") throw new Error("Origin fixture was not created");
+        await expect(inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "forbidden-child", originKind: "session",
+                originSessionId: origin.session.id, workDepth: 5 })))).rejects.toMatchObject({ name: "SessionCreationOriginError" });
+        await expect(db.session.count({ where: { accountId: owner.id } })).resolves.toBe(0);
+    });
+
+    it("refuses non-workflow Runs even when the creator owns the Automation row", async () => {
+        const owner = await createPlainAccount("pk-workflow-origin-owner");
+        const now = new Date();
+        const automation = await db.automation.create({ data: { accountId: owner.id, name: "Ordinary automation", templateCiphertext: "{}" } });
+        const ordinary = await db.automationRun.create({ data: {
+            accountId: owner.id, automationId: automation.id, state: "succeeded",
+            causeKind: "manual", causeOccurredAt: now, scheduledAt: now, dueAt: now,
+        } });
+        for (const runId of [ordinary.id, "missing-workflow-run"]) {
+            await expect(inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+                prepared({ accountId: owner.id, tag: `refused-${runId}`, originKind: "run_step",
+                    originRunId: runId, workDepth: 31 })))).rejects.toMatchObject({ name: "SessionCreationOriginError" });
+        }
+        expect(await db.session.count({ where: { accountId: owner.id } })).toBe(0);
+    });
+
+    it("accepts an admitted Workflow origin only for its owning Account", async () => {
+        const owner = await createPlainAccount("pk-admitted-workflow-owner");
+        const other = await createPlainAccount("pk-admitted-workflow-other");
+        const machine = await db.machine.create({ data: { id: randomUUID(), accountId: owner.id, metadata: "{}" } });
+        const runId = randomUUID();
+        const accountCurrentness = await inTx((tx) => fetchAutomationAccountCurrentnessWitnessTx(tx, owner.id));
+        if (!accountCurrentness) throw new Error("Plain Account currentness unavailable");
+        const acceptedEnvelope = serializeWorkflowStoredContentEnvelopeV1(sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+            mode: "plain",
+            binding: { v: 1, purpose: "accepted_snapshot", accountId: owner.id, runId },
+            acceptedSnapshot: {
+                definition: { version: 1, inputs: [],
+                    defaults: { agentTarget: { kind: "agent", identity: { pluginId: "happier.agent.test", localId: "test" } } },
+                    blocks: [{ kind: "step", id: "step", document: { text: "Work", references: [], attachments: [] }, input: [], result: { kind: "text" } }] },
+                source: { kind: "inline" }, inputs: {},
+                machineId: machine.id, executionTarget: { kind: "session" },
+                workspaceTarget: { project: { machineId: machine.id, directory: "/repo", checkoutRootPath: "/repo" } },
+                origin: { kind: "direct" },
+                authorization: { admittedPermissionCeiling: "default", principal: { kind: "host" } },
+            },
+        }));
+        await admitWorkflowRun({ accountId: owner.id, runId, machineId: machine.id,
+            origin: { kind: "direct" }, acceptedEnvelope, accountCurrentness });
+        const child = await inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: owner.id, tag: "workflow-child", originKind: "run_step", originRunId: runId, workDepth: 31 })));
+        if (child.kind !== "created") throw new Error("Workflow child was not created");
+        expect(child.session).toMatchObject({ originKind: "run_step", originRunId: runId, workDepth: 31 });
+        await expect(inTx((tx) => createOrRejoinLayout1SessionByTagInTx(tx,
+            prepared({ accountId: other.id, tag: "foreign-workflow-child", originKind: "run_step", originRunId: runId, workDepth: 31 }))))
+            .rejects.toMatchObject({ name: "SessionCreationOriginError" });
+        expect(await db.session.count({ where: { accountId: other.id } })).toBe(0);
+    });
 
     it("creates one canonical Layout-1 row and rejoins the same tag without rewriting its content", async () => {
         const owner = await createPlainAccount("pk-constructor-rejoin");
@@ -177,7 +319,6 @@ describe("Layout-1 Session constructor (SQLite integration)", () => {
     });
 
     it("rejoins without reapplying a different submitted initial-access draft", async () => {
-        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
         const owner = await createPlainAccount("pk-constructor-access-rejoin");
         const team = await db.team.create({ data: { name: "Initial access rejoin" } });
         await db.teamMembership.create({

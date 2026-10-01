@@ -55,10 +55,10 @@ const releasePublishInput = {
 } as const;
 
 const materializationsReportInput = {
+    expectedRevision: null,
     snapshot: {
         serverIdentityId: "srv_availabilityRouteFixture",
         machineId: "machine-route-fixture",
-        revision: 1,
         materializations: [],
     },
 } as const;
@@ -66,18 +66,12 @@ const materializationsReportInput = {
 const uiArtifactLink: PluginAccountPluginUiArtifactLinkV1 = {
     release: releasePublishInput.facts.ref,
     contributionId: "hosted",
+    artifactId: "hosted",
     tier: "hostedWeb" as const,
     platform: "web" as const,
-    artifactId: "00000000-0000-4000-8000-000000000001",
+    accountArtifactId: "00000000-0000-4000-8000-000000000001",
     artifactDigest: `sha256:${"b".repeat(64)}`,
-    compatibility: {
-        hostAppVersion: "1.0.0",
-        hostUiApiVersion: "1.0.0",
-        reactVersion: "19.2.0",
-        platform: "web" as const,
-        channel: "store" as const,
-        nativeCapabilities: [],
-    },
+    hostUiApiRange: "^1.0.0",
 };
 
 const packageAssetLink: PluginAccountPluginPackageAssetLinkV1 = {
@@ -91,17 +85,17 @@ const packageAssetLink: PluginAccountPluginPackageAssetLinkV1 = {
 
 const uiArtifactSlot = {
     contributionId: uiArtifactLink.contributionId,
+    artifactId: uiArtifactLink.artifactId,
     tier: uiArtifactLink.tier,
     platform: uiArtifactLink.platform,
     artifactDigest: uiArtifactLink.artifactDigest,
-    compatibility: {
-        hostUiApiVersion: uiArtifactLink.compatibility.hostUiApiVersion,
-    },
+    hostUiApiRange: uiArtifactLink.hostUiApiRange,
 };
 
 const uiArtifactReadInput = {
     release: releasePublishInput.facts.ref,
     contributionId: uiArtifactLink.contributionId,
+    artifactId: uiArtifactLink.artifactId,
     tier: uiArtifactLink.tier,
     platform: uiArtifactLink.platform,
 } as const;
@@ -129,7 +123,7 @@ function createOperations(): BrowserArtifactRouteOperations {
             outcome: "created" as const,
         })),
         reportMaterializations: vi.fn(async ({ input }) => ({
-            snapshot: PluginAvailabilityMaterializationsReportActionInputV1Schema.parse(input).snapshot,
+            revision: PluginAvailabilityMaterializationsReportActionInputV1Schema.parse(input).expectedRevision ?? 1,
             outcome: "replaced" as const,
         })),
         readMaterializations: vi.fn(async () => ({ availabilityCursor: 0, snapshots: [] })),
@@ -157,6 +151,9 @@ function createOperations(): BrowserArtifactRouteOperations {
                     revision: "0",
                 },
             };
+        }),
+        claimCollectionWriters: vi.fn(async () => {
+            throw new Error("claimCollectionWriters is not exercised by route tests");
         }),
         publishUiArtifact: vi.fn(async () => ({
             outcome: "created" as const,
@@ -234,6 +231,7 @@ describe("plugin Availability routes", () => {
         for (const action of [
             "account.plugins.availability.intent.read",
             "account.plugins.availability.intent.set",
+            "account.plugins.availability.collectionWriters.claim",
             "account.plugins.availability.intents.list",
             "account.plugins.availability.release.read",
             "account.plugins.availability.release.publish",
@@ -393,6 +391,7 @@ describe("plugin Availability routes", () => {
             body: {
                 release: releasePublishInput.facts.ref,
                 contributionId: uiArtifactLink.contributionId,
+                artifactId: uiArtifactLink.artifactId,
                 tier: uiArtifactLink.tier,
                 platform: uiArtifactLink.platform,
                 purpose: "candidatePreparation",
@@ -483,8 +482,7 @@ describe("plugin Availability routes", () => {
         const uiArtifactPublishInput = {
             release: uiArtifactReadInput.release,
             slot: uiArtifactSlot,
-            hostCompatibility: uiArtifactLink.compatibility,
-            artifactId: uiArtifactLink.artifactId,
+            accountArtifactId: uiArtifactLink.accountArtifactId,
             artifact: {
                 header: encodePlainArtifactStoredContent({ title: "Hosted" }),
                 body: encodePlainArtifactStoredContent({ archive: "fixture" }),
@@ -500,7 +498,10 @@ describe("plugin Availability routes", () => {
         expect(operations.publishUiArtifact).toHaveBeenCalledWith({
             accountId: publishRequest.userId,
             supportsCurrentStoredContentProtocol: true,
-            input: expect.objectContaining({ artifactId: uiArtifactLink.artifactId }),
+            input: expect.objectContaining({
+                accountArtifactId: uiArtifactLink.accountArtifactId,
+                slot: expect.objectContaining({ artifactId: uiArtifactLink.artifactId }),
+            }),
         });
 
         const legacyReadReply = replyHarness();

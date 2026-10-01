@@ -142,6 +142,10 @@ export const TeamDirectoryGroupV1Schema = z.object({
   displayName: z.string().min(1).max(512),
   state: z.enum(['active', 'deleted']),
   memberCount: z.number().int().min(0).nullable(),
+  /** Distinct Accounts bound to people in the complete external Group roster. */
+  boundAccountCount: z.number().int().min(0).nullable(),
+  /** People in the complete external Group roster without an Account binding. */
+  unboundPeopleCount: z.number().int().min(0).nullable(),
   mapping: TeamDirectoryGroupMappingV1Schema,
   lastCompleteObservationAt: DirectoryTimestampSchema.nullable(),
   sourceLabel: DirectoryLabelSchema,

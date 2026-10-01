@@ -608,6 +608,8 @@ async function seedCurrentCollectionAccount(params: Readonly<{
     rows: readonly SeedRow[];
     manifest?: unknown;
     retainRelease?: boolean;
+    /** `null` is a daemon-claimed, release-less writer pointer. */
+    desiredVersion?: string | null;
 }>) {
     const manifest = PluginManifestV2Schema.parse(params.manifest ?? COLLECTION_MANIFEST);
     await createAccount({
@@ -635,7 +637,7 @@ async function seedCurrentCollectionAccount(params: Readonly<{
         data: {
             accountId: params.accountId,
             pluginId: ref.pluginId,
-            desiredVersion: "1.0.0",
+            desiredVersion: params.desiredVersion === undefined ? "1.0.0" : params.desiredVersion,
             enabled: true,
             offlineUiHosting: "disabled",
             writableCollections: toPrismaJson([ref]),
@@ -3411,6 +3413,67 @@ describe("plugin collection UI query route", () => {
                 revision: 1,
                 rowIds: ["task-written"],
             },
+        });
+    });
+
+    it("admits a release-less claimed writer for contract reads, mutations and static UI queries", async () => {
+        const accountId = "account-collection-release-less-writer";
+        const { ref } = await seedCurrentCollectionAccount({
+            accountId,
+            seq: 41,
+            rows: [],
+            desiredVersion: null,
+            retainRelease: false,
+        });
+        const headers = {
+            "content-type": "application/json",
+            "x-test-user-id": accountId,
+            ...V3_HEADERS,
+        };
+
+        await withPluginDataApp(async (app) => {
+            const contract = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/contract",
+                headers,
+                payload: { ref },
+            });
+            expect(contract.statusCode).toBe(200);
+            expect(PluginCollectionContractReadResultV1Schema.parse(contract.json()))
+                .toMatchObject({ access: "writable", contract: { contractDigest: ref.contractDigest } });
+
+            const mutation = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    writerContext: {
+                        schemaVersion: ref.schemaVersion,
+                        contractDigest: ref.contractDigest,
+                    },
+                    operations: [{
+                        kind: "put",
+                        rowId: "task-claimed",
+                        expectedRevision: "absent",
+                        expectedAbsenceEpoch: 0,
+                        content: { t: "plain", v: { privateNote: "never projected" } },
+                        projection: { status: "open", title: "Claimed task" },
+                    }],
+                },
+            });
+            expect(mutation.statusCode).toBe(200);
+
+            const queried = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/ui-query",
+                headers,
+                payload: queryRequest(),
+            });
+            expect(queried.statusCode).toBe(200);
+            expect(PluginCollectionUiQueryResultV1Schema.parse(queried.json()).rows)
+                .toMatchObject([{ context: { rowId: "task-claimed", revision: 1 } }]);
         });
     });
 

@@ -2,17 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
     isRequestOnPublicServerUrl,
-    resolveCachedPublicServerUrl,
-    readPublicServerUrlFromEnv,
+    peekInferredPublicServerUrl,
+    readInferredPublicServerAccess,
+    resolveInferredPublicServerUrl,
     resetPublicServerUrlInferenceCacheForTests,
 } from "./publicServerUrlInference";
 
+async function resolveCachedPublicServerUrl(env: NodeJS.ProcessEnv): Promise<string | null> {
+    return (await resolveInferredPublicServerUrl(env))?.url ?? null;
+}
+
 vi.mock("@/app/integrations/tailscale/tailscaleServePublicUrlInference", () => ({
-    inferAndApplyTailscaleServePublicServerUrl: vi.fn(),
+    inferTailscaleServePublicServerUrl: vi.fn(),
 }));
 
 vi.mock("@/app/integrations/tailscale/tailscaleFunnelPublicUrlInference", () => ({
-    inferAndApplyTailscaleFunnelPublicServerUrl: vi.fn(),
+    inferTailscaleFunnelPublicServerUrl: vi.fn(),
 }));
 
 describe("publicServerUrlInference", () => {
@@ -141,14 +146,11 @@ describe("publicServerUrlInference", () => {
         });
 
         it("falls back to tailscale funnel inference after serve inference returns null", async () => {
-            const { inferAndApplyTailscaleServePublicServerUrl } = await import("@/app/integrations/tailscale/tailscaleServePublicUrlInference");
-            const { inferAndApplyTailscaleFunnelPublicServerUrl } = await import("@/app/integrations/tailscale/tailscaleFunnelPublicUrlInference");
+            const { inferTailscaleServePublicServerUrl } = await import("@/app/integrations/tailscale/tailscaleServePublicUrlInference");
+            const { inferTailscaleFunnelPublicServerUrl } = await import("@/app/integrations/tailscale/tailscaleFunnelPublicUrlInference");
 
-            vi.mocked(inferAndApplyTailscaleServePublicServerUrl).mockImplementation(async () => null);
-            vi.mocked(inferAndApplyTailscaleFunnelPublicServerUrl).mockImplementation(async (env) => {
-                env.HAPPIER_PUBLIC_SERVER_URL = "https://funnel.example.test";
-                return "https://funnel.example.test";
-            });
+            vi.mocked(inferTailscaleServePublicServerUrl).mockImplementation(async () => null);
+            vi.mocked(inferTailscaleFunnelPublicServerUrl).mockImplementation(async () => "https://funnel.example.test");
 
             const env = {
                 HAPPIER_TAILSCALE_INFER_PUBLIC_URL: "1",
@@ -160,8 +162,33 @@ describe("publicServerUrlInference", () => {
             const resolved = await resolveCachedPublicServerUrl(env);
 
             expect(resolved).toBe("https://funnel.example.test");
-            expect(inferAndApplyTailscaleServePublicServerUrl).toHaveBeenCalledTimes(1);
-            expect(inferAndApplyTailscaleFunnelPublicServerUrl).toHaveBeenCalledTimes(1);
+            expect(readInferredPublicServerAccess()?.inferred).toEqual({ url: "https://funnel.example.test", source: "tailscale_funnel" });
+            expect(inferTailscaleServePublicServerUrl).toHaveBeenCalledTimes(1);
+            expect(inferTailscaleFunnelPublicServerUrl).toHaveBeenCalledTimes(1);
+            // Inference is a read-only source: it never writes the environment it probed with.
+            expect(env.HAPPIER_PUBLIC_SERVER_URL).toBe("");
+            expect(env.HAPPIER_PUBLIC_SERVER_URL_INFERRED).toBeUndefined();
+        });
+
+        it("answers a hot-path peek from the cache and refreshes in the background, never blocking", async () => {
+            const { inferTailscaleServePublicServerUrl } = await import("@/app/integrations/tailscale/tailscaleServePublicUrlInference");
+            let release: (value: string) => void = () => undefined;
+            vi.mocked(inferTailscaleServePublicServerUrl).mockImplementation(() => new Promise((resolve) => {
+                release = resolve;
+            }));
+            const env = { HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL: "0", HAPPIER_PUBLIC_SERVER_URL_INFER_TTL_MS: "60000" } as NodeJS.ProcessEnv;
+
+            resetPublicServerUrlInferenceCacheForTests();
+            // Cold: the peek starts one probe and answers "nothing inferred yet" instead of waiting.
+            expect(peekInferredPublicServerUrl(env)).toBeNull();
+            expect(peekInferredPublicServerUrl(env)).toBeNull();
+            await vi.waitFor(() => expect(inferTailscaleServePublicServerUrl).toHaveBeenCalledTimes(1));
+            expect(peekInferredPublicServerUrl(env)).toBeNull();
+            release("https://serve.example.test");
+            await vi.waitFor(() => {
+                expect(peekInferredPublicServerUrl(env)).toEqual({ url: "https://serve.example.test", source: "tailscale_serve" });
+            });
+            expect(inferTailscaleServePublicServerUrl).toHaveBeenCalledTimes(1);
         });
 
         it("invalidates the cache when a relay access config appears after a null inference", async () => {
@@ -281,21 +308,6 @@ describe("publicServerUrlInference", () => {
                 process.env.HOME = previousHome;
                 await rm(homeDir, { recursive: true, force: true });
             }
-        });
-    });
-
-    describe("readPublicServerUrlFromEnv", () => {
-        it("normalizes and strips userinfo/query/hash/trailing slash", () => {
-            const env = {
-                HAPPIER_PUBLIC_SERVER_URL: "https://user:pass@stack.example.test/?q=1#frag",
-            } as NodeJS.ProcessEnv;
-
-            expect(readPublicServerUrlFromEnv(env)).toBe("https://stack.example.test");
-        });
-
-        it("returns null when url is missing or invalid", () => {
-            expect(readPublicServerUrlFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
-            expect(readPublicServerUrlFromEnv({ HAPPIER_PUBLIC_SERVER_URL: "not-a-url" } as NodeJS.ProcessEnv)).toBeNull();
         });
     });
 

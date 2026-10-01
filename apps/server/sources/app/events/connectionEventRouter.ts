@@ -21,8 +21,11 @@ import { readSessionAccessAuthenticationFromSocket } from "@/app/session/access/
 import { inTx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import type { SessionBroadcastContainer } from "@happier-dev/protocol";
+import type { VerifiedApiTokenPrincipal } from "@/app/auth/auth";
 import {
     getAccountRevocationSocketRoom,
+    getApiTokenRevocationSocketRoom,
+    getAccountTerminalSocketRoom,
     getAccountSessionSocketRoom,
     getMachineBoundSessionSocketRoom,
     getMachineSocketRoom,
@@ -56,6 +59,17 @@ function estimateEventFanoutPayloadBytes(payload: any): number {
 
 function shouldSampleEventFanoutPayloadBytes(): boolean {
     return Math.random() < EVENT_FANOUT_PAYLOAD_BYTES_SAMPLE_RATE;
+}
+
+function projectPayloadForSocket(data: Readonly<{ authTokenKind?: unknown }>, payload: unknown): unknown {
+    if (data.authTokenKind !== "api_token" || !payload || typeof payload !== "object") return payload;
+    const container = payload as Readonly<Record<string, unknown>>;
+    const body = container.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return payload;
+    const update = body as Readonly<Record<string, unknown>>;
+    if (update.t !== "update-session" || !("access" in update)) return payload;
+    const { access: _access, ...viewerBody } = update;
+    return { ...container, body: viewerBody };
 }
 
 class EventRouter {
@@ -107,6 +121,31 @@ class EventRouter {
         }
         for (const connection of this.userConnections.get(accountId) ?? []) {
             connection.socket.disconnect(true);
+        }
+    }
+
+    disconnectAccountTerminalSockets(accountId: string): void {
+        if (this.io) {
+            this.io.to(getAccountTerminalSocketRoom(accountId)).disconnectSockets(true);
+            return;
+        }
+        for (const connection of this.userConnections.get(accountId) ?? []) {
+            if (connection.socket.data.authTokenKind === "terminal") connection.socket.disconnect(true);
+        }
+    }
+
+    disconnectApiTokenSockets(tokenIds: readonly string[]): void {
+        if (tokenIds.length === 0) return;
+        if (this.io) {
+            this.io.to(tokenIds.map(getApiTokenRevocationSocketRoom)).disconnectSockets(true);
+            return;
+        }
+        for (const connections of this.userConnections.values()) {
+            for (const connection of connections) {
+                const principal: VerifiedApiTokenPrincipal | undefined = connection.socket.data.apiTokenPrincipal;
+                if (principal && (tokenIds.includes(principal.credentialId)
+                    || (principal.parentTokenId !== null && tokenIds.includes(principal.parentTokenId)))) connection.socket.disconnect(true);
+            }
         }
     }
 
@@ -397,7 +436,7 @@ class EventRouter {
                             continue;
                         }
                         if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
-                        this.io!.to(socket.id).emit(params.eventName, params.payload);
+                        this.io!.to(socket.id).emit(params.eventName, projectPayloadForSocket(socket.data, params.payload));
                         deliveredCount += 1;
                     }
                 });
@@ -431,7 +470,7 @@ class EventRouter {
                         continue;
                     }
                     if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
-                    connection.socket.emit(params.eventName, params.payload);
+                    connection.socket.emit(params.eventName, projectPayloadForSocket(connection.socket.data, params.payload));
                     deliveredCount += 1;
                 }
             });
@@ -498,7 +537,7 @@ class EventRouter {
                         authentication: readSessionAccessAuthenticationFromSocket(socket),
                     });
                     if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
-                    localIo.to(socket.id).emit(delivery.eventName, delivery.payload);
+                    localIo.to(socket.id).emit(delivery.eventName, projectPayloadForSocket(socket.data, delivery.payload));
                     deliveredCount += 1;
                 } catch {
                     // One malformed or stale socket cannot suppress another socket's delivery.

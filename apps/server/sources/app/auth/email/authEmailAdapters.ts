@@ -47,7 +47,7 @@ function formatFrom(config: AuthEmailSmtpConfig): string {
  */
 export function createDisabledAuthEmailDelivery(): AuthEmailDelivery {
     return {
-        isReady: false,
+        isReady: async () => false,
         async deliver(): Promise<AuthEmailDeliveryResult> {
             return {
                 status: "failed",
@@ -63,7 +63,7 @@ export function createSmtpAuthEmailDelivery(params: Readonly<{
     transport: AuthEmailSmtpTransport;
 }>): AuthEmailDelivery {
     return {
-        isReady: true,
+        isReady: async () => true,
         async deliver(message: AuthEmailMessage): Promise<AuthEmailDeliveryResult> {
             let envelope: AuthEmailSmtpEnvelope;
             try {

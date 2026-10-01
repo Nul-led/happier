@@ -95,6 +95,36 @@ export function computeTeamWorkosConnectionRuntimeFingerprint(input: Readonly<{
     return `team-workos:v1:${input.providerSecurityRevision}:${input.connectionRevision}:${digest}`;
 }
 
+/** Current provider authority shared by network reads and directory effect commits. */
+export async function resolveTeamWorkosProviderInstanceInTx(
+    tx: Tx,
+    input: Readonly<{ teamId: string; providerInstanceId: string; includeDisabled?: boolean }>,
+): Promise<
+    | Readonly<{ status: "ready"; instance: IdentityProviderInstanceView }>
+    | Readonly<{ status: "unreadable" | "provider_unavailable" }>
+> {
+    const teamProvider = await resolveIdentityProviderInstanceRuntimeInTx(tx, {
+        id: input.providerInstanceId,
+        owner: { kind: "team", teamId: input.teamId },
+        includeDisabled: input.includeDisabled,
+    });
+    const resolvedProvider = teamProvider.status === "not_found"
+        ? await resolveIdentityProviderInstanceRuntimeInTx(tx, {
+            id: input.providerInstanceId,
+            owner: { kind: "home" },
+            includeDisabled: input.includeDisabled,
+        })
+        : teamProvider;
+    if (resolvedProvider.status === "unreadable") return { status: "unreadable" };
+    if (
+        resolvedProvider.status !== "ready"
+        || resolvedProvider.instance.kind !== "workos_sso"
+        || resolvedProvider.instance.config.kind !== "workos_sso"
+        || resolvedProvider.secrets !== null
+    ) return { status: "provider_unavailable" };
+    return { status: "ready", instance: resolvedProvider.instance };
+}
+
 export function resolveTeamWorkosConnectionRuntimeInTx(
     tx: Tx,
     input: TeamWorkosRuntimeInput & Readonly<{ purpose: "directory" }>,
@@ -130,25 +160,12 @@ export async function resolveTeamWorkosConnectionRuntimeInTx(
         return { status: "connection_disabled" };
     }
 
-    const teamProvider = await resolveIdentityProviderInstanceRuntimeInTx(tx, {
-        id: row.providerInstanceId,
-        owner: { kind: "team", teamId: input.teamId },
+    const resolvedProvider = await resolveTeamWorkosProviderInstanceInTx(tx, {
+        providerInstanceId: row.providerInstanceId,
+        teamId: input.teamId,
         includeDisabled: input.includeDisabled,
     });
-    const resolvedProvider = teamProvider.status === "not_found"
-        ? await resolveIdentityProviderInstanceRuntimeInTx(tx, {
-            id: row.providerInstanceId,
-            owner: { kind: "home" },
-            includeDisabled: input.includeDisabled,
-        })
-        : teamProvider;
-    if (resolvedProvider.status === "unreadable") return { status: "unreadable" };
-    if (
-        resolvedProvider.status !== "ready"
-        || resolvedProvider.instance.kind !== "workos_sso"
-        || resolvedProvider.instance.config.kind !== "workos_sso"
-        || resolvedProvider.secrets !== null
-    ) return { status: "provider_unavailable" };
+    if (resolvedProvider.status !== "ready") return resolvedProvider;
 
     const documents = parseTeamIdentityConnectionDocuments({
         providerKind: resolvedProvider.instance.kind,

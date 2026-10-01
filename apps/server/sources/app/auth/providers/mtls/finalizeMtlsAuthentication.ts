@@ -76,7 +76,7 @@ export async function finalizeMtlsAuthenticationInTx(
     teamId?: string;
     teamInvitationContinuation?: TeamInvitationPostAuthContinuationV1;
 }>> {
-    if (params.team?.invitation && !isTeamMembershipAdmissionEnabled()) abort("not-eligible");
+    if (params.team?.invitation && !await isTeamMembershipAdmissionEnabled({ tx })) abort("not-eligible");
     const team = params.team
         ? await tx.team.findUnique({
             where: { id: params.team.teamId },
@@ -151,7 +151,7 @@ export async function finalizeMtlsAuthenticationInTx(
         });
     }
 
-    if (team) {
+    if (team && !params.team?.invitation) {
         const qualification = await qualifyTeamAuthenticationInTx(tx, {
             env: process.env,
             team,

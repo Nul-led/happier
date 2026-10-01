@@ -17,6 +17,14 @@ import {
 } from "./connectedAccountAttemptTransactions/registerConnectedAccountAttemptTransactionRoutes";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
+const transactionScope = {
+    machineId: "machine-a",
+    service: { pluginId: "acme.accounts", localId: "work" },
+    modeId: "oauth",
+    intent: "connect",
+    phase: "awaitingOAuth",
+    createdAtMs: 1,
+} as const;
 
 function resolveContractProviderFromEnv(): "postgres" | "mysql" {
     const raw = (process.env.HAPPIER_DB_PROVIDER ?? process.env.HAPPY_DB_PROVIDER ?? "postgres")
@@ -146,7 +154,11 @@ describe("Connected Account attempt transaction provider db contract", () => {
                 method: "POST",
                 url,
                 headers,
-                payload: { content: initialContent, expiresAtMs },
+                payload: { content: initialContent, expiresAtMs, scope: {
+                    ...transactionScope,
+                    modeId: scenario.kind,
+                    phase: scenario.kind === "oauth" ? "awaitingOAuth" : "awaitingDeviceAuthorization",
+                } },
             });
             expect(created.statusCode).toBe(200);
             expect(created.json()).toEqual({
@@ -177,6 +189,11 @@ describe("Connected Account attempt transaction provider db contract", () => {
                     expectedRevision: 2,
                     content: replacementContent,
                     expiresAtMs: expiresAtMs + 1_000,
+                    scope: {
+                        ...transactionScope,
+                        modeId: scenario.kind,
+                        phase: scenario.kind === "oauth" ? "awaitingOAuth" : "awaitingDeviceAuthorization",
+                    },
                 },
             });
             expect(staleReplace.statusCode).toBe(409);
@@ -192,6 +209,11 @@ describe("Connected Account attempt transaction provider db contract", () => {
                     expectedRevision: 1,
                     content: replacementContent,
                     expiresAtMs: expiresAtMs + 1_000,
+                    scope: {
+                        ...transactionScope,
+                        modeId: scenario.kind,
+                        phase: scenario.kind === "oauth" ? "awaitingOAuth" : "awaitingDeviceAuthorization",
+                    },
                 },
             });
             expect(replaced.statusCode).toBe(200);
@@ -261,6 +283,7 @@ describe("Connected Account attempt transaction provider db contract", () => {
                         ciphertextBytes: 1_200,
                     }),
                     expiresAtMs: Date.now() + 15 * 60_000,
+                    scope: transactionScope,
                 },
             })),
         );

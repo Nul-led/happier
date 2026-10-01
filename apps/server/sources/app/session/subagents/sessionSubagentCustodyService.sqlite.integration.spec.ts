@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
     createSessionSubagentCustodyKeyV1,
     createSessionSubagentCustodyPlainContentFingerprintV1,
+    createSessionSubagentSourceCustodyStorageIdentityV1,
     type SessionSubagentCustodyScopeV1,
 } from '@happier-dev/protocol';
 
@@ -19,7 +20,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lig
 import {
     listSessionSubagentCustody,
     mutateSessionSubagentCustody,
-    retireSessionSubagentCustodyGeneration,
+    retireSessionSubagentCustodySource,
 } from './sessionSubagentCustodyService';
 
 const authentication = createPresentUserSessionAccessAuthentication();
@@ -55,13 +56,28 @@ describe('durable subagent custody on SQLite', () => {
         return { account, session };
     }
 
-    function custodyScope(overrides: Partial<SessionSubagentCustodyScopeV1> = {}): SessionSubagentCustodyScopeV1 {
+    function custodyScope(
+        overrides: Partial<Omit<SessionSubagentCustodyScopeV1, 'sourceCustody'>> & Readonly<{
+            immutableGenerationId?: string;
+            sourceCustody?: SessionSubagentCustodyScopeV1['sourceCustody'];
+        }> = {},
+    ): SessionSubagentCustodyScopeV1 {
+        const { immutableGenerationId = `generation-${randomUUID()}`, ...rest } = overrides;
         return {
             pluginId: 'acme.agent',
             contributionId: 'assistant',
-            immutableGenerationId: `generation-${randomUUID()}`,
-            ...overrides,
+            sourceCustody: { kind: 'managed', immutableGenerationId, installSource: 'npm' },
+            ...rest,
         };
+    }
+
+    function sourceWhere(scope: SessionSubagentCustodyScopeV1) {
+        const identity = createSessionSubagentSourceCustodyStorageIdentityV1(scope.sourceCustody);
+        return { sourceCustodyKind: identity.kind, sourceCustodyId: identity.id };
+    }
+
+    function storedScope(scope: SessionSubagentCustodyScopeV1) {
+        return { pluginId: scope.pluginId, contributionId: scope.contributionId, ...sourceWhere(scope) };
     }
 
     function request(
@@ -387,7 +403,7 @@ describe('durable subagent custody on SQLite', () => {
             data: Array.from({ length: 256 }, (_, index) => ({
                 accountId: account.id,
                 sessionId: session.id,
-                ...recordScope,
+                ...storedScope(recordScope),
                 custodyKey: recordCustodyKey,
                 subagentId: `seeded-record-${index}`,
                 subagentKey: index.toString(16).padStart(64, '0'),
@@ -413,7 +429,7 @@ describe('durable subagent custody on SQLite', () => {
             data: Array.from({ length: 4_096 }, (_, index) => ({
                 accountId: account.id,
                 sessionId: session.id,
-                ...receiptScope,
+                ...storedScope(receiptScope),
                 custodyKey: receiptCustodyKey,
                 operationId: `seeded-operation-${index}`,
                 requestDigest: index.toString(16).padStart(64, '0'),
@@ -444,7 +460,7 @@ describe('durable subagent custody on SQLite', () => {
                 return {
                     accountId: recordOwner.id,
                     sessionId: recordSession.id,
-                    ...firstRecordScope,
+                    ...storedScope(firstRecordScope),
                     custodyKey: firstRecordCustodyKey,
                     subagentId,
                     subagentKey: createHash('sha256').update(subagentId, 'utf8').digest('hex'),
@@ -499,7 +515,7 @@ describe('durable subagent custody on SQLite', () => {
                 ...Array.from({ length: 4_095 }, (_, index) => ({
                     accountId: receiptOwner.id,
                     sessionId: receiptSession.id,
-                    ...receiptScopes[index % receiptScopes.length]!,
+                    ...storedScope(receiptScopes[index % receiptScopes.length]!),
                     custodyKey: receiptCustodyKeys[index % receiptCustodyKeys.length]!,
                     operationId: `aggregate-active-operation-${index}`,
                     requestDigest: index.toString(16).padStart(64, '0'),
@@ -513,7 +529,7 @@ describe('durable subagent custody on SQLite', () => {
                 ...Array.from({ length: 256 }, (_, index) => ({
                     accountId: receiptOwner.id,
                     sessionId: receiptSession.id,
-                    ...expiredScope,
+                    ...storedScope(expiredScope),
                     custodyKey: expiredCustodyKey,
                     operationId: `aggregate-expired-operation-${index}`,
                     requestDigest: `expired-${index}`,
@@ -594,29 +610,29 @@ describe('durable subagent custody on SQLite', () => {
         await expect(mutateSessionSubagentCustody({ actorUserId: participant.id, authentication, sessionId: session.id, request: participantWrite }))
             .resolves.toMatchObject({ ok: true, replayed: false });
 
-        await expect(retireSessionSubagentCustodyGeneration({
+        await expect(retireSessionSubagentCustodySource({
             actorUserId: owner.id,
-            request: { pluginId: releasedScope.pluginId, immutableGenerationId: releasedScope.immutableGenerationId },
+            request: { pluginId: releasedScope.pluginId, sourceCustody: releasedScope.sourceCustody },
         })).resolves.toEqual({ ok: true });
         await expect(db.sessionSubagentCustody.count({
-            where: { accountId: owner.id, pluginId: releasedScope.pluginId, immutableGenerationId: releasedScope.immutableGenerationId },
+            where: { accountId: owner.id, pluginId: releasedScope.pluginId, ...sourceWhere(releasedScope) },
         })).resolves.toBe(0);
         await expect(db.sessionSubagentCustodyReceipt.count({
-            where: { accountId: owner.id, pluginId: releasedScope.pluginId, immutableGenerationId: releasedScope.immutableGenerationId },
+            where: { accountId: owner.id, pluginId: releasedScope.pluginId, ...sourceWhere(releasedScope) },
         })).resolves.toBe(0);
         await expect(db.sessionSubagentCustody.count({
-            where: { accountId: owner.id, immutableGenerationId: { in: [currentScope.immutableGenerationId, rollbackScope.immutableGenerationId] } },
+            where: { accountId: owner.id, OR: [sourceWhere(currentScope), sourceWhere(rollbackScope)] },
         })).resolves.toBe(2);
         await expect(db.sessionSubagentCustodyReceipt.count({
-            where: { accountId: owner.id, immutableGenerationId: { in: [currentScope.immutableGenerationId, rollbackScope.immutableGenerationId] } },
+            where: { accountId: owner.id, OR: [sourceWhere(currentScope), sourceWhere(rollbackScope)] },
         })).resolves.toBe(2);
         await expect(db.sessionSubagentCustody.count({
-            where: { accountId: participant.id, sessionId: session.id, immutableGenerationId: releasedScope.immutableGenerationId },
+            where: { accountId: participant.id, sessionId: session.id, ...sourceWhere(releasedScope) },
         })).resolves.toBe(1);
 
-        await expect(retireSessionSubagentCustodyGeneration({
+        await expect(retireSessionSubagentCustodySource({
             actorUserId: owner.id,
-            request: { pluginId: releasedScope.pluginId, immutableGenerationId: releasedScope.immutableGenerationId },
+            request: { pluginId: releasedScope.pluginId, sourceCustody: releasedScope.sourceCustody },
         })).resolves.toEqual({ ok: true });
         await db.$disconnect();
         await db.$connect();
@@ -625,27 +641,28 @@ describe('durable subagent custody on SQLite', () => {
             authentication,
             sessionId: session.id,
             request: { ...releasedWrite, operationId: 'stale-handle-after-retirement' },
-        })).resolves.toEqual({ ok: false, error: 'generation-retired' });
+        })).resolves.toEqual({ ok: false, error: 'source-retired' });
         await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: currentWrite }))
             .resolves.toMatchObject({ ok: true, replayed: true });
         await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: rollbackWrite }))
             .resolves.toMatchObject({ ok: true, replayed: true });
 
         await db.session.delete({ where: { id: session.id } });
-        await expect(db.sessionSubagentCustodyRetiredGeneration.count({ where: { accountId: owner.id } })).resolves.toBe(1);
+        await expect(db.sessionSubagentCustodyRetiredSource.count({ where: { accountId: owner.id } })).resolves.toBe(1);
     });
 
     it('fails the 4097th actor generation tombstone visibly without eviction or deleting its live custody', async () => {
         const { account, session } = await seed();
         const retainedGenerationId = 'retained-generation';
         const target = request(session.id, { operationId: 'retirement-capacity-target' });
-        await db.sessionSubagentCustodyRetiredGeneration.createMany({
+        await db.sessionSubagentCustodyRetiredSource.createMany({
             data: [
-                { accountId: account.id, pluginId: 'acme.retained', immutableGenerationId: retainedGenerationId, capacitySlot: 0 },
+                { accountId: account.id, pluginId: 'acme.retained', sourceCustodyKind: 'managed', sourceCustodyId: retainedGenerationId, capacitySlot: 0 },
                 ...Array.from({ length: 4_095 }, (_, index) => ({
                     accountId: account.id,
                     pluginId: `acme.seed-${index}`,
-                    immutableGenerationId: `generation-${index}`,
+                    sourceCustodyKind: 'managed',
+                    sourceCustodyId: `generation-${index}`,
                     capacitySlot: index + 1,
                 })),
             ],
@@ -657,15 +674,15 @@ describe('durable subagent custody on SQLite', () => {
             request: target,
         })).resolves.toMatchObject({ ok: true, replayed: false });
 
-        await expect(retireSessionSubagentCustodyGeneration({
+        await expect(retireSessionSubagentCustodySource({
             actorUserId: account.id,
-            request: { pluginId: 'acme.retained', immutableGenerationId: retainedGenerationId },
+            request: { pluginId: 'acme.retained', sourceCustody: { kind: 'managed', immutableGenerationId: retainedGenerationId, installSource: 'npm' } },
         })).resolves.toEqual({ ok: true });
-        await expect(retireSessionSubagentCustodyGeneration({
+        await expect(retireSessionSubagentCustodySource({
             actorUserId: account.id,
-            request: { pluginId: target.scope.pluginId, immutableGenerationId: target.scope.immutableGenerationId },
+            request: { pluginId: target.scope.pluginId, sourceCustody: target.scope.sourceCustody },
         })).resolves.toEqual({ ok: false, error: 'retirement-capacity-exceeded' });
-        await expect(db.sessionSubagentCustodyRetiredGeneration.count({
+        await expect(db.sessionSubagentCustodyRetiredSource.count({
             where: { accountId: account.id },
         })).resolves.toBe(4_096);
         await expect(db.sessionSubagentCustody.count({
@@ -678,31 +695,32 @@ describe('durable subagent custody on SQLite', () => {
 
     it('linearizes concurrent claims for the final retirement slot without oversubscription or eviction', async () => {
         const { account } = await seed();
-        await db.sessionSubagentCustodyRetiredGeneration.createMany({
+        await db.sessionSubagentCustodyRetiredSource.createMany({
             data: Array.from({ length: 4_095 }, (_, index) => ({
                 accountId: account.id,
                 pluginId: `acme.seed-${index}`,
-                immutableGenerationId: `generation-${index}`,
+                sourceCustodyKind: 'managed',
+                sourceCustodyId: `generation-${index}`,
                 capacitySlot: index,
             })),
         });
 
         const results = await Promise.all([
-            retireSessionSubagentCustodyGeneration({
+            retireSessionSubagentCustodySource({
                 actorUserId: account.id,
-                request: { pluginId: 'acme.concurrent-a', immutableGenerationId: 'generation-a' },
+                request: { pluginId: 'acme.concurrent-a', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-a', installSource: 'npm' } },
             }),
-            retireSessionSubagentCustodyGeneration({
+            retireSessionSubagentCustodySource({
                 actorUserId: account.id,
-                request: { pluginId: 'acme.concurrent-b', immutableGenerationId: 'generation-b' },
+                request: { pluginId: 'acme.concurrent-b', sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-b', installSource: 'npm' } },
             }),
         ]);
 
         expect(results.filter((result) => result.ok)).toHaveLength(1);
         expect(results.filter((result) => !result.ok && result.error === 'retirement-capacity-exceeded')).toHaveLength(1);
-        await expect(db.sessionSubagentCustodyRetiredGeneration.count({ where: { accountId: account.id } }))
+        await expect(db.sessionSubagentCustodyRetiredSource.count({ where: { accountId: account.id } }))
             .resolves.toBe(4_096);
-        await expect(db.sessionSubagentCustodyRetiredGeneration.count({
+        await expect(db.sessionSubagentCustodyRetiredSource.count({
             where: { accountId: account.id, pluginId: { in: ['acme.concurrent-a', 'acme.concurrent-b'] } },
         })).resolves.toBe(1);
     });
@@ -716,26 +734,26 @@ describe('durable subagent custody on SQLite', () => {
 
         const [mutationResult, retirementResult] = await Promise.all([
             mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation }),
-            retireSessionSubagentCustodyGeneration({
+            retireSessionSubagentCustodySource({
                 actorUserId: account.id,
-                request: { pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
+                request: { pluginId: mutation.scope.pluginId, sourceCustody: mutation.scope.sourceCustody },
             }),
         ]);
 
         expect(retirementResult).toEqual({ ok: true });
-        expect(mutationResult.ok || mutationResult.error === 'generation-retired').toBe(true);
+        expect(mutationResult.ok || mutationResult.error === 'source-retired').toBe(true);
         await expect(db.sessionSubagentCustody.count({
-            where: { accountId: account.id, pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
+            where: { accountId: account.id, pluginId: mutation.scope.pluginId, ...sourceWhere(mutation.scope) },
         })).resolves.toBe(0);
         await expect(db.sessionSubagentCustodyReceipt.count({
-            where: { accountId: account.id, pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
+            where: { accountId: account.id, pluginId: mutation.scope.pluginId, ...sourceWhere(mutation.scope) },
         })).resolves.toBe(0);
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
             authentication,
             sessionId: session.id,
             request: { ...mutation, operationId: 'generation-race-stale-retry' },
-        })).resolves.toEqual({ ok: false, error: 'generation-retired' });
+        })).resolves.toEqual({ ok: false, error: 'source-retired' });
     });
 
     it('expires a target receipt outside the bounded cleanup batch before replay admission', async () => {
@@ -747,7 +765,9 @@ describe('durable subagent custody on SQLite', () => {
                 ...Array.from({ length: 256 }, (_, index) => ({
                     accountId: account.id,
                     sessionId: session.id,
-                    ...mutation.scope,
+                    pluginId: mutation.scope.pluginId,
+                    contributionId: mutation.scope.contributionId,
+                    ...sourceWhere(mutation.scope),
                     custodyKey: mutation.custodyKey,
                     operationId: `older-expired-${index}`,
                     requestDigest: `digest-${index}`,
@@ -761,7 +781,9 @@ describe('durable subagent custody on SQLite', () => {
                 {
                     accountId: account.id,
                     sessionId: session.id,
-                    ...mutation.scope,
+                    pluginId: mutation.scope.pluginId,
+                    contributionId: mutation.scope.contributionId,
+                    ...sourceWhere(mutation.scope),
                     custodyKey: mutation.custodyKey,
                     operationId: mutation.operationId,
                     requestDigest: 'stale-target-digest',
@@ -814,7 +836,7 @@ describe('durable subagent custody on SQLite', () => {
 
                 const hydrated = await app.inject({
                     method: 'GET',
-                    url: `/v2/sessions/${session.id}/subagents/custody?pluginId=${encodeURIComponent(mutation.scope.pluginId)}&contributionId=${encodeURIComponent(mutation.scope.contributionId)}&immutableGenerationId=${encodeURIComponent(mutation.scope.immutableGenerationId)}&custodyKey=${encodeURIComponent(mutation.custodyKey)}`,
+                    url: `/v2/sessions/${session.id}/subagents/custody?pluginId=${encodeURIComponent(mutation.scope.pluginId)}&contributionId=${encodeURIComponent(mutation.scope.contributionId)}&sourceCustody=${encodeURIComponent(JSON.stringify(mutation.scope.sourceCustody))}&custodyKey=${encodeURIComponent(mutation.custodyKey)}`,
                     headers: { 'x-test-user-id': account.id },
                 });
                 expect(hydrated.statusCode).toBe(200);
@@ -822,9 +844,9 @@ describe('durable subagent custody on SQLite', () => {
 
                 const isolatedRetirement = await app.inject({
                     method: 'POST',
-                    url: '/v2/session-subagents/custody/generation-retirements',
+                    url: '/v2/session-subagents/custody/source-retirements',
                     headers: { 'content-type': 'application/json', 'x-test-user-id': outsider.id },
-                    payload: { pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
+                    payload: { pluginId: mutation.scope.pluginId, sourceCustody: mutation.scope.sourceCustody },
                 });
                 expect(isolatedRetirement.statusCode).toBe(200);
                 await expect(db.sessionSubagentCustody.count({ where: { accountId: account.id } })).resolves.toBe(1);
@@ -832,9 +854,9 @@ describe('durable subagent custody on SQLite', () => {
                 for (let attempt = 0; attempt < 2; attempt += 1) {
                     const retired = await app.inject({
                         method: 'POST',
-                        url: '/v2/session-subagents/custody/generation-retirements',
+                        url: '/v2/session-subagents/custody/source-retirements',
                         headers: { 'content-type': 'application/json', 'x-test-user-id': account.id },
-                        payload: { pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
+                        payload: { pluginId: mutation.scope.pluginId, sourceCustody: mutation.scope.sourceCustody },
                     });
                     expect(retired.statusCode).toBe(200);
                     expect(retired.json()).toEqual({ retired: true });
@@ -847,7 +869,7 @@ describe('durable subagent custody on SQLite', () => {
                     payload: { ...mutation, operationId: 'stale-after-retirement' },
                 });
                 expect(staleMutation.statusCode).toBe(409);
-                expect(staleMutation.json()).toMatchObject({ error: 'generation-retired' });
+                expect(staleMutation.json()).toMatchObject({ error: 'source-retired' });
 
                 const denied = await app.inject({
                     method: 'GET',

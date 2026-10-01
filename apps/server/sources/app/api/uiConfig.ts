@@ -1,4 +1,4 @@
-import { parseBooleanEnv } from "../../config/env";
+import { readServerConfig, SERVER_CONFIG } from "@happier-dev/protocol";
 
 export type UiConfig = {
     dir: string | null;
@@ -18,11 +18,9 @@ export type UiConfig = {
 };
 
 export function resolveUiConfig(env: NodeJS.ProcessEnv = process.env): UiConfig {
-    const dirRaw = env.HAPPIER_SERVER_UI_DIR ?? env.HAPPIER_SERVER_LIGHT_UI_DIR;
-    const dir = typeof dirRaw === 'string' && dirRaw.trim() ? dirRaw.trim() : null;
+    const dir = readServerConfig(env, SERVER_CONFIG.HAPPIER_SERVER_UI_DIR) ?? null;
 
-    const prefixRaw = env.HAPPIER_SERVER_UI_PREFIX ?? env.HAPPIER_SERVER_LIGHT_UI_PREFIX;
-    const prefixNormalized = typeof prefixRaw === 'string' && prefixRaw.trim() ? prefixRaw.trim() : '/';
+    const prefixNormalized = readServerConfig(env, SERVER_CONFIG.HAPPIER_SERVER_UI_PREFIX);
     const mountRoot = prefixNormalized === '/' || prefixNormalized === '';
     const prefix = mountRoot
         ? '/'
@@ -30,9 +28,8 @@ export function resolveUiConfig(env: NodeJS.ProcessEnv = process.env): UiConfig 
             ? prefixNormalized.slice(0, -1)
             : prefixNormalized;
 
-    const requiredRaw = env.HAPPIER_SERVER_UI_REQUIRED ?? env.HAPPIER_SERVER_LIGHT_UI_REQUIRED;
-    const required = parseBooleanEnv(requiredRaw, false);
-    const deploymentIdRaw = String(env.HAPPIER_SERVER_UI_DEPLOYMENT_ID ?? '').trim();
+    const required = readServerConfig(env, SERVER_CONFIG.HAPPIER_SERVER_UI_REQUIRED);
+    const deploymentIdRaw = readServerConfig(env, SERVER_CONFIG.HAPPIER_SERVER_UI_DEPLOYMENT_ID) ?? '';
     const deploymentId = /^[A-Za-z0-9_-]{16,128}$/.test(deploymentIdRaw)
         ? deploymentIdRaw
         : null;

@@ -34,7 +34,7 @@ import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access
 const errorSchema = <Code extends z.ZodType>(code: Code) => z.object({ error: code }).strict();
 const InvalidRequestErrorSchema = errorSchema(z.literal("invalid_request"));
 const PageBadRequestErrorSchema = errorSchema(z.enum(["invalid_request", "invalid_cursor"]));
-const ForbiddenErrorSchema = errorSchema(z.literal("forbidden"));
+const ForbiddenErrorSchema = errorSchema(z.enum(["forbidden", "session_access_authentication_required"]));
 const NotFoundErrorSchema = errorSchema(z.literal("session_not_found"));
 const PageConflictErrorSchema = errorSchema(z.literal("session_data_key_unavailable"));
 const PatchConflictErrorSchema = errorSchema(z.enum([
@@ -46,12 +46,15 @@ const PatchConflictErrorSchema = errorSchema(z.enum([
 const ParamsSchema = z.object({ sessionId: z.string().min(1) }).strict();
 
 /** One code decides one status; there are no per-item errors or retry hints. */
-function statusForPageError(error: SessionDataKeyEnvelopePageError): 400 | 403 | 404 | 409 {
+function statusForPageError(error: SessionDataKeyEnvelopePageError): 400 | 403 | 404 | 409 | 503 {
     switch (error) {
         case "invalid_cursor":
             return 400;
         case "forbidden":
+        case "session_access_authentication_required":
             return 403;
+        case "session_access_authentication_unavailable":
+            return 503;
         case "session_data_key_unavailable":
             return 409;
         case "session_not_found":
@@ -59,11 +62,13 @@ function statusForPageError(error: SessionDataKeyEnvelopePageError): 400 | 403 |
     }
 }
 
-function statusForPatchError(error: SessionDataKeyEnvelopePatchError): 400 | 403 | 404 | 409 {
+function statusForPatchError(error: SessionDataKeyEnvelopePatchError): 400 | 403 | 404 | 409 | 503 {
     return error === "invalid_request"
         ? 400
-        : error === "forbidden"
+        : error === "forbidden" || error === "session_access_authentication_required"
             ? 403
+            : error === "session_access_authentication_unavailable"
+                ? 503
             : error === "session_not_found"
                 ? 404
                 : 409;
@@ -82,6 +87,7 @@ export function registerSessionDataKeyEnvelopeRoutes(app: Fastify) {
                 403: ForbiddenErrorSchema,
                 404: NotFoundErrorSchema,
                 409: PageConflictErrorSchema,
+                503: errorSchema(z.literal("session_access_authentication_unavailable")),
             },
         },
     }, async (request, reply) => {
@@ -115,6 +121,7 @@ export function registerSessionDataKeyEnvelopeRoutes(app: Fastify) {
                 403: ForbiddenErrorSchema,
                 404: NotFoundErrorSchema,
                 409: PatchConflictErrorSchema,
+                503: errorSchema(z.literal("session_access_authentication_unavailable")),
             },
         },
     }, async (request, reply) => {

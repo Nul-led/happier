@@ -3,11 +3,12 @@ import { isActiveHomeAccountStatus } from "@happier-dev/protocol";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { inTx, type Tx } from "@/storage/inTx";
 
+import { recordHomeAdministrationEventInTx } from "@/app/home/audit/homeAdministrationEvents";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
 import { countActiveHomeOwnersInTx, readHomeGovernanceAccountInTx } from "./homeCapabilities";
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
-/** The runtime purpose that positively identifies a managed Personal Home. */
-export const PERSONAL_HOME_RUNTIME_PURPOSE = "personal-home";
+export { PERSONAL_HOME_RUNTIME_PURPOSE } from '@/app/runtime/personalHomeRuntimePurpose';
 
 export type HomeOwnerClaimResult =
     | Readonly<{ status: "claimed"; ownerAccountId: string }>
@@ -18,19 +19,28 @@ export type HomeOwnerClaimResult =
 /**
  * The one transition out of the zero-active-owner bootstrap state.
  *
- * Personal Home bootstrap and the deployment-local operator command are the
- * current production callers, and each names an explicit, already existing,
- * active Account. No supported managed-host Home/Account provisioner exists in
+ * Personal Home bootstrap, the deployment-local operator command (also run on
+ * the hosting desktop by the `relay.runtime.personal_home.claim_owner.v1`
+ * task) and the one-time claim code are the current production callers, and
+ * each names an explicit, already existing, active Account. No supported managed-host Home/Account provisioner exists in
  * current repository source; an external producer must supply its immutable
  * trusted Account-creation contract before that path can call this transition.
- * There is no public claim route, setup bearer,
- * or "first signup becomes owner" behavior anywhere in this path, and the
+ * The only HTTP entry is `home.governance.claim`, bound to a code minted by a
+ * deployment-local command; there is no standing setup bearer and no "first
+ * signup becomes owner" behavior anywhere in this path, and the
  * claim grants Home governance only — never Team membership, Session access,
  * or key material.
  */
 export async function claimHomeOwnerInTx(
     tx: Tx,
-    input: Readonly<{ targetAccountId: string }>,
+    input: Readonly<{
+        targetAccountId: string;
+        /**
+         * Who assigned the owner, for the audit trail. `claim_code` is the claiming Account itself,
+         * holding a one-time code the deployment printed (`homeClaimCode.ts`).
+         */
+        via: "deployment_command" | "personal_home_bootstrap" | "claim_code";
+    }>,
 ): Promise<HomeOwnerClaimResult> {
     const target = await readHomeGovernanceAccountInTx(tx, input.targetAccountId);
     if (!target) return { status: "target_not_found" };
@@ -42,6 +52,11 @@ export async function claimHomeOwnerInTx(
     await tx.account.update({
         where: { id: target.accountId },
         data: { homeRole: "owner" },
+    });
+    await recordHomeAdministrationEventInTx(tx, {
+        actor: input.via === "claim_code" ? { kind: "account", accountId: target.accountId } : { kind: input.via },
+        target: { kind: "account", id: target.accountId },
+        detail: { action: "home.owner.claim", summary: input.via === "claim_code" ? { via: "claim_code" } : {} },
     });
     // A claim is an ordinary Home role update as far as every client is
     // concerned, so it publishes the same refresh through the same owners: the
@@ -64,7 +79,10 @@ export async function claimHomeOwnerInTx(
 export async function claimHomeOwner(
     input: Readonly<{ targetAccountId: string }>,
 ): Promise<HomeOwnerClaimResult> {
-    return await inTx(async (tx) => await claimHomeOwnerInTx(tx, input), { isolationLevel: "Serializable" });
+    return await inTx(
+        async (tx) => await claimHomeOwnerInTx(tx, { ...input, via: "deployment_command" }),
+        { isolationLevel: "Serializable" },
+    );
 }
 
 export type PersonalHomeOwnerReconciliationResult =
@@ -87,7 +105,7 @@ export async function reconcilePersonalHomeInitialOwnerInTx(
     tx: Tx,
     input: Readonly<{ runtimePurpose: string | null; accountId: string }>,
 ): Promise<PersonalHomeOwnerReconciliationResult> {
-    if (input.runtimePurpose !== PERSONAL_HOME_RUNTIME_PURPOSE) return { status: "not_personal_home" };
+    if (!isPersonalHomeRuntimePurpose(input.runtimePurpose)) return { status: "not_personal_home" };
 
     const activeOwnerCount = await countActiveHomeOwnersInTx(tx);
     if (activeOwnerCount > 0) return { status: "already_owned", activeOwnerCount };
@@ -95,7 +113,7 @@ export async function reconcilePersonalHomeInitialOwnerInTx(
     const accountCount = await tx.account.count({ where: { status: "active" } });
     if (accountCount !== 1) return { status: "setup_required", accountCount };
 
-    return await claimHomeOwnerInTx(tx, { targetAccountId: input.accountId });
+    return await claimHomeOwnerInTx(tx, { targetAccountId: input.accountId, via: "personal_home_bootstrap" });
 }
 
 export type PersonalHomeBootstrapOwnerResolution =
@@ -118,7 +136,7 @@ export async function resolvePersonalHomeBootstrapOwnerInTx(
     tx: Tx,
     input: Readonly<{ runtimePurpose: string | null }>,
 ): Promise<PersonalHomeBootstrapOwnerResolution> {
-    if (input.runtimePurpose !== PERSONAL_HOME_RUNTIME_PURPOSE) return { status: "not_personal_home" };
+    if (!isPersonalHomeRuntimePurpose(input.runtimePurpose)) return { status: "not_personal_home" };
 
     const activeOwners = await tx.account.findMany({
         where: { status: "active", homeRole: "owner" },

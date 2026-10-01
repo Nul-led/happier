@@ -36,6 +36,26 @@ describe("Account Security native password lifecycle", () => {
     }, 120_000);
     afterAll(async () => { await harness.close(); });
 
+    it("lets a terminal credential read a re-allowed policy under its stale automation ceiling", async () => {
+        const signing = tweetnacl.sign.keyPair();
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            terminalPresentUserPolicy: "allowed",
+        } });
+        const token = await auth.createToken(account.id, undefined, { kind: "terminal", authority: "account_automation" });
+        const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+        app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
+        enableAuthentication(app);
+        registerAccountSecurityRoutes(app);
+        try {
+            const response = await app.inject({ method: "GET", url: "/v1/account/security", headers: {
+                authorization: `Bearer ${token}`, "x-happier-authority-ceiling": "account_automation",
+            } });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toMatchObject({ terminalPresentUserPolicy: "allowed" });
+        } finally { await app.close(); }
+    });
+
     it("enrolls an E2EE Account with no native identity only after exact mailbox verification", async () => {
         const signing = tweetnacl.sign.keyPair();
         const account = await db.account.create({ data: {
@@ -48,7 +68,7 @@ describe("Account Security native password lifecycle", () => {
         app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
         enableAuthentication(app);
         registerAccountSecurityRoutes(app, {
-            authEmailDelivery: { isReady: true, deliver: async (message) => {
+            authEmailDelivery: { isReady: async () => true, deliver: async (message) => {
                 if (message.kind === "native_email_verification") delivered.push(message.verifyUrl);
                 return { status: "sent" };
             } },
@@ -547,14 +567,16 @@ describe("Account Security native password lifecycle", () => {
         }
     });
 
-    it("changes only the bound Account sign-in email and consumes mailbox proof atomically", async () => {
+    it.each([false, true])("changes only the bound Account sign-in email (identity replaced: %s)", async (replaceIdentity) => {
+        const previousEmail = `previous-${replaceIdentity}@example.test`;
+        const replacementEmail = `replacement-${replaceIdentity}@example.test`;
         const account = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
-        await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: "previous@example.test", profile: {} } });
+        const identity = await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: previousEmail, profile: {} } });
         await db.accountPasswordCredential.create({ data: { accountId: account.id,
             credential: { v: 1, kind: "plain_password_hash", hash: await hashPasswordMaterial(new TextEncoder().encode("current long password value")) } } });
         const issued = await inTx(tx => issueNativeAuthOneTimeOperationInTx(tx, {
-            v: 1, purpose: "verify_native_email", normalizedEmail: "replacement@example.test",
-            consumer: { kind: "sign_in_email_change", accountId: account.id, expectedNativeIdentity: "previous@example.test" },
+            v: 1, purpose: "verify_native_email", normalizedEmail: replacementEmail,
+            consumer: { kind: "sign_in_email_change", accountId: account.id, nativeIdentityId: identity.id, expectedNativeIdentity: previousEmail },
         }));
         const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user",
             authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }] });
@@ -568,7 +590,7 @@ describe("Account Security native password lifecycle", () => {
             const collisionIdentity = await db.accountIdentity.create({ data: {
                 accountId: collisionAccount.id,
                 provider: "email",
-                providerUserId: "replacement@example.test",
+                providerUserId: replacementEmail,
                 profile: {},
             } });
             expect((await submit()).statusCode).toBe(409);
@@ -577,11 +599,20 @@ describe("Account Security native password lifecycle", () => {
             await db.accountIdentity.update({ where: { accountId_provider: { accountId: account.id, provider: "email" } }, data: { providerUserId: "intervening@example.test" } });
             expect((await submit()).statusCode).toBe(409);
             expect(await inTx(tx => readNativeAuthOneTimeOperation(tx, { purpose: "verify_native_email", token: issued.rawBearer }))).not.toBeNull();
-            await db.accountIdentity.update({ where: { accountId_provider: { accountId: account.id, provider: "email" } }, data: { providerUserId: "previous@example.test" } });
+            await db.accountIdentity.update({ where: { accountId_provider: { accountId: account.id, provider: "email" } }, data: { providerUserId: previousEmail } });
+            if (replaceIdentity) {
+                await db.accountIdentity.delete({ where: { accountId_provider: { accountId: account.id, provider: "email" } } });
+                await db.accountIdentity.create({ data: { accountId: account.id, provider: "email", providerUserId: previousEmail, profile: {} } });
+                const stale = await submit();
+                expect(stale.statusCode, stale.body).toBe(409);
+                expect(await inTx(tx => readNativeAuthOneTimeOperation(tx, { purpose: "verify_native_email", token: issued.rawBearer }))).not.toBeNull();
+                expect(await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: account.id, provider: "email" } } })).toMatchObject({ providerUserId: previousEmail });
+                return;
+            }
             const changed = await submit();
             expect(changed.statusCode, changed.body).toBe(200);
-            expect(await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: account.id, provider: "email" } } })).toMatchObject({ providerUserId: "replacement@example.test" });
-            expect(await db.accountEmail.findUnique({ where: { accountId_normalizedEmail: { accountId: account.id, normalizedEmail: "replacement@example.test" } } })).not.toBeNull();
+            expect(await db.accountIdentity.findUniqueOrThrow({ where: { accountId_provider: { accountId: account.id, provider: "email" } } })).toMatchObject({ providerUserId: replacementEmail });
+            expect(await db.accountEmail.findUnique({ where: { accountId_normalizedEmail: { accountId: account.id, normalizedEmail: replacementEmail } } })).not.toBeNull();
             expect(await db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: account.id } })).toMatchObject({ revision: 1 });
             expect(await inTx(tx => readNativeAuthOneTimeOperation(tx, { purpose: "verify_native_email", token: issued.rawBearer }))).toBeNull();
             expect((await submit()).statusCode).toBe(400);
@@ -815,7 +846,7 @@ describe("Account Security native password lifecycle", () => {
         enableAuthentication(app);
         registerAccountSecurityRoutes(app, {
             isEmailDeliveryReady: () => true,
-            authEmailDelivery: { isReady: true, deliver: async () => ({ status: "failed", reason: "transport_failed", detail: "offline" }) },
+            authEmailDelivery: { isReady: async () => true, deliver: async () => ({ status: "failed", reason: "transport_failed", detail: "offline" }) },
             resolveApplicationLinkTarget: async () => ({
                 applicationOrigin: "https://app.example.test",
                 homeTarget: "portable-home-target",

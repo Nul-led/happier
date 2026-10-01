@@ -89,12 +89,6 @@ describe('contributes.voiceModelPacks', () => {
       .toEqual([validVoiceModelPack()]);
   });
 
-  it('rejects duplicate local ids within one plugin', () => {
-    expect(PluginContributesV2Schema.safeParse({
-      voiceModelPacks: [validVoiceModelPack(), validVoiceModelPack()],
-    }).success).toBe(false);
-  });
-
   it('requires bounded reviewable license text when acceptance is required', () => {
     const contribution = validVoiceModelPack();
     const requiringAcceptance = {

@@ -32,6 +32,27 @@ const OTHER_MATERIAL: AccountScopedCryptoMaterial = {
   machineKey: new Uint8Array(32).fill(8),
 };
 
+describe('canonical confidential structural indexes', () => {
+  it('keeps raw paths and message hashes within sensitive content', () => {
+    const split = splitReviewCommentV1(comment());
+    expect(split.structural.anchorIndex).toEqual({ kind: 'line' });
+    expect(split.structural.fingerprintIndex).toBeUndefined();
+    expect(split.sensitive.anchor).toMatchObject({ filePath: 'src/private.ts' });
+  });
+  it('verifies retained optional indexes before opening canonical content', () => {
+    const split = splitReviewCommentV1(comment());
+    const structural = { ...split.structural,
+      anchorIndex: { ...split.structural.anchorIndex, filePath: 'src/private.ts' },
+      fingerprintIndex: { normalizedMessageHash: 'dedupe-hash' } };
+    const envelope = sealReviewCommentSensitiveEnvelopeV1({ structural, sensitive: split.sensitive, mode: 'plain' });
+    expect(openReviewCommentSensitiveEnvelopeV1({ structural, envelope, mode: 'plain' }).status).toBe('available');
+    const changedPath = { ...structural, anchorIndex: { ...structural.anchorIndex, filePath: 'other.ts' } };
+    const changedHash = { ...structural, fingerprintIndex: { normalizedMessageHash: 'other' } };
+    expect(openReviewCommentSensitiveEnvelopeV1({ structural: changedPath, envelope, mode: 'plain' }).status).not.toBe('available');
+    expect(openReviewCommentSensitiveEnvelopeV1({ structural: changedHash, envelope, mode: 'plain' }).status).not.toBe('available');
+  });
+});
+
 function comment(overrides: Partial<ReviewCommentV1> = {}): ReviewCommentV1 {
   return {
     v: 1,
@@ -98,6 +119,7 @@ function comment(overrides: Partial<ReviewCommentV1> = {}): ReviewCommentV1 {
       replacementText: 'const secret = false;',
     },
     metadata: {
+      reviewGroupIds: ['panel-1', 'panel-2'],
       severity: 'error',
       taxonomyIds: ['security.secret'],
       tags: ['private'],
@@ -128,6 +150,45 @@ function event(overrides: Partial<ReviewCommentEventV1> = {}): ReviewCommentEven
     ...overrides,
   };
 }
+
+describe('workspace-scoped Review Comment encryption binding', () => {
+  it('round trips a no-Project finding and refuses disclosure under another workspace', () => {
+    const source = comment({
+      projectId: undefined,
+      workspace: { machineId: 'machine-1', path: '/repo' },
+      findingIdentity: 'a'.repeat(64),
+      findingSeverity: 'high',
+      flags: { disputed: true },
+    });
+    const split = splitReviewCommentV1(source);
+    const envelope = sealReviewCommentSensitiveEnvelopeV1({
+      structural: split.structural,
+      sensitive: split.sensitive,
+      mode: 'e2ee',
+      material: MATERIAL,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
+    expect(openStoredReviewCommentV1({
+      stored: { v: 1, structural: split.structural, sensitiveEnvelope: envelope },
+      mode: 'e2ee',
+      material: MATERIAL,
+    })).toMatchObject({ status: 'available', comment: {
+      workspace: source.workspace,
+      findingIdentity: source.findingIdentity,
+      findingSeverity: 'high',
+      flags: { disputed: true },
+    } });
+    expect(openStoredReviewCommentV1({
+      stored: { v: 1, structural: { ...split.structural, workspace: { machineId: 'machine-2', path: '/repo' } }, sensitiveEnvelope: envelope },
+      mode: 'e2ee',
+      material: MATERIAL,
+    })).toMatchObject({ status: 'locked', reason: 'content_binding_mismatch' });
+    expect(() => buildReviewCommentMutationEventEnvelopeV1({
+      accountId: 'account-1', actor: source.author, actionId: 'reviews.comments.transition', mode: 'plain',
+      input: { workspace: source.workspace, commentId: source.id, expectedServerRevision: 1, expectedState: 'open', toState: 'pending_review', reason: 'Raised again', clientMutationId: 'workspace-re-raise' },
+    })).not.toThrow();
+  });
+});
 
 describe('Review Comment structural/sensitive content', () => {
   it('parses a provenance-scoped legacy split migration source without pretending it is one ciphertext', () => {
@@ -248,7 +309,6 @@ describe('Review Comment structural/sensitive content', () => {
       projectId: 'project-1',
       anchorIndex: {
         kind: 'line',
-        filePath: 'src/private.ts',
       },
       bodyVersion: 1,
       serverRevision: 1,

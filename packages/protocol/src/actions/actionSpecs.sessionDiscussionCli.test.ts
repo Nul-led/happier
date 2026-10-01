@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getActionSpec, listActionCliCommandDeclarations } from './actionSpecs.js';
+import { actionCliDerivedDefault } from './actionCliProjection.js';
 
 describe('Session discussion friendly CLI projection', () => {
   it('publishes every user discussion intent under the canonical friendly path', () => {
@@ -39,7 +40,7 @@ describe('Session discussion friendly CLI projection', () => {
       invocationId: 'invocation-1',
     })).toEqual({
       sessionId: 'session-prefix',
-      creationLocalId: 'discussion-invocation-1',
+      creationLocalId: actionCliDerivedDefault('discussion-invocation-1'),
       title: 'Release readiness',
       firstMessage: {
         localId: 'message-invocation-1',

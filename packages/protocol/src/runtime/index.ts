@@ -14,7 +14,6 @@ export {
 export {
   AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_ID_CODE_UNITS,
   AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_REVISION,
-  AGENT_SESSION_STARTUP_INSTRUCTIONS_V1_MAX_UTF8_BYTES,
   AgentSessionStartupInstructionsMarkerV1Schema,
   AgentSessionStartupInstructionsV1Schema,
   type AgentSessionStartupInstructionsMarkerV1,

@@ -33,6 +33,7 @@ function disabledKeepForeverPolicy(): RetentionPolicy {
             globalLocks: keepForever,
             automationRuns: keepForever,
             automationRunEvents: keepForever,
+            homeAdministrationEvents: keepForever,
         },
     };
 }

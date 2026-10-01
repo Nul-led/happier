@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Server } from 'socket.io';
+import { API_TOKEN_FULL_GRANT_V1 } from "@happier-dev/protocol/auth/apiTokenGrant";
 
 import {
     createExternalActionDaemonDispatchResponse,
@@ -33,6 +34,7 @@ const principal = {
     principalId: "principal-1",
     credentialId: "credential-1",
     authority: "account_automation" as const,
+    grant: API_TOKEN_FULL_GRANT_V1,
 };
 
 const protectedMaterial = {

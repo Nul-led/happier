@@ -146,6 +146,46 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
         });
     });
 
+    it("returns the stored origin and current reports-to relation for a role-less fresh child and rejoin", async () => {
+        const owner = await createAccount("pk-create-worker-organization");
+        const createLead = (tag: string) => db.session.create({ data: {
+            accountId: owner.id, tag, encryptionMode: "plain", metadataLayoutVersion: 1,
+            metadata: JSON.stringify({ v: 1 }), ownerMetadata: STORED_PLAIN_OWNER_METADATA,
+        } });
+        const [originalLead, currentLead] = await Promise.all([
+            createLead("original-lead"), createLead("current-lead"),
+        ]);
+        await withApp(async (app) => {
+            const headers = {
+                "content-type": "application/json", "x-test-user-id": owner.id,
+                "x-happier-account-stored-content-protocol": "2",
+            };
+            const payload = {
+                ...layoutOneBody, tag: "role-less-worker", reportsTo: { sessionId: originalLead.id },
+                originKind: "session", originSessionId: originalLead.id, workDepth: 1,
+            };
+            const fresh = await app.inject({ method: "POST", url: "/v1/sessions", headers, payload });
+            expect(fresh.statusCode, fresh.body).toBe(200);
+            const child = V2SessionByIdResponseSchema.parse(fresh.json()).session;
+            expect(child).toMatchObject({ reportsTo: { sessionId: originalLead.id }, origin: { kind: "session" } });
+            expect(child.ownerMetadata).toEqual(PLAIN_OWNER_METADATA);
+
+            const reattach = await app.inject({
+                method: "POST", url: `/v1/sessions/${child.id}/reports-to`, headers,
+                payload: { leadSessionId: currentLead.id, expectedLeadSessionId: originalLead.id },
+            });
+            expect(reattach.statusCode, reattach.body).toBe(200);
+            const rejoined = await app.inject({ method: "POST", url: "/v1/sessions", headers,
+                payload: { ...payload, originKind: "execution_run", originSessionId: currentLead.id },
+            });
+            expect(rejoined.statusCode, rejoined.body).toBe(200);
+            expect(rejoined.json().created).toBe(false);
+            expect(V2SessionByIdResponseSchema.parse(rejoined.json()).session).toMatchObject({
+                id: child.id, reportsTo: { sessionId: currentLead.id }, origin: { kind: "session" },
+            });
+        });
+    });
+
     it("rejects every Team credential binding intent before Session creation when the capability is disabled", async () => {
         const owner = await createAccount("pk-disabled-team-credential-binding");
 

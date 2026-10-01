@@ -55,7 +55,8 @@ const admittedOperation = {
   contributor: {
     pluginId: 'happier.scm.forge.github',
     contributionId: 'github-connection',
-    immutableGenerationId: 'contributor-generation-1',
+    occurrenceId: 'contributor-occurrence-1',
+    sourceCustody: { kind: 'development', registeredRootId: 'github-root' },
   },
   role: 'setup',
   action: { pluginId: 'happier.scm.forge.github', localId: 'connection/prepare-v1' },
@@ -113,10 +114,14 @@ describe('plugin UI Host API response envelope', () => {
 const admittedSelection = {
   target: {
     pluginId: 'acme.preview',
-    immutableGenerationId: 'target-generation-1',
+    sourceCustody: { kind: 'development', registeredRootId: 'preview-root' },
   },
   point: admittedPoint,
-  contributor: admittedOperation.contributor,
+  contributor: {
+    pluginId: admittedOperation.contributor.pluginId,
+    contributionId: admittedOperation.contributor.contributionId,
+    sourceCustody: admittedOperation.contributor.sourceCustody,
+  },
 } as const;
 
 describe('plugin UI Composer host API payloads', () => {
@@ -589,7 +594,8 @@ describe('plugin UI open and Action components', () => {
         contributor: {
           pluginId: 'acme.provider',
           contributionId: 'provider',
-          immutableGenerationId: 'contributor-generation-1',
+          occurrenceId: 'contributor-occurrence-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'provider-root' },
         },
         role: 'setup',
         action: { pluginId: 'acme.provider', localId: 'connection/prepare-v1' },

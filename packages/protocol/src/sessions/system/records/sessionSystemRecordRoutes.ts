@@ -198,7 +198,28 @@ export const SessionSystemRecordErrorResponseSchema = z.object({
   currentRevision: z.string().optional(),
 }).strict();
 
+/**
+ * The System Records producer answers every refusal in this typed body. Readers consume it
+ * before any HTTP-status inference, so one operation-scoped denial cannot mean "forbidden"
+ * on one host and "you are not signed in" on another.
+ */
+export function readSessionSystemRecordErrorCodeV1(body: unknown): string | null {
+  const parsed = SessionSystemRecordErrorResponseSchema.safeParse(body);
+  if (!parsed.success) return null;
+  const code = parsed.data.code.trim();
+  return code.length > 0 ? code : null;
+}
+
 export const SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER = 'x-happier-plugin-id' as const;
+
+/**
+ * The strict record protocol opt-in a client sends on every v1 System Records request.
+ * One wire fact shared by the route guard, every typed client transport and the server's
+ * CORS allowlist, so a cross-origin browser preflight can never diverge from what clients send.
+ */
+export const SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER = 'x-happier-session-system-records-protocol' as const;
+/** The wire value of {@link SESSION_SYSTEM_RECORDS_PROTOCOL_HTTP_HEADER} for protocol v1. */
+export const SESSION_SYSTEM_RECORDS_PROTOCOL_V1_HTTP_HEADER_VALUE = '1' as const;
 
 const LegacyHostNamespaceSchema = SessionSystemRecordNamespaceSchema.exclude(['surface']);
 

@@ -1,4 +1,3 @@
-import { createHash, createHmac } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 import {
@@ -10,22 +9,19 @@ import {
     HomeLoginAssertionV1Schema,
 } from "@happier-dev/protocol";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import {
+    createEd25519PublicKeyId,
+    deriveEd25519SigningSeed,
+} from "@/app/crypto/derivedEd25519SigningKey";
 import type { HomeLoginAssertionV1 } from "./accountDirectorySchemas";
 
 export const ACCOUNT_DIRECTORY_SIGNING_DOMAIN = ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1;
 const ASSERTION_TTL_MS = 3 * 60_000;
 
-function deriveSigningSeed(masterSecret: string): Uint8Array {
-    return new Uint8Array(createHmac("sha512", `${ACCOUNT_DIRECTORY_SIGNING_DOMAIN} Master Seed`)
-        .update(masterSecret, "utf8")
-        .digest()
-        .subarray(0, tweetnacl.sign.seedLength));
-}
-
 export function resolveAccountDirectorySigningKeyPair(env: NodeJS.ProcessEnv = process.env): tweetnacl.SignKeyPair {
     const masterSecret = (env.HANDY_MASTER_SECRET ?? "").trim();
     if (!masterSecret) throw new Error("HANDY_MASTER_SECRET is required");
-    return tweetnacl.sign.keyPair.fromSeed(deriveSigningSeed(masterSecret));
+    return tweetnacl.sign.keyPair.fromSeed(deriveEd25519SigningSeed(masterSecret, ACCOUNT_DIRECTORY_SIGNING_DOMAIN));
 }
 
 export function accountDirectorySigningKeyMetadata(env: NodeJS.ProcessEnv = process.env): Readonly<{
@@ -34,7 +30,7 @@ export function accountDirectorySigningKeyMetadata(env: NodeJS.ProcessEnv = proc
 }> {
     const publicKey = resolveAccountDirectorySigningKeyPair(env).publicKey;
     return {
-        keyId: createHash("sha256").update(publicKey).digest("hex"),
+        keyId: createEd25519PublicKeyId(publicKey),
         publicKeyBase64Url: encodeBase64(publicKey, "base64url"),
     };
 }

@@ -5,6 +5,7 @@ import {
 } from "@happier-dev/protocol";
 import {
     GENERATED_HOSTED_WEB_ASSET_PROFILE_V1,
+    PluginUiArtifactIdV2Schema,
     PluginUiArtifactDigestV1Schema,
 } from "@happier-dev/protocol/plugins/ui";
 import { decodeBase64, encodeBase64 } from "privacy-kit";
@@ -57,7 +58,7 @@ const BrowserArtifactCapabilityClaimsV1Schema = z.object({
     contributionId: z.string().trim().min(1).max(512),
     tier: z.literal("hostedWeb"),
     platform: z.literal("web"),
-    artifactId: z.string().uuid(),
+    artifactId: PluginUiArtifactIdV2Schema,
     artifactDigest: PluginUiArtifactDigestV1Schema,
     hostedWebScope: BrowserArtifactHostedWebScopeV1Schema,
     embeddingOrigin: PluginHostedWebOriginV1Schema,

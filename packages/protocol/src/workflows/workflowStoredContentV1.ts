@@ -1,12 +1,7 @@
 import { z } from 'zod';
-
-import {
-  isAccountScopedBlobCiphertextForKind,
-  openAccountScopedBlobCiphertext,
-  sealAccountScopedBlobCiphertext,
-  type AccountScopedBlobKind,
-  type AccountScopedCryptoMaterial,
-} from '../crypto/accountScopedCipher.js';
+import tweetnacl from 'tweetnacl';
+import { decodeBase64, encodeBase64, readCanonicalPaddedBase64DecodedLength } from '../crypto/base64.js';
+import { parseSerializedJsonValue } from '../crypto/serializedJsonValue.js';
 import { createCanonicalJsonSigningInput } from '../crypto/canonicalJson.js';
 import {
   AutomationStoredContentEnvelopeV1Schema,
@@ -62,19 +57,19 @@ export type WorkflowCheckpointStoredBindingV1 = z.infer<typeof WorkflowCheckpoin
 export type WorkflowFinalResultStoredBindingV1 = z.infer<typeof WorkflowFinalResultStoredBindingV1Schema>;
 
 const WorkflowAcceptedSnapshotStoredPayloadV1Schema = z.object({
-  v: z.literal(1), binding: WorkflowAcceptedSnapshotStoredBindingV1Schema,
+  v: z.literal(2), binding: WorkflowAcceptedSnapshotStoredBindingV1Schema,
   content: WorkflowAcceptedSnapshotV1Schema,
 }).strict();
 const WorkflowInvocationProgressStoredPayloadV1Schema = z.object({
-  v: z.literal(1), binding: WorkflowInvocationProgressStoredBindingV1Schema,
+  v: z.literal(2), binding: WorkflowInvocationProgressStoredBindingV1Schema,
   content: WorkflowProgressEnvelopeV1Schema,
 }).strict();
 const WorkflowCheckpointStoredPayloadV1Schema = z.object({
-  v: z.literal(1), binding: WorkflowCheckpointStoredBindingV1Schema,
+  v: z.literal(2), binding: WorkflowCheckpointStoredBindingV1Schema,
   content: WorkflowCheckpointEnvelopeV1Schema,
 }).strict();
 const WorkflowFinalResultStoredPayloadV1Schema = z.object({
-  v: z.literal(1), binding: WorkflowFinalResultStoredBindingV1Schema,
+  v: z.literal(2), binding: WorkflowFinalResultStoredBindingV1Schema,
   content: WorkflowFinalResultV1Schema,
 }).strict();
 
@@ -93,16 +88,24 @@ export type WorkflowStoredContentOuterValidationV1 =
 type WorkflowStoredEnvelopeSealModeV1 =
   | Readonly<{ mode: 'plain' }>
   | Readonly<{
-      mode: 'e2ee'; material: AccountScopedCryptoMaterial;
+      mode: 'e2ee'; runDataKey: Uint8Array;
       randomBytes: (length: number) => Uint8Array;
     }>;
 
-const WORKFLOW_ACCOUNT_SCOPED_BLOB_KIND_BY_PURPOSE = {
-  accepted_snapshot: 'workflow_accepted_snapshot',
-  invocation_progress: 'workflow_invocation_progress',
-  checkpoint: 'workflow_checkpoint',
-  final_result: 'workflow_final_result',
-} as const satisfies Record<WorkflowStoredContentBindingV1['purpose'], AccountScopedBlobKind>;
+// Development direct cut: Account-derived ciphertext is intentionally not readable.
+const WORKFLOW_RUN_CIPHERTEXT_PREFIX = 'wfr1:';
+function readWorkflowRunCiphertext(ciphertext: string): Uint8Array | null {
+  if (!ciphertext.startsWith(WORKFLOW_RUN_CIPHERTEXT_PREFIX)) return null;
+  const encoded = ciphertext.slice(WORKFLOW_RUN_CIPHERTEXT_PREFIX.length);
+  const length = readCanonicalPaddedBase64DecodedLength(encoded);
+  if (length === null || length < tweetnacl.secretbox.nonceLength + tweetnacl.secretbox.overheadLength) return null;
+  const bytes = decodeBase64(encoded);
+  return encodeBase64(bytes) === encoded ? bytes : null;
+}
+
+function isWorkflowRunDataKey(key: unknown): key is Uint8Array {
+  return key instanceof Uint8Array && key.byteLength === tweetnacl.secretbox.keyLength;
+}
 
 type ParsedWorkflowStoredPayloadV1 = Readonly<{
   binding: WorkflowStoredContentBindingV1;
@@ -151,10 +154,8 @@ export function validateWorkflowStoredEnvelopeOuterForModeV1(params: Readonly<{
     return { kind: 'modeMismatch' };
   }
   if (envelope.data.t === 'encrypted') {
-    return isAccountScopedBlobCiphertextForKind({
-      kind: WORKFLOW_ACCOUNT_SCOPED_BLOB_KIND_BY_PURPOSE[binding.data.purpose],
-      ciphertext: envelope.data.c,
-    }) ? { kind: 'available', envelope: envelope.data } : { kind: 'contentInvalid' };
+    return readWorkflowRunCiphertext(envelope.data.c)
+      ? { kind: 'available', envelope: envelope.data } : { kind: 'contentInvalid' };
   }
   const payload = parsePayloadForBinding(binding.data, envelope.data.v);
   if (!payload) return { kind: 'contentInvalid' };
@@ -172,20 +173,21 @@ function sealWorkflowStoredEnvelopeV1(params: Readonly<{
   if (params.mode === 'plain') {
     return WorkflowStoredContentEnvelopeV1Schema.parse({ t: 'plain', v: payload });
   }
+  if (!isWorkflowRunDataKey(params.runDataKey)) throw new TypeError('Workflow run data key must be 32 bytes');
+  const nonce = params.randomBytes(tweetnacl.secretbox.nonceLength);
+  if (nonce.length !== tweetnacl.secretbox.nonceLength) throw new TypeError('Invalid Workflow encryption nonce');
+  const boxed = tweetnacl.secretbox(new TextEncoder().encode(createCanonicalJsonSigningInput(payload)), nonce, params.runDataKey);
+  const bytes = new Uint8Array(nonce.length + boxed.length);
+  bytes.set(nonce); bytes.set(boxed, nonce.length);
   return WorkflowStoredContentEnvelopeV1Schema.parse({
     t: 'encrypted',
-    c: sealAccountScopedBlobCiphertext({
-      kind: WORKFLOW_ACCOUNT_SCOPED_BLOB_KIND_BY_PURPOSE[binding.purpose],
-      material: params.material,
-      payload,
-      randomBytes: params.randomBytes,
-    }),
+    c: WORKFLOW_RUN_CIPHERTEXT_PREFIX + encodeBase64(bytes),
   });
 }
 
 function openWorkflowStoredEnvelopeV1(params: Readonly<{
   mode: 'plain' | 'e2ee'; binding: WorkflowStoredContentBindingV1;
-  envelope: unknown; material?: AccountScopedCryptoMaterial;
+  envelope: unknown; runDataKey?: Uint8Array;
 }>): Readonly<{ kind: 'available'; content: unknown }> | WorkflowStoredContentOpenFailureV1 {
   const binding = WorkflowStoredContentBindingV1Schema.safeParse(params.binding);
   if (!binding.success) return { kind: 'contentInvalid' };
@@ -195,14 +197,15 @@ function openWorkflowStoredEnvelopeV1(params: Readonly<{
   if (outer.envelope.t === 'plain') {
     rawPayload = outer.envelope.v;
   } else {
-    if (!params.material) return { kind: 'materialUnavailable' };
-    const opened = openAccountScopedBlobCiphertext({
-      kind: WORKFLOW_ACCOUNT_SCOPED_BLOB_KIND_BY_PURPOSE[binding.data.purpose],
-      material: params.material,
-      ciphertext: outer.envelope.c,
-    });
+    if (params.runDataKey === undefined) return { kind: 'materialUnavailable' };
+    if (!isWorkflowRunDataKey(params.runDataKey)) return { kind: 'contentInvalid' };
+    const bytes = readWorkflowRunCiphertext(outer.envelope.c);
+    if (!bytes) return { kind: 'contentInvalid' };
+    const opened = tweetnacl.secretbox.open(bytes.subarray(tweetnacl.secretbox.nonceLength),
+      bytes.subarray(0, tweetnacl.secretbox.nonceLength), params.runDataKey);
     if (!opened) return { kind: 'contentInvalid' };
-    rawPayload = opened.value;
+    try { rawPayload = parseSerializedJsonValue(new TextDecoder().decode(opened)); }
+    catch { return { kind: 'contentInvalid' }; }
   }
   const payload = parsePayloadForBinding(binding.data, rawPayload);
   if (!payload) return { kind: 'contentInvalid' };
@@ -224,12 +227,12 @@ export function sealWorkflowAcceptedSnapshotStoredEnvelopeV1(params: Readonly<{
   acceptedSnapshot: z.infer<typeof WorkflowAcceptedSnapshotV1Schema>;
 }> & WorkflowStoredEnvelopeSealModeV1): WorkflowStoredContentEnvelopeV1 {
   return sealWorkflowStoredEnvelopeV1({
-    ...params, payload: { v: 1, binding: params.binding, content: params.acceptedSnapshot },
+    ...params, payload: { v: 2, binding: params.binding, content: params.acceptedSnapshot },
   });
 }
 export function openWorkflowAcceptedSnapshotStoredEnvelopeV1(params: Readonly<{
   mode: 'plain' | 'e2ee'; binding: WorkflowAcceptedSnapshotStoredBindingV1;
-  envelope: unknown; material?: AccountScopedCryptoMaterial;
+  envelope: unknown; runDataKey?: Uint8Array;
 }>) {
   return narrowOpenedWorkflowContentV1(openWorkflowStoredEnvelopeV1(params), WorkflowAcceptedSnapshotV1Schema);
 }
@@ -239,12 +242,12 @@ export function sealWorkflowProgressStoredEnvelopeV1(params: Readonly<{
   progress: z.infer<typeof WorkflowProgressEnvelopeV1Schema>;
 }> & WorkflowStoredEnvelopeSealModeV1): WorkflowStoredContentEnvelopeV1 {
   return sealWorkflowStoredEnvelopeV1({
-    ...params, payload: { v: 1, binding: params.binding, content: params.progress },
+    ...params, payload: { v: 2, binding: params.binding, content: params.progress },
   });
 }
 export function openWorkflowProgressStoredEnvelopeV1(params: Readonly<{
   mode: 'plain' | 'e2ee'; binding: WorkflowInvocationProgressStoredBindingV1;
-  envelope: unknown; material?: AccountScopedCryptoMaterial;
+  envelope: unknown; runDataKey?: Uint8Array;
 }>) {
   return narrowOpenedWorkflowContentV1(openWorkflowStoredEnvelopeV1(params), WorkflowProgressEnvelopeV1Schema);
 }
@@ -254,12 +257,12 @@ export function sealWorkflowCheckpointStoredEnvelopeV1(params: Readonly<{
   checkpoint: z.infer<typeof WorkflowCheckpointEnvelopeV1Schema>;
 }> & WorkflowStoredEnvelopeSealModeV1): WorkflowStoredContentEnvelopeV1 {
   return sealWorkflowStoredEnvelopeV1({
-    ...params, payload: { v: 1, binding: params.binding, content: params.checkpoint },
+    ...params, payload: { v: 2, binding: params.binding, content: params.checkpoint },
   });
 }
 export function openWorkflowCheckpointStoredEnvelopeV1(params: Readonly<{
   mode: 'plain' | 'e2ee'; binding: WorkflowCheckpointStoredBindingV1;
-  envelope: unknown; material?: AccountScopedCryptoMaterial;
+  envelope: unknown; runDataKey?: Uint8Array;
 }>) {
   return narrowOpenedWorkflowContentV1(openWorkflowStoredEnvelopeV1(params), WorkflowCheckpointEnvelopeV1Schema);
 }
@@ -269,12 +272,12 @@ export function sealWorkflowFinalResultStoredEnvelopeV1(params: Readonly<{
   finalResult: z.infer<typeof WorkflowFinalResultV1Schema>;
 }> & WorkflowStoredEnvelopeSealModeV1): WorkflowStoredContentEnvelopeV1 {
   return sealWorkflowStoredEnvelopeV1({
-    ...params, payload: { v: 1, binding: params.binding, content: params.finalResult },
+    ...params, payload: { v: 2, binding: params.binding, content: params.finalResult },
   });
 }
 export function openWorkflowFinalResultStoredEnvelopeV1(params: Readonly<{
   mode: 'plain' | 'e2ee'; binding: WorkflowFinalResultStoredBindingV1;
-  envelope: unknown; material?: AccountScopedCryptoMaterial;
+  envelope: unknown; runDataKey?: Uint8Array;
 }>) {
   return narrowOpenedWorkflowContentV1(openWorkflowStoredEnvelopeV1(params), WorkflowFinalResultV1Schema);
 }

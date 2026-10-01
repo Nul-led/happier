@@ -29,6 +29,46 @@ async function loadRoutingResolver() {
 }
 
 describe('isApprovalRequiredByActionsSettings', () => {
+  it('keeps fresh-folder consent mandatory on agent and MCP without flooring ordinary session open', () => {
+    for (const surface of ['agent', 'mcp'] as const) {
+      const context = { surface, authority: 'account_automation' as const };
+      const args = {
+        actionId: 'session.open' as const, spec: getActionSpec('session.open'), context,
+        settings: normalizeActionsSettingsV1({ v: 1, approvalWaivedSurfaces: { 'session.open': [surface] } }),
+        requiredByPolicy: false, input: { sessionId: 's1', approvedNewDirectoryCreation: true },
+      };
+      expect(resolveActionApprovalRouting(args)).toMatchObject({ required: true, flow: 'deferred' });
+      expect(resolveActionApprovalRouting({ ...args, input: { sessionId: 's1', approvedNewDirectoryCreation: false } }).required).toBe(false);
+    }
+  });
+  it('defaults safe controller transitions and window enumeration to approval but honors per-action waivers', () => {
+    for (const actionId of ['browser.control.takeControl', 'browser.control.handBack', 'computer.targets.list',
+      'computer.target.select', 'computer.control.interrupt', 'computer.control.handBack'] as const) {
+      const context = { surface: 'agent' as const, authority: 'account_automation' as const };
+      expect(getActionSpec(actionId).surfaces.agent, actionId).toBe(true);
+      expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS, context), actionId).toBe(true);
+      const waived = normalizeActionsSettingsV1({ v: 1, approvalWaivedSurfaces: { [actionId]: ['agent'] } });
+      expect(isApprovalRequiredByActionsSettings(actionId, waived, context), actionId).toBe(false);
+      expect(resolveActionApprovalRouting({ actionId, spec: getActionSpec(actionId), settings: waived,
+        context: { ...context, bypassApprovals: true }, requiredByPolicy: false }).required, actionId).toBe(false);
+      expect(isApprovalRequiredByActionsSettings(actionId, EMPTY_SETTINGS,
+        { surface: 'ui', authority: 'present_user' }), actionId).toBe(false);
+    }
+  });
+  it('never waives agent workflow trigger writes, including an explicit host policy false', () => {
+    for (const actionId of ['workflow.trigger.add', 'workflow.trigger.update', 'workflow.trigger.remove'] as const) {
+      const settings = normalizeActionsSettingsV1({ v: 1, actions: {},
+        approvalWaivedSurfaces: { [actionId]: ['agent', 'ui'] } });
+      const context = { surface: 'agent' as const, authority: 'account_automation' as const };
+      expect.soft(isApprovalRequiredByActionsSettings(actionId, settings, context), actionId).toBe(true);
+      expect.soft(resolveActionApprovalRouting({ actionId, spec: getActionSpec(actionId), settings, context,
+        requiredByPolicy: false }).required, actionId).toBe(true);
+      expect(isApprovalRequiredByActionsSettings(actionId, settings,
+        { surface: 'ui', authority: 'present_user' }), actionId).toBe(false);
+    }
+    expect(resolveActionApprovalRouting({ actionId: 'workflow.trigger.list', spec: getActionSpec('workflow.trigger.list'),
+      context: { surface: 'agent' }, requiredByPolicy: false }).required).toBe(false);
+  });
   it('defaults the five identity test and Admin Portal Actions to approval while honoring waiver and require', () => {
     const actionIds = [
       'identity.providers.test.start',

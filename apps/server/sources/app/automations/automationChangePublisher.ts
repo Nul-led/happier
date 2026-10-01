@@ -157,7 +157,7 @@ export function emitAutomationRunUpdatedToMachineOnly(params: {
     run: Readonly<{
         id: string;
         automationId: string | null;
-        state: AutomationRunState | "pause_requested" | "paused" | "interrupted";
+        state: AutomationRunState | "pause_requested" | "paused" | "interrupted" | "waiting_for_review";
         scheduledAt: Date;
         startedAt: Date | null;
         finishedAt: Date | null;
@@ -166,11 +166,12 @@ export function emitAutomationRunUpdatedToMachineOnly(params: {
         attempt: number;
     }>;
     cursor: number;
-    workflowControl?: "cancel_requested";
+    workflowControl?: "cancel_requested" | "review_resolved";
 }): void {
     const projectedState: AutomationRunState = params.run.state === "pause_requested"
         || params.run.state === "paused"
         || params.run.state === "interrupted"
+        || params.run.state === "waiting_for_review"
         ? "running"
         : params.run.state;
     eventRouter.emitUpdate({

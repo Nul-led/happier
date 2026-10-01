@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   WorkflowAcceptedSnapshotV1Schema,
+  WorkflowRunExecutionTargetV1Schema,
   deriveWorkflowAcceptedPermissionCeilingV1,
 } from './workflowDefinitionV1.js';
 import { validateWorkflowDefinition } from './workflowValidationV1.js';
@@ -34,7 +35,36 @@ const workspaceTarget = {
   originalCommittedRevision: 'a'.repeat(40),
 } as const;
 
+const frozen = { authoredDefinition: definition, materializedLeaves: [], frozenChildren: {}, workDepth: 0, metadata: null };
+
 describe('WorkflowAcceptedSnapshotV1', () => {
+  it('requires an explicit frozen authorship observation for saved sources', () => {
+    const saved = { kind: 'saved' as const, definitionId: 'definition-1',
+      revision: { headerVersion: 2, bodyVersion: 4 } };
+    const base = { definition, authoredDefinition: definition, workDepth: 0,
+      materializedLeaves: [], frozenChildren: {}, metadata: { title: 'Frozen' },
+      inputs: {}, machineId: 'machine-1', executionTarget: { kind: 'session' as const },
+      workspaceTarget, origin: { kind: 'direct' as const },
+      authorization: { admittedPermissionCeiling: 'default' as const, principal: { kind: 'host' as const } } };
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse({ ...base, source: saved }).success).toBe(false);
+    for (const savedBy of [null, { kind: 'person' as const, accountId: 'editor' }]) {
+      expect(WorkflowAcceptedSnapshotV1Schema.parse({ ...base, source: { ...saved, savedBy } }).source)
+        .toEqual({ ...saved, savedBy });
+      const source = { kind: 'automation' as const, automationId: 'automation-1',
+        definitionId: saved.definitionId, revision: saved.revision, savedBy };
+      expect(WorkflowAcceptedSnapshotV1Schema.parse({ ...base, source }).source).toEqual(source);
+    }
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse({ ...base, source: {
+      kind: 'automation', automationId: 'automation-1', definitionId: saved.definitionId,
+      revision: saved.revision,
+    } }).success).toBe(false);
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse({ ...base, source: { kind: 'inline' } }).success).toBe(true);
+  });
+  it('retires the Workflow-only attached target rather than aliasing it to a Session', () => {
+    expect(WorkflowRunExecutionTargetV1Schema.safeParse({ kind: 'attached_run' }).success).toBe(false);
+    expect(WorkflowRunExecutionTargetV1Schema.parse({ kind: 'session' })).toEqual({ kind: 'session' });
+    expect(WorkflowRunExecutionTargetV1Schema.parse({ kind: 'detached_run' })).toEqual({ kind: 'detached_run' });
+  });
   it('derives one canonical ceiling from every effective nested leaf and the omission default', () => {
     const normalized = validateWorkflowDefinition({
       version: 1,
@@ -68,12 +98,13 @@ describe('WorkflowAcceptedSnapshotV1', () => {
 
   it('freezes the complete direct admission correspondence', () => {
     const snapshot = WorkflowAcceptedSnapshotV1Schema.parse({
+      ...frozen,
       definition,
       metadata: { title: 'Frozen release check', description: 'Accepted once' },
-      source: { kind: 'saved', definitionId: 'definition-1', revision: { headerVersion: 2, bodyVersion: 4 } },
+      source: { kind: 'saved', definitionId: 'definition-1', revision: { headerVersion: 2, bodyVersion: 4 }, savedBy: null },
       inputs: { topic: 'workflow' },
       machineId: 'machine-1',
-      executionTarget: { kind: 'attached_run' },
+      executionTarget: { kind: 'detached_run' },
       workspaceTarget,
       origin: { kind: 'direct', originSessionId: 'session-1' },
       authorization: {
@@ -81,16 +112,17 @@ describe('WorkflowAcceptedSnapshotV1', () => {
         principal: { kind: 'api', accountId: 'account-1', principalId: 'principal-1', credentialId: 'credential-1' },
       },
       resultDelivery: {
-        kind: 'originating_session', originSessionId: 'session-1', localInputId: 'workflow-input-v2:stable',
+        kind: 'originating_session', originSessionId: 'session-1',
       },
     });
     expect(snapshot).toMatchObject({ machineId: 'machine-1', workspaceTarget, inputs: { topic: 'workflow' } });
     expect(snapshot.metadata).toEqual({ title: 'Frozen release check', description: 'Accepted once' });
-    expect(snapshot.executionTarget).toEqual({ kind: 'attached_run' });
+    expect(snapshot.executionTarget).toEqual({ kind: 'detached_run' });
   });
 
-  it('accepts legacy snapshots without display metadata but rejects malformed metadata', () => {
-    const legacy = {
+  it('freezes the absence of inline display metadata and rejects malformed metadata', () => {
+    const inline = {
+      ...frozen,
       definition,
       source: { kind: 'inline' as const },
       inputs: {},
@@ -100,12 +132,13 @@ describe('WorkflowAcceptedSnapshotV1', () => {
       origin: { kind: 'direct' as const },
       authorization: { admittedPermissionCeiling: 'default' as const, principal: { kind: 'host' as const } },
     };
-    expect(WorkflowAcceptedSnapshotV1Schema.safeParse(legacy).success).toBe(true);
-    expect(WorkflowAcceptedSnapshotV1Schema.safeParse({ ...legacy, metadata: { title: '   ' } }).success).toBe(false);
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse(inline).success).toBe(true);
+    expect(WorkflowAcceptedSnapshotV1Schema.safeParse({ ...inline, metadata: { title: '   ' } }).success).toBe(false);
   });
 
   it('requires the normalized Run execution target in accepted storage', () => {
     const base = {
+      ...frozen,
       definition,
       source: { kind: 'inline' as const },
       inputs: {},
@@ -127,6 +160,7 @@ describe('WorkflowAcceptedSnapshotV1', () => {
 
   it('rejects delivery to a Session other than the frozen origin', () => {
     expect(WorkflowAcceptedSnapshotV1Schema.safeParse({
+      ...frozen,
       definition,
       source: { kind: 'inline' },
       inputs: {},
@@ -136,13 +170,14 @@ describe('WorkflowAcceptedSnapshotV1', () => {
       origin: { kind: 'direct', originSessionId: 'session-1' },
       authorization: { admittedPermissionCeiling: 'default', principal: { kind: 'host' } },
       resultDelivery: {
-        kind: 'originating_session', originSessionId: 'session-2', localInputId: 'workflow-input-v2:stable',
+        kind: 'originating_session', originSessionId: 'session-2',
       },
     }).success).toBe(false);
   });
 
   it('rejects a project workspace from a machine other than the immutable Run target', () => {
     expect(WorkflowAcceptedSnapshotV1Schema.safeParse({
+      ...frozen,
       definition,
       source: { kind: 'inline' },
       inputs: {},

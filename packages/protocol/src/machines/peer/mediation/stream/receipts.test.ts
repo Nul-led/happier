@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { PEER_MEDIATION_RECEIPTS } from '../receipts';
-import { MachineLiveStreamReceiptV1Schema } from './receipts';
+import { isMachineLiveStreamTerminalReceiptV1, MachineLiveStreamReceiptV1Schema } from './receipts';
 
 describe('MachineLiveStreamReceiptV1Schema', () => {
+  it('distinguishes a terminal source receipt from temporary relay pressure', () => {
+    const receipt = MachineLiveStreamReceiptV1Schema.parse({ v: 1, id: PEER_MEDIATION_RECEIPTS.streamBandwidthCapped,
+      streamId: 'stream_1', routeKind: 'server_relay', flowKind: 'live_stream', reasonCode: 'queue_pressure' });
+    expect(isMachineLiveStreamTerminalReceiptV1(receipt)).toBe(false);
+    expect(isMachineLiveStreamTerminalReceiptV1({ ...receipt, terminal: true, terminalOutcome: 'error' })).toBe(true);
+  });
   it('accepts stream lifecycle receipts with metering details', () => {
     const parsed = MachineLiveStreamReceiptV1Schema.parse({
       v: 1,

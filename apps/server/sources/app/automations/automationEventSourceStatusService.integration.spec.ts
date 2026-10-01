@@ -44,7 +44,11 @@ const caller = {
     machineId: MACHINE_ID,
     machineInstallationId: MACHINE_INSTALLATION_ID,
     materializationId: MATERIALIZATION_ID,
-    immutableGenerationId: "github-immutable-generation-a",
+    sourceCustody: {
+        kind: "managed",
+        immutableGenerationId: "github-immutable-generation-a",
+        installSource: "archive",
+    },
 } as const;
 
 function releaseFacts(params: Readonly<{
@@ -367,7 +371,7 @@ describe("Automation Event source status", () => {
             reporterMachineId: MACHINE_ID,
             reporterMachineInstallationId: MACHINE_INSTALLATION_ID,
             reporterMaterializationId: MATERIALIZATION_ID,
-            reporterImmutableGenerationId: "github-immutable-generation-a",
+            reporterSourceCustody: caller.sourceCustody,
             state: "observing",
             code: null,
             observedCount: 2,
@@ -649,7 +653,7 @@ describe("Automation Event source status", () => {
                 reporterMachineId: MACHINE_ID,
                 reporterMachineInstallationId: MACHINE_INSTALLATION_ID,
                 reporterMaterializationId: MATERIALIZATION_ID,
-                reporterImmutableGenerationId: "github-immutable-generation-a",
+                reporterSourceCustody: caller.sourceCustody,
                 scopeKey: `durablePush:${DURABLE_PUSH_ENDPOINT_ID}`,
                 observedRevision: 7n,
                 adoptedRevision: 6n,
@@ -1116,7 +1120,7 @@ describe("Automation Event source status", () => {
         })).resolves.toEqual([expect.objectContaining({
             reporterMachineId: MACHINE_ID,
             reporterMachineInstallationId: MACHINE_INSTALLATION_ID,
-            reporterImmutableGenerationId: "github-immutable-generation-a",
+            reporterSourceCustody: caller.sourceCustody,
             observedRevision: 7n,
             adoptedRevision: 7n,
             state: "current",
@@ -1131,7 +1135,11 @@ describe("Automation Event source status", () => {
             machineId: "machine-automation-source-status-second",
             machineInstallationId: "installation-automation-source-status-second",
             materializationId: MATERIALIZATION_ID,
-            immutableGenerationId: "github-immutable-generation-a",
+            sourceCustody: {
+                kind: "managed",
+                immutableGenerationId: "github-immutable-generation-a",
+                installSource: "archive",
+            },
         } as const;
         await db.machine.create({
             data: {
@@ -1190,14 +1198,14 @@ describe("Automation Event source status", () => {
             select: {
                 reporterMachineId: true,
                 reporterMachineInstallationId: true,
-                reporterImmutableGenerationId: true,
+                reporterSourceCustody: true,
                 revision: true,
             },
         })).resolves.toEqual([
             {
                 reporterMachineId: secondCaller.machineId,
                 reporterMachineInstallationId: secondCaller.machineInstallationId,
-                reporterImmutableGenerationId: secondCaller.immutableGenerationId,
+                reporterSourceCustody: secondCaller.sourceCustody,
                 revision: 2,
             },
         ]);
@@ -1334,7 +1342,11 @@ describe("Automation Event source status", () => {
             machineId: "machine-automation-source-status-retargeted",
             machineInstallationId: "installation-automation-source-status-retargeted",
             materializationId: "materialization-automation-source-status-retargeted",
-            immutableGenerationId: "github-immutable-generation-b",
+            sourceCustody: {
+                kind: "managed",
+                immutableGenerationId: "github-immutable-generation-b",
+                installSource: "archive",
+            },
         } as const;
         await db.machine.create({
             data: {

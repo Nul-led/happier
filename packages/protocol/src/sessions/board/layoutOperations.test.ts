@@ -23,7 +23,64 @@ function expectOk(result: ReturnType<typeof applySessionBoardLayoutOperationV1>)
 }
 
 describe('Session Board semantic layout operations', () => {
-  it('accepts only the eight closed semantic operations and rejects index-based moves', () => {
+  it('sets and clears a placement frame override without changing the same item in another view', () => {
+    const parsed = SessionBoardLayoutOperationV1Schema.safeParse({
+      op: 'item.frameStyle', tabId: 'overview', itemId: 'chart', frameStyle: 'plain',
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const styled = expectOk(applySessionBoardLayoutOperationV1(layout, parsed.data));
+    expect(styled.tabs[0]?.items[1]).toEqual({ itemId: 'chart', width: 'medium', frameStyle: 'plain' });
+    expect(styled.tabs[1]?.items).toEqual(layout.tabs[1]?.items);
+    const clear = SessionBoardLayoutOperationV1Schema.parse({
+      op: 'item.frameStyle', tabId: 'overview', itemId: 'chart', frameStyle: null,
+    });
+    expect(expectOk(applySessionBoardLayoutOperationV1(styled, clear))).toEqual(layout);
+    expect(applySessionBoardLayoutOperationV1(layout, { ...parsed.data, itemId: 'missing' }))
+      .toEqual({ ok: false, error: 'session_board_item_not_found' });
+  });
+
+  it('preserves frame overrides through draft-based edits, moves, resizing and item upserts', () => {
+    const styled = { ...layout, tabs: layout.tabs.map((tab) => ({ ...tab,
+      items: tab.items.map((entry) => ({ ...entry, frameStyle: 'plain' as const })),
+    })) };
+    const renamed = expectOk(applySessionBoardLayoutOperationV1(styled, {
+      op: 'tab.rename', tabId: 'overview', title: 'Renamed',
+    }));
+    expect(renamed.tabs[0]?.items).toEqual(styled.tabs[0]?.items);
+    const resized = expectOk(applySessionBoardLayoutOperationV1(styled, {
+      op: 'item.resize', tabId: 'overview', itemId: 'note', width: 'full',
+    }));
+    expect(resized.tabs[0]?.items[0]).toEqual({ itemId: 'note', width: 'full', frameStyle: 'plain' });
+    const moved = expectOk(applySessionBoardLayoutOperationV1(styled, {
+      op: 'item.move', itemId: 'note', fromTabId: 'overview', toTabId: 'metrics',
+    }));
+    expect(moved.tabs[1]?.items[1]).toEqual({ itemId: 'note', width: 'wide', frameStyle: 'plain' });
+    const removed = expectOk(applySessionBoardLayoutOperationV1(styled, {
+      op: 'tab.remove', tabId: 'overview', disposition: { kind: 'move', tabId: 'metrics' },
+    }));
+    expect(removed.tabs[0]?.items[1]).toEqual({ itemId: 'note', width: 'wide', frameStyle: 'plain' });
+    const upserted = expectOk(applySessionBoardItemPlacementV1(styled, {
+      itemId: 'note', placement: { tabId: 'overview', width: 'compact', anchor: { side: 'after', itemId: 'chart' } },
+    }));
+    expect(upserted.tabs[0]?.items[1]).toEqual({ itemId: 'note', width: 'compact', frameStyle: 'plain' });
+    expect(styled.tabs[0]?.items[0]).toEqual({ itemId: 'note', width: 'wide', frameStyle: 'plain' });
+  });
+
+  it('cleans every reference to a missing item in one layout edit without changing siblings', () => {
+    const operation = SessionBoardLayoutOperationV1Schema.safeParse({ op: 'item.unpinAll', itemId: 'chart' });
+    expect(operation.success).toBe(true);
+    if (!operation.success) return;
+    const cleaned = expectOk(applySessionBoardLayoutOperationV1(layout, operation.data));
+    expect(cleaned.tabs).toEqual([
+      { id: 'overview', title: 'Overview', items: [{ itemId: 'note', width: 'wide' }] },
+      { id: 'metrics', title: 'Metrics', items: [] },
+    ]);
+    expect(applySessionBoardLayoutOperationV1(cleaned, operation.data)).toEqual({ ok: true, layout: cleaned });
+    expect(layout.tabs[1]?.items).toEqual([{ itemId: 'chart', width: 'full' }]);
+  });
+
+  it('accepts the closed semantic operations and rejects index-based moves', () => {
     for (const operation of [
       { op: 'tab.create', tabId: 'new', title: 'New' },
       { op: 'tab.rename', tabId: 'overview', title: 'Renamed' },
@@ -32,6 +89,7 @@ describe('Session Board semantic layout operations', () => {
       { op: 'item.place', itemId: 'note', tabId: 'metrics', width: 'compact' },
       { op: 'item.move', itemId: 'chart', fromTabId: 'overview', toTabId: 'metrics' },
       { op: 'item.unpin', itemId: 'chart', tabId: 'metrics' },
+      { op: 'item.unpinAll', itemId: 'chart' },
       { op: 'item.resize', itemId: 'note', tabId: 'overview', width: 'full' },
     ]) {
       expect(SessionBoardLayoutOperationV1Schema.safeParse(operation).success, operation.op).toBe(true);

@@ -99,7 +99,7 @@ describe('Runner readiness', () => {
           kind: 'agent',
           identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
         },
-        managedInstallationId: 'managed-codex-13',
+        agentRuntimeId: 'codex',
         executablePath: '/managed/codex',
         authoritativeVersion: '1.0.0',
       },
@@ -119,6 +119,12 @@ describe('Runner readiness', () => {
     expect(parsed.success, parsed.success ? undefined : parsed.error.message).toBe(true);
     if (parsed.success) {
       expect(parsed.data.brokerReadinessRequest).toEqual(brokerReadinessRequest);
+      expect(parsed.data.installation).toEqual({
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
+        agentRuntimeId: 'codex',
+        executablePath: '/managed/codex',
+        authoritativeVersion: '1.0.0',
+      });
     }
   });
 });

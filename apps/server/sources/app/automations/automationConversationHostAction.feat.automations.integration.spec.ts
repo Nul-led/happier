@@ -32,6 +32,12 @@ const CALLER_PLUGIN_ID = "com.acme.bridge";
 const CALLER_PLUGIN_VERSION = "1.0.0";
 const CALLER_CONTRIBUTION_LOCAL_ID = "observation-ingest-v1";
 const CALLER_IMMUTABLE_GENERATION = "generation-conversation-host-action";
+const CALLER_OCCURRENCE_ID = "occurrence-conversation-host-action";
+const CALLER_SOURCE_CUSTODY = {
+    kind: "managed" as const,
+    immutableGenerationId: CALLER_IMMUTABLE_GENERATION,
+    installSource: "archive" as const,
+};
 const RESULT_DELIVERY_ACTION_LOCAL_ID = "automation/result-deliver-v1";
 
 const callerMaterialization = {
@@ -69,7 +75,7 @@ async function loadConversationHostExecutor(transport: unknown): Promise<Dynamic
         },
         transport,
         revalidateCallerMaterialization: async () => true,
-        revalidateCallerImmutableGeneration: async () => true,
+        revalidateCallerOccurrence: async () => true,
         resolveAccountId: async () => ACCOUNT_ID,
         resolveAccountEncryptionCurrentness: async () => {
             const account = await db.account.findUniqueOrThrow({
@@ -313,7 +319,8 @@ describe("Conversation admission through the real host Action executor (integrat
                 kind: "plugin",
                 pluginId: CALLER_PLUGIN_ID,
                 contributionLocalId: CALLER_CONTRIBUTION_LOCAL_ID,
-                immutableGenerationId: CALLER_IMMUTABLE_GENERATION,
+                occurrenceId: CALLER_OCCURRENCE_ID,
+                sourceCustody: CALLER_SOURCE_CUSTODY,
                 materialization: callerMaterialization,
             },
         };

@@ -20,6 +20,7 @@ import {
     type PluginWebhookStoredEnvelopeReadyV1,
 } from "./storedEnvelope";
 import { createGitHubWebhookHmacSha256V1Verifier } from "./verifiers/githubHmacSha256";
+import { requiresProviderInstallationIdV1 } from "./routingKind";
 import type { PluginWebhookCommittedDeliveryWakeV1 } from "./wake";
 
 const GITHUB_DELIVERY_ID_PATTERN_V1 = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -205,10 +206,10 @@ export async function admitVerifiedPluginWebhookV1(params: Readonly<{
     const providerDeliveryId = params.verification.providerDeliveryId;
     const credentialVersionId = params.verification.credentialVersionId;
 
-    const providerInstallationId = route.routingKind === "providerInstallation"
+    const providerInstallationId = requiresProviderInstallationIdV1(route.routingKind)
         ? dependencies.parseInstallationId(params.rawBody)
         : undefined;
-    if (route.routingKind === "providerInstallation" && !providerInstallationId) {
+    if (requiresProviderInstallationIdV1(route.routingKind) && !providerInstallationId) {
         return { kind: "rejected", statusCode: 404, code: "not_found" };
     }
     const endpoint = await dependencies.resolveEndpoint({

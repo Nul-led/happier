@@ -47,7 +47,7 @@ describe("native auth email production composition", () => {
     function app() {
         messages = [];
         const delivery: AuthEmailDelivery = {
-            isReady: true,
+            isReady: async () => true,
             deliver: async (message) => {
                 messages.push(message);
                 return { status: "sent" };

@@ -7,8 +7,8 @@ import {
   type PluginUiArtifactFileV1,
 } from '../contributions/ui/artifacts.js';
 import {
-  PluginUiArtifactsManifestEntryV1Schema,
-  type PluginUiArtifactsManifestEntryV1,
+  PluginUiArtifactsManifestEntryV2Schema,
+  type PluginUiArtifactsManifestEntryV2,
 } from './uiArtifactsManifest.js';
 import {
   PluginUiArtifactDigestV1Schema,
@@ -29,7 +29,7 @@ export const PluginUiArtifactArchiveHeaderV1Schema = z.object({
   v: z.literal(PLUGIN_UI_ARTIFACT_ARCHIVE_VERSION_V1),
   kind: z.literal(PLUGIN_UI_ARTIFACT_ARCHIVE_KIND_V1),
   title: z.null(),
-  artifactGraph: PluginUiArtifactsManifestEntryV1Schema,
+  artifactGraph: PluginUiArtifactsManifestEntryV2Schema,
 }).strict();
 export type PluginUiArtifactArchiveHeaderV1 =
   z.infer<typeof PluginUiArtifactArchiveHeaderV1Schema>;
@@ -50,7 +50,7 @@ export type PluginUiArtifactArchiveBodyV1 =
   z.infer<typeof PluginUiArtifactArchiveBodyV1Schema>;
 
 export type PluginUiArtifactArchiveOpenedV1 = Readonly<{
-  artifactGraph: PluginUiArtifactsManifestEntryV1;
+  artifactGraph: PluginUiArtifactsManifestEntryV2;
   files: ReadonlyMap<string, Uint8Array>;
 }>;
 
@@ -60,7 +60,7 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return copy;
 }
 
-function artifactKindFor(tier: PluginUiArtifactsManifestEntryV1['tier']): string {
+function artifactKindFor(tier: PluginUiArtifactsManifestEntryV2['tier']): string {
   return tier === 'reactNative' ? 'reactNativeBundle' : 'hostedWebAsset';
 }
 
@@ -84,7 +84,7 @@ function hasExpectedFileSet(
 function verifyFiles(input: Readonly<{
   pluginId: string;
   expectedArtifactDigest: PluginUiArtifactDigestV1;
-  artifactGraph: PluginUiArtifactsManifestEntryV1;
+  artifactGraph: PluginUiArtifactsManifestEntryV2;
   files: ReadonlyMap<string, Uint8Array>;
 }>): boolean {
   if (!hasExpectedFileSet(input.artifactGraph.files, input.files)) return false;
@@ -97,7 +97,7 @@ function verifyFiles(input: Readonly<{
       integrity: {
         digest: declared.digest,
         pluginId: input.pluginId,
-        contributionId: input.artifactGraph.contributionId,
+        contributionId: input.artifactGraph.artifactId,
         artifactKind,
       },
     });
@@ -111,7 +111,7 @@ function verifyFiles(input: Readonly<{
     integrity: {
       digest: input.expectedArtifactDigest,
       pluginId: input.pluginId,
-      contributionId: input.artifactGraph.contributionId,
+      contributionId: input.artifactGraph.artifactId,
       artifactKind,
     },
   }).ok;
@@ -133,7 +133,7 @@ export function createPluginUiArtifactArchiveV1(input: Readonly<{
   header: PluginUiArtifactArchiveHeaderV1;
   body: PluginUiArtifactArchiveBodyV1;
 }> | null {
-  const graph = PluginUiArtifactsManifestEntryV1Schema.safeParse(input.artifactGraph);
+  const graph = PluginUiArtifactsManifestEntryV2Schema.safeParse(input.artifactGraph);
   if (!graph.success) return null;
   const pluginId = String(input.pluginId ?? '').trim();
   if (!pluginId) return null;

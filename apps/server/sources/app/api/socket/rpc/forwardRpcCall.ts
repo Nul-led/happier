@@ -1,4 +1,7 @@
 import type { Server, Socket } from "socket.io";
+import { randomUUID } from "node:crypto";
+import type { CallerInputConstraintsV1 } from "@happier-dev/protocol/auth/apiTokenGrant";
+import type { ExternalActionExecutionAuthorizationV1 } from "@happier-dev/protocol/actions";
 
 import {
     isPlainMachineDataKeyMarker,
@@ -13,6 +16,7 @@ import {
     SOCKET_RPC_EVENTS,
     SocketRpcTransportResponseEnvelopeV1Schema,
     type SocketRpcRequestPayload,
+    type SessionTransferRoutingV1,
     type SocketRpcTransportAcknowledgementV1,
 } from "@happier-dev/protocol/socketRpc";
 
@@ -108,6 +112,14 @@ export async function forwardRpcCall(params: Readonly<{
     transportResponseEnvelopeVersion?: 1;
     callerSocketId?: string;
     callerSocket?: Pick<Socket, "data">;
+    /** Verified credential constraints; inbound RPC fields are never authoritative. */
+    callerInputConstraints?: CallerInputConstraintsV1;
+    transferRouting?: SessionTransferRoutingV1;
+    /** Trusted ingress producer, invoked only inside the selected target's currentness guard. */
+    createCallerInputAuthorization?: (input: Readonly<{
+        target: RpcAckResponseEmitter;
+        requestId: string;
+    }>) => Promise<ExternalActionExecutionAuthorizationV1>;
     targetGuard?: RpcForwardTargetGuard;
     cancellation?: Readonly<{
         /** Server-minted correlation that is safe to expose to the exact target. */
@@ -241,11 +253,18 @@ export async function forwardRpcCall(params: Readonly<{
             throw new Error("RPC request cancelled by caller");
         }
         const timeoutMs = resolveRpcForwardTimeoutMs(params.method, params.timeoutMs);
+        const targetRequestId = params.cancellation?.targetRequestId
+            ?? (params.createCallerInputAuthorization ? `rpc_${randomUUID()}` : undefined);
         const request: SocketRpcRequestPayload = {
             method: params.method,
             params: params.callParams,
+            callerAuthority: params.callerSocket?.data?.authAuthority === "present_user"
+                ? "present_user"
+                : "account_automation",
+            ...(params.callerInputConstraints ? { callerInputConstraints: params.callerInputConstraints } : {}),
+            ...(params.transferRouting ? { transferRouting: params.transferRouting } : {}),
             timeoutMs,
-            ...(params.cancellation ? { requestId: params.cancellation.targetRequestId } : {}),
+            ...(targetRequestId ? { requestId: targetRequestId } : {}),
             ...(params.authorization ? { authorization: params.authorization } : {}),
             ...(params.transportResponseEnvelopeVersion === 1
                 ? { transportResponseEnvelopeVersion: 1 as const }
@@ -260,10 +279,21 @@ export async function forwardRpcCall(params: Readonly<{
                 throw new Error("RPC request cancelled by caller");
             }
             const targetEmitter = selection.target.timeout(timeoutMs);
+            const callerInputAuthorization = params.createCallerInputAuthorization && targetRequestId
+                ? await params.createCallerInputAuthorization({ target: selection.target, requestId: targetRequestId })
+                : null;
+            if (params.cancellation?.signal.aborted) throw new Error("RPC request cancelled by caller");
             requestSubmitted = true;
             const response = targetEmitter.emitWithAck(
                 SOCKET_RPC_EVENTS.REQUEST,
-                request,
+                callerInputAuthorization ? {
+                    ...request,
+                    callerInputAuthorization,
+                    callerInputConstraints: {
+                        models: callerInputAuthorization.binding.grant.models,
+                        permissionModes: callerInputAuthorization.binding.grant.permissionModes,
+                    },
+                } : request,
             );
             const cancellationSignal = params.cancellation?.signal;
             // Caller-lifecycle operations forward cancellation to their exact

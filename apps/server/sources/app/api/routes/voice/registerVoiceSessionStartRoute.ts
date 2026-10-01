@@ -4,6 +4,7 @@ import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCata
 import { db } from "@/storage/db";
 import { type VoiceSessionLifecycleBody, voiceSessionLifecycleBodySchema } from "./voiceSessionLifecycleSchemas";
 import { type Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 async function ownsUnexpiredVoiceSessionLease(params: Readonly<{
     accountId: string;
@@ -46,7 +47,8 @@ export function registerVoiceSessionStartRoute(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const serverFeatures = resolveServerFeaturesForGating(process.env);
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        const serverFeatures = resolveServerFeaturesForGating(requestHomeEnv);
         if (!isResolvedServerFeatureEnabledForGating(serverFeatures, "voice.happierVoice")) {
             return reply.code(404).send({ ok: false, reason: "not_found" as const });
         }

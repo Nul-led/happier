@@ -117,6 +117,23 @@ describe("local service preview access tokens", () => {
         expect(() => mod?.createLocalServicePreviewToken({ ...baseInput, expiresAt: 1_000 })).toThrow();
     });
 
+    it('rejects a URL admission record without an expiry while allowing registration-bound cookies', async () => {
+        const mod = await loadPreviewTokensModule();
+        const issued = mod!.createLocalServicePreviewToken({
+            secret: 'server-secret', tokenId: 'token_1', rawToken: 'raw-preview-token',
+            previewId: 'preview_1', sessionId: 'session_1', machineId: 'machine_1',
+            issuedAt: 1_000, expiresAt: null, exchangeMode: 'cookie',
+        });
+        const validation = {
+            secret: 'server-secret', rawToken: issued.token, record: issued.record,
+            previewId: 'preview_1', sessionId: 'session_1', machineId: 'machine_1', nowMs: 62_000,
+        };
+        expect(mod!.validateLocalServicePreviewToken(validation)).toEqual({ ok: true });
+        expect(mod!.validateLocalServicePreviewToken({
+            ...validation, record: { ...issued.record, exchangeMode: 'url' }, expectedExchangeMode: 'url',
+        })).toEqual({ ok: false, reasonCode: 'expired' });
+    });
+
     it("rejects expired, revoked, and mismatched token material", async () => {
         const mod = await loadPreviewTokensModule();
         const issued = mod?.createLocalServicePreviewToken({

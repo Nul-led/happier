@@ -81,6 +81,12 @@ describe("workflow Run persistence contract", () => {
         expect(schema).toContain('@@unique([runId, sequence], map: "WorkflowRunInvocation_run_sequence_key")');
         expect(schema).toContain('@@unique([runId, parentRecordId, memberOrdinal, attempt], map: "WorkflowRunInvocation_slot_attempt_key")');
         expect(schema).toContain('@@index([runId, lifecycle, sequence], map: "WorkflowRunInvocation_lifecycle_idx")');
+        expect(schema).toMatch(/@@index\(\[accountId, createdAt(?:\(sort: Desc\))?, id(?:\(sort: Desc\))?\], map: "AutomationRun_account_created_id_idx"\)/u);
+        if (relativePath === "prisma/mysql/schema.prisma") {
+            expect(schema).toMatch(/^\s*workflowAcceptedSnapshotEnvelope\s+String\?\s+@db\.LongText$/mu);
+            expect(schema).toMatch(/^\s*workflowCheckpointEnvelope\s+String\?\s+@db\.LongText$/mu);
+            expect(schema).toMatch(/^\s*contentEnvelope\s+String\s+@db\.LongText$/mu);
+        }
     });
 
     it.each([
@@ -123,12 +129,18 @@ describe("workflow Run persistence contract", () => {
         expect(migration).toContain('CREATE UNIQUE INDEX "WorkflowRunInvocation_run_sequence_key" ON "WorkflowRunInvocation"("runId", "sequence")');
         expect(migration).toContain('CREATE UNIQUE INDEX "WorkflowRunInvocation_slot_attempt_key" ON "WorkflowRunInvocation"("runId", "parentRecordId", "memberOrdinal", "attempt")');
         expect(migration).toContain('CREATE INDEX "WorkflowRunInvocation_lifecycle_idx" ON "WorkflowRunInvocation"("runId", "lifecycle", "sequence")');
+        expect(migration).toContain('CREATE INDEX "AutomationRun_account_created_id_idx" ON "AutomationRun"("accountId", "createdAt" DESC, "id" DESC)');
         for (const lifecycle of WORKFLOW_INVOCATION_LIFECYCLES) {
             expect(migration).toContain(`'${lifecycle}'`);
         }
         expect(migration).toMatch(/"sequence" (?:BIGINT|INTEGER) NOT NULL/iu);
         expect(migration).toMatch(/"memberOrdinal" (?:BIGINT|INTEGER) NOT NULL/iu);
         expect(migration).toMatch(/"attempt" (?:BIGINT|INTEGER) NOT NULL DEFAULT 0/iu);
+        if (relativePath.includes("/mysql/")) {
+            expect(migration).toContain('"workflowAcceptedSnapshotEnvelope" LONGTEXT NULL');
+            expect(migration).toContain('"workflowCheckpointEnvelope" LONGTEXT NULL');
+            expect(migration).toContain('"contentEnvelope" LONGTEXT NOT NULL');
+        }
         for (const state of ["pause_requested", "paused", "interrupted"]) {
             expect(migration).toContain(`'${state}'`);
         }

@@ -191,7 +191,7 @@ describe('plugin contribution introspection wire contract', () => {
     expect(PluginContributionLifecycleRecordV1Schema.safeParse({
       ...base,
       registration: { requirement: 'required', state: 'unbound' },
-      activation: { state: 'active', generation: 'runtime:1' },
+      activation: { state: 'active', occurrenceId: 'runtime:1' },
     }).success).toBe(false);
     expect(PluginContributionLifecycleRecordV1Schema.safeParse({
       ...base,

@@ -326,7 +326,11 @@ describe.skipIf(provider !== "postgres" && provider !== "postgresql")(
                 machineId,
                 machineInstallationId,
                 materializationId,
-                immutableGenerationId: `generation-${suffix}`,
+                sourceCustody: {
+                    kind: "managed" as const,
+                    immutableGenerationId: `generation-${suffix}`,
+                    installSource: "archive" as const,
+                },
             };
             const admit = async (params: Readonly<{
                 input: ReturnType<typeof eventInput>;

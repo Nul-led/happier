@@ -12,6 +12,12 @@ import {
 } from './browser.js';
 import { type RuntimeActionSpecFamily, type RuntimeActionSpecTextMap } from './common.js';
 import {
+  COMPUTER_RUNTIME_ACTION_INPUT_SCHEMAS,
+  COMPUTER_RUNTIME_ACTION_OUTPUT_SCHEMAS,
+  COMPUTER_RUNTIME_ACTION_SPEC_FAMILY,
+  projectComputerObservationInput,
+} from './computer.js';
+import {
   LOCAL_SERVICES_RUNTIME_ACTION_INPUT_SCHEMAS,
   LOCAL_SERVICES_RUNTIME_ACTION_OUTPUT_SCHEMAS,
   LOCAL_SERVICES_RUNTIME_ACTION_SPEC_FAMILY,
@@ -28,6 +34,7 @@ import {
 } from './simulator.js';
 
 const RUNTIME_ACTION_SPEC_FAMILIES = Object.freeze([
+  COMPUTER_RUNTIME_ACTION_SPEC_FAMILY,
   BROWSER_RUNTIME_ACTION_SPEC_FAMILY,
   LOCAL_SERVICES_RUNTIME_ACTION_SPEC_FAMILY,
   PEER_MEDIATION_RUNTIME_ACTION_SPEC_FAMILY,
@@ -49,14 +56,32 @@ const RUNTIME_ACTION_DESCRIPTIONS = mergeRuntimeActionTextMaps((family) => famil
  * input/output schema for every runtime id — no prefix fallback or unknown
  * public result carrier remains.
  */
-export const RUNTIME_ACTION_INPUT_SCHEMAS = Object.freeze({
+type RuntimeActionInputSchemas = Readonly<
+  typeof COMPUTER_RUNTIME_ACTION_INPUT_SCHEMAS
+  & typeof BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS
+  & typeof LOCAL_SERVICES_RUNTIME_ACTION_INPUT_SCHEMAS
+  & typeof PEER_MEDIATION_RUNTIME_ACTION_INPUT_SCHEMAS
+  & typeof SIMULATOR_RUNTIME_ACTION_INPUT_SCHEMAS
+>;
+
+type RuntimeActionOutputSchemas = Readonly<
+  typeof COMPUTER_RUNTIME_ACTION_OUTPUT_SCHEMAS
+  & typeof BROWSER_RUNTIME_ACTION_OUTPUT_SCHEMAS
+  & typeof LOCAL_SERVICES_RUNTIME_ACTION_OUTPUT_SCHEMAS
+  & typeof PEER_MEDIATION_RUNTIME_ACTION_OUTPUT_SCHEMAS
+  & typeof SIMULATOR_RUNTIME_ACTION_OUTPUT_SCHEMAS
+>;
+
+export const RUNTIME_ACTION_INPUT_SCHEMAS: RuntimeActionInputSchemas = Object.freeze({
+  ...COMPUTER_RUNTIME_ACTION_INPUT_SCHEMAS,
   ...BROWSER_RUNTIME_ACTION_INPUT_SCHEMAS,
   ...LOCAL_SERVICES_RUNTIME_ACTION_INPUT_SCHEMAS,
   ...PEER_MEDIATION_RUNTIME_ACTION_INPUT_SCHEMAS,
   ...SIMULATOR_RUNTIME_ACTION_INPUT_SCHEMAS,
 } as const satisfies Readonly<Record<RuntimeActionIdV1, z.ZodTypeAny>>);
 
-export const RUNTIME_ACTION_OUTPUT_SCHEMAS = Object.freeze({
+export const RUNTIME_ACTION_OUTPUT_SCHEMAS: RuntimeActionOutputSchemas = Object.freeze({
+  ...COMPUTER_RUNTIME_ACTION_OUTPUT_SCHEMAS,
   ...BROWSER_RUNTIME_ACTION_OUTPUT_SCHEMAS,
   ...LOCAL_SERVICES_RUNTIME_ACTION_OUTPUT_SCHEMAS,
   ...PEER_MEDIATION_RUNTIME_ACTION_OUTPUT_SCHEMAS,
@@ -107,6 +132,8 @@ function createRuntimeActionSpecFor<
     sideEffectClass,
     outputSchema: params.outputSchema,
     inputSchema: params.inputSchema,
+    ...(Object.hasOwn(COMPUTER_RUNTIME_ACTION_INPUT_SCHEMAS, actionId)
+      ? { projectObservationInput: projectComputerObservationInput } : {}),
     inputHints: {
       title,
       description: executorReal ? humanDescription : RUNTIME_ACTION_PROJECTION_CONTRACT_HINT_DESCRIPTION,
@@ -115,14 +142,20 @@ function createRuntimeActionSpecFor<
   };
 }
 
-function createRuntimeActionSpec<TActionId extends RuntimeActionIdV1>(actionId: TActionId) {
-  return createRuntimeActionSpecFor({
+function createRuntimeActionSpec(actionId: RuntimeActionIdV1): RuntimeActionSpec {
+  return createRuntimeActionSpecFor<RuntimeActionIdV1, RuntimeActionInputSchemas[RuntimeActionIdV1], RuntimeActionOutputSchemas[RuntimeActionIdV1]>({
     actionId,
     inputSchema: RUNTIME_ACTION_INPUT_SCHEMAS[actionId],
     outputSchema: RUNTIME_ACTION_OUTPUT_SCHEMAS[actionId],
   });
 }
 
-export const RUNTIME_ACTION_SPECS = Object.freeze(
+type RuntimeActionSpec = RuntimeActionSpecFor<
+  RuntimeActionIdV1,
+  RuntimeActionInputSchemas[RuntimeActionIdV1],
+  RuntimeActionOutputSchemas[RuntimeActionIdV1]
+>;
+
+export const RUNTIME_ACTION_SPECS: readonly RuntimeActionSpec[] = Object.freeze(
   RuntimeActionIdV1Schema.options.map(createRuntimeActionSpec),
 ) satisfies readonly PreNormalizedActionSpec[];

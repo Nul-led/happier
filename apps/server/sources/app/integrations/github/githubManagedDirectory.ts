@@ -34,6 +34,7 @@ const contextBrand: unique symbol = Symbol("ManagedGitHubDirectoryReadContext");
 
 export interface ManagedGitHubDirectoryReadContext {
     readonly directorySourceId: string;
+    readonly githubInstallationId: bigint;
     readonly registrationSecurityRevision: number;
     readonly installationRevision: number;
     readonly networkPolicyFingerprint: string;
@@ -237,6 +238,7 @@ function hasExpectedTuple(
     resolved: ResolvedManagedDirectory,
 ): boolean {
     return context.directorySourceId === resolved.source.id
+        && context.githubInstallationId === resolved.installation.githubInstallationId
         && context.registrationSecurityRevision === resolved.registration.securityRevision
         && context.installationRevision === resolved.installation.revision
         && context.networkPolicyFingerprint === resolved.network.fingerprint;
@@ -353,6 +355,7 @@ export async function beginManagedGitHubDirectoryRead(
         ok: true,
         context: Object.freeze({
             directorySourceId: resolved.value.source.id,
+            githubInstallationId: resolved.value.installation.githubInstallationId,
             registrationSecurityRevision: resolved.value.registration.securityRevision,
             installationRevision: resolved.value.installation.revision,
             networkPolicyFingerprint: resolved.value.network.fingerprint,

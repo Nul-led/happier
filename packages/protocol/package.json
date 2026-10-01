@@ -6,9 +6,25 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./terminal": {
+      "types": "./dist/terminal/index.d.ts",
+      "default": "./dist/terminal/index.js"
+    },
     "./server/relayDrift": {
       "types": "./dist/server/relayDrift.d.ts",
       "default": "./dist/server/relayDrift.js"
+    },
+    "./auth/apiTokenGrant": {
+      "types": "./dist/auth/apiTokenGrant.d.ts",
+      "default": "./dist/auth/apiTokenGrant.js"
+    },
+    "./actions/decisionAuthority": {
+      "types": "./dist/actions/decisionAuthority.d.ts",
+      "default": "./dist/actions/decisionAuthority.js"
+    },
+    "./actions/invocationAuthority": {
+      "types": "./dist/actions/invocationAuthority.d.ts",
+      "default": "./dist/actions/invocationAuthority.js"
     },
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,6 +33,22 @@
     "./tools/v2": {
       "types": "./dist/tools/v2/index.d.ts",
       "default": "./dist/tools/v2/index.js"
+    },
+    "./local/services/inventory": {
+      "types": "./dist/local/services/inventory/index.d.ts",
+      "default": "./dist/local/services/inventory/index.js"
+    },
+    "./local/services/preview/v1": {
+      "types": "./dist/local/services/preview/v1.d.ts",
+      "default": "./dist/local/services/preview/v1.js"
+    },
+    "./local/services/preview/nativeDirect": {
+      "types": "./dist/local/services/preview/nativeDirect.d.ts",
+      "default": "./dist/local/services/preview/nativeDirect.js"
+    },
+    "./local/services/public/v1": {
+      "types": "./dist/local/services/public/v1.d.ts",
+      "default": "./dist/local/services/public/v1.js"
     },
     "./tools/v2/subAgentFamilies": {
       "types": "./dist/tools/v2/subAgentFamilies.d.ts",
@@ -74,6 +106,18 @@
       "types": "./dist/actions/index.d.ts",
       "default": "./dist/actions/index.js"
     },
+    "./connect/connectedServiceProfilePreferences": {
+      "types": "./dist/connect/connectedServiceProfilePreferences.d.ts",
+      "default": "./dist/connect/connectedServiceProfilePreferences.js"
+    },
+    "./connect/execute-configuration-action": {
+      "types": "./dist/connect/executeConfigurationActionV1.d.ts",
+      "default": "./dist/connect/executeConfigurationActionV1.js"
+    },
+    "./connect/agentDefaultChoices": {
+      "types": "./dist/connect/agentDefaultChoices.d.ts",
+      "default": "./dist/connect/agentDefaultChoices.js"
+    },
     "./actions/externalActionLimits": {
       "types": "./dist/actions/externalActionLimits.d.ts",
       "default": "./dist/actions/externalActionLimits.js"
@@ -85,6 +129,10 @@
     "./actions/actionSpecs": {
       "types": "./dist/actions/actionSpecs.d.ts",
       "default": "./dist/actions/actionSpecs.js"
+    },
+    "./actions/scmGitActionSpecs": {
+      "types": "./dist/actions/scmGitActionSpecs.d.ts",
+      "default": "./dist/actions/scmGitActionSpecs.js"
     },
     "./actions/actionExecutionResult": {
       "types": "./dist/actions/actionExecutionResult.d.ts",
@@ -105,6 +153,14 @@
     "./auth/accountApiTokens": {
       "types": "./dist/auth/accountApiTokens.d.ts",
       "default": "./dist/auth/accountApiTokens.js"
+    },
+    "./auth/authToken": {
+      "types": "./dist/auth/authToken.d.ts",
+      "default": "./dist/auth/authToken.js"
+    },
+    "./embed": {
+      "types": "./dist/embed/index.d.ts",
+      "default": "./dist/embed/index.js"
     },
     "./auth/accountDirectory": {
       "types": "./dist/auth/accountDirectory.d.ts",
@@ -287,6 +343,10 @@
       "types": "./dist/agents/claude/index.d.ts",
       "default": "./dist/agents/claude/index.js"
     },
+    "./agents/setup": {
+      "types": "./dist/agents/setup/agentSetup.d.ts",
+      "default": "./dist/agents/setup/agentSetup.js"
+    },
     "./backends": {
       "types": "./dist/backends/index.d.ts",
       "default": "./dist/backends/index.js"
@@ -294,6 +354,10 @@
     "./daemon/plugin-invocation-logs": {
       "types": "./dist/daemon/pluginInvocationLogs.d.ts",
       "default": "./dist/daemon/pluginInvocationLogs.js"
+    },
+    "./daemon/agent-install-jobs": {
+      "types": "./dist/daemon/agentInstallJobs.d.ts",
+      "default": "./dist/daemon/agentInstallJobs.js"
     },
     "./pets": {
       "types": "./dist/pets/index.d.ts",
@@ -311,6 +375,14 @@
       "types": "./dist/plugins/ui/targetedContributions.d.ts",
       "default": "./dist/plugins/ui/targetedContributions.js"
     },
+    "./plugins/runtime/sourceCustody": {
+      "types": "./dist/plugins/runtime/sourceCustody.d.ts",
+      "default": "./dist/plugins/runtime/sourceCustody.js"
+    },
+    "./plugins/public-toolchain-compatibility": {
+      "types": "./dist/plugins/publicToolchainCompatibilityV1.d.ts",
+      "default": "./dist/plugins/publicToolchainCompatibilityV1.js"
+    },
     "./plugins/ui/composerRef": {
       "types": "./dist/plugins/ui/composerRef.d.ts",
       "default": "./dist/plugins/ui/composerRef.js"
@@ -327,6 +399,10 @@
       "types": "./dist/plugins/actions/protocolComposableSchema.d.ts",
       "default": "./dist/plugins/actions/protocolComposableSchema.js"
     },
+    "./plugins/actions/policy": {
+      "types": "./dist/plugins/actions/policy.d.ts",
+      "default": "./dist/plugins/actions/policy.js"
+    },
     "./plugins/errors": {
       "types": "./dist/plugins/errors.d.ts",
       "default": "./dist/plugins/errors.js"
@@ -342,6 +418,10 @@
     "./plugins/contributions/v2": {
       "types": "./dist/plugins/contributions/v2.d.ts",
       "default": "./dist/plugins/contributions/v2.js"
+    },
+    "./plugins/contributions/public-types": {
+      "types": "./dist/plugins/contributions/publicTypes.d.ts",
+      "default": "./dist/plugins/contributions/publicTypes.js"
     },
     "./plugins/source-spec": {
       "types": "./dist/plugins/sourceSpecV1.d.ts",
@@ -491,6 +571,10 @@
       "types": "./dist/connect/connectedServiceLimitCategory.d.ts",
       "default": "./dist/connect/connectedServiceLimitCategory.js"
     },
+    "./account/notifications/notifyMeV1": {
+      "types": "./dist/account/notifications/notifyMeV1.d.ts",
+      "default": "./dist/account/notifications/notifyMeV1.js"
+    },
     "./account/settings/connected-services": {
       "types": "./dist/account/settings/connectedServicesSettings.d.ts",
       "default": "./dist/account/settings/connectedServicesSettings.js"
@@ -502,6 +586,10 @@
     "./sessions/metadata/runtime-descriptor": {
       "types": "./dist/sessions/metadata/runtimeDescriptorV1.d.ts",
       "default": "./dist/sessions/metadata/runtimeDescriptorV1.js"
+    },
+    "./sessions/metadata/directory": {
+      "types": "./dist/sessions/metadata/sessionDirectoryV1.d.ts",
+      "default": "./dist/sessions/metadata/sessionDirectoryV1.js"
     },
     "./sessions/metadata/runtime-descriptor-compat": {
       "types": "./dist/sessions/metadata/compat/runtimeDescriptorMetadata.d.ts",
@@ -679,9 +767,25 @@
       "types": "./dist/workflows/index.d.ts",
       "default": "./dist/workflows/index.js"
     },
+    "./execution/runs/resultContract": {
+      "types": "./dist/execution/runs/resultContract.d.ts",
+      "default": "./dist/execution/runs/resultContract.js"
+    },
+    "./plugins/events/hostReferencesV1": {
+      "types": "./dist/plugins/events/hostReferencesV1.d.ts",
+      "default": "./dist/plugins/events/hostReferencesV1.js"
+    },
     "./workflows/workflowV1": {
       "types": "./dist/workflows/workflowV1.d.ts",
       "default": "./dist/workflows/workflowV1.js"
+    },
+    "./workflows/workflowLeafV1": {
+      "types": "./dist/workflows/workflowLeafV1.d.ts",
+      "default": "./dist/workflows/workflowLeafV1.js"
+    },
+    "./workflows/workflowStepSelectionV1": {
+      "types": "./dist/workflows/workflowStepSelectionV1.d.ts",
+      "default": "./dist/workflows/workflowStepSelectionV1.js"
     },
     "./workflows/workflowReferenceV1": {
       "types": "./dist/workflows/workflowReferenceV1.d.ts",
@@ -699,9 +803,17 @@
       "types": "./dist/workflows/workflowProgressV1.d.ts",
       "default": "./dist/workflows/workflowProgressV1.js"
     },
+    "./workflows/workflowRunStorageV1": {
+      "types": "./dist/workflows/workflowRunStorageV1.d.ts",
+      "default": "./dist/workflows/workflowRunStorageV1.js"
+    },
     "./workflows/workflowDefinitionV1": {
       "types": "./dist/workflows/workflowDefinitionV1.d.ts",
       "default": "./dist/workflows/workflowDefinitionV1.js"
+    },
+    "./workflows/workflowDefinitionEditV1": {
+      "types": "./dist/workflows/workflowDefinitionEditV1.d.ts",
+      "default": "./dist/workflows/workflowDefinitionEditV1.js"
     },
     "./workflows/workflowDocumentV1": {
       "types": "./dist/workflows/workflowDocumentV1.d.ts",

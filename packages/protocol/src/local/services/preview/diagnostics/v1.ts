@@ -10,6 +10,7 @@ const IdSchema = z.string().trim().min(1).max(256);
 
 export const LocalServicePreviewDiagnosticReasonCodeV1Schema = z.enum([
   'invalid_preview_resource',
+  'preview_registration_failed',
   'preview_token_secret_missing',
   'preview_public_base_url_missing',
   'preview_not_found',

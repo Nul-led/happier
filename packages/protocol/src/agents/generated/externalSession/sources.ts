@@ -2,7 +2,7 @@
  * GENERATED FILE CONTRACT (A.16y.7-protocol-provider-default-and-source-projection)
  *
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 export const GENERATED_EXTERNAL_SESSIONS_SOURCE_DECLARATIONS = [
@@ -285,6 +285,33 @@ export const GENERATED_EXTERNAL_SESSIONS_SOURCE_DECLARATIONS = [
       ]
     },
     "sourceKind": "antigravityCliPrint"
+  },
+  {
+    "agentId": "qwen",
+    "instances": [
+      {
+        "constants": {},
+        "kind": "default"
+      }
+    ],
+    "key": {
+      "segments": [
+        {
+          "kind": "literal",
+          "value": "qwenAcpSessionList"
+        }
+      ]
+    },
+    "schema": {
+      "fields": [
+        {
+          "kind": "literal",
+          "name": "kind",
+          "value": "qwenAcpSessionList"
+        }
+      ]
+    },
+    "sourceKind": "qwenAcpSessionList"
   },
   {
     "agentId": "kimi",

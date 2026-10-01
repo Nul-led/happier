@@ -46,7 +46,7 @@ export function isAutomationCauseRow<T extends Readonly<{
  * direct Workflow rows remain owned by the Workflow service.
  */
 export function projectAutomationOriginRun(row: StoredAutomationRunRow): AutomationRunItem | null {
-    if (!isAutomationCauseRow(row) || row.originSessionId !== null) return null;
+    if (!isAutomationCauseRow(row)) return null;
     return row as AutomationRunItem;
 }
 
@@ -72,6 +72,7 @@ export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause | nu
     if (row.causeKind === "conversation") {
         return AutomationRunCauseSchema.parse({
             kind: "conversation",
+            ...(row.triggerId === null ? {} : { triggerId: row.triggerId }),
             occurrenceKey: required(row.occurrenceKey, "occurrenceKey"),
             occurredAt: required(row.causeOccurredAt, "causeOccurredAt").getTime(),
         });
@@ -128,7 +129,9 @@ export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause | nu
             evidence: {
                 event,
                 sourceSessionId: required(row.causeSourceSessionId, "causeSourceSessionId"),
-                sourceTurnId: required(row.causeSourceTurnId, "causeSourceTurnId"),
+                ...(event === "sessionStarted" || event === "sessionArchived" ? {} : {
+                    sourceTurnId: required(row.causeSourceTurnId, "causeSourceTurnId"),
+                }),
                 ...(event === "userActionRequired"
                     ? {
                         requestId: required(
@@ -188,7 +191,7 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
     }
     if (cause.kind === "conversation") {
         return {
-            triggerId: null,
+            triggerId: cause.triggerId ?? null,
             causeKind: "conversation" as const,
             causeTriggerKind: null,
             causeTriggerRevision: null,
@@ -226,7 +229,7 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
         causeSourceSessionId: cause.triggerKind === "sessionLifecycle"
             ? cause.evidence.sourceSessionId
             : null,
-        causeSourceTurnId: cause.triggerKind === "sessionLifecycle"
+        causeSourceTurnId: cause.triggerKind === "sessionLifecycle" && "sourceTurnId" in cause.evidence
             ? cause.evidence.sourceTurnId
             : null,
         causeSessionLifecycleRequestId: cause.triggerKind === "sessionLifecycle"

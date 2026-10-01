@@ -20,6 +20,7 @@ export const MENTION_KIND_V1 = {
   skill: 'happier.skill',
   vendorPlugin: 'happier.vendorPlugin',
   session: 'happier.session',
+  workflowInput: 'happier.workflowInput',
 } as const;
 
 export type BuiltInMentionKindV1 = (typeof MENTION_KIND_V1)[keyof typeof MENTION_KIND_V1];
@@ -30,6 +31,7 @@ export const MENTION_REF_SCHEME_V1 = {
   [MENTION_KIND_V1.skill]: 'skill',
   [MENTION_KIND_V1.vendorPlugin]: 'vendorPlugin',
   [MENTION_KIND_V1.session]: 'session',
+  [MENTION_KIND_V1.workflowInput]: 'workflowInput',
 } as const satisfies Readonly<Record<BuiltInMentionKindV1, string>>;
 
 export const MENTION_BOUNDS = {

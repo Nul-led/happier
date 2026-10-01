@@ -10,7 +10,7 @@ function relayFrame(sequence: number, payloadKind: 'image_delta' | 'image_keyfra
         timestampMs: 1_000 + sequence,
         payloadKind,
         payloadEncoding: 'binary_base64' as const,
-        payloadBase64: Buffer.from(new Uint8Array(payloadSizeBytes)).toString('base64'),
+        payload: { t: 'plain' as const, v: Buffer.from(new Uint8Array(payloadSizeBytes)).toString('base64') },
         payloadSizeBytes,
     };
 }

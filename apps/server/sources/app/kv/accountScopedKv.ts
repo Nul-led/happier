@@ -1,7 +1,5 @@
-import { PluginIdSchema } from "@happier-dev/protocol";
+import { AuthoringMemoryKeyV1Schema, PluginIdSchema, classifyAccountJsonKvKey } from "@happier-dev/protocol";
 import * as privacyKit from "privacy-kit";
-
-import { isTodoKvKey } from "./todoKvStoredContent";
 
 /**
  * UserKVStore is shared with pre-plugin generic KV, so Account-owned domains
@@ -16,6 +14,8 @@ export const PLUGIN_DECLARATIVE_SETTINGS_KEY_PREFIX =
     "@happier/account/plugin-settings/v1/" as const;
 export const ACCOUNT_SESSION_DRAFT_KV_PREFIX =
     "@happier/account/session-draft/v1/" as const;
+export const AUTHORING_MEMORY_ACCOUNT_KV_PREFIX =
+    "@happier/account/authoring-memory/v1/" as const;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -23,9 +23,11 @@ const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export type AccountScopedKvKeyClassification =
     | Readonly<{ kind: "generic" }>
     | Readonly<{ kind: "todo"; keyKind: "index" | "item" }>
+    | Readonly<{ kind: "workspace" }>
     | Readonly<{ kind: "pluginAccountStorage"; pluginId: string }>
     | Readonly<{ kind: "pluginDeclarativeSettings"; pluginId: string }>
     | Readonly<{ kind: "accountSessionDraft" }>
+    | Readonly<{ kind: "accountAuthoringMemory"; key: string }>
     | Readonly<{ kind: "reservedUnknown" }>;
 
 export class AccountScopedKvReservedKeyError extends Error {
@@ -50,6 +52,16 @@ export function buildPluginAccountStoragePhysicalKey(pluginId: string): string {
 
 export function buildPluginDeclarativeSettingsPhysicalKey(pluginId: string): string {
     return `${PLUGIN_DECLARATIVE_SETTINGS_KEY_PREFIX}${PluginIdSchema.parse(pluginId)}`;
+}
+
+export function buildAuthoringMemoryPhysicalKey(key: string): string {
+    return `${AUTHORING_MEMORY_ACCOUNT_KV_PREFIX}${AuthoringMemoryKeyV1Schema.parse(key)}`;
+}
+
+export function parseAuthoringMemoryPhysicalKey(physicalKey: string): string | null {
+    if (!physicalKey.startsWith(AUTHORING_MEMORY_ACCOUNT_KV_PREFIX)) return null;
+    const parsed = AuthoringMemoryKeyV1Schema.safeParse(physicalKey.slice(AUTHORING_MEMORY_ACCOUNT_KV_PREFIX.length));
+    return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -79,6 +91,8 @@ export function decodeAccountScopedKvJson(value: Uint8Array): unknown {
 export function classifyAccountScopedKvKey(
     key: string,
 ): AccountScopedKvKeyClassification {
+    const authoringMemoryKey = parseAuthoringMemoryPhysicalKey(key);
+    if (authoringMemoryKey !== null) return { kind: "accountAuthoringMemory", key: authoringMemoryKey };
     if (key.startsWith(ACCOUNT_SESSION_DRAFT_KV_PREFIX)) {
         return { kind: "accountSessionDraft" };
     }
@@ -105,7 +119,9 @@ export function classifyAccountScopedKvKey(
         return { kind: "reservedUnknown" };
     }
 
-    if (isTodoKvKey(key)) {
+    const accountJsonNamespace = classifyAccountJsonKvKey(key);
+    if (accountJsonNamespace === 'workspace') return { kind: 'workspace' };
+    if (accountJsonNamespace === 'todo') {
         return {
             kind: "todo",
             keyKind: key === "todo.index" ? "index" : "item",
@@ -120,6 +136,7 @@ export function isReservedAccountScopedKvKey(key: string): boolean {
     return classification.kind === "pluginAccountStorage"
         || classification.kind === "pluginDeclarativeSettings"
         || classification.kind === "accountSessionDraft"
+        || classification.kind === "accountAuthoringMemory"
         || classification.kind === "reservedUnknown";
 }
 

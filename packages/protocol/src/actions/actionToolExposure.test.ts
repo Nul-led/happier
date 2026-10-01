@@ -14,7 +14,6 @@ import {
 import {
   ActionSpecSchema,
   HUMAN_SECRET_API_EXCLUSION_ACTION_IDS,
-  INTERACTIVE_DISCUSSION_API_EXCLUSION_ACTION_IDS,
   INTERNAL_ACTION_IDS,
   INTERNAL_ACTION_REASONS,
   PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_ACTION_IDS,
@@ -284,7 +283,6 @@ describe('actionToolExposure', () => {
   it('derives public Action projections from reasoned exclusions independently of execution placement', () => {
     const internalActionIds = new Set(INTERNAL_ACTION_IDS);
     const humanSecretApiExcludedActionIds = new Set(HUMAN_SECRET_API_EXCLUSION_ACTION_IDS);
-    const interactiveDiscussionApiExcludedActionIds = new Set(INTERACTIVE_DISCUSSION_API_EXCLUSION_ACTION_IDS);
     const pluginProvenanceOnlyActionIds = new Set(PLUGIN_PROVENANCE_ONLY_API_EXCLUSION_ACTION_IDS);
     const pluginSurfaceExcludedActionIds = new Set(PLUGIN_SURFACE_EXCLUSION_ACTION_IDS);
 
@@ -304,8 +302,8 @@ describe('actionToolExposure', () => {
         expect(spec.surfaces.api, spec.id).toBe(
           !pluginProvenanceOnlyActionIds.has(spec.id)
             && !humanSecretApiExcludedActionIds.has(spec.id)
-            && !interactiveDiscussionApiExcludedActionIds.has(spec.id)
-            && spec.requiredAuthority === 'account_automation',
+            && (spec.requiredAuthority === 'account_automation'
+              || ['approval.request.decide', 'session.permission.respond', 'session.user_action.answer'].includes(spec.id)),
         );
         expect(spec.surfaces.plugin, spec.id).toBe(
           !pluginSurfaceExcludedActionIds.has(spec.id),
@@ -314,6 +312,8 @@ describe('actionToolExposure', () => {
     }
 
     expect(getActionSpec('projects.list').surfaces).toEqual(expect.objectContaining({
+      agent: true,
+      mcp: true,
       api: true,
       plugin: true,
     }));

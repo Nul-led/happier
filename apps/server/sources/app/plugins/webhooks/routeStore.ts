@@ -2,7 +2,11 @@ import type { PluginMachineMaterializationRefV1 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 
-type PluginWebhookRoutingKindV1 = "accountEndpoint" | "providerInstallation";
+import {
+    isEndpointSetupCompatibleWithRoutingKindV1,
+    isPluginWebhookRoutingKindV1,
+    type PluginWebhookRoutingKindV1,
+} from "./routingKind";
 
 export type ActivePluginWebhookRouteV1 = Readonly<{
     routeId: string;
@@ -64,7 +68,7 @@ export async function findActivePluginWebhookRouteV1(opaqueRouteId: string): Pro
         || !route.enabled
         || route.revokedAt !== null
         || route.verifierKind !== "github_hmac_sha256_v1"
-        || (route.routingKind !== "accountEndpoint" && route.routingKind !== "providerInstallation")
+        || !isPluginWebhookRoutingKindV1(route.routingKind)
         || route.policyVersion !== 1
     ) {
         return null;
@@ -100,10 +104,11 @@ function projectActiveEndpointV1(
         return null;
     }
     if (
-        (routingKind === "accountEndpoint"
-            && (endpoint.setupKind !== "accountEndpointV1" || endpoint.providerInstallationId !== null))
-        || (routingKind === "providerInstallation"
-            && (endpoint.setupKind !== "githubSharedInstallationV1" || endpoint.providerInstallationId === null))
+        !isEndpointSetupCompatibleWithRoutingKindV1({
+            routingKind,
+            setupKind: endpoint.setupKind,
+            providerInstallationId: endpoint.providerInstallationId,
+        })
     ) {
         return null;
     }

@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  FrameBridgeIdentityV1Schema,
+  wireIdentitiesEqual,
+  type FrameBridgeIdentityV1,
+} from '../../frameBridge/frameBridgeEnvelopeV1.js';
 
 import { PluginUiJsonValueV1Schema } from '../contributions/ui/json.js';
 import {
@@ -15,11 +20,8 @@ import { PluginUiTargetedContributionOperationV1Schema } from './targetedContrib
 
 export const PLUGIN_UI_HOST_API_WIRE_VERSION_V1 = 1 as const;
 
-export const PluginUiHostApiWireIdentityV1Schema = z.object({
-  instanceId: z.string().trim().min(1),
-  mountNonce: z.string().trim().min(1),
-}).strict();
-export type PluginUiHostApiWireIdentityV1 = z.infer<typeof PluginUiHostApiWireIdentityV1Schema>;
+export const PluginUiHostApiWireIdentityV1Schema = FrameBridgeIdentityV1Schema;
+export type PluginUiHostApiWireIdentityV1 = FrameBridgeIdentityV1;
 
 /**
  * The one wire-identity equality operation. Every realm that addresses a
@@ -31,13 +33,7 @@ export type PluginUiHostApiWireIdentityV1 = z.infer<typeof PluginUiHostApiWireId
  * Domain identity and authority belong to the outer mount adapter. Two mounts
  * of the same source and a replacement document are distinct addressees.
  */
-export function pluginUiHostApiWireIdentitiesEqual(
-  expected: PluginUiHostApiWireIdentityV1,
-  actual: PluginUiHostApiWireIdentityV1,
-): boolean {
-  return expected.instanceId === actual.instanceId
-    && expected.mountNonce === actual.mountNonce;
-}
+export const pluginUiHostApiWireIdentitiesEqual = wireIdentitiesEqual;
 
 const WireBase = z.object({ wireVersion: z.literal(PLUGIN_UI_HOST_API_WIRE_VERSION_V1), identity: PluginUiHostApiWireIdentityV1Schema });
 const RequestBase = WireBase.extend({ requestId: z.string().trim().min(1) });

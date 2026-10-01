@@ -7,6 +7,7 @@ const ATTENTION_DELIVERY_EVENT_DEFINITIONS = [
   { id: 'permission_request', remoteAlert: true },
   { id: 'user_action_request', remoteAlert: true },
   { id: 'follow_update', remoteAlert: true },
+  { id: 'notify_me', remoteAlert: false },
   { id: 'session_started', remoteAlert: false },
   { id: 'task_acknowledged', remoteAlert: false },
   { id: 'task_completed', remoteAlert: false },
@@ -49,6 +50,7 @@ export const REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS = ATTENTION_DELIVERY_EVEN
 export const AttentionDeliveryChannelIdSchema = z.enum([
   'expo_push',
   'webhook',
+  'plugin',
   'local_notification',
   'badge',
   'desktop_overlay',
@@ -150,6 +152,8 @@ export type AttentionDeliveryChannelConfig = z.infer<typeof AttentionDeliveryCha
 export const ATTENTION_DELIVERY_CHANNEL_DEFAULT_QUIET_HOURS_BEHAVIOR = {
   expo_push: 'suppress',
   webhook: 'deliver',
+  // Preserve the policy owner's suppress fallback for an otherwise unspecified channel.
+  plugin: 'suppress',
   local_notification: 'suppress',
   badge: 'deliver',
   desktop_overlay: 'deliver',

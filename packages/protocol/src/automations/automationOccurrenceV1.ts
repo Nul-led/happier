@@ -170,25 +170,30 @@ export type AutomationScheduleOccurrenceEvidenceV1 = z.infer<
 >;
 
 /** Minimal immutable identity for one canonical Session lifecycle occurrence. */
-export const AutomationSessionLifecycleOccurrenceEvidenceV1Schema = z.object({
+const SESSION_LIFECYCLE_OCCURRENCE_SHAPE = {
   v: z.literal(1),
   kind: z.literal('sessionLifecycle'),
-  event: AutomationSessionLifecycleEventSchema,
   sourceSessionId: boundedNfcString(256, 'Source Session identifiers'),
-  sourceTurnId: boundedNfcString(256, 'Source turn identifiers'),
-  requestId: boundedNfcString(256, 'User-action request identifiers').optional(),
-  requestKind: AutomationSessionLifecycleRequestKindSchema.optional(),
   occurredAt: AutomationOccurredAtV1Schema,
-}).strict().superRefine((value, context) => {
-  const hasRequestIdentity = value.requestId !== undefined && value.requestKind !== undefined;
-  if (value.event === 'userActionRequired' && !hasRequestIdentity) {
-    context.addIssue({ code: 'custom', message: 'User-action occurrences require request identity' });
-  }
-  if (value.event !== 'userActionRequired'
-    && (value.requestId !== undefined || value.requestKind !== undefined)) {
-    context.addIssue({ code: 'custom', message: 'Terminal occurrences cannot carry request identity' });
-  }
-});
+} as const;
+export const AutomationSessionLifecycleOccurrenceEvidenceV1Schema = z.discriminatedUnion('event', [
+  z.object({
+    ...SESSION_LIFECYCLE_OCCURRENCE_SHAPE,
+    event: AutomationSessionLifecycleEventSchema.exclude(['userActionRequired', 'sessionStarted', 'sessionArchived']),
+    sourceTurnId: boundedNfcString(256, 'Source turn identifiers'),
+  }).strict(),
+  z.object({
+    ...SESSION_LIFECYCLE_OCCURRENCE_SHAPE,
+    event: z.literal('userActionRequired'),
+    sourceTurnId: boundedNfcString(256, 'Source turn identifiers'),
+    requestId: boundedNfcString(256, 'User-action request identifiers'),
+    requestKind: AutomationSessionLifecycleRequestKindSchema,
+  }).strict(),
+  z.object({
+    ...SESSION_LIFECYCLE_OCCURRENCE_SHAPE,
+    event: z.enum(['sessionStarted', 'sessionArchived']),
+  }).strict(),
+]);
 export type AutomationSessionLifecycleOccurrenceEvidenceV1 = z.infer<
   typeof AutomationSessionLifecycleOccurrenceEvidenceV1Schema
 >;
@@ -332,6 +337,11 @@ function occurrenceKeyParts(input:
       ];
     }
     if (input.evidence.kind === 'sessionLifecycle') {
+      if (!('sourceTurnId' in input.evidence)) {
+        return ['1', input.evidence.kind, input.triggerId, input.evidence.event,
+          input.evidence.sourceSessionId,
+          input.evidence.event === 'sessionStarted' ? '' : String(input.evidence.occurredAt)];
+      }
       return [
         '1',
         input.evidence.kind,

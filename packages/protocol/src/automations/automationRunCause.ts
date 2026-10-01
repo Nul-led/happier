@@ -77,9 +77,14 @@ const AutomationSessionLifecycleRunCauseSchema = z.object({
   ...AUTOMATION_SESSION_LIFECYCLE_RUN_CAUSE_SHAPE,
   evidence: z.discriminatedUnion('event', [
     z.object({
-      event: AutomationSessionLifecycleEventSchema.exclude(['userActionRequired']),
+      event: AutomationSessionLifecycleEventSchema.exclude(['userActionRequired', 'sessionStarted', 'sessionArchived']),
       sourceSessionId: IDENTIFIER_SCHEMA,
       sourceTurnId: IDENTIFIER_SCHEMA,
+      policy: AutomationSessionLifecyclePolicySnapshotSchema,
+    }).strict(),
+    z.object({
+      event: z.enum(['sessionStarted', 'sessionArchived']),
+      sourceSessionId: IDENTIFIER_SCHEMA,
       policy: AutomationSessionLifecyclePolicySnapshotSchema,
     }).strict(),
     z.object({
@@ -100,6 +105,7 @@ const AutomationManualRunCauseSchema = z.object({
 
 const AutomationConversationRunCauseSchema = z.object({
   kind: z.literal('conversation'),
+  triggerId: AutomationTriggerIdSchema.optional(),
   occurrenceKey: AutomationOccurrenceKeyV1Schema,
   occurredAt: AutomationOccurredAtV1Schema,
 }).strict();
@@ -144,9 +150,13 @@ export type AutomationRunCause = Readonly<
     occurrenceKey: AutomationOccurrenceKeyV1;
     occurredAt: AutomationOccurredAtV1;
     evidence: Readonly<{
-      event: Exclude<AutomationSessionLifecycleEvent, 'userActionRequired'>;
+      event: Exclude<AutomationSessionLifecycleEvent, 'userActionRequired' | 'sessionStarted' | 'sessionArchived'>;
       sourceSessionId: string;
       sourceTurnId: string;
+      policy: AutomationSessionLifecyclePolicySnapshot;
+    }> | Readonly<{
+      event: 'sessionStarted' | 'sessionArchived';
+      sourceSessionId: string;
       policy: AutomationSessionLifecyclePolicySnapshot;
     }> | Readonly<{
       event: 'userActionRequired';
@@ -160,6 +170,7 @@ export type AutomationRunCause = Readonly<
   | { kind: 'manual'; invokedAt: AutomationOccurredAtV1 }
   | {
     kind: 'conversation';
+    triggerId?: AutomationTriggerId;
     occurrenceKey: AutomationOccurrenceKeyV1;
     occurredAt: AutomationOccurredAtV1;
   }
@@ -225,11 +236,20 @@ export type AutomationRunCauseDeclarationV1 = Readonly<
         | Readonly<{ kind: 'firstMatch' }>
         | Readonly<{ kind: 'nextMatches'; count: number }>
         | Readonly<{ kind: 'everyMatch' }>;
+    }> | Readonly<{
+      event: 'sessionStarted' | 'sessionArchived';
+      sourceSessionId: string;
+      policy:
+        | Readonly<{ kind: 'currentTurn' }>
+        | Readonly<{ kind: 'firstMatch' }>
+        | Readonly<{ kind: 'nextMatches'; count: number }>
+        | Readonly<{ kind: 'everyMatch' }>;
     }>;
   }
   | { kind: 'manual'; invokedAt: number }
   | {
     kind: 'conversation';
+    triggerId?: string;
     occurrenceKey: string;
     occurredAt: number;
   }

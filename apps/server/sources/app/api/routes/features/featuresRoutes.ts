@@ -1,8 +1,10 @@
 import {
     ServerRetentionPolicyV2Schema,
     type HomeConnectionDescriptorV1,
+    type HomeHostFact,
     type HomeSearchCapabilities,
 } from '@happier-dev/protocol';
+import { readHomeHostFact } from '@happier-dev/cli-common/process';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { type Fastify } from '../../types';
 
@@ -27,6 +29,8 @@ import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFea
 import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
 import { isRestrictedAuthTokenKind } from '@/app/api/utils/apiTokenRouteAdmission';
 import { captureFastifyExceptionForSentry } from '@/app/monitoring/sentry';
+import { readRequestHomeEnv } from '@/app/home/settings/requestHomeEnv';
+import { isPersonalHomeRuntimePurpose } from '@/app/runtime/personalHomeRuntimePurpose';
 
 export function featuresRoutes(app: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => HomeSearchCapabilities | undefined;
@@ -34,17 +38,34 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
     resolveHomeIrohEndpointState?: () => HomeIrohEndpointState | Promise<HomeIrohEndpointState>;
     /** Startup-selected durable owner; null/absent means descriptor publication is unavailable. */
     homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
+    /** OS boundary override for route tests. */
+    resolveHomeHostFact?: (signal: AbortSignal) => Promise<HomeHostFact>;
 }> = {}) {
     const featuresRateLimit = resolveApiHotEndpointRateLimit(process.env, "features");
+    const hostFactAbort = new AbortController();
+    let currentHomeHostFact: HomeHostFact = { kind: 'unknown' };
+    let hostFactProbeStarted = false;
+    const isPersonalHome = () => isPersonalHomeRuntimePurpose(process.env.HAPPIER_MANAGED_RELAY_PURPOSE);
+    const startHomeHostFactProbe = () => {
+        if (!isPersonalHome() || hostFactProbeStarted) return;
+        hostFactProbeStarted = true;
+        void (params.resolveHomeHostFact ?? readHomeHostFact)(hostFactAbort.signal).then(
+            (fact) => { currentHomeHostFact = fact; },
+            () => { currentHomeHostFact = { kind: 'unknown' }; },
+        );
+    };
+    app.addHook('onClose', () => hostFactAbort.abort());
+    startHomeHostFactProbe();
     const sendFeaturesResponse = async (
         request: FastifyRequest,
         reply: FastifyReply,
         descriptorVisibility: 'public' | 'authenticated',
     ) => {
-        const environmentPayload = resolveFeaturesFromEnv(process.env);
+        const requestHomeEnv = await readRequestHomeEnv(request);
+        const environmentPayload = resolveFeaturesFromEnv(requestHomeEnv);
         const effectiveHomeMethods = await resolveEffectiveHomeAuthMethods({
-            env: process.env,
-            emailDeliveryReady: await isAuthEmailDeliveryReady(process.env),
+            env: requestHomeEnv,
+            emailDeliveryReady: await isAuthEmailDeliveryReady({ env: requestHomeEnv }),
         }).catch((error: unknown) => {
             app.log.error({ err: error }, 'Failed to resolve the Home authentication policy for public features');
             captureFastifyExceptionForSentry(error, request);
@@ -133,20 +154,24 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             && !isRestrictedAuthTokenKind(request.authTokenKind)
             ? 'authenticated'
             : 'public';
+        if (effectiveDescriptorVisibility === 'authenticated') startHomeHostFactProbe();
+        const homeHostFact = effectiveDescriptorVisibility === 'authenticated' && isPersonalHome()
+            ? currentHomeHostFact
+            : undefined;
         // Request-time read: the descriptor always reflects the current
         // endpoint lifecycle and is never cached beyond this response.
         const resolvedHomeConnectionDescriptor: HomeConnectionDescriptorV1 | undefined =
             params.homeConnectionDescriptorContinuityStore
                 ? effectiveDescriptorVisibility === 'public'
                     ? await readCommittedHomeConnectionDescriptor({
-                        env: process.env,
+                        env: requestHomeEnv,
                         continuityStore: params.homeConnectionDescriptorContinuityStore,
                         ...(params.resolveHomeIrohEndpointState
                             ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
                             : {}),
                     })
                     : await readHomeConnectionDescriptor({
-                        env: process.env,
+                        env: requestHomeEnv,
                         continuityStore: params.homeConnectionDescriptorContinuityStore,
                         visibility: effectiveDescriptorVisibility,
                         ...(params.resolveHomeIrohEndpointState
@@ -159,13 +184,14 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             payload: {
                 ...payload,
                 ...(resolvedHomeConnectionDescriptor ? { homeConnectionDescriptor: resolvedHomeConnectionDescriptor } : {}),
+                ...(homeHostFact ? { homeHostFact } : {}),
                 capabilities: {
                     ...payload.capabilities,
                     serverIdentity: { serverIdentityId },
                     ...(homeSearch ? { homeSearch } : {}),
                 },
             },
-            env: process.env,
+            env: requestHomeEnv,
             requestIp: request.ip,
         }));
     };
@@ -182,8 +208,9 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, 'features'),
             },
         },
-        async (_request, reply) => reply.send(
-            retentionPolicyToPublicPolicy(readRetentionPolicyFromEnv(process.env)),
+        // The Home's effective rules, the same the worker sweeps with (plan §3.6).
+        async (request, reply) => reply.send(
+            retentionPolicyToPublicPolicy(readRetentionPolicyFromEnv(await readRequestHomeEnv(request))),
         ),
     );
 
@@ -213,7 +240,7 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             },
             config: {
                 allowApiToken: true,
-                ephemeralSessionRunnerBinding: { scope: "account" },
+                restrictedCredentialBinding: { scope: "account" },
                 rateLimit: featuresRateLimit,
             },
         },

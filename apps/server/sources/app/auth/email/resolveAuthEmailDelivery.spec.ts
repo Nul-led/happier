@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    createPerSendAuthEmailDelivery,
     isAuthEmailDeliveryReady,
     resolveAuthEmailDelivery,
     resolveAuthEmailReadiness,
@@ -47,7 +48,7 @@ describe("resolveAuthEmailDelivery", () => {
             resolveApplicationLinkTarget: async () => { throw new Error("descriptor read failed"); },
         })).resolves.toBe(false);
         // The process-wide answer reads the same owner with the startup-registered link target.
-        await expect(isAuthEmailDeliveryReady(configuredEnv)).resolves.toBe(false);
+        await expect(isAuthEmailDeliveryReady({ env: configuredEnv })).resolves.toBe(false);
     });
     it("treats a deployment without a host or sender as unconfigured", () => {
         expect(resolveAuthEmailSmtpConfig({})).toBeNull();
@@ -67,27 +68,54 @@ describe("resolveAuthEmailDelivery", () => {
         })?.port).toBe(2525);
     });
 
+    it("reads mail settings through the registry: shared boolean spelling, declared defaults, sender kept as written", () => {
+        expect(resolveAuthEmailSmtpConfig({ ...configuredEnv, HAPPIER_AUTH_EMAIL_SMTP_SECURE: "y" })).toMatchObject({ secure: true, port: 465 });
+        expect(resolveAuthEmailSmtpConfig({ ...configuredEnv, HAPPIER_AUTH_EMAIL_SMTP_PORT: "70000" })?.port).toBe(587);
+        expect(resolveAuthEmailSmtpConfig(configuredEnv)).toMatchObject({ fromName: "Happier", username: null, password: null });
+        expect(resolveAuthEmailSmtpConfig({
+            ...configuredEnv,
+            HAPPIER_AUTH_EMAIL_FROM_ADDRESS: " Happier <no-reply@happier.dev> ",
+        })?.fromAddress).toBe("Happier <no-reply@happier.dev>");
+    });
+
     it("uses the disabled adapter when no transport is configured", async () => {
         const delivery = resolveAuthEmailDelivery({});
-        expect(delivery.isReady).toBe(false);
+        await expect(delivery.isReady()).resolves.toBe(false);
         const result = await delivery.deliver(message);
 
         expect(result).toMatchObject({ status: "failed", reason: "not_configured" });
-        await expect(isAuthEmailDeliveryReady({})).resolves.toBe(false);
+        await expect(isAuthEmailDeliveryReady({ env: {} })).resolves.toBe(false);
     });
 
     it("reports the production SMTP binding as a configured transport, which alone is not readiness", async () => {
         expect(isAuthEmailTransportConfigured(configuredEnv)).toBe(true);
-        await expect(isAuthEmailDeliveryReady(configuredEnv)).resolves.toBe(false);
+        await expect(isAuthEmailDeliveryReady({ env: configuredEnv })).resolves.toBe(false);
     });
 
     it("delivers through SMTP once a transport binding exists", async () => {
         const deps = { createSmtpTransport: () => transport };
 
         const delivery = resolveAuthEmailDelivery(configuredEnv, deps);
-        expect(delivery.isReady).toBe(true);
+        await expect(delivery.isReady()).resolves.toBe(true);
         expect(await delivery.deliver(message)).toEqual({ status: "sent" });
         expect(isAuthEmailTransportConfigured(configuredEnv)).toBe(true);
         expect(isAuthEmailTransportConfigured({})).toBe(false);
+    });
+
+    it("resolves its configuration on every send, so a changed setting applies without a restart", async () => {
+        let env: Record<string, string | undefined> = {};
+        const sentWith: Array<string | null> = [];
+        const delivery = createPerSendAuthEmailDelivery({
+            readEnv: async () => env,
+            createSmtpTransport: (config) => ({ async send() { sentWith.push(config.password); } }),
+        });
+
+        await expect(delivery.isReady()).resolves.toBe(false);
+        expect(await delivery.deliver(message)).toMatchObject({ status: "failed", reason: "not_configured" });
+
+        env = { ...configuredEnv, HAPPIER_AUTH_EMAIL_SMTP_USERNAME: "mailer", HAPPIER_AUTH_EMAIL_SMTP_PASSWORD: "stored-password" };
+        await expect(delivery.isReady()).resolves.toBe(true);
+        expect(await delivery.deliver(message)).toEqual({ status: "sent" });
+        expect(sentWith).toEqual(["stored-password"]);
     });
 });

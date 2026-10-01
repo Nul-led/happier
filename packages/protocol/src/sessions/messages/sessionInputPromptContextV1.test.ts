@@ -7,6 +7,17 @@ import {
 } from './sessionInputPromptContextV1.js';
 
 describe('session input prompt context V1', () => {
+  it('does not revive per-turn role delivery from obsolete role context data', () => {
+    // Older in-process producers can still carry this extra property. It must
+    // not become a competing role-instruction delivery path at runtime.
+    const input = { transformedUserText: 'ACTUAL_INPUT', roleContext: {
+      role: { instructions: 'OBSOLETE_ROLE_INJECTION' },
+      notes: 'OBSOLETE_NOTES_INJECTION',
+      worker: { leadSessionId: 'lead', taskBoundary: 'OBSOLETE_WORKER_INJECTION' },
+    } };
+    expect(renderSessionInputContextPromptV1(input)).toBe('ACTUAL_INPUT');
+  });
+
   it('renders host Run context as escaped data and advertises only supplied read Actions', () => {
     const input = {
       sessionRunContext: {
@@ -126,7 +137,7 @@ describe('session input prompt context V1', () => {
     ].join('\n'));
   });
 
-  it('renders Workflow V2 invocation and delivery provenance instead of legacyUnknown', () => {
+  it('renders Workflow V2 invocation provenance and treats retired delivery as unknown', () => {
     expect(renderSessionInputContextBlockV1({
       provenance: resolveSessionInputPromptProvenanceV1({
         happierProvenanceV1: {
@@ -135,8 +146,10 @@ describe('session input prompt context V1', () => {
       }),
     })).toContain('workflow_invocation_record_id="invocation-1"');
     expect(renderSessionInputContextBlockV1({
-      provenance: { v: 2, kind: 'workflow_result_delivery', runId: 'run-1' },
-    })).toContain('workflow_run_id="run-1"');
+      provenance: resolveSessionInputPromptProvenanceV1({ happierProvenanceV1: {
+        v: 2, kind: 'workflow_result_delivery', runId: 'run-1',
+      } }),
+    })).toContain('source_kind="legacyUnknown"');
   });
 
   it('renders co-present bounded external actor and content provenance in canonical order', () => {

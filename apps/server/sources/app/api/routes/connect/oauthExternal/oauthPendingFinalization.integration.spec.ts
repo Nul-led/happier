@@ -140,8 +140,15 @@ describe("OAuth pending finalization mutation boundary", () => {
         app.setValidatorCompiler(validatorCompiler);
         app.setSerializerCompiler(serializerCompiler);
         // Supply the authenticated transport principal; all catalog and identity logic stays real.
-        app.decorate("authenticate", async (request: { userId: string; authTokenAuthenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[] }) => {
+        app.decorate("authenticate", async (request: {
+            userId: string;
+            authAuthority?: "present_user";
+            authTokenKind?: "account";
+            authTokenAuthenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
+        }) => {
             request.userId = account.id;
+            request.authAuthority = "present_user";
+            request.authTokenKind = "account";
             request.authTokenAuthenticationEvidence = options.initiatingEvidence;
         });
         if (mode === "connect") registerExternalConnectFinalizeRoute(app);
@@ -182,6 +189,24 @@ describe("OAuth pending finalization mutation boundary", () => {
             expect(await db.repeatKey.findUnique({ where: { key: pending } })).toBeNull();
         },
     );
+
+    it("consumes a stale provider pending without linking an identity", async () => {
+        const { account, pending, submit } = await fixture("connect", { providerId: "oidc-test" });
+        const config = JSON.parse(process.env.AUTH_PROVIDERS_CONFIG_JSON!) as Record<string, unknown>[];
+        process.env.AUTH_PROVIDERS_CONFIG_JSON = JSON.stringify(config.map((provider) => ({
+            ...provider,
+            clientSecret: "rotated",
+        })));
+
+        const response = await submit();
+
+        expect(response.statusCode, response.body).toBe(409);
+        expect(response.json()).toEqual({ error: "auth_provider_configuration_changed" });
+        await expect(db.accountIdentity.count()).resolves.toBe(0);
+        await expect(db.account.count()).resolves.toBe(1);
+        await expect(db.account.findUnique({ where: { id: account.id } })).resolves.not.toBeNull();
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.toBeNull();
+    });
 
     it.each(["connect", "keyed"] as const)("allows only one concurrent use of a %s pending proof", async (mode) => {
         const { pending, submit } = await fixture(mode);

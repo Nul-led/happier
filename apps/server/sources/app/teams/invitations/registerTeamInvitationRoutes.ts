@@ -78,6 +78,7 @@ const TEAM_INVITATION_ERROR_CODE: Record<TeamInvitationAnyError, TeamErrorCodeV1
     email_delivery_unavailable: "invitation_email_unavailable",
     team_authentication_required: "team_authentication_required",
     team_authentication_unavailable: "team_authentication_unavailable",
+    invalid_team_cursor: "invalid_team_cursor",
 };
 
 /**
@@ -185,6 +186,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
         teamName: string;
         recipient: NormalizedVerifiedEmail;
         homeName: string;
+        inviterAccountId: string;
     }>): Promise<TeamInvitationRowV1> {
         const joinUrl = await renderJoinUrl(input.token);
         // The precondition proved an origin exists; a race that removed it leaves the
@@ -192,6 +194,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
         if (joinUrl === null) return input.invitation;
         const lastEmailDelivery = await deliverTeamInvitationEmail(deps.email, {
             invitationId: input.invitation.id,
+            inviterAccountId: input.inviterAccountId,
             recipient: input.recipient,
             joinUrl,
             homeName: input.homeName,
@@ -255,6 +258,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
                     teamName: result.value.teamName,
                     recipient,
                     homeName,
+                    inviterAccountId: request.userId,
                 }),
                 joinUrl: null,
             });
@@ -386,6 +390,7 @@ export function registerTeamInvitationRoutes(app: Fastify, deps: TeamInvitationR
                     teamName: result.value.teamName,
                     recipient,
                     homeName,
+                    inviterAccountId: request.userId,
                 }),
                 joinUrl: null,
             });

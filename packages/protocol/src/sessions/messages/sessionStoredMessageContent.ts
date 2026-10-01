@@ -18,7 +18,7 @@ export const StrictSessionStoredMessageContentEnvelopeSchema = z.discriminatedUn
   }).strict(),
   z.object({
     t: z.literal('plain'),
-    v: z.unknown(),
+    v: z.unknown().refine((value) => value !== undefined, { message: 'Plain envelope value is required' }),
   }).strict(),
 ]);
 

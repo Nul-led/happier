@@ -221,6 +221,7 @@ export const accountEncryptionFirstKeyStepUpPendingSchema = z
             z.literal("account_encryption_first_key"),
         provider: z.string().min(1),
         credentialRevision: z.number().int().min(1).max(2_147_483_647).optional(),
+        nativeIdentityId: z.string().min(1).max(256).optional(),
         securityBinding: oauthSecurityBindingSchema.optional(),
         userId: z.string().min(1),
         providerUserId: z.string().min(1),
@@ -229,8 +230,8 @@ export const accountEncryptionFirstKeyStepUpPendingSchema = z
             AccountEncryptionMigrateExternalAuthBindingDigestV1Schema,
     })
     .strict().refine(value => value.provider === "email_password"
-        ? value.credentialRevision !== undefined && value.securityBinding === undefined
-        : value.credentialRevision === undefined);
+        ? value.credentialRevision !== undefined && value.nativeIdentityId !== undefined && value.securityBinding === undefined
+        : value.credentialRevision === undefined && value.nativeIdentityId === undefined);
 
 export const accountPasswordEnrollmentStepUpPendingSchema = z
     .object({

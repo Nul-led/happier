@@ -19,8 +19,6 @@ import {
   GH_INSTALLABLE_DESCRIPTOR,
   GH_INSTALLABLE_KEY,
   GH_RUNTIME_INSTALLABLE_POLICY,
-  PLUGIN_UI_BUNDLER_REPACK_INSTALLABLE_DESCRIPTOR,
-  PLUGIN_UI_BUNDLER_VITE_INSTALLABLE_DESCRIPTOR,
 } from './definitions/index.js';
 import { toInstallableCatalogEntry } from './descriptor.js';
 import {
@@ -117,20 +115,6 @@ export const BUILT_IN_INSTALLABLE_CONTRIBUTIONS = Object.freeze([
       ownerId: 'happier.core',
     },
     descriptor: AZ_INSTALLABLE_DESCRIPTOR,
-  },
-  {
-    owner: {
-      provenance: 'built_in',
-      ownerId: 'happier.core',
-    },
-    descriptor: PLUGIN_UI_BUNDLER_VITE_INSTALLABLE_DESCRIPTOR,
-  },
-  {
-    owner: {
-      provenance: 'built_in',
-      ownerId: 'happier.core',
-    },
-    descriptor: PLUGIN_UI_BUNDLER_REPACK_INSTALLABLE_DESCRIPTOR,
   },
 ] satisfies readonly InstallableRegistryContribution[]);
 

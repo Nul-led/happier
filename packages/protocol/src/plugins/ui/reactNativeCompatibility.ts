@@ -1,28 +1,6 @@
 import { z } from 'zod';
 
 import { PluginUiFallbackRefV1Schema } from '../contributions/ui/actions.js';
-import { PluginUiChannelV1Schema, PluginUiPlatformV1Schema } from '../contributions/ui/compatibility.js';
-import { PluginUiExactRuntimeVersionV1Schema } from './artifactCompatibility.js';
-
-export const PluginReactNativeCompatibilityInputV1Schema = z.object({
-  pluginId: z.string().trim().min(1),
-  contributionId: z.string().trim().min(1),
-  artifactDigest: z.string().trim().min(1),
-  hostAppVersion: PluginUiExactRuntimeVersionV1Schema,
-  hostUiApiVersion: PluginUiExactRuntimeVersionV1Schema,
-  reactVersion: PluginUiExactRuntimeVersionV1Schema,
-  reactNativeVersion: PluginUiExactRuntimeVersionV1Schema,
-  expoRuntimeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-  hermesVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
-  platform: PluginUiPlatformV1Schema,
-  channel: PluginUiChannelV1Schema,
-  availableNativeCapabilities: z.array(z.string().trim().min(1)).default([]),
-  requiredNativeCapabilities: z.array(z.string().trim().min(1)).default([]),
-  featureState: z.enum(['enabled', 'disabled', 'unknown']),
-  previousCrashCount: z.number().int().nonnegative().default(0),
-}).strict();
-export type PluginReactNativeCompatibilityInputV1 =
-  z.infer<typeof PluginReactNativeCompatibilityInputV1Schema>;
 
 export const PluginReactNativeCompatibilityDecisionStateV1Schema = z.enum([
   'load',
@@ -39,7 +17,6 @@ export const PluginReactNativeCompatibilityDecisionReasonV1Schema = z.enum([
   'channel_policy_denied',
   'runtime_mismatch',
   'missing_native_capability',
-  'crash_disabled',
   'unknown',
 ]);
 export type PluginReactNativeCompatibilityDecisionReasonV1 =

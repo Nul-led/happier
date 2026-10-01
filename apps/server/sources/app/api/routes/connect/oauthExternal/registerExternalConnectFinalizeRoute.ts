@@ -34,11 +34,13 @@ import {
 } from "@/app/auth/authenticationEvidence";
 import { auth } from "@/app/auth/auth";
 import { requireTeamOAuthAdmissionInTx } from "@/app/teams/memberships/teamOAuthAdmission";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
+import { PresentUserRequiredResponseSchema, requirePresentUser } from "../../../utils/requirePresentUser";
 
 export function registerExternalConnectFinalizeRoute(app: Fastify) {
     app.post("/v1/connect/external/:provider/finalize", {
         errorHandler: oauthExternalFinalizeErrorHandler,
-        preHandler: app.authenticate,
+        preHandler: [app.authenticate, requirePresentUser],
         schema: {
             params: z.object({ provider: z.string() }),
             body: ExternalOAuthFinalizeConnectRequestSchema,
@@ -47,7 +49,10 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                 400: z.object({ error: z.enum(["invalid-pending", "invalid-username"]) }),
                 // A Team-admission connect is refused by `oauthExternalFinalizeErrorHandler`
                 // with the same typed Team outcome the authentication finalizers declare.
-                403: z.object({ error: z.enum(["forbidden", "not-eligible", "team_authentication_required"]) }),
+                403: z.union([
+                    PresentUserRequiredResponseSchema,
+                    z.object({ error: z.enum(["forbidden", "not-eligible", "team_authentication_required"]) }),
+                ]),
                 503: z.object({ error: z.literal("team_authentication_unavailable") }),
                 404: z.object({ error: z.literal("unsupported-provider") }),
                 409: z.union([
@@ -59,13 +64,14 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
         const pendingKey = request.body.pending.toString().trim();
         if (!pendingKey) return reply.code(400).send({ error: "invalid-pending" });
 
         const pending = await loadValidOAuthPending(pendingKey);
         if (!pending) {
-            if (!await resolveOAuthRuntimeById(process.env, providerId)) return reply.code(404).send({ error: "unsupported-provider" });
+            if (!await resolveOAuthRuntimeById(requestHomeEnv, providerId)) return reply.code(404).send({ error: "unsupported-provider" });
             return reply.code(400).send({ error: "invalid-pending" });
         }
 
@@ -94,6 +100,7 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
         }
 
         const bindingInput = {
+            env: requestHomeEnv,
             providerId,
             pendingKey,
             binding: parsedValue.securityBinding,
@@ -102,7 +109,7 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
         const isTeamAdmission = parsedValue.securityBinding?.purpose === "team_admission";
         await requireCurrentOAuthPendingRuntime(bindingInput);
 
-        const validation = validateUsername(request.body.username, process.env);
+        const validation = validateUsername(request.body.username, requestHomeEnv);
         if (!validation.ok) return reply.code(400).send({ error: "invalid-username" });
         const username = validation.username;
 
@@ -160,7 +167,7 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                 await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
                 if (!isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
                     && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: providerId,
                         actionId: "connect",
                     })) return false;
@@ -168,7 +175,7 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                 await prepared.connectInTx(tx);
                 const teamAuthenticationEvidence = isTeamAdmission
                     ? await requireTeamOAuthAdmissionInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         accountId: request.userId,
                         provider: parsedValue.securityBinding?.provider,
                         connection: parsedValue.securityBinding?.connection,
@@ -186,7 +193,7 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                     })
                     : undefined);
                 const authenticationEvidence = await mergeCurrentAuthenticationEvidenceInTx(tx, {
-                    env: process.env,
+                    env: requestHomeEnv,
                     accountId: request.userId,
                     initiating: request.authTokenAuthenticationEvidence,
                     newlyVerified,

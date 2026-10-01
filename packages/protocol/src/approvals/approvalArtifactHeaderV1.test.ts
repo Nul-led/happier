@@ -49,7 +49,7 @@ describe('approval Artifact header correspondence', () => {
     requestedSurface: 'api',
     qualifiedActionId: 'acme.publisher/actions/releases/publish',
     input: {},
-    generation: 'generation-1',
+    sourceCustody: { kind: 'managed', immutableGenerationId: 'generation-1', installSource: 'npm' },
     policyFingerprint: 'a'.repeat(64),
     subjectFingerprint: 'b'.repeat(64),
     replayPlacement: { serverId: 'profile-1', machineId: 'machine-1', defaultSessionId: 'session-1' },

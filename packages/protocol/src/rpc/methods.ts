@@ -24,6 +24,10 @@ export const RPC_METHODS = {
   DAEMON_TERMINAL_RESIZE: 'daemon.terminal.resize',
   DAEMON_TERMINAL_CLOSE: 'daemon.terminal.close',
   DAEMON_TERMINAL_RESTART: 'daemon.terminal.restart',
+  DAEMON_AGENTS_INSTALL_START: 'daemon.agents.install.start',
+  DAEMON_AGENTS_INSTALL_READ: 'daemon.agents.install.read',
+  DAEMON_AGENTS_INSTALL_CANCEL: 'daemon.agents.install.cancel',
+  DAEMON_AGENTS_INSTALL_LIST: 'daemon.agents.install.list',
   DAEMON_MEMORY_SEARCH: 'daemon.memory.search',
   DAEMON_MEMORY_GET_WINDOW: 'daemon.memory.getWindow',
   DAEMON_MEMORY_ENSURE_UP_TO_DATE: 'daemon.memory.ensureUpToDate',
@@ -115,9 +119,11 @@ export const RPC_METHODS = {
   DAEMON_PLUGIN_STRUCTURED_MESSAGE_ACTION_EXECUTE: 'daemon.plugins.structuredMessages.actions.execute',
   DAEMON_PLUGIN_ACTION_FORM_CONNECTED_ACCOUNT_OPTIONS_RESOLVE:
     'daemon.plugins.actionForms.connectedAccountOptions.resolve',
+  DAEMON_PLUGIN_ACTION_SCHEMAS_READ: 'daemon.plugins.actions.schemas.read',
   DAEMON_PLUGIN_COMPOSER_REFERENCE_SEARCH: 'daemon.plugins.composerReferences.search',
   DAEMON_PLUGIN_UI_ARTIFACT_BYTES_READ: 'daemon.plugins.uiArtifacts.bytes.read',
   DAEMON_PLUGIN_UI_RESOURCE_READ: 'daemon.plugins.ui.resources.read',
+  DAEMON_PLUGIN_UI_TARGETED_CONTRIBUTIONS_READ: 'daemon.plugins.ui.targetedContributions.read',
   // EU-4b live resource invalidation. A client-owned long-poll triple over this
   // same forward machine RPC channel: `open` establishes one daemon-side
   // subscription and returns the current digest, `next` parks until an
@@ -126,7 +132,6 @@ export const RPC_METHODS = {
   DAEMON_PLUGIN_UI_RESOURCE_WATCH_OPEN: 'daemon.plugins.ui.resources.watch.open',
   DAEMON_PLUGIN_UI_RESOURCE_WATCH_NEXT: 'daemon.plugins.ui.resources.watch.next',
   DAEMON_PLUGIN_UI_RESOURCE_WATCH_CLOSE: 'daemon.plugins.ui.resources.watch.close',
-  DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT: 'daemon.plugins.ui.reactNativeCrashReports.submit',
   DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT: 'daemon.localServices.inventory.snapshot',
   DAEMON_LOCAL_SERVICES_INVENTORY_REFRESH: 'daemon.localServices.inventory.refresh',
   DAEMON_LOCAL_SERVICES_INVENTORY_WATCH: 'daemon.localServices.inventory.watch',
@@ -144,6 +149,9 @@ export const RPC_METHODS = {
   DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_REVOKE: 'daemon.localServices.publicPreview.revoke',
   DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL: 'daemon.localServices.publicPreview.copyUrl',
   DAEMON_BROWSER_CONTROL_DISPATCH: 'daemon.browser.control.dispatch',
+  // Owner-scoped present-user computer Actions (choose a window, look, stop, hand back, permission pane).
+  DAEMON_COMPUTER_ACTION_EXECUTE: 'daemon.computer.actions.execute',
+  DAEMON_BROWSER_VIEW_LIST: 'daemon.browser.view.list',
   DAEMON_BROWSER_CONTEXT_DISPATCH: 'daemon.browser.context.dispatch',
   DAEMON_BROWSER_DIAGNOSTICS_SNAPSHOT: 'daemon.browser.diagnostics.snapshot',
   DAEMON_BROWSER_RECORDING_START: 'daemon.browser.recording.start',
@@ -156,6 +164,7 @@ export const RPC_METHODS = {
   // cannot drive the desktop Wry WebView directly (separate OS process), so it asks the connected
   // desktop UI to capture one reference-only frame over the existing daemon<->UI session RPC channel.
   UI_BROWSER_RECORDING_CAPTURE_FRAME: 'ui.browser.recording.captureFrame',
+  UI_BROWSER_AUTOMATION_DISPATCH: 'ui.browser.automation.dispatch',
   DAEMON_SIMULATOR_PREVIEW_SNAPSHOT: 'daemon.devices.simulator.preview.snapshot',
   DAEMON_SIMULATOR_PREVIEW_ACTION: 'daemon.devices.simulator.preview.action',
   // Server-relayed live-stream start trigger (SIM-P0-1). The viewer cannot start a relay stream
@@ -260,14 +269,25 @@ export const RPC_METHODS = {
   DAEMON_WORKSPACE_SYNC_GET: 'daemon.workspaceSync.get.v1',
   DAEMON_WORKSPACE_SYNC_LIST: 'daemon.workspaceSync.list.v1',
   DAEMON_WORKSPACE_SYNC_FLUSH: 'daemon.workspaceSync.flush.v1',
+  DAEMON_WORKSPACE_SYNC_PREPARE_BETWEEN: 'daemon.workspaceSync.prepareBetween.v1',
   DAEMON_WORKSPACE_SYNC_PAUSE: 'daemon.workspaceSync.pause.v1',
   DAEMON_WORKSPACE_SYNC_RESUME: 'daemon.workspaceSync.resume.v1',
   DAEMON_WORKSPACE_SYNC_TERMINATE: 'daemon.workspaceSync.terminate.v1',
   DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST: 'daemon.workspaceSync.conflicts.list.v1',
-  DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE: 'daemon.workspaceSync.conflict.delete.v1',
+  DAEMON_WORKSPACE_SYNC_CONFLICT_RESOLVE: 'daemon.workspaceSync.conflict.resolve.v1',
   DAEMON_WORKSPACE_SYNC_FILE_READ: 'daemon.workspaceSync.file.read.v1',
-  DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE: 'daemon.workspaceSync.target.conflict.delete.v1',
+  DAEMON_WORKSPACE_SYNC_RELATIONSHIPS_LIST: 'daemon.workspaceSync.relationships.list.v1',
+  DAEMON_WORKSPACE_SYNC_RELATIONSHIP_CREATE: 'daemon.workspaceSync.relationship.create.v1',
+  DAEMON_WORKSPACE_SYNC_CONFLICT_INSPECT: 'daemon.workspaceSync.conflict.inspect.v1',
+  DAEMON_WORKSPACE_SYNC_SELECTION_DIAGNOSE: 'daemon.workspaceSync.selection.diagnose.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_STAGE: 'daemon.workspaceSync.target.conflict.stage.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_APPLY: 'daemon.workspaceSync.target.conflict.apply.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_STAGE_DISCARD: 'daemon.workspaceSync.target.conflict.stage.discard.v1',
+  DAEMON_WORKSPACE_SYNC_CONFLICT_CAPTURE_RELEASE: 'daemon.workspaceSync.conflict.capture.release.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_RECOVER: 'daemon.workspaceSync.target.conflict.recover.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ: 'daemon.workspaceSync.target.file.read.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_ENTRY_OBSERVE: 'daemon.workspaceSync.target.entry.observe.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_SELECTION_DIAGNOSE: 'daemon.workspaceSync.target.selection.diagnose.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT: 'daemon.workspaceSync.target.replacement.preflight.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE: 'daemon.workspaceSync.target.bootstrap.prepare.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE: 'daemon.workspaceSync.target.bootstrap.release.v1',
@@ -297,6 +317,8 @@ export const RPC_METHODS = {
   SESSION_AGENT_TRANSITION: 'session.agentTransition',
   /** Read-only live continuation eligibility on an exact machine. */
   SESSION_CONTINUATION_INSPECT: 'session.continuation.inspect',
+  /** One source read/decrypt for every target shown by the Agent picker. */
+  SESSION_CONTINUATION_INSPECT_BATCH: 'session.continuation.inspectBatch',
   /**
    * Read-only rebuild of the activation brief one transition divider stands
    * for. Runs the same bounded context pass the transition ran, bounded by the
@@ -373,6 +395,9 @@ export const RPC_METHODS = {
   SCM_BRANCH_REBASE: 'scm.branch.rebase',
   SCM_BRANCH_OPERATION_CONTINUE: 'scm.branch.operation.continue',
   SCM_BRANCH_OPERATION_ABORT: 'scm.branch.operation.abort',
+  SCM_BRANCH_OPERATION_SKIP: 'scm.branch.operation.skip',
+  SCM_CONFLICT_ACCEPT_SIDE: 'scm.conflict.acceptSide',
+  SCM_CONFLICT_MARK_RESOLVED: 'scm.conflict.markResolved',
   SCM_WORKTREE_CREATE: 'scm.worktree.create',
   SCM_WORKTREE_REMOVE: 'scm.worktree.remove',
   SCM_WORKTREE_PRUNE: 'scm.worktree.prune',
@@ -384,6 +409,7 @@ export const RPC_METHODS = {
   SCM_REMOTE_PULL: 'scm.remote.pull',
   SCM_REMOTE_PUBLISH: 'scm.remote.publish',
   SCM_STASH_LIST: 'scm.stash.list',
+  SCM_STASH_CREATE: 'scm.stash.create',
   SCM_STASH_DROP: 'scm.stash.drop',
   SCM_STASH_POP: 'scm.stash.pop',
   SCM_STASH_APPLY: 'scm.stash.apply',
@@ -413,6 +439,8 @@ export const RPC_METHODS = {
 } as const;
 
 export const SESSION_RPC_METHODS = {
+  /** FIN coordinator control for an exact prepared Session workflow-step input. */
+  SESSION_WORKFLOW_STEP_WITHDRAW: 'session.workflowStep.withdraw',
   SESSION_USER_MESSAGE_SEND: 'session.userMessage.send',
   /** Host-private native Agent tool transport; the live Session stamps all authority. */
   SESSION_AGENT_TOOL_CALL_V1: 'session.agentTool.call.v1',
@@ -428,6 +456,14 @@ export const SESSION_RPC_METHODS = {
   SESSION_CONNECTED_SERVICE_AUTH_READ_RUNTIME_IDENTITY: 'session.connectedServiceAuth.readRuntimeIdentity',
   SESSION_PROVIDER_INPUT_ADMISSION: 'session.providerInput.admission',
   SESSION_MODEL_TRANSITION: 'session.model.transition',
+  SESSION_ROLE_SET: 'session.role.set',
+  SESSION_ROLES_CONFIGURATION_SET: 'session.roles.configuration.set',
+  SESSION_ROLES_OVERRIDE_SET: 'session.roles.override.set',
+  SESSION_ROLES_OVERRIDE_CLEAR: 'session.roles.override.clear',
+  SESSION_ROLES_ADD: 'session.roles.add',
+  SESSION_ROLES_REMOVE: 'session.roles.remove',
+  SESSION_NOTES_SET: 'session.notes.set',
+  SESSION_ROLES_APPLY_TO_REPORTS: 'session.roles.apply_to_reports',
   SESSION_PENDING_QUEUE_MATERIALIZE_NEXT: 'session.pendingQueue.materializeNext',
   SESSION_PENDING_QUEUE_WAKE_CAPABILITY_GET_V1: 'session.pendingQueue.wake.capability.get.v1',
   SESSION_PENDING_QUEUE_WAKE_V1: 'session.pendingQueue.wake.v1',

@@ -19,6 +19,7 @@ export const AccountErasureErrorV1Schema = z.object({
     'present_user_required',
     'home_owner_transfer_required',
     'team_owner_transfer_required',
+    'account_erasure_transition_cleanup_pending',
   ]),
 }).strict();
 export type AccountErasureErrorV1 = z.infer<typeof AccountErasureErrorV1Schema>;

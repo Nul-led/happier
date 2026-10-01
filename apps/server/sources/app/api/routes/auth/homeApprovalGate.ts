@@ -10,6 +10,8 @@ import { resolveHomeDeviceApprovalRequiredFromEnv } from "@happier-dev/cli-commo
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { assertAccountActive, InactiveAccountError } from "@/app/auth/accountStatus";
+import { acquireAccountSessionOwnerMetadataFenceInTx, AccountSessionOwnerMetadataFenceAccountNotFoundError } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import type { Fastify } from "../../types";
 import { requirePresentUser, PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
 import { resolvePairingAuthPolicyFromEnv } from "./pairingAuthPolicy";
@@ -209,30 +211,40 @@ export function registerHomeLoginApprovalRoutes(app: Fastify): void {
     }, async (request, reply) => {
         const approvalId = request.params.approvalId;
         const status = request.body.decision === "approve" ? "approved" : "rejected";
-        const now = new Date();
-        const transition = await db.authPairingSession.updateMany({
-            where: {
-                id: approvalId,
-                accountId: request.userId,
-                flow: "account_assertion",
-                approvalStatus: "pending",
-                expiresAt: { gt: now },
-            },
-            data: { approvalStatus: status, decidedAt: now },
+        const outcome = await inTx(async (tx) => {
+            try {
+                await acquireAccountSessionOwnerMetadataFenceInTx(tx, request.userId);
+            } catch (error) {
+                if (error instanceof AccountSessionOwnerMetadataFenceAccountNotFoundError) throw new InactiveAccountError();
+                throw error;
+            }
+            const account = await tx.account.findUnique({ where: { id: request.userId }, select: { status: true } });
+            if (!account) throw new InactiveAccountError();
+            assertAccountActive(account.status);
+            const now = new Date();
+            const transition = await tx.authPairingSession.updateMany({
+                where: {
+                    id: approvalId,
+                    accountId: request.userId,
+                    flow: "account_assertion",
+                    approvalStatus: "pending",
+                    expiresAt: { gt: now },
+                },
+                data: { approvalStatus: status, decidedAt: now },
+            });
+            if (transition.count === 1) return status;
+            const existing = await tx.authPairingSession.findFirst({
+                where: { id: approvalId, accountId: request.userId, flow: "account_assertion", expiresAt: { gt: now } },
+                select: { approvalStatus: true },
+            });
+            return existing?.approvalStatus === "approved" || existing?.approvalStatus === "rejected"
+                ? "already_decided" as const : "not_found" as const;
         });
-        if (transition.count === 1) {
-            if (status === "rejected") {
+        if (outcome !== "not_found") {
+            if (outcome === "rejected") {
                 recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "rejected" });
             }
-            return reply.send({ status });
-        }
-
-        const existing = await db.authPairingSession.findFirst({
-            where: { id: approvalId, accountId: request.userId, flow: "account_assertion", expiresAt: { gt: now } },
-            select: { approvalStatus: true },
-        });
-        if (existing?.approvalStatus === "approved" || existing?.approvalStatus === "rejected") {
-            return reply.send({ status: "already_decided" });
+            return reply.send({ status: outcome });
         }
         return reply.code(404).send({ error: "not_found" });
     });

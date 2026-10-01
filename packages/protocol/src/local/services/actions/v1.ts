@@ -58,11 +58,17 @@ export const LocalServiceActionRequestV1Schema = z
     requestId: z.string().trim().min(1).max(256),
     target: LocalServiceActionTargetV1Schema,
     action: LocalServiceActionKindV1Schema,
+    // On Undo, both this key and the target id address the owner's persisted suppression.
+    undoKey: z.string().trim().min(1).optional(),
     confirmationNonce: z.string().trim().min(1).max(256).optional(),
     force: z.boolean().optional().default(false),
   })
   .strict()
   .superRefine((request, ctx) => {
+    if (request.undoKey && (request.action !== 'forget' || request.target.kind !== 'inventory_entry'
+      || request.target.inventoryEntryId !== request.undoKey)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['undoKey'], message: 'Undo must target the same detected service suppression key.' });
+    }
     if (
       (request.action === 'stop_managed'
         || request.action === 'restart_managed'
@@ -166,6 +172,7 @@ export const LocalServiceActionResultV1Schema = z
     requestId: z.string().trim().min(1).max(256),
     action: LocalServiceActionKindV1Schema,
     status: z.enum(['succeeded', 'denied', 'failed']),
+    undoKey: z.string().trim().min(1).optional(),
     reasonCode: z.string().trim().min(1).max(256).optional(),
     auditEvents: z.array(LocalServiceActionAuditEventV1Schema),
   })

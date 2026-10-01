@@ -27,6 +27,7 @@ import {
   classifyQualifiedConnectedAccountLegacyAuthenticationMode,
   resolveLegacyQualifiedConnectedAccountService,
 } from "../qualifiedConnectedAccounts/identity";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerConnectedServiceCredentialRoutesV2(
   app: Fastify,
@@ -227,6 +228,7 @@ export function registerConnectedServiceCredentialRoutesV2(
       },
     },
   }, async (request, reply) => {
+    const requestHomeEnv = await readRequestHomeEnv(request);
     const userId = request.userId;
     const serviceId = request.params.serviceId satisfies ConnectedServiceId;
     const profileId = request.params.profileId;
@@ -244,7 +246,7 @@ export function registerConnectedServiceCredentialRoutesV2(
           ? { expectedCredentialRevision: request.query.expectedCredentialRevision }
           : {}),
         cleanupGroupReferences: request.query.cleanupGroupReferences === true
-          || !isServerFeatureEnabledForRequest("connectedServices.accountGroups", process.env),
+          || !isServerFeatureEnabledForRequest("connectedServices.accountGroups", requestHomeEnv),
       });
     if (
       result.status === "storage_mode_mismatch"

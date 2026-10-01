@@ -9,7 +9,7 @@ const { SessionSpawnNewInputV2Schema } = sessionSpawnInput;
 
 const input = {
   executionTarget: { serverId: 'server-1', machineId: 'machine-1' },
-  directory: '/workspace/project',
+  directory: { kind: 'path', path: '/workspace/project' },
   agentTarget: {
     kind: 'agent',
     identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
@@ -17,6 +17,34 @@ const input = {
 } as const;
 
 describe('SessionSpawnNewInputV2Schema', () => {
+  it('requires an explicit directory intent and excludes checkout creation from managed sessions', () => {
+    expect(SessionSpawnNewInputV2Schema.parse(input).directory).toEqual(input.directory);
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, directory: { kind: 'managed' } }).directory)
+      .toEqual({ kind: 'managed' });
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, directory: '/workspace/project' }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({ ...input, directory: { kind: 'managed', path: '/fake' } }).success).toBe(false);
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      directory: { kind: 'managed' },
+      checkoutCreationDraft: { kind: 'git_worktree', displayName: 'feature', baseRef: 'main', branchMode: 'new' },
+    }).success).toBe(false);
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.safeParse({
+      ...input,
+      directory: { kind: 'managed' },
+      checkoutCreationDraft: { kind: 'git_worktree', displayName: 'feature', baseRef: 'main', branchMode: 'new' },
+    }).success).toBe(false);
+  });
+  it('carries the strict lead relation in ordinary and browser-safe creation without implying access', () => {
+    const reportsTo = { sessionId: 'lead' };
+    expect(SessionSpawnNewInputV2Schema.parse({ ...input, reportsTo }).reportsTo).toEqual(reportsTo);
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.parse({ ...input, reportsTo }).reportsTo)
+      .toEqual(reportsTo);
+    expect(SessionSpawnNewInputV2Schema.parse(input)).not.toHaveProperty('reportsTo');
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input, reportsTo: { ...reportsTo, accessLevel: 'edit' },
+    }).success).toBe(false);
+  });
+
   it('accepts a Team-resource Connected Service binding at the Machine spawn boundary', () => {
     expect(SessionSpawnNewInputV2Schema.parse({
       ...input,
@@ -151,6 +179,36 @@ describe('SessionSpawnNewInputV2Schema', () => {
     }).success).toBe(true);
   });
 
+  it('carries typed Composer references in the first input without an arbitrary metadata bag', () => {
+    const structuredInput = {
+      v: 1,
+      mentions: [{ kind: 'partner.reference', ref: 'partner:issue-42', token: '@issue', label: 'Issue #42' }],
+    } as const;
+    expect(SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      initialInput: { text: 'Check @issue', structuredInput },
+    }).initialInput).toEqual({ text: 'Check @issue', structuredInput });
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      initialInput: { text: 'Check @issue', meta: { arbitrary: true } },
+    }).success).toBe(false);
+  });
+
+  it('accepts a contentless semantic Composer attachment as the whole first turn', () => {
+    const attachment = {
+      v: 1,
+      instanceId: 'issue-42',
+      attachment: { pluginId: 'acme.issues', localId: 'issue' },
+      key: '42',
+      value: { issueId: 42 },
+      presentation: { label: 'Issue #42', typeLabel: 'Issue' },
+    } as const;
+    expect(SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      initialInput: { structuredInput: { v: 1, composerAttachments: [attachment] } },
+    }).initialInput).toEqual({ structuredInput: { v: 1, composerAttachments: [attachment] } });
+  });
+
   it('publishes the one bounded checkout authoring draft used by spawn', () => {
     expect('SessionAuthoringCheckoutCreationDraftV1Schema' in sessionSpawnInput).toBe(true);
     expect(sessionSpawnInput.SessionAuthoringCheckoutCreationDraftV1Schema)
@@ -282,6 +340,18 @@ describe('SessionSpawnNewInputV2Schema', () => {
         baseRef: 'main',
         unrecognizedCheckoutSecret: 'must-not-persist',
       },
+    }).success).toBe(false);
+  });
+
+  it('admits a Herdr-hosted Session through the existing terminal authoring field', () => {
+    const parsed = SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      terminal: { mode: 'herdr', herdr: { sessionName: 'default' } },
+    });
+    expect(parsed.terminal).toEqual({ mode: 'herdr', herdr: { sessionName: 'default' } });
+    expect(SessionSpawnNewInputV2Schema.safeParse({
+      ...input,
+      terminal: { mode: 'herdr', herdr: { socketPath: '/private/socket' } },
     }).success).toBe(false);
   });
 });

@@ -1,13 +1,17 @@
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
+import { HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { auth } from "@/app/auth/auth";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import type { Fastify as AppFastify } from "../../types";
 import { authRoutes } from "./authRoutes";
 import { createHomeApprovalGate } from "./homeApprovalGate";
 import { enableAuthentication } from "../../utils/enableAuthentication";
+import { enableErrorHandlers } from "../../utils/enableErrorHandlers";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -19,6 +23,7 @@ function createTestApp() {
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as unknown as AppFastify;
     enableAuthentication(typed);
+    enableErrorHandlers(typed);
     return trackApp(typed);
 }
 
@@ -248,7 +253,7 @@ describe("Home login approval (gate + routes) (integration)", () => {
             });
         });
 
-        it("allows redemption only for an approved row with the exact account, issuer, subject, and requester key", async () => {
+        it("allows redemption only for an approved row with the exact account, assertion binding, issuer, subject, and requester key", async () => {
             const account = await ensurePrimaryAccount();
             const row = await createAssertionRow({ approvalStatus: "approved", decidedAt: new Date() });
             const gate = createHomeApprovalGate(APPROVAL_ENV);
@@ -256,6 +261,13 @@ describe("Home login approval (gate + routes) (integration)", () => {
                 kind: "allowed",
                 approvedRequest: { approvalId: row.id, bindingProof: baseRowFacts.approvalBindingProof },
             });
+
+            await expect(gate.evaluate({
+                accountId: account.id,
+                ...baseRowFacts,
+                approvalBindingProof: "different-signed-assertion-binding",
+                approvalId: row.id,
+            })).resolves.toEqual({ kind: "invalid" });
 
             await expect(gate.evaluate({
                 accountId: account.id,
@@ -317,6 +329,75 @@ describe("Home login approval (gate + routes) (integration)", () => {
     });
 
     describe("approval routes admission", () => {
+        it.each(["approve", "reject"] as const)(
+            "refuses an admitted %s decision after suspension and allows fresh approval after re-enable",
+            async (decision) => {
+                const account = await ensurePrimaryAccount();
+                const owner = await db.account.create({
+                    data: { publicKey: `pk-approval-owner-${crypto.randomUUID()}`, homeRole: "owner" },
+                    select: { id: true },
+                });
+                const pending = await createAssertionRow();
+                const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+                const app = createTestApp();
+                let suspendAfterAdmission = true;
+                // Pause at the real HTTP lifecycle boundary after the registered
+                // authentication handlers, keeping auth and lifecycle logic real.
+                app.addHook("onRoute", (route) => {
+                    if (route.url !== HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1) return;
+                    const preHandlers = route.preHandler
+                        ? (Array.isArray(route.preHandler) ? route.preHandler : [route.preHandler])
+                        : [];
+                    route.preHandler = [...preHandlers, async () => {
+                        if (!suspendAfterAdmission) return;
+                        suspendAfterAdmission = false;
+                        await expect(inTx((tx) => setAccountStatusInTx(tx, {
+                            actorAccountId: owner.id,
+                            targetAccountId: account.id,
+                            status: "suspended",
+                            authority: "home_administration",
+                        }))).resolves.toEqual({ status: "applied" });
+                    }];
+                });
+                authRoutes(app);
+                await app.ready();
+
+                const response = await app.inject({
+                    method: "POST",
+                    url: `/v1/auth/home-login/approvals/${pending.id}/decision`,
+                    headers: { authorization: `Bearer ${token}` },
+                    payload: { decision },
+                });
+                await expect(db.account.findUniqueOrThrow({
+                    where: { id: account.id },
+                    select: { status: true },
+                })).resolves.toEqual({ status: "suspended" });
+                expect(response.statusCode).toBe(401);
+                expect(response.json()).toEqual({ error: "invalid_token" });
+                await expect(db.authPairingSession.findUniqueOrThrow({
+                    where: { id: pending.id },
+                    select: { approvalStatus: true, decidedAt: true },
+                })).resolves.toEqual({ approvalStatus: "pending", decidedAt: null });
+
+                await expect(inTx((tx) => setAccountStatusInTx(tx, {
+                    actorAccountId: owner.id,
+                    targetAccountId: account.id,
+                    status: "active",
+                    authority: "home_administration",
+                }))).resolves.toEqual({ status: "applied" });
+                expect(await auth.verifyToken(token)).toBeNull();
+                const freshToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+                const fresh = await app.inject({
+                    method: "POST",
+                    url: `/v1/auth/home-login/approvals/${pending.id}/decision`,
+                    headers: { authorization: `Bearer ${freshToken}` },
+                    payload: { decision: "approve" },
+                });
+                expect(fresh.statusCode).toBe(200);
+                expect(fresh.json()).toEqual({ status: "approved" });
+            },
+        );
+
         it("admits only a full present-user Home credential and rejects restricted kinds on list and decision", async () => {
             const account = await ensurePrimaryAccount();
             const pending = await createAssertionRow();

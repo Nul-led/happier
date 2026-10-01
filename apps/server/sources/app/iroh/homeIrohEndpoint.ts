@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { IrohError } from '@happier-dev/iroh-native/node';
 import { parseIrohEndpointDescriptorV1, type IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
@@ -80,6 +80,7 @@ const NOT_COMPOSED_STATE: HomeIrohEndpointState = { status: 'not-composed', snap
 const STARTING_STATE: HomeIrohEndpointState = { status: 'starting', snapshot: null, failureReason: null };
 const STOPPING_STATE: HomeIrohEndpointState = { status: 'stopping', snapshot: null, failureReason: null };
 const UNAVAILABLE_STATE: HomeIrohEndpointState = { status: 'unavailable', snapshot: null, failureReason: null };
+const RETIRED_STATE: HomeIrohEndpointState = { status: 'retired', snapshot: null, failureReason: null };
 
 /**
  * Derives the Iroh acceptor target port from the actual bound Fastify
@@ -116,6 +117,30 @@ let ensureInFlight: Promise<HomeIrohEndpointState> | null = null;
 let stopInFlight: Promise<void> | null = null;
 let lifecycleEpoch = 0;
 let lifecycleState: HomeIrohEndpointState = NOT_COMPOSED_STATE;
+/** Where this server composes Iroh, registered once by `startServer` (plan §3.2, AM-2). */
+let composition: HomeIrohComposition | null = null;
+
+/**
+ * Test-only state reset for this module's process singleton. Owner tests use
+ * this narrow seam instead of reloading the full server module graph between
+ * cases. Production lifecycle callers must use `stopHomeIrohEndpoint`.
+ */
+export async function resetHomeIrohEndpointStateForTests(): Promise<void> {
+    lifecycleEpoch += 1;
+    const admittedEnsure = ensureInFlight;
+    const admittedStop = stopInFlight;
+    await admittedEnsure?.catch(() => undefined);
+    await admittedStop?.catch(() => undefined);
+    await releaseOwnedEndpoint().catch(() => undefined);
+    activeState = null;
+    ownedEndpoint = null;
+    cleanupInFlight = null;
+    ensureInFlight = null;
+    stopInFlight = null;
+    lifecycleEpoch = 0;
+    lifecycleState = NOT_COMPOSED_STATE;
+    composition = null;
+}
 
 /**
  * True while native resources are still owned outside a published composition:
@@ -222,6 +247,64 @@ export function beginHomeIrohEndpointStartup(): void {
 /** Completes a pre-listen attempt that could not satisfy the exposure proof. */
 export function markHomeIrohEndpointStartupUnavailable(): void {
     if (!activeState && lifecycleState.status === 'starting') lifecycleState = UNAVAILABLE_STATE;
+}
+
+/**
+ * The composition this server runs direct connections with: the listening API port and the outer
+ * descriptor continuity chosen at startup. Registered only where Iroh is composed (a light Personal
+ * Home whose exposure proof holds), so its presence is what "direct connections are available on
+ * this Home" means to the owner console.
+ */
+export type HomeIrohComposition = Readonly<{
+    env: NodeJS.ProcessEnv;
+    apiPort: number | null;
+    continuityStore: HomeConnectionDescriptorContinuityStore;
+    /** Test-only native lifecycle boundary; production resolves the packaged binding. */
+    native?: HomeIrohNativeLifecycle | null;
+}>;
+
+export function registerHomeIrohComposition(params: HomeIrohComposition): void {
+    composition = params;
+}
+
+export function readHomeIrohComposition(): HomeIrohComposition | null {
+    return composition;
+}
+
+/** Records at startup that the owner keeps direct connections off: nothing is composed or published. */
+export function markHomeIrohEndpointRetired(): void {
+    if (!activeState) lifecycleState = RETIRED_STATE;
+}
+
+/**
+ * Owner-initiated retirement (plan §3.2, AM-2): stops the endpoint, deletes its identity key so the
+ * identity can never come back, and reports `retired`, the one state the descriptor publisher
+ * treats as an explicit removal of the Iroh endpoint. The caller publishes afterwards.
+ */
+export async function retireHomeIrohEndpoint(): Promise<HomeIrohEndpointState> {
+    const current = composition;
+    if (!current) return lifecycleState;
+    await stopHomeIrohEndpoint();
+    const keyPath = resolvePersonalHomeRuntimeLayout({ env: current.env }).irohEndpointKeyPath;
+    await rm(keyPath, { force: true });
+    lifecycleState = RETIRED_STATE;
+    return lifecycleState;
+}
+
+/**
+ * Turns direct connections back on after an owner retirement. The retired key is gone, so the
+ * endpoint starts with a new identity through the ordinary composition path.
+ */
+export async function resumeHomeIrohEndpoint(): Promise<HomeIrohEndpointState> {
+    const current = composition;
+    if (!current) return lifecycleState;
+    if (lifecycleState.status === 'retired') lifecycleState = NOT_COMPOSED_STATE;
+    return await ensureHomeIrohEndpoint({
+        env: current.env,
+        apiPort: current.apiPort,
+        continuityStore: current.continuityStore,
+        ...(current.native !== undefined ? { native: current.native } : {}),
+    });
 }
 
 /**

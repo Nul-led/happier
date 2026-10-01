@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { claimReviewCommentPublication } from "@/testkit/reviewCommentPublicationTestkit";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
+import * as privacyKit from "privacy-kit";
 
-import { createFakeRouteApp, createReplyStub, getRouteHandler } from "@/app/api/testkit/routeHarness";
+import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from "@/app/api/testkit/routeHarness";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { registerApiRoutes } from "@/app/api/api";
+import { createPluginAvailabilityOperations } from "@/app/plugins/availability/operations";
 import { updateAccountEncryptionMode } from "@/app/api/routes/account/updateAccountEncryptionMode";
 import {
     acquireAccountEncryptionTransitionFenceInTx,
@@ -23,6 +26,7 @@ import {
     buildReviewCommentPublicationTransportRequestV1,
     openReviewCommentPublicationTransportResponseV1,
     PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
+    PluginPermissionGrantRequestActionOutputV1Schema,
     createReviewCommentPrincipalSigningInputV1,
     REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
     REVIEW_COMMENT_PRINCIPAL_HEADER_V1,
@@ -31,11 +35,21 @@ import {
     ReviewCommentListResponseV1Schema,
     ReviewCommentTransitionResponseV1Schema,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
+    reviewCommentMutationInputWithoutEventEnvelopeV1,
     type ReviewCommentActorRefV1,
     type ReviewCommentCurrentIntentV1,
     type ReviewCommentPublicationPlanV1,
 } from "@happier-dev/protocol";
 import { buildReviewCommentTextSnapshotHashes } from "./snapshots";
+import { initEncrypt } from "@/modules/encrypt";
+import {
+    projectReviewCommentStructuralMutationV1, applyReviewCommentPreparedSensitiveMutationV1,
+    sealReviewCommentSensitiveEnvelopeV1, buildReviewCommentMutationEventEnvelopeV1,
+    ReviewCommentPrepareMutationResponseV1Schema, openReviewCommentSensitiveMigrationSourceV1,
+    ReviewCommentCommitMutationResponseV1Schema,
+    executeReviewCommentTransportV1, ReviewCommentV1Schema, ReviewCommentBulkTransitionResponseV1Schema,
+    type ReviewCommentMutationActionIdV1,
+} from "@happier-dev/protocol";
 import { createReviewCommentOperations } from "./operations";
 import { registerReviewCommentRoutes } from "./routes";
 import {
@@ -45,6 +59,7 @@ import {
 
 const CODERABBIT_PLUGIN_ID = "happier.review.coderabbit";
 const EXTERNAL_PLUGIN_ID = "acme.reviewbot";
+const REVIEW_PERMISSION_SERVER_IDENTITY_ID = "srv_reviewPermissionCaller";
 
 function e2eeAccountFields(seedByte: number) {
     const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(seedByte));
@@ -188,8 +203,79 @@ function createCurrentIntent(params: Readonly<{
         agentId,
         projectId: String(params.body.projectId),
         workspaceId: String(params.body.workspaceId),
-        immutableGenerationId: "generation-1",
+        sourceCustody: {
+            kind: "bundled_first_party",
+            packagedRuntime: {
+                kind: "cli_version_root",
+                versionRootId: "review-coderabbit-test-cli-root",
+            },
+        },
     };
+}
+
+async function seedCurrentPermissionCaller(params: Readonly<{
+    accountId: string;
+    machineId: string;
+    materializationId: string;
+    pluginId: string;
+}>): Promise<void> {
+    await db.session.create({ data: { id: "session-1", accountId: params.accountId, tag: "review-session", metadata: "{}", encryptionMode: "plain" } });
+    vi.stubEnv("HAPPIER_SERVER_IDENTITY_ID", REVIEW_PERMISSION_SERVER_IDENTITY_ID);
+    const version = "1.2.3";
+    const archiveDigestSha256 = `sha256:${"a".repeat(64)}`;
+    const availability = createPluginAvailabilityOperations({
+        resolveServerIdentityId: async () => REVIEW_PERMISSION_SERVER_IDENTITY_ID,
+    });
+    await availability.publishRelease({
+        accountId: params.accountId,
+        input: {
+            sourceClass: "registryPackage",
+            facts: {
+                ref: { pluginId: params.pluginId, version },
+                archiveDigestSha256,
+                normalizedManifest: {
+                    schemaVersion: 2,
+                    id: params.pluginId,
+                    version,
+                    displayName: "Review permission caller fixture",
+                    engines: { happier: "^1.0.0" },
+                    runtime: { apiVersion: 1 },
+                    contributes: {},
+                },
+                collectionContracts: [],
+                uiSlots: [],
+                packageAssetArchive: {
+                    archiveDigestSha256: `sha256:${"b".repeat(64)}`,
+                    resources: [],
+                },
+            },
+        },
+    });
+    await availability.reportMaterializations({
+        accountId: params.accountId,
+        publisherMachineId: params.machineId,
+        input: {
+            expectedRevision: null,
+            snapshot: {
+                serverIdentityId: REVIEW_PERMISSION_SERVER_IDENTITY_ID,
+                machineId: params.machineId,
+                materializations: [{
+                    serverIdentityId: REVIEW_PERMISSION_SERVER_IDENTITY_ID,
+                    machineId: params.machineId,
+                    materializationId: params.materializationId,
+                    pluginId: params.pluginId,
+                    version,
+                    sourceClass: "registryPackage",
+                    portableRelease: true,
+                    archiveDigestSha256,
+                    uiArtifacts: [],
+                    enabled: true,
+                    trustState: "trusted",
+                    observedAt: 1_700_000_000_000,
+                }],
+            },
+        },
+    });
 }
 
 describe("review comment durable storage", () => {
@@ -213,10 +299,470 @@ describe("review comment durable storage", () => {
         await db.$executeRawUnsafe("DELETE FROM review_comment_events").catch(() => undefined);
         await db.$executeRawUnsafe("DELETE FROM review_comments").catch(() => undefined);
         await harness.resetDbTables([
+            () => db.session.deleteMany(),
             () => db.machine.deleteMany(),
             () => db.userKVStore.deleteMany(),
             () => db.account.deleteMany(),
         ]);
+    });
+
+    it("prepares and commits canonical E2EE records over HTTP without plaintext sensitive columns", async () => {
+        const account = await db.account.create({ data: { id: "account-encrypted-canonical", ...e2eeAccountFields(73) } });
+        await initEncrypt();
+        const actor = { kind: "user", userId: account.id } as const;
+        const material = { type: "dataKey", machineKey: new Uint8Array(32).fill(74) } as const;
+        const input = { workspace: { machineId: "machine-canonical", path: "/repo" },
+            anchor: { kind: "file", filePath: "private.ts" }, snapshot: textSnapshot(), body: "private canonical body",
+            metadata: { tags: ["private canonical tag"] }, authorIntent: "open", clientMutationId: "canonical-e2ee-1" };
+        const mutation = projectReviewCommentStructuralMutationV1("reviews.comments.create", input);
+        await withAuthenticatedTestApp(registerReviewCommentRoutes, async (app) => {
+            const request = { v: 1, mutation, contentCommitment: "a".repeat(43), createRequestFingerprint: "b".repeat(43) };
+            const response = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/prepare", headers: { "x-test-user-id": account.id }, payload: request });
+            expect(response.statusCode, response.body).toBe(200);
+            const preparation = ReviewCommentPrepareMutationResponseV1Schema.parse(response.json());
+            expect(JSON.stringify(preparation)).not.toContain("private canonical");
+            const prepared = preparation.records[0]!;
+            const sensitive = applyReviewCommentPreparedSensitiveMutationV1({ mutation, input, prepared });
+            const commitInput = { v: 1, receipt: preparation.receipt, records: [{ commentId: prepared.structural.id,
+                sensitiveEnvelope: sealReviewCommentSensitiveEnvelopeV1({ structural: prepared.structural, sensitive, mode: "e2ee", material, randomBytes: (length) => new Uint8Array(length).fill(31) }),
+                eventEnvelope: buildReviewCommentMutationEventEnvelopeV1({ accountId: account.id, actor, actionId: mutation.actionId, input, mode: "e2ee", material, randomBytes: (length) => new Uint8Array(length).fill(32) }),
+            }] };
+            const committed = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/commit", headers: { "x-test-user-id": account.id }, payload: commitInput });
+            expect(committed.statusCode, committed.body).toBe(200);
+            const stored = ReviewCommentCommitMutationResponseV1Schema.parse(committed.json()).comments[0]!;
+            const opened = await openReviewCommentSensitiveMigrationSourceV1({ structural: stored.structural, source: "source" in stored ? stored.source : { v: 1, layout: "canonical_v1", envelope: stored.sensitiveEnvelope }, material });
+            expect(opened.status).toBe("available");
+            if (opened.status === "available") expect(opened.comment.body).toBe(input.body);
+            const rows = await db.$queryRaw<Array<{ body_envelope_json: string; metadata_json: string | null; snapshot_envelope_json: string }>>`SELECT body_envelope_json, metadata_json, snapshot_envelope_json FROM review_comments WHERE id = ${stored.structural.id}`;
+            expect(JSON.stringify(rows)).not.toContain("private canonical");
+            expect(rows[0]?.metadata_json).toBeNull();
+            const replay = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/commit", headers: { "x-test-user-id": account.id }, payload: commitInput });
+            expect(replay.statusCode, replay.body).toBe(200);
+            expect(replay.json()).toMatchObject({ replayed: true, comments: [{ structural: { id: stored.structural.id } }] });
+            const tamperedBytes = privacyKit.decodeBase64(preparation.receipt);
+            tamperedBytes[0] = tamperedBytes[0]! ^ 1;
+            const tampered = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/commit", headers: { "x-test-user-id": account.id }, payload: { ...commitInput, receipt: privacyKit.encodeBase64(tamperedBytes) } });
+            expect(tampered.statusCode).toBe(400);
+        });
+    });
+
+    it("keeps retained split E2EE secrets off ordinary reads and preparation while allowing plain legacy records", async () => {
+        const encryptedAccount = await db.account.create({ data: { id: "account-retained-private", ...e2eeAccountFields(77) } });
+        const plainAccount = await db.account.create({ data: { id: "account-retained-plain", publicKey: "retained-plain-key", encryptionMode: "plain" } });
+        for (const [account, mode] of [[encryptedAccount, "e2ee"], [plainAccount, "plain"]] as const) {
+            const id = `retained-${mode}`;
+            await db.reviewComment.create({ data: {
+                id, accountId: account.id, projectId: "project-1", threadId: id,
+                state: "open", flagsJson: "{}", authorJson: JSON.stringify({ kind: "user", userId: account.id }),
+                anchorJson: JSON.stringify({ kind: "file", filePath: "PRIVATE-retained.ts" }),
+                snapshotEnvelopeJson: JSON.stringify(mode === "e2ee" ? { t: "encrypted", c: "retained-snapshot-cipher" } : { t: "plain", v: { kind: "none", capturedAt: 1000 } }),
+                bodyEnvelopeJson: JSON.stringify(mode === "e2ee" ? { t: "encrypted", c: "retained-body-cipher" } : { t: "plain", v: "PRIVATE-retained-body" }),
+                bodyVersion: 1, serverRevision: 1, editsJson: "[]", dispositionsJson: "{}",
+                transitionsJson: JSON.stringify([{ transitionId: `${id}-transition`, toState: "open", transitionedAt: 1000,
+                    transitionedBy: { kind: "user", userId: account.id }, serverRevision: 1, reason: "PRIVATE-retained-reason" }]),
+                evidenceJson: JSON.stringify([{ kind: "reasoning", message: "PRIVATE-retained-evidence" }]),
+                metadataJson: JSON.stringify({ tags: ["PRIVATE-retained-metadata"] }), createdAt: 1000n, updatedAt: 1000n,
+            } });
+        }
+        await withAuthenticatedTestApp(registerReviewCommentRoutes, async (app) => {
+            const headers = { "x-test-user-id": encryptedAccount.id };
+            for (const url of ["/v1/reviews/comments/retained-e2ee?stored=true", "/v1/reviews/comments?stored=true&projectId=project-1",
+                "/v1/reviews/comments/retained-e2ee", "/v1/reviews/comments?projectId=project-1"]) {
+                const response = await app.inject({ method: "GET", url, headers });
+                expect(response.statusCode, response.body).toBe(400);
+                expect(response.json()).toMatchObject({ error: "review_comment_encryption_mode_mismatch" });
+                expect(response.body).not.toContain("PRIVATE-");
+            }
+            const prepare = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/prepare", headers,
+                payload: { v: 1, contentCommitment: "a".repeat(43), mutation: projectReviewCommentStructuralMutationV1("reviews.comments.setDisposition", {
+                    projectId: "project-1", commentId: "retained-e2ee", expectedServerRevision: 1, disposition: "working", clientMutationId: "retained-prepare" }) } });
+            expect(prepare.statusCode, prepare.body).toBe(400);
+            expect(prepare.json()).toMatchObject({ error: "review_comment_encryption_mode_mismatch" });
+            expect(prepare.body).not.toContain("PRIVATE-");
+            const plain = await app.inject({ method: "GET", url: "/v1/reviews/comments/retained-plain", headers: { "x-test-user-id": plainAccount.id } });
+            expect(plain.statusCode, plain.body).toBe(200);
+            expect(plain.json()).toMatchObject({ comment: { body: "PRIVATE-retained-body", anchor: { filePath: "PRIVATE-retained.ts" } } });
+            const edited = await app.inject({ method: "PATCH", url: "/v1/reviews/comments/retained-plain", headers: { "x-test-user-id": plainAccount.id },
+                payload: { projectId: "project-1", expectedServerRevision: 1, expectedBodyVersion: 1, nextBody: "PRIVATE-retained-edit", clientMutationId: "plain-retained-edit" } });
+            expect(edited.statusCode, edited.body).toBe(200);
+            expect(edited.json()).toMatchObject({ comment: { body: "PRIVATE-retained-edit", serverRevision: 2 } });
+            // Account mode remains the authority even if retained plaintext rows are inconsistent with it.
+            await db.account.update({ where: { id: plainAccount.id }, data: e2eeAccountFields(79) });
+            for (const url of ["/v1/reviews/comments/retained-plain", "/v1/reviews/comments?projectId=project-1"]) {
+                const inconsistent = await app.inject({ method: "GET", url, headers: { "x-test-user-id": plainAccount.id } });
+                expect(inconsistent.statusCode, inconsistent.body).toBe(400);
+                expect(inconsistent.json()).toMatchObject({ error: "review_comment_encryption_mode_mismatch" });
+                expect(inconsistent.body).not.toContain("PRIVATE-");
+            }
+        });
+        // Explicit migration recovery retains the original source; ordinary admission must not mutate or destroy it.
+        const retained = await createSqlReviewCommentStore().getSource({ accountId: encryptedAccount.id, commentId: "retained-e2ee" });
+        expect(retained?.source).toMatchObject({ layout: "legacy_split_v1", sourceMode: "e2ee", anchor: { filePath: "PRIVATE-retained.ts" } });
+    });
+
+    it("runs the E2EE CRUD lifecycle through real HTTP and retains partial bulk CAS outcomes", async () => {
+        const account = await db.account.create({ data: { id: "account-encrypted-lifecycle", ...e2eeAccountFields(75) } });
+        await initEncrypt();
+        const actor = { kind: "user", userId: account.id } as const;
+        const context = { accountId: account.id, mode: "e2ee", material: { type: "dataKey", machineKey: new Uint8Array(32).fill(76) } } as const;
+        const workspace = { machineId: "machine-lifecycle", path: "/repo" };
+        await withAuthenticatedTestApp(registerReviewCommentRoutes, async (app) => {
+            const run = async (actionId: ReviewCommentMutationActionIdV1, input: Record<string, unknown>) => executeReviewCommentTransportV1({
+                actionId, input, context, actor, randomBytes,
+                request: async (request) => {
+                    expect(JSON.stringify(request)).not.toContain("PRIVATE-");
+                    const response = await app.inject({ method: request.method === "get" ? "GET" : "POST", url: request.path,
+                        headers: { "x-test-user-id": account.id }, payload: request.body });
+                    if (response.statusCode !== 200) throw new Error(response.body);
+                    return response.json();
+                },
+            });
+            const commentFrom = (value: unknown) => {
+                if (!value || typeof value !== "object" || !("comment" in value)) throw new Error("Expected Review Comment result");
+                return ReviewCommentV1Schema.parse(value.comment);
+            };
+            const original = commentFrom(await run("reviews.comments.create", { workspace,
+                anchor: { kind: "file", filePath: "PRIVATE-file.ts" }, snapshot: textSnapshot(),
+                body: "PRIVATE-body", metadata: { tags: ["PRIVATE-tag"] }, authorIntent: "open", clientMutationId: "crud-create" }));
+            const second = commentFrom(await run("reviews.comments.create", { workspace,
+                anchor: { kind: "workspace", workspaceId: "workspace-1" }, snapshot: { kind: "none", capturedAt: 1000 },
+                body: "PRIVATE-second", authorIntent: "open", clientMutationId: "crud-second" }));
+            const edited = commentFrom(await run("reviews.comments.edit", { workspace, commentId: original.id,
+                expectedServerRevision: 1, expectedBodyVersion: 1, nextBody: "PRIVATE-edited", reason: "PRIVATE-edit-reason", clientMutationId: "crud-edit" }));
+            expect(edited.edits[0]).toMatchObject({ previousBody: "PRIVATE-body", nextBody: "PRIVATE-edited" });
+            const reply = commentFrom(await run("reviews.comments.reply", { workspace, parentCommentId: edited.id,
+                expectedParentServerRevision: edited.serverRevision, body: "PRIVATE-reply", clientMutationId: "crud-reply" }));
+            expect(reply.parentCommentId).toBe(edited.id);
+            const disposed = commentFrom(await run("reviews.comments.setDisposition", { workspace, commentId: edited.id,
+                expectedServerRevision: edited.serverRevision, disposition: "working", clientMutationId: "crud-disposition" }));
+            const evidenced = commentFrom(await run("reviews.comments.attachEvidence", { workspace, commentId: disposed.id,
+                expectedServerRevision: disposed.serverRevision, evidence: [{ kind: "reasoning", message: "PRIVATE-evidence" }], clientMutationId: "crud-evidence" }));
+            let interleaved = false;
+            const bulk = ReviewCommentBulkTransitionResponseV1Schema.parse(await executeReviewCommentTransportV1({
+                actionId: "reviews.comments.bulkTransition", context, actor, randomBytes,
+                input: { workspace, commentIds: [evidenced.id, second.id], expectedServerRevisions: { [evidenced.id]: evidenced.serverRevision, [second.id]: second.serverRevision },
+                    expectedState: "open", toState: "dismissed", reason: "PRIVATE-dismiss", clientMutationId: "crud-bulk" },
+                request: async (request) => {
+                    const response = await app.inject({ method: "POST", url: request.path, headers: { "x-test-user-id": account.id }, payload: request.body });
+                    expect(response.statusCode, response.body).toBe(200);
+                    if (!interleaved && request.path.endsWith("/prepare")) {
+                        interleaved = true;
+                        await run("reviews.comments.setDisposition", { workspace, commentId: second.id, expectedServerRevision: second.serverRevision,
+                            disposition: "working", clientMutationId: "crud-race" });
+                    }
+                    return response.json();
+                },
+            }));
+            expect(bulk.updated).toMatchObject([{ id: original.id, state: "dismissed" }]);
+            expect(bulk.failed).toMatchObject([{ commentId: second.id, errorCode: "review_comment_conflict" }]);
+            const redacted = commentFrom(await run("reviews.comments.redact", { workspace, commentId: original.id,
+                expectedServerRevision: bulk.updated[0]!.serverRevision, reason: "PRIVATE-redact", clientMutationId: "crud-redact" }));
+            expect(redacted).toMatchObject({ body: "", edits: [], flags: { redacted: true } });
+            const wrongScope = await app.inject({ method: "POST", url: "/v1/reviews/comments/mutations/prepare", headers: { "x-test-user-id": account.id },
+                payload: { v: 1, contentCommitment: "a".repeat(43), mutation: projectReviewCommentStructuralMutationV1("reviews.comments.setDisposition", {
+                    workspace: { ...workspace, path: "/other" }, commentId: second.id, expectedServerRevision: 2, disposition: "working", clientMutationId: "wrong-scope" }) } });
+            expect(wrongScope.statusCode).toBe(400);
+            expect(wrongScope.json()).toMatchObject({ error: "review_comment_conflict" });
+            const rows = await db.$queryRaw<Array<Record<string, unknown>>>`SELECT anchor_json, anchor_file_path, body_envelope_json, snapshot_envelope_json, edits_json, evidence_json, transitions_json, metadata_json, tombstone_json FROM review_comments WHERE account_id = ${account.id}`;
+            expect(JSON.stringify(rows)).not.toContain("PRIVATE-");
+            expect(rows.every((row) => row.anchor_file_path === null && row.evidence_json === null && row.metadata_json === null)).toBe(true);
+            const events = await db.$queryRaw<Array<{ event_envelope_json: string }>>`SELECT event_envelope_json FROM review_comment_events WHERE account_id = ${account.id}`;
+            expect(JSON.stringify(events)).not.toContain("PRIVATE-");
+        });
+    });
+
+    it("persists and isolates workspace-only review comments and their events", async () => {
+        const account = await db.account.create({ data: {
+            id: "account-workspace-review", publicKey: "pk-workspace-review", encryptionMode: "plain",
+        } });
+        const app = registerDefaultRoutes();
+        const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
+        const workspace = { machineId: "machine-workspace-review", path: "/work/repo" };
+        const createReply = createReplyStub();
+        const created = ReviewCommentCreateResponseV1Schema.parse(await create({
+            userId: account.id,
+            body: { workspace, sessionId: "session-workspace-review", findingIdentity: "a".repeat(64),
+                findingSeverity: "high", anchor: { kind: "line", filePath: "src/example.ts", line: 2 },
+                snapshot: textSnapshot(), body: "Check null.", authorIntent: "open", clientMutationId: "workspace-review-create" },
+        }, createReply));
+        expect(createReply.statusCode).toBe(200);
+        const store = createSqlReviewCommentStore();
+        expect(await store.get({ accountId: account.id, commentId: created.comment.id })).toMatchObject({
+            workspace, findingIdentity: "a".repeat(64), findingSeverity: "high",
+        });
+        expect(await store.list({ accountId: account.id, filters: { workspace,
+            states: [], taxonomyIds: [], includeHistory: false, limit: 50 } })).toMatchObject({ items: [{ id: created.comment.id }] });
+        expect(await store.list({ accountId: account.id, filters: { workspace: { ...workspace, path: "/other" },
+            states: [], taxonomyIds: [], includeHistory: false, limit: 50 } })).toMatchObject({ items: [] });
+        expect(await store.listEvents({ accountId: account.id, commentId: created.comment.id })).toMatchObject([{ workspace }]);
+    });
+
+    it("admits only exact signed host findings with ordinary Session access and coalesces durable identities", async () => {
+        const account = await db.account.create({ data: { id: "account-host-review", publicKey: "pk-host-review", encryptionMode: "plain" } });
+        await db.session.create({ data: { id: "session-host-review", accountId: account.id, tag: "review-session", metadata: "{}", encryptionMode: "plain" } });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(33));
+        await createTrustedMachineInstallation({ accountId: account.id, machineId: "machine-host-review", installationId: "installation-host-review", keyPair });
+        const app = registerDefaultRoutes();
+        const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
+        const body = { workspace: { machineId: "machine-host-review", path: "/repo" }, sessionId: "session-host-review",
+            runId: "review-round-1", engineId: "codex", findingId: "finding-1", findingIdentity: "c".repeat(64),
+            anchor: { kind: "file" as const, filePath: "src/example.ts" }, snapshot: textSnapshot(),
+            body: "Guard this value", metadata: { reviewGroupIds: ["host-panel-1"] }, authorIntent: "propose" as const, clientMutationId: "host-finding-1" };
+        const header = createSignedPrincipalHeader({ actor: { kind: "agent", agentId: "codex", sessionId: body.sessionId },
+            currentIntent: { v: 1, kind: "review_findings_materialization", actionId: "reviews.comments.create",
+                sessionId: body.sessionId, runId: body.runId, callId: "call-review-1", agentId: "codex", workspace: body.workspace,
+                effectBodySha256Base64Url: createHash("sha256").update(stringifyReviewCommentPrincipalCanonicalJsonV1(body)).digest("base64url") },
+            keyPair, machineId: "machine-host-review", installationId: "installation-host-review", body });
+        const request = { userId: account.id, authAuthority: "present_user" as const, headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: header }, body };
+        const comment = ReviewCommentCreateResponseV1Schema.parse(await create(request, createReplyStub())).comment;
+        expect(comment).toMatchObject({ state: "proposed", workspace: body.workspace, findingIdentity: body.findingIdentity });
+        expect((await createSqlReviewCommentStore().get({ accountId: account.id, commentId: comment.id }))?.metadata?.reviewGroupIds).toEqual(["host-panel-1"]);
+        const denied = createReplyStub();
+        // Invoke the post-auth boundary directly: the route harness otherwise supplies present_user.
+        await getRouteEntry(app, "POST", "/v1/reviews/comments").handler({ ...request, authAuthority: undefined }, denied);
+        expect(denied.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_permission_denied" }));
+        const operations = createReviewCommentOperations(createSqlReviewCommentStore(), { now: () => 1234, createId: (prefix) => `${prefix}-${tweetnacl.randomBytes(8).join("-")}` });
+        const duplicateBody = { ...body, engineId: "claude", runId: "review-round-2", clientMutationId: "host-finding-2" };
+        const duplicates = await Promise.all([0, 1].map((index) => operations.create({ accountId: account.id,
+            actor: { kind: "user", userId: account.id }, input: { ...duplicateBody, clientMutationId: `host-duplicate-${index}` } })));
+        expect(duplicates.map((value) => value.comment.id)).toEqual([comment.id, comment.id]);
+        expect(await createSqlReviewCommentStore().listEvents({ accountId: account.id, commentId: comment.id })).toHaveLength(1);
+        const concurrent = await Promise.all([0, 1].map((index) => operations.create({ accountId: account.id,
+            actor: { kind: "user", userId: account.id }, input: { ...duplicateBody, findingIdentity: "d".repeat(64),
+                engineId: index === 0 ? "codex" : "claude", clientMutationId: `host-concurrent-${index}` } })));
+        expect(concurrent[0]!.comment.id).toBe(concurrent[1]!.comment.id);
+        expect(await createSqlReviewCommentStore().listEvents({ accountId: account.id, commentId: concurrent[0]!.comment.id })).toHaveLength(1);
+    });
+
+    it("keeps encrypted finding re-raises separate from signed CAS dispute events", async () => {
+        const account = await db.account.create({ data: { id: "account-encrypted-reraise", ...e2eeAccountFields(40) } });
+        const sessionId = "session-encrypted-reraise";
+        await db.session.create({ data: { id: sessionId, accountId: account.id, tag: sessionId, metadata: "{}", encryptionMode: "e2ee" } });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(42));
+        const machineId = "machine-encrypted-reraise";
+        const installationId = "installation-encrypted-reraise";
+        await createTrustedMachineInstallation({ accountId: account.id, machineId, installationId, keyPair });
+        const app = registerDefaultRoutes();
+        const actor = { kind: "agent", agentId: "codex", sessionId } as const;
+        const workspace = { machineId, path: "/repo" };
+        await initEncrypt();
+        const context = { accountId: account.id, mode: "e2ee", material: { type: "dataKey", machineKey: new Uint8Array(32).fill(41) } } as const;
+        const input = { workspace, sessionId, runId: "encrypted-round-1", engineId: "codex", findingIdentity: "9".repeat(64),
+            anchor: { kind: "file" as const, filePath: "src/example.ts" }, snapshot: textSnapshot(),
+            body: "Private finding",
+            authorIntent: "open" as const, clientMutationId: "encrypted-create" };
+        const signedRequest = (actingActor: ReviewCommentActorRefV1, logicalCreate?: typeof input) => async (request: Parameters<Parameters<typeof executeReviewCommentTransportV1>[0]["request"]>[0]) => {
+            const handler = getRouteHandler(app, "POST", request.path);
+            const reply = createReplyStub();
+            const result = await handler({ userId: account.id, authAuthority: "present_user", method: "POST", url: request.path, body: request.body,
+                headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: createSignedPrincipalHeader({ actor: actingActor, keyPair, machineId, installationId, body: request.body, path: request.path,
+                    ...(logicalCreate ? { currentIntent: { v: 1, kind: "review_findings_materialization", actionId: "reviews.comments.create", sessionId,
+                        runId: logicalCreate.runId, callId: `call-${logicalCreate.runId}`, agentId: actor.agentId, workspace,
+                        effectBodySha256Base64Url: request.contentCommitment! } as ReviewCommentCurrentIntentV1 } : {}) }) },
+            }, reply);
+            expect(reply.statusCode).toBe(200);
+            return result;
+        };
+        const materialize = async (body: typeof input) => ReviewCommentCreateResponseV1Schema.parse(await executeReviewCommentTransportV1({
+            actionId: "reviews.comments.create", input: body, actor, context, randomBytes, request: signedRequest(actor, body),
+        }));
+        const created = await materialize(input);
+        const transitionInput = { workspace, commentId: created.comment.id, expectedServerRevision: 1, expectedState: "open", toState: "dismissed", reason: "Verified no issue",
+            clientMutationId: "encrypted-dismiss" };
+        const mutate = (body: typeof transitionInput) => {
+            const actingActor = body.expectedState === "open" ? { ...actor, agentId: "builder" } : actor;
+            return executeReviewCommentTransportV1({ actionId: "reviews.comments.transition", input: body, actor: actingActor, context, randomBytes, request: signedRequest(actingActor) });
+        };
+        expect(await mutate(transitionInput)).toMatchObject({ comment: { state: "dismissed", serverRevision: 2 } });
+        const duplicate = await materialize({ ...input, engineId: "claude", runId: "encrypted-round-2", clientMutationId: "encrypted-reraise" });
+        expect(duplicate.comment).toMatchObject({ id: created.comment.id, state: "dismissed", serverRevision: 2 });
+        expect(await createSqlReviewCommentStore().listEvents({ accountId: account.id, commentId: created.comment.id })).toHaveLength(2);
+        expect(await mutate({ ...transitionInput, expectedServerRevision: 2, expectedState: "dismissed", toState: "open",
+            clientMutationId: "encrypted-reopen" }))
+            .toMatchObject({ comment: { state: "open", serverRevision: 3, flags: { disputed: true } } });
+        const events = await db.$queryRaw<Array<{ event_kind: string; event_envelope_json: string }>>`
+            SELECT event_kind, event_envelope_json FROM review_comment_events WHERE account_id = ${account.id} ORDER BY server_revision`;
+        expect(events.map((event) => event.event_kind)).toEqual(["created", "transitioned", "transitioned"]);
+        expect(events.map((event) => JSON.parse(event.event_envelope_json))).toMatchObject([
+            { binding: { eventKind: "created", requestBinding: { actionId: "reviews.comments.create" } }, sensitive: { t: "encrypted" } },
+            { binding: { eventKind: "transitioned", requestBinding: { actionId: "reviews.comments.transition" } }, sensitive: { t: "encrypted" } },
+            { binding: { eventKind: "transitioned", requestBinding: { actionId: "reviews.comments.transition" } }, sensitive: { t: "encrypted" } },
+        ]);
+    });
+
+    it("admits signed lead review verdicts only for currently readable led Sessions", async () => {
+        const account = await db.account.create({ data: { id: "account-lead-review", publicKey: "pk-lead-review", encryptionMode: "plain" } });
+        const foreign = await db.account.create({ data: { id: "account-foreign-review", publicKey: "pk-foreign-review", encryptionMode: "plain" } });
+        const leadId = "session-review-lead";
+        const childId = "session-review-child";
+        const unrelatedId = "session-review-unrelated";
+        const unreadableId = "session-review-unreadable";
+        const readOnlyId = "session-review-read-only";
+        const nestedId = "session-review-nested";
+        for (const sessionId of [leadId, childId, unrelatedId, unreadableId, readOnlyId, nestedId]) {
+            await db.session.create({ data: { id: sessionId, accountId: [unreadableId, readOnlyId].includes(sessionId) ? foreign.id : account.id,
+                tag: sessionId, metadata: "{}", encryptionMode: "plain" } });
+        }
+        await db.sessionReportsTo.createMany({ data: [childId, unreadableId, readOnlyId].map((sessionId) => ({ sessionId, leadSessionId: leadId })) });
+        await db.sessionReportsTo.create({ data: { sessionId: nestedId, leadSessionId: unreadableId } });
+        await db.sessionShare.create({ data: { sessionId: readOnlyId, sharedByUserId: foreign.id, sharedWithUserId: account.id, accessLevel: "view" } });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(36));
+        const machineId = "machine-lead-review";
+        const installationId = "installation-lead-review";
+        await createTrustedMachineInstallation({ accountId: account.id, machineId, installationId, keyPair });
+        await withAuthenticatedTestApp(registerReviewCommentRoutes, async (app) => {
+            const workspace = { machineId, path: "/repo" };
+            const comments = new Map<string, { id: string }>();
+            for (const sessionId of [childId, unrelatedId, unreadableId, readOnlyId, nestedId]) {
+                const response = await app.inject({ method: "POST", url: "/v1/reviews/comments", headers: { "x-test-user-id": account.id },
+                    payload: { workspace, sessionId, anchor: { kind: "file", filePath: "src/example.ts" }, snapshot: textSnapshot(),
+                        body: "Check this value", authorIntent: "open", clientMutationId: `lead-comment-${sessionId}` },
+                });
+                expect(response.statusCode, response.body).toBe(200);
+                const created = ReviewCommentCreateResponseV1Schema.parse(response.json());
+                comments.set(sessionId, created.comment);
+            }
+            const actor = { kind: "agent", agentId: "codex", sessionId: leadId } as const;
+            const signedRequest = (path: string, body?: unknown, method: "GET" | "POST" = "POST", principalActor: ReviewCommentActorRefV1 = actor) => ({
+                headers: { "x-test-user-id": account.id, [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: createSignedPrincipalHeader({ actor: principalActor, keyPair, machineId, installationId, path, body, method }) },
+            });
+            const list = (sessionId: string) => app.inject({ ...signedRequest("/v1/reviews/comments", undefined, "GET"),
+                method: "GET", url: `/v1/reviews/comments?sessionId=${sessionId}` });
+            const listResponse = await list(childId);
+            expect(listResponse.statusCode, listResponse.body).toBe(200);
+            const listed = ReviewCommentListResponseV1Schema.parse(listResponse.json());
+            const childCommentId = comments.get(childId)!.id;
+            expect(listed.items.map((comment) => comment.id)).toEqual([childCommentId]);
+            for (const sessionId of [readOnlyId, nestedId]) {
+                const response = await list(sessionId);
+                expect(response.statusCode, response.body).toBe(200);
+                expect(ReviewCommentListResponseV1Schema.parse(response.json()).items.map((comment) => comment.id)).toEqual([comments.get(sessionId)!.id]);
+            }
+            const disposition = (commentId: string, body: Record<string, unknown>, principalActor: ReviewCommentActorRefV1 = actor) => app.inject({
+                ...signedRequest(`/v1/reviews/comments/${commentId}/disposition`, body, "POST", principalActor),
+                method: "POST", url: `/v1/reviews/comments/${commentId}/disposition`, payload: body });
+            const body = { workspace, expectedServerRevision: 1, disposition: "blocking", clientMutationId: "lead-uphold" };
+            const verdict = await disposition(childCommentId, body);
+            expect(verdict.statusCode, verdict.body).toBe(200);
+            expect(verdict.json()).toMatchObject({ comment: { serverRevision: 2, dispositions: { [`agent:codex:${leadId}`]: "blocking" } } });
+            const dismissed = { workspace, expectedServerRevision: 2, expectedState: "open", toState: "dismissed",
+                reason: "Verified no issue", clientMutationId: "lead-dismiss" };
+            const dismissedResponse = await app.inject({ ...signedRequest(`/v1/reviews/comments/${childCommentId}/transition`, dismissed),
+                method: "POST", url: `/v1/reviews/comments/${childCommentId}/transition`, payload: dismissed });
+            expect(dismissedResponse.statusCode, dismissedResponse.body).toBe(200);
+            expect(dismissedResponse.json()).toMatchObject({ comment: { state: "dismissed", serverRevision: 3 } });
+            const replyBody = { workspace, expectedParentServerRevision: 3, body: "A reply is not a verdict", clientMutationId: "lead-reply-denied" };
+            const replyResponse = await app.inject({ ...signedRequest(`/v1/reviews/comments/${childCommentId}/reply`, replyBody),
+                method: "POST", url: `/v1/reviews/comments/${childCommentId}/reply`, payload: replyBody });
+            expect(replyResponse.json()).toMatchObject({ error: "review_comment_permission_denied" });
+            for (const sessionId of [unrelatedId, unreadableId]) {
+                expect((await list(sessionId)).json()).toMatchObject({ error: "review_comment_permission_denied" });
+                const commentId = comments.get(sessionId)!.id;
+                expect((await disposition(commentId, body)).json()).toMatchObject({ error: "review_comment_permission_denied" });
+            }
+            const readOnlyCommentId = comments.get(readOnlyId)!.id;
+            expect((await disposition(readOnlyCommentId, body)).json()).toMatchObject({ error: "review_comment_permission_denied" });
+            const workflowRunId = "b25c232a-aa68-4343-90c7-9b4b0b980a01";
+            await db.automationRun.create({ data: { id: workflowRunId, accountId: account.id, originKind: "direct", causeKind: null, originSessionId: leadId,
+                scheduledAt: new Date(), dueAt: new Date(), workflowCustodyState: "pending", workflowAcceptedSnapshotEnvelope: "{}",
+                assignments: { create: { machineId } } } });
+            const workflowBody = { ...body, expectedServerRevision: 3, clientMutationId: "workflow-child-denied" };
+            expect((await disposition(childCommentId, workflowBody, { kind: "workflow", runId: workflowRunId })).json()).toMatchObject({ error: "review_comment_permission_denied" });
+            await db.sessionReportsTo.delete({ where: { sessionId: childId } });
+            const detachedBody = { ...body, expectedServerRevision: 3, clientMutationId: "detached-lead-uphold" };
+            expect((await disposition(childCommentId, detachedBody)).json()).toMatchObject({ error: "review_comment_permission_denied" });
+        });
+    });
+
+    it("persists the trusted workflow origin when signed detached finding input has no Session", async () => {
+        const account = await db.account.create({ data: { id: "account-detached-review-origin", publicKey: "pk-detached-review-origin", encryptionMode: "plain" } });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(35));
+        const machineId = "machine-detached-review-origin";
+        const installationId = "installation-detached-review-origin";
+        await createTrustedMachineInstallation({ accountId: account.id, machineId, installationId, keyPair });
+        const app = registerDefaultRoutes();
+        const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
+        const workspace = { machineId, path: "/repo" };
+        const sessionIds = ["session-review-origin-one", "session-review-origin-two"];
+        const workflowRunIds = ["1740f2d2-b283-4acb-bd4f-2a9ff26b7db1", "1740f2d2-b283-4acb-bd4f-2a9ff26b7db2"];
+        const commentIds: string[] = [];
+        for (const [index, sessionId] of sessionIds.entries()) {
+            const workflowRunId = workflowRunIds[index]!;
+            await db.session.create({ data: { id: sessionId, accountId: account.id, tag: `origin-${index}`, metadata: "{}", encryptionMode: "plain" } });
+            await db.automationRun.create({ data: { id: workflowRunId, accountId: account.id, originKind: "direct", causeKind: null, originSessionId: sessionId,
+                scheduledAt: new Date(), dueAt: new Date(), workflowCustodyState: "pending", workflowAcceptedSnapshotEnvelope: "{}",
+                assignments: { create: { machineId } } } });
+            const body = { workspace, runId: `detached-review-leaf-${index}`, engineId: "codex", findingId: `finding-${index}`,
+                findingIdentity: "f".repeat(64), anchor: { kind: "file" as const, filePath: "src/example.ts" }, snapshot: textSnapshot(),
+                body: "Guard this value", authorIntent: "propose" as const, clientMutationId: `detached-review-create-${index}` };
+            const header = createSignedPrincipalHeader({ actor: { kind: "workflow", runId: workflowRunId },
+                currentIntent: { v: 1, kind: "review_findings_materialization", actionId: "reviews.comments.create", workflowRunId,
+                    runId: body.runId, callId: `detached-review-call-${index}`, agentId: "codex", workspace,
+                    effectBodySha256Base64Url: createHash("sha256").update(stringifyReviewCommentPrincipalCanonicalJsonV1(body)).digest("base64url") },
+                keyPair, machineId, installationId, body });
+            const created = ReviewCommentCreateResponseV1Schema.parse(await create({ userId: account.id, authAuthority: "present_user",
+                headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: header }, body }, createReplyStub()));
+            expect(created.comment.sessionId).toBe(sessionId);
+            expect(await db.reviewComment.findUniqueOrThrow({ where: { id: created.comment.id }, select: { sessionId: true } })).toEqual({ sessionId });
+            if (index === 0) {
+                const wrongBody = { ...body, sessionId: "session-from-mutable-effect", clientMutationId: "wrong-workflow-origin" };
+                const wrongHeader = createSignedPrincipalHeader({ actor: { kind: "workflow", runId: workflowRunId },
+                    currentIntent: { v: 1, kind: "review_findings_materialization", actionId: "reviews.comments.create", workflowRunId,
+                        sessionId: wrongBody.sessionId, runId: wrongBody.runId, callId: "wrong-origin-call", agentId: "codex", workspace,
+                        effectBodySha256Base64Url: createHash("sha256").update(stringifyReviewCommentPrincipalCanonicalJsonV1(wrongBody)).digest("base64url") },
+                    keyPair, machineId, installationId, body: wrongBody });
+                const wrongReply = createReplyStub();
+                await create({ userId: account.id, authAuthority: "present_user", headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: wrongHeader }, body: wrongBody }, wrongReply);
+                expect(wrongReply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_permission_denied" }));
+            }
+            commentIds.push(created.comment.id);
+        }
+        expect(commentIds[0]).not.toBe(commentIds[1]);
+        const actor = { kind: "workflow", runId: workflowRunIds[0]! } as const;
+        const listHeader = createSignedPrincipalHeader({ actor, keyPair, machineId, installationId, method: "GET", path: "/v1/reviews/comments" });
+        const listed = ReviewCommentListResponseV1Schema.parse(await getRouteHandler(app, "GET", "/v1/reviews/comments")({
+            userId: account.id, authAuthority: "present_user", headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: listHeader }, query: {},
+        }, createReplyStub()));
+        expect(listed.items.map((comment) => comment.id)).toEqual([commentIds[0]]);
+        const body = { workspace, expectedServerRevision: 1, disposition: "blocking", clientMutationId: "detached-review-verdict" };
+        const header = createSignedPrincipalHeader({ actor, keyPair, machineId, installationId,
+            path: `/v1/reviews/comments/${commentIds[0]!}/disposition`, body });
+        const verdict = await getRouteHandler(app, "POST", "/v1/reviews/comments/:commentId/disposition")({ userId: account.id, authAuthority: "present_user",
+            headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: header }, params: { commentId: commentIds[0]! }, body }, createReplyStub());
+        expect(verdict).toMatchObject({ comment: { sessionId: sessionIds[0], serverRevision: 2, dispositions: { [`workflow:${workflowRunIds[0]!}`]: "blocking" } } });
+    });
+
+    it("admits originless workflow findings only on the assigned signed host and keeps moderation scope closed", async () => {
+        const account = await db.account.create({ data: { id: "account-workflow-host-review", publicKey: "pk-workflow-host-review", encryptionMode: "plain" } });
+        const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(34));
+        await createTrustedMachineInstallation({ accountId: account.id, machineId: "machine-workflow-review", installationId: "installation-workflow-review", keyPair });
+        const workflowRunId = "13e56f2e-28b0-4baf-9f5a-b1e1c49a3e57";
+        await db.automationRun.create({ data: { id: workflowRunId, accountId: account.id, originKind: "direct", causeKind: null,
+            scheduledAt: new Date(), dueAt: new Date(), workflowCustodyState: "pending", workflowAcceptedSnapshotEnvelope: "{}",
+            assignments: { create: { machineId: "machine-workflow-review" } } } });
+        const app = registerDefaultRoutes();
+        const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
+        const body = { workspace: { machineId: "machine-workflow-review", path: "/repo" }, runId: "workflow-review-leaf",
+            engineId: "codex", findingId: "finding-1", findingIdentity: "e".repeat(64), anchor: { kind: "file" as const, filePath: "src/example.ts" },
+            snapshot: textSnapshot(), body: "Guard this value", authorIntent: "propose" as const, clientMutationId: "workflow-host-finding" };
+        const actor = { kind: "workflow", runId: workflowRunId } as const;
+        const header = createSignedPrincipalHeader({ actor, currentIntent: { v: 1, kind: "review_findings_materialization", actionId: "reviews.comments.create",
+            workflowRunId, runId: body.runId, callId: "workflow-review-call", agentId: "codex", workspace: body.workspace,
+            effectBodySha256Base64Url: createHash("sha256").update(stringifyReviewCommentPrincipalCanonicalJsonV1(body)).digest("base64url") },
+            keyPair, machineId: "machine-workflow-review", installationId: "installation-workflow-review", body });
+        const created = ReviewCommentCreateResponseV1Schema.parse(await create({ userId: account.id, authAuthority: "present_user",
+            headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: header }, body }, createReplyStub()));
+        expect(created.comment.sessionId).toBeUndefined();
+        await db.automationRunAssignment.update({ where: { runId_machineId: { runId: workflowRunId, machineId: "machine-workflow-review" } }, data: { machineId: "another-machine" } });
+        const wrongHostReply = createReplyStub();
+        await create({ userId: account.id, authAuthority: "present_user", headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: header }, body }, wrongHostReply);
+        expect(wrongHostReply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_permission_denied" }));
+        const listHeader = createSignedPrincipalHeader({ actor, keyPair, machineId: "machine-workflow-review", installationId: "installation-workflow-review",
+            method: "GET", path: "/v1/reviews/comments", body: null });
+        const listReply = createReplyStub();
+        await getRouteHandler(app, "GET", "/v1/reviews/comments")({ userId: account.id, authAuthority: "present_user",
+            headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: listHeader }, query: {} }, listReply);
+        expect(listReply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_permission_denied" }));
     });
 
     it("persists one first-dispatch claim across simultaneous SQL-store callers", async () => {
@@ -1136,8 +1682,8 @@ describe("review comment durable storage", () => {
             id: created.comment.id,
             server_revision: 2,
         });
-        expect(JSON.parse(rows[0]!.body_envelope_json)).toEqual({ t: "plain", v: transitioned.comment.body });
-        expect(JSON.parse(rows[0]!.snapshot_envelope_json)).toEqual({ t: "plain", v: transitioned.comment.snapshot });
+        expect(JSON.parse(rows[0]!.body_envelope_json)).toMatchObject({ t: "plain", v: { sensitive: { body: transitioned.comment.body, snapshot: transitioned.comment.snapshot } } });
+        expect(JSON.parse(rows[0]!.snapshot_envelope_json)).toEqual({ v: 1, layout: "review_comment_sensitive_in_body_v1" });
 
         const events = await db.$queryRaw<Array<{
             event_kind: string;
@@ -1195,6 +1741,7 @@ describe("review comment durable storage", () => {
         const reply = createReplyStub();
         const rejected = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: principalHeader },
             body: {
                 projectId: "project-1",
@@ -1264,6 +1811,13 @@ describe("review comment durable storage", () => {
             installationId: "installation-review-comments-trusted-grant",
             keyPair: installationKeyPair,
         });
+        const permissionMaterializationId = "materialization-review-comments-trusted-grant";
+        await seedCurrentPermissionCaller({
+            accountId: account.id,
+            machineId: "machine-review-comments-trusted-grant",
+            materializationId: permissionMaterializationId,
+            pluginId: CODERABBIT_PLUGIN_ID,
+        });
         const app = registerAllRoutes();
         expect(app.routes.has("POST /v1/plugins/permissions/grants/request")).toBe(true);
 
@@ -1278,8 +1832,14 @@ describe("review comment durable storage", () => {
             subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
             reason: "Publish approved review comments directly.",
             requester: { kind: "plugin" as const, pluginId: CODERABBIT_PLUGIN_ID, sessionId: "session-1" },
+            caller: {
+                machineId: "machine-review-comments-trusted-grant",
+                materializationId: permissionMaterializationId,
+                pluginId: CODERABBIT_PLUGIN_ID,
+            },
         };
-        const requested = await requestGrant({
+        const requestReply = createReplyStub();
+        const requested = PluginPermissionGrantRequestActionOutputV1Schema.parse(await requestGrant({
             userId: account.id,
             method: "POST",
             url: "/v1/plugins/permissions/grants/request",
@@ -1293,9 +1853,13 @@ describe("review comment durable storage", () => {
                 }),
             },
             body: requestGrantBody,
-        }, createReplyStub()) as any;
+        }, requestReply));
+        expect(requested).toMatchObject({ pendingRequest: { pluginId: CODERABBIT_PLUGIN_ID } });
+        expect(requestReply.statusCode).toBe(200);
         await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: requested.pendingRequest.id },
         }, createReplyStub());
 
@@ -1318,6 +1882,7 @@ describe("review comment durable storage", () => {
         const missingIntentReply = createReplyStub();
         const missingIntent = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: missingIntentHeader },
             body: missingIntentBody,
         }, missingIntentReply);
@@ -1350,6 +1915,7 @@ describe("review comment durable storage", () => {
         });
         const created = ReviewCommentCreateResponseV1Schema.parse(await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: principalHeader },
             body: createBody,
         }, createReplyStub()));
@@ -1363,6 +1929,7 @@ describe("review comment durable storage", () => {
         const tamperedBodyReply = createReplyStub();
         const tamperedBody = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: principalHeader },
             body: {
                 ...createBody,
@@ -1390,6 +1957,7 @@ describe("review comment durable storage", () => {
         const mismatchedIntentReply = createReplyStub();
         const mismatchedIntent = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: mismatchedIntentHeader },
             body: mismatchedIntentBody,
         }, mismatchedIntentReply);
@@ -1409,6 +1977,7 @@ describe("review comment durable storage", () => {
         });
         const wrongPath = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: wrongPathHeader },
             body: {
                 ...createBody,
@@ -1442,6 +2011,7 @@ describe("review comment durable storage", () => {
         const mismatchReply = createReplyStub();
         const mismatch = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: mismatchPrincipalHeader },
             body: mismatchBody,
         }, mismatchReply);
@@ -1466,6 +2036,13 @@ describe("review comment durable storage", () => {
             installationId: "installation-review-comments-external-grant-projection",
             keyPair: installationKeyPair,
         });
+        const permissionMaterializationId = "materialization-review-comments-external-grant-projection";
+        await seedCurrentPermissionCaller({
+            accountId: account.id,
+            machineId: "machine-review-comments-external-grant-projection",
+            materializationId: permissionMaterializationId,
+            pluginId: EXTERNAL_PLUGIN_ID,
+        });
         const app = registerAllRoutes();
         const requestGrant = getRouteHandler(app, "POST", "/v1/plugins/permissions/grants/request");
         const grant = getRouteHandler(app, "POST", "/v1/plugins/permissions/grants/grant");
@@ -1478,8 +2055,13 @@ describe("review comment durable storage", () => {
             subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
             reason: "Publish approved review comments directly.",
             requester: { kind: "plugin" as const, pluginId: EXTERNAL_PLUGIN_ID, sessionId: "session-1" },
+            caller: {
+                machineId: "machine-review-comments-external-grant-projection",
+                materializationId: permissionMaterializationId,
+                pluginId: EXTERNAL_PLUGIN_ID,
+            },
         };
-        const requested = await requestGrant({
+        const requested = PluginPermissionGrantRequestActionOutputV1Schema.parse(await requestGrant({
             userId: account.id,
             method: "POST",
             url: "/v1/plugins/permissions/grants/request",
@@ -1494,9 +2076,11 @@ describe("review comment durable storage", () => {
                 }),
             },
             body: requestGrantBody,
-        }, createReplyStub()) as any;
+        }, createReplyStub()));
         await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: requested.pendingRequest.id },
         }, createReplyStub());
 
@@ -1522,6 +2106,7 @@ describe("review comment durable storage", () => {
         });
         const created = ReviewCommentCreateResponseV1Schema.parse(await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: firstHeader },
             body: firstBody,
         }, createReplyStub()));
@@ -1556,6 +2141,7 @@ describe("review comment durable storage", () => {
         const deniedReply = createReplyStub();
         const denied = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: secondHeader },
             body: secondBody,
         }, deniedReply);
@@ -1586,12 +2172,32 @@ describe("review comment durable storage", () => {
             installationId: "installation-review-comments-wrong-grant-caller",
             keyPair: callerKeyPair,
         });
+        const permissionMaterializationId = "materialization-review-comments-projection-owner";
+        await seedCurrentPermissionCaller({
+            accountId: account.id,
+            machineId: "machine-review-comments-projection-owner",
+            materializationId: permissionMaterializationId,
+            pluginId: EXTERNAL_PLUGIN_ID,
+        });
         const app = registerAllRoutes();
         const requestGrant = getRouteHandler(app, "POST", "/v1/plugins/permissions/grants/request");
         const grant = getRouteHandler(app, "POST", "/v1/plugins/permissions/grants/grant");
         const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
 
-        const requested = await requestGrant({
+        const requestGrantBody = {
+            pluginId: EXTERNAL_PLUGIN_ID,
+            capability: REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
+            targetScope: { kind: "project" as const, projectId: "project-1" },
+            subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
+            reason: "Publish approved review comments directly.",
+            requester: { kind: "plugin" as const, pluginId: EXTERNAL_PLUGIN_ID, sessionId: "session-1" },
+            caller: {
+                machineId: "machine-review-comments-projection-owner",
+                materializationId: permissionMaterializationId,
+                pluginId: EXTERNAL_PLUGIN_ID,
+            },
+        };
+        const requested = PluginPermissionGrantRequestActionOutputV1Schema.parse(await requestGrant({
             userId: account.id,
             method: "POST",
             url: "/v1/plugins/permissions/grants/request",
@@ -1601,27 +2207,15 @@ describe("review comment durable storage", () => {
                     machineId: "machine-review-comments-projection-owner",
                     installationId: "installation-review-comments-projection-owner",
                     path: "/v1/plugins/permissions/grants/request",
-                    body: {
-                        pluginId: EXTERNAL_PLUGIN_ID,
-                        capability: REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
-                        targetScope: { kind: "project", projectId: "project-1" },
-                        subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
-                        reason: "Publish approved review comments directly.",
-                        requester: { kind: "plugin", pluginId: EXTERNAL_PLUGIN_ID, sessionId: "session-1" },
-                    },
+                    body: requestGrantBody,
                 }),
             },
-            body: {
-                pluginId: EXTERNAL_PLUGIN_ID,
-                capability: REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
-                targetScope: { kind: "project", projectId: "project-1" },
-                subject: GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
-                reason: "Publish approved review comments directly.",
-                requester: { kind: "plugin", pluginId: EXTERNAL_PLUGIN_ID, sessionId: "session-1" },
-            },
-        }, createReplyStub()) as any;
+            body: requestGrantBody,
+        }, createReplyStub()));
         await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: requested.pendingRequest.id },
         }, createReplyStub());
         const createBody = {
@@ -1648,6 +2242,7 @@ describe("review comment durable storage", () => {
 
         const denied = await create({
             userId: account.id,
+            authAuthority: "present_user",
             headers: { [REVIEW_COMMENT_PRINCIPAL_HEADER_V1]: principalHeader },
             body: createBody,
         }, reply);
@@ -1656,7 +2251,7 @@ describe("review comment durable storage", () => {
         expect(denied).toMatchObject({ error: "review_comment_direct_write_permission_required" });
     });
 
-    it("accepts encrypted body snapshot and event envelopes for effective e2ee accounts", async () => {
+    it("rejects obsolete split-cipher CRUD instead of retaining a second encrypted writer", async () => {
         const account = await db.account.create({
             data: {
                 id: "account-review-comments-e2ee",
@@ -1666,7 +2261,8 @@ describe("review comment durable storage", () => {
         });
 
         const create = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments");
-        const created = ReviewCommentCreateResponseV1Schema.parse(await create({
+        const reply = createReplyStub();
+        const denied = await create({
             userId: account.id,
             body: {
                 projectId: "project-1",
@@ -1678,36 +2274,23 @@ describe("review comment durable storage", () => {
                 eventEnvelope: { t: "encrypted", c: "created-event-ciphertext" },
                 clientMutationId: "mutation-create",
             },
-        }, createReplyStub()));
-
-        expect(created.comment.body).toEqual({ t: "encrypted", c: "body-ciphertext" });
-        expect(created.comment.snapshot).toEqual({ t: "encrypted", c: "snapshot-ciphertext" });
+        }, reply);
+        expect(reply.statusCode).toBe(400);
+        expect(denied).toMatchObject({ error: "review_comment_encryption_mode_mismatch" });
 
         const rows = await db.$queryRaw<Array<{
             body_envelope_json: string;
             snapshot_envelope_json: string;
         }>>`SELECT body_envelope_json, snapshot_envelope_json FROM review_comments WHERE account_id = ${account.id}`;
-        expect(rows).toHaveLength(1);
-        expect(JSON.parse(rows[0]!.body_envelope_json)).toEqual({ t: "encrypted", c: "body-ciphertext" });
-        expect(JSON.parse(rows[0]!.snapshot_envelope_json)).toEqual({ t: "encrypted", c: "snapshot-ciphertext" });
+        expect(rows).toHaveLength(0);
 
         const events = await db.$queryRaw<Array<{
             event_envelope_json: string;
         }>>`SELECT event_envelope_json FROM review_comment_events WHERE account_id = ${account.id}`;
-        expect(events).toHaveLength(1);
-        expect(JSON.parse(events[0]!.event_envelope_json)).toMatchObject({
-            v: 1,
-            binding: {
-                eventKind: "created",
-                commentId: created.comment.id,
-                accountId: account.id,
-                clientMutationId: "mutation-create",
-            },
-            sensitive: { t: "encrypted", c: "created-event-ciphertext" },
-        });
+        expect(events).toHaveLength(0);
     });
 
-    it("keeps e2ee redaction writes envelope-compatible when the server cannot synthesize ciphertext", async () => {
+    it("reseals encrypted redaction rather than retaining the unredacted body ciphertext", async () => {
         const account = await db.account.create({
             data: {
                 id: "account-review-comments-e2ee-redact",
@@ -1717,36 +2300,33 @@ describe("review comment durable storage", () => {
         });
 
         const app = registerDefaultRoutes();
-        const create = getRouteHandler(app, "POST", "/v1/reviews/comments");
-        const redact = getRouteHandler(app, "POST", "/v1/reviews/comments/:commentId/redact");
-        const created = ReviewCommentCreateResponseV1Schema.parse(await create({
-            userId: account.id,
-            body: {
+        await initEncrypt();
+        const actor = { kind: "user", userId: account.id } as const;
+        const context = { accountId: account.id, mode: "e2ee", material: { type: "dataKey", machineKey: new Uint8Array(32).fill(23) } } as const;
+        const run = (actionId: ReviewCommentMutationActionIdV1, input: Record<string, unknown>) => executeReviewCommentTransportV1({ actionId, input, actor, context, randomBytes,
+            request: async (request) => getRouteHandler(app, "POST", request.path)({ userId: account.id, authAuthority: "present_user", method: "POST", url: request.path, body: request.body }, createReplyStub()),
+        });
+        const created = ReviewCommentCreateResponseV1Schema.parse(await run("reviews.comments.create", {
                 projectId: "project-1",
                 anchor: { kind: "line", filePath: "src/example.ts", line: 2 },
-                snapshot: { t: "encrypted", c: "snapshot-ciphertext" },
-                body: { t: "encrypted", c: "body-ciphertext" },
-                eventEnvelope: { t: "encrypted", c: "created-event-ciphertext" },
+                snapshot: textSnapshot(),
+                body: "private unredacted body",
                 clientMutationId: "mutation-create",
-            },
-        }, createReplyStub()));
+        }));
+        const prior = await createSqlReviewCommentStore().getSource({ accountId: account.id, commentId: created.comment.id });
 
-        const redacted = await redact({
-            userId: account.id,
-            params: { commentId: created.comment.id },
-            body: {
+        const redacted = await run("reviews.comments.redact", {
+                commentId: created.comment.id,
                 projectId: "project-1",
                 expectedServerRevision: 1,
                 redactBody: true,
-                eventEnvelope: { t: "encrypted", c: "redacted-event-ciphertext" },
                 clientMutationId: "mutation-redact",
-            },
-        }, createReplyStub());
+        });
 
         expect(redacted).toMatchObject({
             comment: {
                 id: created.comment.id,
-                body: { t: "encrypted", c: "body-ciphertext" },
+                body: "",
                 flags: { redacted: true },
             },
         });
@@ -1755,7 +2335,9 @@ describe("review comment durable storage", () => {
             SELECT body_envelope_json FROM review_comments WHERE account_id = ${account.id}
         `;
         expect(rows).toHaveLength(1);
-        expect(JSON.parse(rows[0]!.body_envelope_json)).toEqual({ t: "encrypted", c: "body-ciphertext" });
+        const source = await createSqlReviewCommentStore().getSource({ accountId: account.id, commentId: created.comment.id });
+        expect(source?.source).not.toEqual(prior?.source);
+        expect(JSON.parse(rows[0]!.body_envelope_json)).toMatchObject({ t: "encrypted" });
     });
 
     it("rejects mixed envelope modes at durable review-comment write choke points", async () => {

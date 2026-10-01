@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { resolveFeaturesFromEnv } from "@/app/features/registry";
 
 import { classifyRequestIp } from "@/app/net/requestOrigin";
+import { resolveEffectiveAuthMethodDecisions, toPublishedAuthMethods } from "@/app/auth/methods/effectiveAuthMethods";
 
 import {
     applyPublicSignupProvisioningRestrictionsToFeaturesPayload,
@@ -76,14 +77,12 @@ describe("publicSignupProvisioningPolicy", () => {
         ).toBe(false);
     });
 
-    it("denies a combined provision action whenever a branch it offers is denied", () => {
+    it("denies a combined provision action only when both branches are denied", () => {
         const env = {
             HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "email_password",
             HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: "keyless",
         } as NodeJS.ProcessEnv;
 
-        // An `either` action offers both branches, so it cannot be partly
-        // denied by omission: the restriction applies to the whole action.
         expect(
             shouldDenyPublicSignupProvisioningAction({
                 env,
@@ -91,7 +90,11 @@ describe("publicSignupProvisioningPolicy", () => {
                 methodId: "email_password",
                 mode: "either",
             }),
-        ).toBe(true);
+        ).toBe(false);
+        expect(shouldDenyPublicSignupProvisioningAction({
+            env: { ...env, HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: "*" },
+            requestIp: "203.0.113.10", methodId: "email_password", mode: "either",
+        })).toBe(true);
         expect(
             shouldDenyPublicSignupProvisioningAction({
                 env,
@@ -108,6 +111,31 @@ describe("publicSignupProvisioningPolicy", () => {
                 mode: "either",
             }),
         ).toBe(false);
+    });
+
+    it.each([
+        { denied: "keyed", surviving: "keyless" },
+        { denied: "keyless", surviving: "keyed" },
+    ] as const)("publishes the surviving $surviving native branch when $denied is restricted", ({ denied, surviving }) => {
+        const env = {
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: "1",
+            HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: "email_password",
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: denied,
+        };
+        const payload = resolveFeaturesFromEnv(env);
+        payload.capabilities.auth.methods = toPublishedAuthMethods(resolveEffectiveAuthMethodDecisions({ env, emailDeliveryReady: true }));
+        const restricted = applyPublicSignupProvisioningRestrictionsToFeaturesPayload({ payload, env, requestIp: "203.0.113.10" });
+        const native = restricted.capabilities.auth.methods?.find(method => method.id === "email_password");
+        expect(native?.actions).toEqual(expect.arrayContaining([
+            { id: "provision", enabled: true, mode: surviving },
+            { id: "login", enabled: true, mode: "either" },
+        ]));
+        const privatePayload = applyPublicSignupProvisioningRestrictionsToFeaturesPayload({ payload, env, requestIp: "10.0.0.5" });
+        expect(privatePayload.capabilities.auth.methods?.find(method => method.id === "email_password")?.actions)
+            .toContainEqual({ id: "provision", enabled: true, mode: "either" });
     });
 
     it("disables only matching provision actions for public requests", () => {

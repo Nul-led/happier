@@ -8,6 +8,7 @@ import { parseIntEnv } from "@/config/env";
 import { db, getActivePrismaRuntime } from "@/storage/db";
 import type { AccountLiveActivityTarget } from "@prisma/client";
 import type { Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 const DEFAULT_REMOTE_UPDATE_DEDUPE_WINDOW_MS = 30_000;
 const MAX_REMOTE_UPDATE_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -127,6 +128,7 @@ export function liveActivityRemoteUpdateRoutes(app: Fastify) {
     app.post("/v1/live-activity-remote-updates", {
         preHandler: app.authenticate,
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const parsed = LiveActivityRemoteUpdateRequestV1Schema.safeParse(request.body);
         if (!parsed.success) {
             return reply.code(400).send({ code: "live_activity_remote_update_invalid" });
@@ -143,10 +145,10 @@ export function liveActivityRemoteUpdateRoutes(app: Fastify) {
                 endedAt: null,
             },
         });
-        const config = resolveLiveActivityRemoteTransportConfig(process.env);
+        const config = resolveLiveActivityRemoteTransportConfig(requestHomeEnv);
         const deliveries = [];
-        const dedupeWindowMs = resolveRemoteUpdateDedupeWindowMs(process.env);
-        const backgroundWakeMinIntervalMs = resolveBackgroundWakeMinIntervalMs(process.env);
+        const dedupeWindowMs = resolveRemoteUpdateDedupeWindowMs(requestHomeEnv);
+        const backgroundWakeMinIntervalMs = resolveBackgroundWakeMinIntervalMs(requestHomeEnv);
 
         for (const target of targets) {
             if (updateRequest.transportMode === "direct_apns") {

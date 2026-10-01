@@ -43,6 +43,7 @@ import { isManagedGitHubIdentityProviderAvailableForConnectionInTx } from "./git
 import { beginManagedGitHubDirectoryRead } from "./githubManagedDirectory";
 import { TEAM_CHANGE_ENTITY_ID } from "@/app/teams/teamChanges";
 import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+import { listHomeAdministrationEventsInTx } from "@/app/home/audit/homeAdministrationEvents";
 
 const ACCEPTED_EMAIL_PASSWORD = { kind: "home_method" as const, methodId: "email_password" };
 const EMAIL_PASSWORD_EVIDENCE = [ACCEPTED_EMAIL_PASSWORD];
@@ -107,6 +108,7 @@ beforeEach(() => {
 });
 afterAll(async () => await harness.close());
 afterEach(async () => {
+    await db.homeAdministrationEvent.deleteMany({});
     await db.teamDirectorySource.deleteMany({});
     await db.teamIdentityConnection.deleteMany({});
     await db.identityProviderInstance.deleteMany({});
@@ -292,7 +294,7 @@ describe("managed GitHub App registration lifecycle", () => {
         })).resolves.toMatchObject({ cursor: expect.any(Number) });
     });
 
-    it("reports the identity permissions a Home-owned sign-in provider needs without any Team connection", async () => {
+    it("separates enabled requirements from draft setup and paused-source repair requirements", async () => {
         const actorAccountId = await createAccount("owner");
         const created = await createHomeGitHubAppRegistration({
             actorAccountId,
@@ -316,9 +318,8 @@ describe("managed GitHub App registration lifecycle", () => {
                 verifiedEvents: [],
             },
         });
-        // A Home managed-GitHub sign-in provider has no Team connection at all; it is still
-        // the consumer whose organization evidence the installation must be granted.
-        await db.identityProviderInstance.create({
+        // A disabled Home provider still needs setup guidance, but is not a current consumer.
+        const provider = await db.identityProviderInstance.create({
             data: {
                 ownerTeamId: null,
                 kind: "github_app_identity",
@@ -336,12 +337,41 @@ describe("managed GitHub App registration lifecycle", () => {
             installations: [{
                 id: installation.id,
                 teamConsumers: [],
-                requirements: {
+                requirements: { permissions: {}, events: [], missingPermissions: [], missingEvents: [] },
+                prospectiveRequirements: {
                     permissions: { members: "read" },
                     missingPermissions: [{ permission: "members", required: "read" }],
                 },
             }],
         });
+
+        // Home sign-in has no Team connection: enabling the provider is sufficient.
+        await db.identityProviderInstance.update({ where: { id: provider.id }, data: { enabled: true } });
+        await expect(listGitHubAppRegistrations({ actorAccountId, owner: { kind: "home" } }))
+            .resolves.toMatchObject({ installations: [{
+                requirements: { permissions: { members: "read" } },
+                prospectiveRequirements: { permissions: { members: "read" } },
+            }] });
+
+        await db.identityProviderInstance.delete({ where: { id: provider.id } });
+        const team = await db.team.create({ data: { name: "Paused directory" } });
+        const source = await db.teamDirectorySource.create({ data: {
+            teamId: team.id,
+            kind: "github_organization",
+            state: "paused",
+            displayName: "Paused GitHub directory",
+            externalSourceKey: "github:paused",
+            bindingConfig: { v: 1, kind: "github_organization", githubOrganizationLogin: "HomeSignIn" },
+            githubAppInstallationId: installation.id,
+        } });
+        await expect(listGitHubAppRegistrations({ actorAccountId, owner: { kind: "home" } }))
+            .resolves.toMatchObject({ installations: [{
+                requirements: { permissions: {}, events: [], missingPermissions: [], missingEvents: [] },
+                prospectiveRequirements: { permissions: { members: "read" } },
+            }] });
+        await db.teamDirectorySource.update({ where: { id: source.id }, data: { state: "active" } });
+        await expect(listGitHubAppRegistrations({ actorAccountId, owner: { kind: "home" } }))
+            .resolves.toMatchObject({ installations: [{ requirements: { permissions: { members: "read" } } }] });
     });
 
     it("withdraws verification, identity, and directory readiness when Home removes a GHES origin", async () => {
@@ -578,6 +608,7 @@ describe("managed GitHub App registration lifecycle", () => {
                 ownerTeamId: team.id,
                 kind: "github_app_identity",
                 displayName: "Team-owned GitHub",
+                enabled: true,
                 config: { v: 1, kind: "github_app_identity" },
                 githubAppInstallationId: installation.id,
             },
@@ -586,6 +617,7 @@ describe("managed GitHub App registration lifecycle", () => {
             data: {
                 teamId: team.id,
                 providerInstanceId: provider.id,
+                enabled: true,
                 externalReference: {
                     v: 1,
                     kind: "github_app_identity",
@@ -625,6 +657,15 @@ describe("managed GitHub App registration lifecycle", () => {
             actorAccountId: otherActorAccountId,
             owner: { kind: "team", teamId: team.id },
         })).resolves.toEqual({ status: "forbidden" });
+
+        await db.teamIdentityConnection.updateMany({
+            where: { providerInstanceId: provider.id }, data: { enabled: false },
+        });
+        await expect(listGitHubAppRegistrations({ actorAccountId, owner: { kind: "team", teamId: team.id } }))
+            .resolves.toMatchObject({ installations: [{
+                requirements: { permissions: {}, events: [], missingPermissions: [], missingEvents: [] },
+                prospectiveRequirements: { permissions: { members: "read" } },
+            }] });
 
         await expect(updateGitHubAppRegistration({
             actorAccountId,
@@ -1185,6 +1226,58 @@ describe("managed GitHub App registration lifecycle", () => {
             status: "verified",
             installation: { state: "suspended", suspendedAt: expect.any(Date) },
         });
+    });
+
+    it("records who added, changed, verified and removed a Home GitHub App in Activity, never its secrets", async () => {
+        const actorAccountId = await createAccount("owner");
+        const created = await createHomeGitHubAppRegistration({
+            actorAccountId,
+            input: {
+                githubHost: "https://github.com",
+                githubAppId: 44n,
+                githubClientId: "Iv1.audit",
+                githubAppSlug: "acme-happier",
+                secrets: { v: 1, clientSecret: "audit-client-secret", privateKey: "audit-private-key" },
+            },
+        });
+        if (created.status !== "created") throw new Error("expected created registration");
+        const updated = await updateHomeGitHubAppRegistration({
+            actorAccountId,
+            registrationId: created.registration.id,
+            expectedRevision: 1,
+            patch: { secrets: { clientSecret: "rotated-client-secret" } },
+        });
+        expect(updated.status).toBe("updated");
+        const verified = await verifyHomeGitHubAppInstallation({
+            actorAccountId,
+            registrationId: created.registration.id,
+            expectedRegistrationRevision: 2,
+            expectedInstallationRevision: 0,
+            githubInstallationId: 301n,
+            githubOrganizationId: 401n,
+        });
+        if (verified.status !== "verified") throw new Error("expected verified installation");
+        // The identity provider the verification created must go first; removal refuses otherwise.
+        await db.identityProviderInstance.deleteMany({ where: { githubAppInstallationId: verified.installation.id } });
+        await expect(removeHomeGitHubAppInstallation({
+            actorAccountId,
+            installationId: verified.installation.id,
+            expectedRevision: verified.installation.revision,
+        })).resolves.toEqual({ status: "removed" });
+
+        const listed = await inTx((tx) => listHomeAdministrationEventsInTx(tx, { targetId: created.registration.id }));
+        if (listed.status !== "ok") throw new Error("expected audit page");
+        expect(listed.result.items.map((event) => [event.action, event.summary, event.actor.accountId, event.target?.kind]))
+            .toEqual([
+                ["github_app.installation.remove", { name: "acme-happier", organization: "Acme" }, actorAccountId, "github_app"],
+                ["github_app.installation.verify", { name: "acme-happier", organization: "Acme" }, actorAccountId, "github_app"],
+                ["github_app.update", { name: "acme-happier", secretsReplaced: true }, actorAccountId, "github_app"],
+                ["github_app.create", { name: "acme-happier" }, actorAccountId, "github_app"],
+            ]);
+        const stored = JSON.stringify(await db.homeAdministrationEvent.findMany({}));
+        for (const secret of ["audit-client-secret", "audit-private-key", "rotated-client-secret"]) {
+            expect(stored).not.toContain(secret);
+        }
     });
 
     it("blocks installation removal while a directory source references it", async () => {

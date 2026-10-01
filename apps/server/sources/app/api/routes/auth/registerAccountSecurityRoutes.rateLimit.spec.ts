@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createFakeRouteApp, getRouteEntry } from "../../testkit/routeHarness";
+import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { registerAccountSecurityRoutes } from "./registerAccountSecurityRoutes";
 
 function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
@@ -55,6 +56,30 @@ describe("Account Security route rate limits", () => {
             ["POST", "/v1/account/email/change"],
         ] as const) {
             expect(getRouteEntry(app, method, path).opts.config?.connectionAuthFailureError).toBe("invalid_token");
+        }
+    });
+
+    it("bounds authenticated first-enrollment mail by the user-keyed profile, not the IP-keyed public one", () => {
+        const app = createFakeRouteApp();
+        registerAccountSecurityRoutes(app as never);
+
+        const authenticatedProfile = resolveApiHotEndpointRateLimit(process.env, "auth.email.verify.requestAuthenticated");
+        const publicProfile = resolveApiHotEndpointRateLimit(process.env, "auth.email.verify.request");
+        if (authenticatedProfile === false || publicProfile === false) throw new Error("mail profiles must resolve");
+        // The two profiles are deliberately distinct; the assertion below would
+        // not discriminate if a deployment collapsed them.
+        expect(authenticatedProfile.max).not.toBe(publicProfile.max);
+
+        // Both authenticated mail routes are the same resource — the present
+        // Account — so they share one profile.
+        for (const path of [
+            "/v1/account/password/enroll/email/request",
+            "/v1/account/email/change/request",
+        ] as const) {
+            expect(getRouteEntry(app, "POST", path).opts.config?.rateLimit).toMatchObject({
+                max: authenticatedProfile.max,
+                timeWindow: authenticatedProfile.timeWindow,
+            });
         }
     });
 });

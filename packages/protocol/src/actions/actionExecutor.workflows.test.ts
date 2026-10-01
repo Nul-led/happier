@@ -1,8 +1,55 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
+import { createWorkflowActionExecutor } from './executor/workflowAccountActions.js';
+import { createWorkflowDefinitionActions } from './executor/workflowDefinitions.js';
+import { resolveWorkflowDefinitionRefV1 } from '../workflows/workflowDefinitionResolverV1.js';
 
 describe('createActionExecutor (Workflow family)', () => {
+  it('discovers builtins and every Account library page through the real workflow owner', async () => {
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    // Only the Account Artifact transport is substituted; catalog, definition
+    // filtering, paging and Action discovery stay real.
+    const definitions = createWorkflowDefinitionActions({
+      artifactStore: {
+        list: async ({ cursor }) => {
+          const index = cursor ? 1 : 0;
+          return { items: [{ artifactId: ids[index]!, headerVersion: 1, updatedAt: 1,
+            header: { kind: 'workflow-definition.v1', definitionId: ids[index],
+              revision: { headerVersion: 1, bodyVersion: 1 }, metadata: { title: index ? 'Shared recipe' : 'Own recipe' } },
+            access: index ? 'view' : 'owner', ownerAccountId: index ? 'other-account' : 'account' }],
+            ...(index ? {} : { nextCursor: ids[0] }) };
+        },
+        read: async () => { throw new Error('discovery_needs_no_body'); },
+        create: async () => { throw new Error('discovery_is_read_only'); },
+        update: async () => { throw new Error('discovery_is_read_only'); },
+        delete: async () => { throw new Error('discovery_is_read_only'); },
+      },
+      encodeListCursor: (row) => row.artifactId,
+      assertDefinitionWriteAllowed: () => { throw new Error('discovery_is_read_only'); },
+    });
+    let workflowEnabled = true;
+    const executor = createActionExecutor({ workflowAction: createWorkflowActionExecutor({
+      isWorkflowFeatureEnabled: () => workflowEnabled, definitions,
+      runs: { execute: async () => { throw new Error('discovery_starts_no_run'); } },
+    }) } as unknown as ActionExecutorDeps);
+    for (const [actionId, fieldPath] of [['workflow.trigger.add', 'workflow'], ['session.trigger.add', 'target.ref'],
+      ['workflow.run.start', 'source.workflow']] as const) {
+      const result = await executor.execute('action.options.resolve', { actionId, fieldPath, draftInput: {} }, { surface: 'agent' });
+      expect(result).toMatchObject({ ok: true, result: { options: expect.arrayContaining([
+        ...(actionId === 'workflow.run.start' ? [] : [{ value: ids[0], label: 'Own recipe' }, { value: ids[1], label: 'Shared recipe' }]),
+        expect.objectContaining({ value: 'builtin:keep-going' }),
+        expect.objectContaining({ value: 'builtin:plan-with-a-panel' }),
+      ]) } });
+      if (actionId === 'workflow.run.start') expect(result).not.toMatchObject({ result: { options: expect.arrayContaining([
+        expect.objectContaining({ value: ids[0] }),
+      ]) } });
+      expect(await resolveWorkflowDefinitionRefV1('builtin:plan-with-a-panel')).toMatchObject({ kind: 'catalog' });
+    }
+    workflowEnabled = false;
+    await expect(executor.execute('action.options.resolve', { actionId: 'workflow.trigger.add', fieldPath: 'workflow', draftInput: {} },
+      { surface: 'agent' })).resolves.toMatchObject({ ok: false, errorCode: 'content_unavailable' });
+  });
   it('routes a strict normalized input through the single Workflow dependency', async () => {
     const workflowAction = vi.fn(async () => ({
       valid: true,
@@ -48,6 +95,23 @@ describe('createActionExecutor (Workflow family)', () => {
     await expect(executor.execute('workflow.run.list', {}, { surface: 'mcp' }))
       .resolves.toMatchObject({ ok: true });
     expect(workflowAction).toHaveBeenCalledOnce();
+  });
+
+  it('routes Workflow run summaries through the canonical host port', async () => {
+    // The dependency is the external host port; the real Action admission and
+    // dispatch below remain exercised.
+    const summaries = { summaries: [], remainingSourceArtifactIds: [] };
+    const input = { sourceArtifactIds: ['definition-1'], recent: 3 };
+    const executor = createActionExecutor({
+      workflowAction: async (args: Parameters<NonNullable<ActionExecutorDeps['workflowAction']>>[0]) => {
+        if (args.actionId !== 'workflow.run.summaries') throw new Error('unexpected_workflow_host_dispatch');
+        expect(args.input).toEqual(input);
+        return summaries;
+      },
+      isActionApprovalRequired: () => false,
+    } as unknown as ActionExecutorDeps);
+    await expect(executor.execute('workflow.run.summaries', input, { surface: 'mcp' }))
+      .resolves.toEqual({ ok: true, result: summaries });
   });
 
   it('fails closed before execution when the Workflow dependency is absent', async () => {

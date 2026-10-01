@@ -125,9 +125,15 @@ describe('qualifyTeamAuthenticationInTx', () => {
     });
 
     it('asks for authentication through the remaining offered alternative when the Home does not offer an accepted connection', async () => {
-        // No Home team-provider allowance exists, so the catalog does not offer the
-        // connection: that accepted reference is not usable, but it is not unreadable
-        // and must not hide the accepted Home method that still works.
+        // Explicit Home narrowing makes the connection unavailable. An absent
+        // policy inherits deployment availability and would still offer OIDC.
+        await db.homeGovernancePolicy.create({ data: {
+            id: 'home',
+            teamProviderPolicy: {
+                v: 1, allowedTeamProviderKinds: [], teamJitAllowed: false,
+                approvedGitHubEnterpriseOrigins: [],
+            },
+        } });
         const team = await db.team.create({ data: { name: 'Narrowed' } });
         const provider = await db.identityProviderInstance.create({
             data: {

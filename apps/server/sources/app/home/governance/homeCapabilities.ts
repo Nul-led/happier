@@ -44,6 +44,7 @@ const DENIED_GOVERNANCE_AUTHORITY: HomeGovernanceAuthority = Object.freeze({
     manageHomeRoles: false,
     manageTeamCreationPolicy: false,
     manageAuthentication: false,
+    manageHomeSettings: false,
     eraseAccounts: false,
     manageAllTeams: false,
 });
@@ -69,6 +70,7 @@ export function resolveHomeGovernanceAuthority(
         manageHomeRoles: isOwner,
         manageTeamCreationPolicy: true,
         manageAuthentication: isOwner,
+        manageHomeSettings: isOwner,
         eraseAccounts: isOwner,
         manageAllTeams: true,
     });
@@ -222,9 +224,11 @@ export type HomeGovernanceMutationRequest =
     | Readonly<{ operation: "view" }>
     | Readonly<{ operation: "set_team_creation_policy" }>
     | Readonly<{ operation: "set_authentication_policy" }>
+    | Readonly<{ operation: "manage_home_settings" }>
     | Readonly<{ operation: "set_home_role"; targetAccountId: string; nextHomeRole: HomeRoleV1 }>
     | Readonly<{ operation: "set_account_status"; targetAccountId: string; nextStatus: AccountStatusV1 }>
-    | Readonly<{ operation: "erase_account"; targetAccountId: string }>;
+    | Readonly<{ operation: "erase_account"; targetAccountId: string }>
+    | Readonly<{ operation: "sign_out_account_everywhere"; targetAccountId: string }>;
 
 export type HomeGovernanceAuthorizationResult =
     | Readonly<{
@@ -240,6 +244,7 @@ function requestTargetAccountId(request: HomeGovernanceMutationRequest): string 
         case "set_home_role":
         case "set_account_status":
         case "erase_account":
+        case "sign_out_account_everywhere":
             return request.targetAccountId;
         default:
             return null;
@@ -259,11 +264,14 @@ function isAuthorizedRequest(input: Readonly<{
             return authority.manageTeamCreationPolicy;
         case "set_authentication_policy":
             return authority.manageAuthentication;
+        case "manage_home_settings":
+            return authority.manageHomeSettings;
         case "set_home_role": {
             const touchesOwnership = target?.homeRole === "owner" || request.nextHomeRole === "owner";
             return touchesOwnership ? authority.manageHomeRoles : authority.manageAccounts;
         }
         case "set_account_status":
+        case "sign_out_account_everywhere":
             // Administering an owner Account at all is owner authority, whether
             // or not another active owner would remain.
             return target?.homeRole === "owner" ? authority.manageHomeRoles : authority.manageAccounts;
@@ -346,6 +354,18 @@ export function resolveHomeAccountMutationCapabilitiesV1(input: Readonly<{
                 ? mutationUnavailable("team_owner_transfer_required")
                 : MUTATION_AVAILABLE;
 
+    // Ending sessions changes no role or status, so ownership continuity does not apply; only an
+    // active Account has sessions left to end.
+    const signOutEverywhere = !isAuthorizedRequest({
+        authority,
+        request: { operation: "sign_out_account_everywhere", targetAccountId: input.target.accountId },
+        target: input.target,
+    })
+        ? mutationUnavailable("not_authorized")
+        : input.target.status !== "active"
+            ? mutationUnavailable("target_not_active")
+            : MUTATION_AVAILABLE;
+
     return Object.freeze({
         setRole: Object.freeze({
             member: roleCapability("member"),
@@ -355,6 +375,7 @@ export function resolveHomeAccountMutationCapabilitiesV1(input: Readonly<{
         disable,
         reenable,
         delete: deleteCapability,
+        signOutEverywhere,
     });
 }
 

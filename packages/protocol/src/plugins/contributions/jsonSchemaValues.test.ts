@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
 import { pluginJsonValuesEqual } from './jsonSchemaValues';
+import { PluginJsonValueV2Schema } from './jsonSchema.js';
+import Ajv from 'ajv';
+
+describe('structural JSON schema', () => {
+  it('parses deep JSON with exact invalid child paths and independent shared values', () => {
+    let value: unknown = true;
+    for (let index = 0; index < 1_200; index += 1) value = { next: [value] };
+    expect(pluginJsonValuesEqual(PluginJsonValueV2Schema.parse(value), value)).toBe(true);
+    const shared = { value: 1 };
+    expect(PluginJsonValueV2Schema.parse([shared, shared])).toEqual([{ value: 1 }, { value: 1 }]);
+    const invalid = PluginJsonValueV2Schema.safeParse({ nested: [Number.POSITIVE_INFINITY] });
+    expect(invalid.success).toBe(false);
+    if (invalid.success) throw new Error('expected invalid JSON number');
+    expect(invalid.error.issues[0]?.path).toEqual(['nested', 0]);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(PluginJsonValueV2Schema.safeParse(cyclic).success).toBe(false);
+  });
+
+  it('preserves structural JSON constraints in its recursive public projection', () => {
+    const validate = new Ajv({ strict: false }).compile(PluginJsonValueV2Schema.toJSONSchema({ io: 'input', target: 'draft-7' }));
+    expect(validate({ nested: [1, null, { text: 'value' }] })).toBe(true);
+    expect(validate({ nested: [undefined] })).toBe(false);
+  });
+});
 
 describe('pluginJsonValuesEqual', () => {
   it('compares 12,000-level strict JSON without recursive stack failure', () => {

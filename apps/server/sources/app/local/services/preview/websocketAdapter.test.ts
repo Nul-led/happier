@@ -1,10 +1,11 @@
 import type { LocalServicePreviewResourceV1 } from "@happier-dev/protocol";
 import { describe, expect, it, vi } from "vitest";
+import * as websocketAdapterModule from "./websocketAdapter";
 
 type WebSocketAdapterModule = typeof import("./websocketAdapter");
 
 async function loadWebSocketAdapterModule(): Promise<WebSocketAdapterModule | null> {
-    return import("./websocketAdapter.js").catch(() => null) as Promise<WebSocketAdapterModule | null>;
+    return websocketAdapterModule;
 }
 
 const preview: LocalServicePreviewResourceV1 = {
@@ -132,15 +133,15 @@ describe("local service preview WebSocket adapter", () => {
 
         expect(result).toEqual({ ok: true });
         expect(tunnelWrites.join("")).toContain("GET /@vite/client?v=1 HTTP/1.1\r\n");
-        expect(tunnelWrites.join("")).toContain("Sec-WebSocket-Protocol: vite-hmr, custom\r\n");
-        expect(tunnelWrites.join("")).toContain("Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n");
+        expect(tunnelWrites.join("")).toContain("sec-websocket-protocol: vite-hmr, custom\r\n");
+        expect(tunnelWrites.join("")).toContain("sec-websocket-extensions: permessage-deflate; client_max_window_bits\r\n");
         expect(client.write).toHaveBeenCalledWith(expect.any(Uint8Array));
         expect(client.write.mock.calls.map((call) => new TextDecoder().decode(call[0])).join("")).toContain(
-            "Sec-WebSocket-Protocol: vite-hmr\r\n",
+            "sec-websocket-protocol: vite-hmr\r\n",
         );
     });
 
-    it("does not request additional tunnel response chunks until downstream WebSocket writes drain", async () => {
+    it("bounds native read-ahead while downstream WebSocket writes are blocked", async () => {
         const mod = await loadWebSocketAdapterModule();
         expect(mod?.proxyLocalServicePreviewWebSocketUpgrade).toBeTypeOf("function");
         if (!mod?.proxyLocalServicePreviewWebSocketUpgrade) return;
@@ -148,14 +149,17 @@ describe("local service preview WebSocket adapter", () => {
         let releaseFirstWrite: () => void = () => {
             throw new Error("first downstream WebSocket write promise was not created");
         };
-        let secondTunnelChunkRequested = false;
+        let requestedChunks = 0;
+        const payloads = Array.from({ length: 8 }, (_, index) => new Uint8Array(64 * 1024).fill(index));
+        const delivered: Uint8Array[] = [];
         const client = createClient();
-        client.write.mockImplementationOnce(() => new Promise<void>((resolve) => {
-            releaseFirstWrite = resolve;
-        }));
+        client.write.mockImplementation((bytes: Uint8Array) => {
+            delivered.push(bytes);
+            if (delivered.length === 1) return new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+        });
 
         const pending = mod.proxyLocalServicePreviewWebSocketUpgrade({
-            preview,
+            preview: { ...preview, policy: undefined },
             request: {
                 path: "/@vite/client",
                 search: "",
@@ -169,9 +173,11 @@ describe("local service preview WebSocket adapter", () => {
                 write: vi.fn(),
                 endWrite: vi.fn(),
                 read: async function* () {
-                    yield new TextEncoder().encode(`${switchingProtocolsResponse()}a`);
-                    secondTunnelChunkRequested = true;
-                    yield new TextEncoder().encode("b");
+                    yield new TextEncoder().encode(switchingProtocolsResponse());
+                    for (const payload of payloads) {
+                        requestedChunks += 1;
+                        yield payload;
+                    }
                 },
                 close: vi.fn(),
                 abort: vi.fn(),
@@ -179,13 +185,13 @@ describe("local service preview WebSocket adapter", () => {
         });
 
         await flushAsyncWork();
-        expect(client.write).toHaveBeenCalledTimes(1);
-        expect(secondTunnelChunkRequested).toBe(false);
+        expect(delivered.length).toBe(1);
+        expect(requestedChunks).toBeLessThan(payloads.length);
 
         releaseFirstWrite();
         await expect(pending).resolves.toEqual({ ok: true });
-        expect(secondTunnelChunkRequested).toBe(true);
-        expect(client.write).toHaveBeenCalledTimes(2);
+        // The first write is the handshake; subsequent bytes retain exact payload order.
+        expect(Buffer.concat(delivered.slice(1)).equals(Buffer.concat(payloads))).toBe(true);
         expect(client.end).toHaveBeenCalled();
     });
 

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, it, vi } from "vitest";
 
 import { db, initDbMysql, initDbPostgres, requireDbProviderFromEnv, shutdownDbClient } from "@/storage/db";
 import { verifySparseSessionListing } from "./sparseListing.test-support";
+import { verifyFolderSessionListing } from "./folderListing.test-support";
 
 describe("Filtered Session listing provider contract", () => {
     let connected = false;
@@ -26,4 +27,8 @@ describe("Filtered Session listing provider contract", () => {
     it("filters sparse audience, tags and personal attention before paging across overlapping grants", async () => {
         await verifySparseSessionListing(provider);
     }, 180_000);
+
+    it("filters exact folder ANY and tag ANY together before stable cursor paging", async () => {
+        await verifyFolderSessionListing();
+    });
 });

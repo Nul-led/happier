@@ -51,6 +51,9 @@ export function registerApiTokenIntrospectionRoute(app: Fastify): void {
                 credentialId: verified.credentialId,
                 expiresAt: verified.expiresAt?.toISOString() ?? null,
                 authority: verified.authority,
+                grant: verified.grant,
+                parentTokenId: verified.parentTokenId,
+                embedConfig: verified.embedConfig,
             });
         },
     );

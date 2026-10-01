@@ -1,6 +1,7 @@
 import {
     AuthTokenProvenanceSchema,
     AuthTokenProvenanceV2Schema,
+    AuthTokenAuthoritySchema,
     type AuthTokenKind,
     type AuthTokenProvenanceAny,
     type AuthTokenAuthenticationEvidenceV1,
@@ -28,6 +29,7 @@ import type { LoginEligibilityResult } from "@/app/auth/loginEligibilityResult";
 
 export type VerifiedRequestPrincipal = Readonly<{
     accountId: string;
+    tokenEpoch?: number;
     kind: AuthTokenKind;
     authority: AuthTokenProvenanceAny["authority"];
     legacy: boolean;
@@ -56,9 +58,11 @@ export type RequestPrincipalVerification =
 
 type VerifiedTokenProvenance = Readonly<{
     userId: string;
+    tokenEpoch?: number;
     extras?: unknown;
     authTokenKind?: unknown;
     authority?: unknown;
+    authTokenMintedAuthority?: unknown;
     legacy: boolean;
     apiTokenPrincipal?: VerifiedApiTokenPrincipal;
     ephemeralSessionRunnerPrincipal?: VerifiedEphemeralSessionRunnerPrincipal;
@@ -77,7 +81,7 @@ function resolveVerifiedAuthProvenance(
         const parsedApiToken = AuthTokenProvenanceSchema.safeParse({
             v: 1,
             kind: verified.authTokenKind,
-            authority: verified.authority,
+            authority: verified.authTokenMintedAuthority ?? verified.authority,
         });
         return parsedApiToken.success && parsedApiToken.data.kind === "api_token"
             ? parsedApiToken.data
@@ -87,12 +91,12 @@ function resolveVerifiedAuthProvenance(
         ? AuthTokenProvenanceSchema.safeParse({
             v: 1,
             kind: verified.authTokenKind,
-            authority: verified.authority,
+            authority: verified.authTokenMintedAuthority ?? verified.authority,
         })
         : AuthTokenProvenanceV2Schema.safeParse({
             v: 2,
             kind: verified.authTokenKind,
-            authority: verified.authority,
+            authority: verified.authTokenMintedAuthority ?? verified.authority,
             evidence: verified.authenticationEvidence,
         });
     return parsed.success ? parsed.data : null;
@@ -169,6 +173,8 @@ export async function verifyRequestPrincipal(input: Readonly<{
     // Account credential.
     const provenance = resolveVerifiedAuthProvenance(verified);
     if (!provenance) return { status: "invalid" };
+    const effectiveAuthority = AuthTokenAuthoritySchema.safeParse(verified.authority);
+    if (!effectiveAuthority.success) return { status: "invalid" };
 
     const sessionRuntimePrincipal = provenance.kind === "ephemeral_session_runner"
         ? verified.ephemeralSessionRunnerPrincipal ?? null
@@ -188,8 +194,9 @@ export async function verifyRequestPrincipal(input: Readonly<{
         status: "verified",
         principal: {
             accountId: verified.userId,
+            ...(verified.tokenEpoch !== undefined ? { tokenEpoch: verified.tokenEpoch } : {}),
             kind: provenance.kind,
-            authority: provenance.authority,
+            authority: effectiveAuthority.data,
             legacy: verified.legacy,
             apiTokenPrincipal: resolveVerifiedApiTokenPrincipal(verified, provenance.kind),
             sessionRuntimePrincipal,

@@ -1,24 +1,16 @@
-import { parseIntEnv } from "@/config/env";
+import { SERVER_CONFIG, readServerConfig, readServerConfigRaw } from "@happier-dev/protocol";
+
 import {
     createDisabledAuthEmailDelivery,
     createSmtpAuthEmailDelivery,
     type AuthEmailSmtpConfig,
     type AuthEmailSmtpTransport,
 } from "./authEmailAdapters";
+import { readHomeEffectiveEnv, type HomeConfigSource } from "@/app/features/catalog/serverFeatureGate";
+
 import type { AuthEmailDelivery } from "./authEmailDelivery";
 import { createProductionAuthEmailSmtpTransport } from "./smtpAuthEmailTransport";
 import { isAuthEmailApplicationLinkBuildable, type ResolveAuthEmailApplicationLinkTarget } from "./nativeAuthEmailOperations";
-
-function readTrimmed(value: string | undefined): string | null {
-    const trimmed = (value ?? "").trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
-function parseBoolean(value: string | undefined, fallback: boolean): boolean {
-    const raw = (value ?? "").trim().toLowerCase();
-    if (!raw) return fallback;
-    return ["1", "true", "yes", "on"].includes(raw);
-}
 
 /**
  * SMTP is the only configurable V1 transport. A deployment that has not
@@ -28,19 +20,21 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 export function resolveAuthEmailSmtpConfig(
     env: Record<string, string | undefined>,
 ): AuthEmailSmtpConfig | null {
-    const host = readTrimmed(env.HAPPIER_AUTH_EMAIL_SMTP_HOST);
-    const fromAddress = readTrimmed(env.HAPPIER_AUTH_EMAIL_FROM_ADDRESS);
+    const host = readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_SMTP_HOST);
+    // The from address is read as written: a deployment may set any address its SMTP relay accepts,
+    // while a Home write is validated as a plain address by the registry.
+    const fromAddress = readServerConfigRaw(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_FROM_ADDRESS)?.raw.trim();
     if (!host || !fromAddress) return null;
 
-    const secure = parseBoolean(env.HAPPIER_AUTH_EMAIL_SMTP_SECURE, false);
+    const secure = readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_SMTP_SECURE);
     return {
         host,
-        port: parseIntEnv(env.HAPPIER_AUTH_EMAIL_SMTP_PORT, secure ? 465 : 587, { min: 1, max: 65_535 }),
+        port: readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_SMTP_PORT) ?? (secure ? 465 : 587),
         secure,
-        username: readTrimmed(env.HAPPIER_AUTH_EMAIL_SMTP_USERNAME),
-        password: readTrimmed(env.HAPPIER_AUTH_EMAIL_SMTP_PASSWORD),
+        username: readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_SMTP_USERNAME) ?? null,
+        password: readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_SMTP_PASSWORD) ?? null,
         fromAddress,
-        fromName: readTrimmed(env.HAPPIER_AUTH_EMAIL_FROM_NAME) ?? "Happier",
+        fromName: readServerConfig(env, SERVER_CONFIG.HAPPIER_AUTH_EMAIL_FROM_NAME),
     };
 }
 
@@ -54,6 +48,27 @@ export function resolveAuthEmailDelivery(
     if (!config) return createDisabledAuthEmailDelivery();
     const createSmtpTransport = deps?.createSmtpTransport ?? createProductionAuthEmailSmtpTransport;
     return createSmtpAuthEmailDelivery({ config, transport: createSmtpTransport(config) });
+}
+
+/**
+ * A delivery that resolves its configuration at every use instead of once: the SMTP settings in
+ * force when a message is sent are the ones it goes out with. The composition passes the Home's
+ * effective configuration (`homeAuthEmailDelivery.ts`); nodemailer transports are cheap to build,
+ * so no transport is cached across sends.
+ */
+export function createPerSendAuthEmailDelivery(deps: Readonly<{
+    readEnv: () => Promise<Record<string, string | undefined>>;
+    createSmtpTransport?: AuthEmailSmtpTransportFactory;
+}>): AuthEmailDelivery {
+    const transportDeps = deps.createSmtpTransport ? { createSmtpTransport: deps.createSmtpTransport } : undefined;
+    return {
+        async isReady() {
+            return isAuthEmailTransportConfigured(await deps.readEnv());
+        },
+        async deliver(message) {
+            return await resolveAuthEmailDelivery(await deps.readEnv(), transportDeps).deliver(message);
+        },
+    };
 }
 
 /** Whether an SMTP transport is configured. A transport alone is not mail readiness. */
@@ -93,15 +108,37 @@ export function registerAuthEmailApplicationLinkTarget(resolver: ResolveAuthEmai
 }
 
 /**
+ * The facts behind readiness, for the Home owner's Email page: whether a transport is configured,
+ * whether the link a mail must carry can be built, and the readiness they make together. The same
+ * rule as `resolveAuthEmailReadiness`, split so the console can say which half is missing.
+ */
+export async function readAuthEmailReadinessFacts(
+    env: Record<string, string | undefined>,
+): Promise<Readonly<{ transportConfigured: boolean; linkTargetBuildable: boolean; linkOrigin: string | null; ready: boolean }>> {
+    const transportConfigured = isAuthEmailTransportConfigured(env);
+    const target = processApplicationLinkTarget ? await processApplicationLinkTarget(env).catch(() => null) : null;
+    const linkTargetBuildable = target !== null && isAuthEmailApplicationLinkBuildable(target);
+    return {
+        transportConfigured,
+        linkTargetBuildable,
+        linkOrigin: target?.applicationOrigin ?? null,
+        ready: transportConfigured && linkTargetBuildable,
+    };
+}
+
+/**
  * Process-wide mail readiness from the environment's transport and the registered link target.
  * Consumed by method readiness so the product can explain which mail-dependent operations are
  * unavailable rather than failing them, or silently sending nothing, at submit time.
  */
-export async function isAuthEmailDeliveryReady(
-    env: Record<string, string | undefined>,
-): Promise<boolean> {
+export async function isAuthEmailDeliveryReady(source: HomeConfigSource): Promise<boolean> {
+    // Transport and link come from one Home-effective configuration. Inside a transaction the caller
+    // passes `tx`, so the Home settings are read through it: SQLite runs one connection, and a read
+    // around the open transaction would wait on it until P2028.
+    const env = await readHomeEffectiveEnv(source);
+    const resolver = processApplicationLinkTarget;
     return await resolveAuthEmailReadiness({
         transportReady: isAuthEmailTransportConfigured(env),
-        resolveApplicationLinkTarget: processApplicationLinkTarget,
+        resolveApplicationLinkTarget: resolver ? async () => await resolver(env) : null,
     });
 }

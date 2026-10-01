@@ -40,6 +40,15 @@ function deepSortObjectKeys(value: unknown): unknown {
 }
 
 describe('plugin JSON Schema validation policy', () => {
+  it('validates Action-projected exclusive numeric boundaries without weakening them', () => {
+    const validate = compilePluginJsonSchema({ type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 2 });
+    expect([0, 1, 2].map((value) => validate(value))).toEqual([false, true, false]);
+  });
+  it('validates Action-projected record key constraints without permitting another key', () => {
+    const validate = compilePluginJsonSchema({ type: 'object', propertyNames: { enum: ['one'] }, additionalProperties: { type: 'string' } });
+    expect(validate({ one: 'valid' })).toBe(true);
+    expect(validate({ two: 'invalid' })).toBe(false);
+  });
   it('keeps ordinary regex authoring non-normalizing across warm, cold, and AJV admission', () => {
     const ordinary = defineProtocolString({ pattern: '^\\s*\\S\\s*$' });
     const coldOrdinary = rehydrateCanonicalProtocolComposableSchema(ordinary.jsonSchema);
@@ -676,12 +685,15 @@ describe('protocol composable schema kernel', () => {
       {
         schema: PluginTargetedContributionSelectionV1Schema,
         value: {
-          target: { pluginId: 'happier.test', immutableGenerationId: 'generation' },
+          target: {
+            pluginId: 'happier.test',
+            sourceCustody: { kind: 'development', registeredRootId: 'test-root' },
+          },
           point: { pointId: 'point', protocol: { id: 'happier.test/point', version: 1 } },
           contributor: {
             pluginId: 'happier.test',
             contributionId: 'entry',
-            immutableGenerationId: 'generation',
+            sourceCustody: { kind: 'development', registeredRootId: 'test-root' },
           },
         },
       },

@@ -57,9 +57,24 @@ export type SessionPermissionExternalHumanDecisionActorV1 = z.infer<
   typeof SessionPermissionExternalHumanDecisionActorV1Schema
 >;
 
+export const SessionPermissionApprovalReviewerDecisionActorV1Schema = z.object({
+  kind: z.literal('approvalReviewer'),
+}).strict();
+
+/** A reviewer may answer this request once; it cannot grant future authority. */
+export const SessionPermissionApprovalReviewerClaimV1Schema = z.object({
+  version: z.literal(1),
+  origin: z.literal('approvalReviewer'),
+  turnId: TurnIdSchema.optional(),
+  decision: z.literal('approved'),
+  scope: z.literal('request'),
+}).strict();
+export type SessionPermissionApprovalReviewerClaimV1 = z.infer<typeof SessionPermissionApprovalReviewerClaimV1Schema>;
+
 export const SessionPermissionDecisionActorV1Schema = z.discriminatedUnion('kind', [
   SessionPermissionAccountUserDecisionActorV1Schema,
   SessionPermissionExternalHumanDecisionActorV1Schema,
+  SessionPermissionApprovalReviewerDecisionActorV1Schema,
 ]);
 export type SessionPermissionDecisionActorV1 = z.infer<typeof SessionPermissionDecisionActorV1Schema>;
 

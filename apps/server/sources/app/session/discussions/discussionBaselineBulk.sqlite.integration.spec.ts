@@ -65,7 +65,10 @@ describe('Lane09 discussion baseline bulk (SQLite)', () => {
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: 'happier-discussion-baseline-bulk-',
-            env: { HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true' },
+            env: {
+                HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true',
+                HAPPIER_FEATURE_SHARING_SESSION__ENABLED: 'true',
+            },
         });
     }, 300_000);
     afterAll(async () => { await harness?.close(); });
@@ -225,5 +228,49 @@ describe('Lane09 discussion baseline bulk (SQLite)', () => {
         expect(await db.accountSessionReadState.count({ where: { sessionId: large.sessionId } })).toBe(large.accounts);
         expect(await db.sessionDiscussionReadState.count({ where: { accountId: { in: large.accountIds } } })).toBe(large.accounts * large.discussions);
         expect(large.statements).toBe(small.statements);
+    });
+
+    it('does not baseline Discussion state through an unqualified restricted Team', async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: 'plain' } });
+        const viewer = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: 'plain' } });
+        const session = await db.session.create({
+            data: { accountId: owner.id, tag: randomUUID(), metadata: '{}', encryptionMode: 'plain', seq: 10 },
+        });
+        const discussion = await db.sessionDiscussion.create({
+            data: {
+                sessionId: session.id,
+                creationLocalId: randomUUID(),
+                creationEqualityEvidenceV1: { kind: 'plainDigest', digest: randomUUID() },
+                createdByAccountId: owner.id,
+                titleContent: { t: 'plain', v: { v: 1, title: 'Restricted' } },
+                messageSeq: 3,
+                lastMessageAt: new Date(),
+            },
+        });
+        const team = await db.team.create({ data: {
+            name: `restricted-discussion-${randomUUID()}`,
+            authenticationPolicy: { v: 1, mode: 'restricted', accepted: [{ kind: 'home_method', methodId: 'github' }] },
+        } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: viewer.id, role: 'member' } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id, teamId: team.id, accessLevel: 'view', effectiveAt: new Date(0),
+        } });
+
+        await expect(inTx(tx => initializeSessionDiscussionCursorsOnTrackingEntryInTx(tx, {
+            sessionId: session.id, accountId: viewer.id,
+        }))).resolves.toBe(0);
+        expect(await db.sessionDiscussionReadState.findUnique({ where: {
+            discussionId_accountId: { discussionId: discussion.id, accountId: viewer.id },
+        } })).toBeNull();
+
+        await db.sessionShare.create({ data: {
+            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: viewer.id, accessLevel: 'view',
+        } });
+        await expect(inTx(tx => initializeSessionDiscussionCursorsOnTrackingEntryInTx(tx, {
+            sessionId: session.id, accountId: viewer.id,
+        }))).resolves.toBe(1);
+        expect(await db.sessionDiscussionReadState.findUnique({ where: {
+            discussionId_accountId: { discussionId: discussion.id, accountId: viewer.id },
+        } })).toMatchObject({ lastReadSeq: 3 });
     });
 });

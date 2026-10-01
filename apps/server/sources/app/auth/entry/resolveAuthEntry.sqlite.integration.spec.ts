@@ -1,4 +1,4 @@
-import { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from '@happier-dev/protocol';
+import { AuthEntryRequestV1Schema, FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from '@happier-dev/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Prisma } from '@prisma/client';
 
@@ -13,6 +13,10 @@ import {
     readNativeAuthOneTimeOperation,
 } from '@/app/auth/email/nativeAuthOneTimeOperations';
 import { hashPasswordMaterial } from '@/app/auth/password/passwordMaterialVerifier';
+import {
+    acceptTeamInvitationPostAuthContinuationInTx,
+    createTeamInvitationPostAuthContinuationInTx,
+} from '@/app/teams/invitations/postAuthContinuation';
 
 import { resolveAuthEntry } from './resolveAuthEntry';
 
@@ -204,7 +208,7 @@ describe('resolveAuthEntry', () => {
         expect(delayed).toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
     });
 
-    it('offers a provisioned non-member only a Team connection that carries an admissible directory source', async () => {
+    it.each(['inherit', 'password'] as const)('offers a provisioned non-member only a directory-binding connection under %s authentication', async (authentication) => {
         // teams-lane-03/02 §8.1 / TA-R19: an existing Account imported by the
         // directory before it signed up proves the Team provider identity through
         // the authenticated connect flow, and the exact binder admits it. Only a
@@ -218,8 +222,16 @@ describe('resolveAuthEntry', () => {
                 HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test',
                 WORKOS_API_KEY: 'sk_test',
                 WORKOS_CLIENT_ID: 'client_test',
+                HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+                HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: '1',
+                HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
             } as const;
-            const team = await db.team.create({ data: { name: 'Directory Team', admissionMode: 'provisioned' } });
+            const team = await db.team.create({ data: {
+                name: 'Directory Team', admissionMode: 'provisioned',
+                ...(authentication === 'password' ? { authenticationPolicy: {
+                    v: 1, mode: 'restricted', accepted: [{ kind: 'home_method', methodId: 'email_password' }],
+                } } : {}),
+            } });
             const workos = await db.identityProviderInstance.create({ data: {
                 ownerTeamId: team.id, kind: 'workos_sso', displayName: 'Company SSO', enabled: true,
                 firstEnabledAt: new Date('2026-09-06T00:00:00.000Z'), config: { v: 1, kind: 'workos_sso' },
@@ -823,8 +835,8 @@ describe('resolveAuthEntry', () => {
         expect(after.actions).not.toContainEqual({ kind: 'switch_account' });
     });
 
-    it('projects an authenticated effective member as already admitted without consuming the invitation', async () => {
-        const team = await activeInvitation();
+    it('projects an unqualified effective member as already admitted without consuming the invitation', async () => {
+        const team = await activeInvitation({ v: 1, mode: 'restricted', accepted: [] });
         const account = await member(team.id);
 
         const projection = await resolveAuthEntry(
@@ -851,6 +863,85 @@ describe('resolveAuthEntry', () => {
         expect(await db.teamInvitation.findFirstOrThrow({
             where: { tokenHash: Uint8Array.from(digestTeamInvitationToken(INVITATION_TOKEN)) },
         })).toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+    });
+
+    it('offers Home-allowed invitation admission independently of protected Team authentication', async () => {
+        const team = await activeInvitation({ v: 1, mode: 'restricted', accepted: [] });
+        const account = await db.account.create({ data: {
+            publicKey: crypto.randomUUID(), encryptionMode: 'plain',
+        } });
+        const projection = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'invitation', token: INVITATION_TOKEN } },
+            {
+                env: {
+                    HAPPIER_FEATURE_TEAMS__ENABLED: '1',
+                    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+                },
+                principal: { accountId: account.id },
+            },
+        );
+        expect(projection).toMatchObject({
+            state: 'admission_required',
+            scope: { kind: 'invitation' },
+            currentAccountRecipientStatus: 'verification_required',
+            actions: expect.arrayContaining([
+                expect.objectContaining({ methodId: 'email_password', action: 'login', origin: 'home' }),
+                { kind: 'switch_account' },
+            ]),
+        });
+        // The invitation entry admits structure, not a credential for protected
+        // Team work: the normal Team entry remains closed by its current policy.
+        await expect(resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: team.id } },
+            { env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1' }, principal: { accountId: account.id } },
+        )).resolves.toMatchObject({ state: 'unavailable' });
+        expect(await db.teamMembership.count({ where: { teamId: team.id } })).toBe(0);
+    });
+
+    it('reads the current invitation offer and mailbox consent through only its bound post-auth Account', async () => {
+        const team = await activeInvitation();
+        const account = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' } });
+        const other = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' } });
+        const invitation = await db.teamInvitation.findFirstOrThrow({ where: { teamId: team.id } });
+        const continuation = await inTx((tx) => createTeamInvitationPostAuthContinuationInTx(tx, {
+            accountId: account.id,
+            teamId: team.id,
+            invitationId: invitation.id,
+            tokenHash: Buffer.from(invitation.tokenHash).toString('hex'),
+            expiresAt: invitation.expiresAt,
+        }));
+        const request = AuthEntryRequestV1Schema.parse({
+            v: 1, scope: { kind: 'invitation', continuation },
+        });
+        const env = { HAPPIER_FEATURE_TEAMS__ENABLED: '1' };
+        const entry = await resolveAuthEntry(request, { env, principal: { accountId: account.id } });
+        expect(entry).toMatchObject({
+            state: 'admission_required',
+            scope: { kind: 'invitation' },
+            currentAccountRecipientStatus: 'verification_required',
+            preview: {
+                team: { teamId: team.id }, role: 'member', historyAccess: 'from_membership',
+                recipientEmailMask: 'i•••@example.test', state: 'active',
+            },
+        });
+        expect(JSON.stringify(entry)).not.toContain(INVITATION_TOKEN);
+        expect(JSON.stringify(entry)).not.toContain(Buffer.from(invitation.tokenHash).toString('hex'));
+        for (const principal of [undefined, { accountId: other.id }]) {
+            await expect(resolveAuthEntry(request, { env, principal })).resolves.toEqual({
+                v: 1, state: 'unavailable', scope: { kind: 'invitation' },
+                reason: 'invitation_unavailable', autoRedirect: null,
+            });
+        }
+        expect(await db.repeatKey.findUnique({ where: { key: continuation.reference } })).not.toBeNull();
+        expect(await db.teamInvitation.findUnique({ where: { id: invitation.id } })).toMatchObject({ acceptedAt: null });
+        await db.teamInvitation.update({ where: { id: invitation.id }, data: { revokedAt: new Date() } });
+        await expect(resolveAuthEntry(request, { env, principal: { accountId: account.id } }))
+            .resolves.toMatchObject({ state: 'unavailable', reason: 'invitation_unavailable' });
+        await db.teamInvitation.update({ where: { id: invitation.id }, data: { revokedAt: null } });
+        await expect(inTx((tx) => acceptTeamInvitationPostAuthContinuationInTx(tx, {
+            continuation, accountId: account.id,
+        }))).resolves.toMatchObject({ outcome: 'joined', teamId: team.id });
+        expect(await db.repeatKey.findUnique({ where: { key: continuation.reference } })).toBeNull();
     });
 
     it('projects transferable invitation mailbox verification as a server-owned admission fact', async () => {
@@ -1000,7 +1091,7 @@ describe('resolveAuthEntry', () => {
         });
     });
 
-    it('fails a restricted Team invitation closed until credential evidence is owned by Homes', async () => {
+    it('keeps structural invitation admission available when a Team connection is unavailable', async () => {
         await activeInvitation({
             v: 1, mode: 'restricted',
             accepted: [{ kind: 'team_connection', connectionId: 'connection-1' }],
@@ -1010,11 +1101,10 @@ describe('resolveAuthEntry', () => {
             {
                 env: {},
             },
-        )).resolves.toEqual({
+        )).resolves.toMatchObject({
             v: 1,
-            state: 'unavailable',
+            state: 'admission_required',
             scope: { kind: 'invitation' },
-            reason: 'entry_not_available',
             autoRedirect: null,
         });
     });
@@ -1132,6 +1222,40 @@ describe('resolveAuthEntry', () => {
         // provisioning recommendation at all.
         expect(login).toBeDefined();
         expect(login).not.toHaveProperty('recommendedProvisionMode');
+    });
+
+    it.each([
+        { denied: 'keyed', mode: 'keyless', recommendation: 'plain' },
+        { denied: 'keyless', mode: 'keyed', recommendation: 'e2ee' },
+    ] as const)('narrows public native provision to $mode and its surviving recommendation', async ({ denied, mode, recommendation }) => {
+        await db.homeGovernancePolicy.create({ data: {
+            id: 'home', authenticationPolicy: {
+                v: 1, permittedAccountModes: ['plain', 'e2ee'],
+                recommendedProvisioningMode: recommendation === 'plain' ? 'e2ee' : 'plain',
+            },
+        } });
+        const env = {
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: '1',
+            HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: '1',
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_METHODS: 'email_password',
+            HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: denied,
+        };
+        const projection = await resolveAuthEntry({ v: 1, scope: { kind: 'home' } }, {
+            env, emailDeliveryReady: true, requestIp: '203.0.113.10',
+        });
+        if (projection.state !== 'ready') throw new Error('expected ready projection');
+        expect(projection.actions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ methodId: 'email_password', action: 'provision', mode, recommendedProvisionMode: recommendation }),
+            expect.objectContaining({ methodId: 'email_password', action: 'login', mode: 'either' }),
+        ]));
+        const deniedProjection = await resolveAuthEntry({ v: 1, scope: { kind: 'home' } }, {
+            env: { ...env, HAPPIER_AUTH_PUBLIC_PROVISION_DENY_MODES: '*' },
+            emailDeliveryReady: true, requestIp: '203.0.113.10',
+        });
+        if (deniedProjection.state !== 'ready') throw new Error('expected ready projection');
+        expect(deniedProjection.actions.some(action => action.methodId === 'email_password' && action.action === 'provision')).toBe(false);
     });
 
     it('fails account-service purpose closed when the Home is not an Account Directory', async () => {

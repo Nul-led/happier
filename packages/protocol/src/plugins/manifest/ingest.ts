@@ -1,5 +1,6 @@
 import { PluginManifestV2Schema, type ParsedPluginManifestV2 } from './v2.js';
 import { PLUGIN_CONTRIBUTION_CATALOG_V2 } from '../contributions/catalog.js';
+import { readPluginSettingSecretCustody } from '../contributions/settings.js';
 import { isDynamicPluginResourceContributionV2 } from '../contributions/v2.js';
 import { createCanonicalJsonSigningInput } from '../../crypto/canonicalJson.js';
 import { PluginContributionLocalIdSchema } from '../contributionIdentity.js';
@@ -178,19 +179,23 @@ function isContributionLocalIdIssuePath(path: readonly PropertyKey[]): boolean {
   });
 }
 
+/**
+ * The one plugin-wide contribution id owner. Every catalog `localId` family
+ * shares one namespace; the per-family Protocol schemas deliberately carry no
+ * duplicate checks of their own.
+ */
 function readContributionIds(contributes: Readonly<Record<string, unknown>>): PluginManifestIngestionDiagnostic[] {
   const seen = new Map<string, string>();
-  const nestedSeen = new Map<string, string>();
   const diagnostics: PluginManifestIngestionDiagnostic[] = [];
   for (const catalogEntry of PLUGIN_CONTRIBUTION_CATALOG_V2) {
-    if (catalogEntry.identityField === null || !['localId', 'nestedId'].includes(catalogEntry.identityKind)) continue;
+    if (catalogEntry.identityField === null || catalogEntry.identityKind !== 'localId') continue;
     const family = catalogEntry.manifestKey;
     const value = catalogEntry.readEntries(contributes);
     value.forEach((entry, index) => {
       if (!entry || typeof entry !== 'object') return;
       const localId = (entry as Readonly<Record<string, unknown>>)[catalogEntry.identityField!];
       if (typeof localId !== 'string') return;
-      if (catalogEntry.identityKind === 'localId' && !PluginContributionLocalIdSchema.safeParse(localId).success) {
+      if (!PluginContributionLocalIdSchema.safeParse(localId).success) {
         diagnostics.push({
           code: 'plugin_manifest_invalid_contribution_id',
           path: ['contributes', ...family.split('.'), index, catalogEntry.identityField!],
@@ -198,8 +203,7 @@ function readContributionIds(contributes: Readonly<Record<string, unknown>>): Pl
         });
         return;
       }
-      const identityNamespace = catalogEntry.identityKind === 'nestedId' ? nestedSeen : seen;
-      const prior = identityNamespace.get(localId);
+      const prior = seen.get(localId);
       if (prior) {
         diagnostics.push({
           code: 'plugin_manifest_duplicate_contribution_id',
@@ -207,9 +211,63 @@ function readContributionIds(contributes: Readonly<Record<string, unknown>>): Pl
           message: `Contribution local id '${localId}' is already declared by ${prior}.`,
         });
       } else {
-        identityNamespace.set(localId, family);
+        seen.set(localId, family);
       }
     });
+  }
+  return diagnostics;
+}
+
+/**
+ * The one Settings field identity owner. Non-secret field ids are unique per
+ * persistence scope, because Settings values, revisions and the SDK
+ * `settings.forScope(scope)` service are partitioned by scope. Secret ids are
+ * plugin-global: Settings secret fields and direct `secrets` share one secret
+ * namespace, which a non-secret field id may not reuse either.
+ */
+function readSettingsFieldIdentityDiagnostics(manifest: ParsedPluginManifestV2): PluginManifestIngestionDiagnostic[] {
+  type Declared = Readonly<{ id: string; path: readonly (string | number)[] }>;
+  const nonSecrets: (Declared & Readonly<{ scope: string }>)[] = [];
+  const secrets: Declared[] = [];
+  manifest.contributes.settings.forEach((contribution, contributionIndex) => {
+    contribution.fields.forEach((field, fieldIndex) => {
+      const path = ['contributes', 'settings', contributionIndex, 'fields', fieldIndex, 'id'] as const;
+      if (readPluginSettingSecretCustody(field.secret) === null) {
+        nonSecrets.push({ id: field.id, scope: contribution.scope, path });
+      } else {
+        secrets.push({ id: field.id, path });
+      }
+    });
+  });
+  manifest.secrets.forEach((secret, secretIndex) => {
+    secrets.push({ id: secret.id, path: ['secrets', secretIndex, 'id'] });
+  });
+
+  const diagnostics: PluginManifestIngestionDiagnostic[] = [];
+  const conflict = (current: Declared, prior: Declared, rule: string): void => {
+    diagnostics.push({
+      code: 'plugin_manifest_duplicate_contribution_id',
+      path: [...current.path],
+      message: `Settings id '${current.id}' ${rule} it is already declared at ${prior.path.join('.')}.`,
+    });
+  };
+  const nonSecretByScopedId = new Map<string, Declared>();
+  const nonSecretById = new Map<string, Declared>();
+  for (const field of nonSecrets) {
+    const scopedId = `${field.scope}\u0000${field.id}`;
+    const prior = nonSecretByScopedId.get(scopedId);
+    if (prior) conflict(field, prior, `must be unique in Settings scope '${field.scope}';`);
+    else nonSecretByScopedId.set(scopedId, field);
+    if (!nonSecretById.has(field.id)) nonSecretById.set(field.id, field);
+  }
+  const secretById = new Map<string, Declared>();
+  for (const secret of secrets) {
+    const prior = secretById.get(secret.id) ?? nonSecretById.get(secret.id);
+    if (prior) {
+      conflict(secret, prior, 'names a secret, and secret ids are plugin-global;');
+      continue;
+    }
+    secretById.set(secret.id, secret);
   }
   return diagnostics;
 }
@@ -970,6 +1028,7 @@ export function ingestPluginManifestV2(input: unknown): PluginManifestIngestionR
   }
   const semanticDiagnostics = [
     ...readContributionIds(manifest.contributes as Readonly<Record<string, unknown>>),
+    ...readSettingsFieldIdentityDiagnostics(manifest),
     ...readAgentUiSettingReferenceDiagnostics(manifest),
     ...readReferenceDiagnostics(manifest),
     ...readAgentInlineSurfaceDiagnostics(manifest),

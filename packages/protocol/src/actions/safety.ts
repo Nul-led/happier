@@ -55,6 +55,7 @@ const RUNTIME_EXTERNAL_NAVIGATION_HOST_EFFECT_ACTION_IDS: ReadonlySet<RuntimeAct
 ]);
 
 export function runtimeActionSideEffectClass(actionId: RuntimeActionIdV1): RuntimeActionSideEffectClass {
+  if (actionId === 'computer.capture' || actionId === 'computer.query') return 'read';
   if (RUNTIME_EXTERNAL_SIDE_EFFECT_ACTION_IDS.has(actionId)) return 'external';
   if (RUNTIME_SIDE_EFFECT_DANGER_ACTION_IDS.has(actionId)) return 'danger';
   if (

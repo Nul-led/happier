@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { parseAgentPermissionIntentV1Alias } from '../../runtime/permissionIntentV1.js';
-import type { ActionCliBindContext, ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliBindContext, type ActionCliProjection } from '../actionCliProjection.js';
 import type { ActionInputHints } from '../metadata.js';
 
 /**
@@ -91,7 +91,7 @@ export const SessionSendCliInputHints: ActionInputHints = {
  * canonical Session-input owner then admits or refuses.
  */
 export function bindSessionSendCliInput(
-  value: SessionSendCliInput,
+  value: Readonly<Partial<SessionSendCliInput>>,
   context: ActionCliBindContext,
 ): Readonly<Record<string, unknown>> {
   const permissionModeOverride = value.permissionMode === undefined
@@ -105,9 +105,11 @@ export function bindSessionSendCliInput(
     : value.providerConnection === SESSION_SEND_NATIVE_PROVIDER_CONNECTION_TOKEN
       ? null
       : value.providerConnection;
+  // Over canonical whole-input JSON this binder sees only the caller fields the
+  // caller actually typed, so each projection is conditional on its source.
   return {
-    sessionId: value.sessionId,
-    message: value.message,
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
+    ...(value.message === undefined ? {} : { message: value.message }),
     ...(value.run === undefined ? {} : { recipient: { kind: 'execution_run' as const, runId: value.run } }),
     ...(permissionModeOverride ? { permissionModeOverride } : {}),
     ...(modelOverride !== undefined ? { modelOverride } : {}),
@@ -116,12 +118,11 @@ export function bindSessionSendCliInput(
     // exact pending input instead of queueing a second message, so one is always
     // retained — an identity minted out of the caller's reach cannot be named in
     // the failure guidance.
-    localId: value.localId ?? context.invocationId,
+    localId: value.localId ?? actionCliDerivedDefault(context.invocationId),
     ...(value.wait ? { wait: true } : {}),
-    timeoutSeconds: Math.min(
-      SESSION_SEND_MAX_TIMEOUT_SECONDS,
-      value.timeoutSeconds ?? SESSION_SEND_DEFAULT_TIMEOUT_SECONDS,
-    ),
+    timeoutSeconds: value.timeoutSeconds === undefined
+      ? actionCliDerivedDefault(SESSION_SEND_DEFAULT_TIMEOUT_SECONDS)
+      : Math.min(SESSION_SEND_MAX_TIMEOUT_SECONDS, value.timeoutSeconds),
   };
 }
 
@@ -152,5 +153,5 @@ export const SESSION_SEND_CLI_PROJECTION: ActionCliProjection = {
     { path: 'message', aliases: ['--prompt'] },
     { path: 'timeoutSeconds', aliases: ['--timeout'] },
   ],
-  bindInput: (value, context) => bindSessionSendCliInput(value as SessionSendCliInput, context),
+  bindInput: (value, context) => bindSessionSendCliInput(value as Partial<SessionSendCliInput>, context),
 };

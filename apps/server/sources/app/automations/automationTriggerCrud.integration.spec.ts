@@ -1215,7 +1215,6 @@ describe("automation trigger-set CRUD", () => {
 
         const first = await listAutomationRuns({
             accountId: account.id, automationId: automation.id, limit: 1,
-            requireV2RunRepresentability: true,
         });
         expect(first).toEqual({ runs: [], nextCursor: currentOnly.id });
         await expect(listAutomationRuns({
@@ -1224,7 +1223,6 @@ describe("automation trigger-set CRUD", () => {
         const second = await listAutomationRuns({
             accountId: account.id, automationId: automation.id, limit: 1,
             cursor: first!.nextCursor,
-            requireV2RunRepresentability: true,
         });
         expect(second).toMatchObject({
             runs: [expect.objectContaining({ id: newerV2.id })],

@@ -99,7 +99,10 @@ export function installStartServerCommonWiringMocks(): void {
     startPresenceRedisWorker: vi.fn(() => ({ stop: vi.fn(async () => {}) })),
   }))
   vi.mock('@/app/integrations/publicUrl/publicServerUrlInference', () => ({
-    resolveCachedPublicServerUrl: vi.fn(async () => null),
+    resolveInferredPublicServerAccess: vi.fn(async () => ({ inferred: null, relayAccess: null })),
+    resolveInferredPublicServerUrl: vi.fn(async () => null),
+    peekInferredPublicServerUrl: vi.fn(() => null),
+    readInferredPublicServerAccess: vi.fn(() => null),
   }))
 }
 

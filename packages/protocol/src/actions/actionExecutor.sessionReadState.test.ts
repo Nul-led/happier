@@ -15,21 +15,21 @@ import { SESSION_READ_STATE_HTTP_PATHS_V1 } from '../sessions/readState/api.js';
 import { projectSessionReadStateActionTransportFailure } from '../sessions/readState/actionTransport.js';
 
 describe('Session read-state Action vertical', () => {
-  it('declares one present-user UI/CLI Action over the existing domain route', () => {
+  it('declares one automation Action over the existing domain route including Agent/MCP exposure', () => {
     const spec = getActionSpec('session.read_state.set');
 
     expect(spec.inputSchema).toBe(SESSION_READ_STATE_ACTION_INPUT_SCHEMAS_V1['session.read_state.set']);
     expect(spec.outputSchema).toBe(SESSION_READ_STATE_ACTION_OUTPUT_SCHEMAS_V1['session.read_state.set']);
-    expect(spec.requiredAuthority).toBe('present_user');
+    expect(spec.requiredAuthority).toBe('account_automation');
     expect(spec.executionPlacement).toBe('account');
     expect(spec.sideEffectClass).toBe('write');
     expect(spec.surfaces).toMatchObject({
       ui: true,
       cli: true,
-      agent: false,
-      mcp: false,
-      api: false,
-      plugin: false,
+      agent: true,
+      mcp: true,
+      api: true,
+      plugin: true,
       voice: false,
     });
     expect(spec.serverTransport).toEqual({
@@ -40,28 +40,32 @@ describe('Session read-state Action vertical', () => {
       path: ['session', 'read'],
       visibility: 'canonical',
     }));
-    expect(isPluginSurfaceExcludedActionId(spec.id)).toBe(true);
-    expect(PUBLIC_ACTION_IDS).not.toContain(spec.id);
-    expect(PublicActionIdSchema.safeParse(spec.id).success).toBe(false);
+    expect(isPluginSurfaceExcludedActionId(spec.id)).toBe(false);
+    expect(PUBLIC_ACTION_IDS).toContain(spec.id);
+    expect(PublicActionIdSchema.safeParse(spec.id).success).toBe(true);
   });
 
-  it('rejects Agent authority before the read-state port can acknowledge human viewing', async () => {
-    const sessionReadStateAction = vi.fn();
+  it.each(['agent', 'mcp'] as const)('allows %s to mark a session read without confirmation', async (surface) => {
+    const sessionReadStateAction = vi.fn(async () => ({
+      success: true, state: 'read', lastViewedSessionSeq: 7, didChange: true,
+    }));
     const executor = createActionExecutor({ sessionReadStateAction } as unknown as ActionExecutorDeps);
 
     await expect(executor.execute('session.read_state.set', {
       sessionId: 'session-1',
       state: 'read',
     }, {
-      surface: 'agent',
+      surface,
       authority: 'account_automation',
       serverId: 'home-1',
     })).resolves.toEqual({
-      ok: false,
-      errorCode: 'present_user_required',
-      error: 'present_user_required',
+      ok: true,
+      result: { state: 'read', lastViewedSessionSeq: 7, didChange: true },
     });
-    expect(sessionReadStateAction).not.toHaveBeenCalled();
+    expect(sessionReadStateAction).toHaveBeenCalledWith(expect.objectContaining({
+      actionId: 'session.read_state.set', serverId: 'home-1',
+      input: { sessionId: 'session-1', state: 'read' },
+    }));
   });
 
   it('binds the exact Home and projects the domain response through one executor port', async () => {

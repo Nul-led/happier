@@ -328,7 +328,7 @@ describe("OIDC offboarding refresh (integration)", () => {
         return { app, accountId: account!.id };
     }
 
-    it("re-checks eligibility using refresh token at the offboarding interval", async () => {
+    it("re-checks eligibility and recovers the same identity after restored membership and fresh authentication", async () => {
         applyOidcOffboardingEnv([
             {
                 id: "okta",
@@ -407,6 +407,19 @@ describe("OIDC offboarding refresh (integration)", () => {
         await expect(enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() }))
             .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
 
+        // A new successful proof replaces the old denial, without deleting or transferring the identity.
+        const deniedIdentity = await db.accountIdentity.findFirstOrThrow({
+            where: { accountId: account!.id, provider: "okta" },
+            select: { id: true, providerUserId: true },
+        });
+        groupsForTokens = ["eng"];
+        const recovered = await authenticateAccount(1);
+        expect(recovered.accountId).toBe(account!.id);
+        await expect(db.accountIdentity.findFirstOrThrow({
+            where: { accountId: account!.id, provider: "okta" },
+            select: { id: true, providerUserId: true, eligibilityStatus: true, eligibilityReason: true },
+        })).resolves.toEqual({ ...deniedIdentity, eligibilityStatus: "eligible", eligibilityReason: null });
+        await recovered.app.close();
         await app.close();
     });
 

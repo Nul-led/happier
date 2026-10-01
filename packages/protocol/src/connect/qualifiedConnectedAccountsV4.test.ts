@@ -43,6 +43,7 @@ import {
 import { ConnectedServicesCapabilitiesSchema } from '../features/payload/capabilities/connectedServicesCapabilities.js';
 import {
   buildProviderAccountUsageRecordId,
+  sealProviderAccountUsageSnapshot,
   sealProviderAccountUsageSnapshotCiphertext,
   type ProviderAccountUsageSnapshotV1,
 } from './accountUsage.js';
@@ -811,6 +812,10 @@ describe('qualified connected-account V4 wire contract', () => {
       state: 'loaded_data',
       planLabel: 'Pro',
       accountLabel: 'Work',
+      subscription: {
+        status: 'subscribed', renewal: 'off', observedAtMs: 900,
+        staleAfterMs: 60_000, currentPeriodEndAtMs: 1_800_000_000_000,
+      },
       meters: [{
         meterId: 'weekly',
         label: 'Weekly',
@@ -834,6 +839,7 @@ describe('qualified connected-account V4 wire contract', () => {
       activeAccountId: 'provider-subject-1',
       source: 'provider_api',
       confidence: 'exact',
+      subscription: snapshot.subscription,
       meters: snapshot.meters,
     });
     const metadata = {
@@ -871,16 +877,18 @@ describe('qualified connected-account V4 wire contract', () => {
       expectedRef: ref,
     })).toEqual(projected);
 
+    const sealed = sealProviderAccountUsageSnapshot({
+      material,
+      snapshot,
+      randomBytes: (length) => new Uint8Array(length).fill(3),
+    });
     const encrypted = QualifiedConnectedAccountQuotaResponseV4Schema.parse({
       ref,
       sourceResolution,
       content: {
         t: 'encrypted',
-        c: sealProviderAccountUsageSnapshotCiphertext({
-          material,
-          payload: snapshot,
-          randomBytes: (length) => new Uint8Array(length).fill(3),
-        }),
+        c: sealed.ciphertext,
+        subscription: sealed.subscription,
       },
       metadata,
     });

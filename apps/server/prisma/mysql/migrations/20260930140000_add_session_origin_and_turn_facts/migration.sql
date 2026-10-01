@@ -1,0 +1,10 @@
+ALTER TABLE `Session`
+    ADD COLUMN `originKind` VARCHAR(191) NOT NULL DEFAULT 'none',
+    ADD COLUMN `originSessionId` VARCHAR(191) NULL,
+    ADD COLUMN `originRunId` VARCHAR(191) NULL,
+    ADD COLUMN `workDepth` INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE `SessionTurn`
+    ADD COLUMN `initiator` VARCHAR(191) NOT NULL DEFAULT 'user',
+    ADD COLUMN `workDepth` INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN `workflowInvocationJson` LONGTEXT NULL;

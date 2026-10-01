@@ -98,7 +98,7 @@ export function registerAutomationEventRoutes(
                     machineId: request.body.caller.materialization.machineId,
                     machineInstallationId: publisher.installationId,
                     materializationId: request.body.caller.materialization.materializationId,
-                    immutableGenerationId: request.body.caller.immutableGenerationId,
+                    sourceCustody: request.body.caller.sourceCustody,
                 },
                 input: request.body.input,
                 ...(request.body.webhookInvocationReference === undefined
@@ -168,7 +168,7 @@ export function registerAutomationEventRoutes(
                     machineId: request.body.caller.materialization.machineId,
                     machineInstallationId: publisher.installationId,
                     materializationId: request.body.caller.materialization.materializationId,
-                    immutableGenerationId: request.body.caller.immutableGenerationId,
+                    sourceCustody: request.body.caller.sourceCustody,
                 },
                 // Preserve the signed mode-specific body.  In particular the
                 // encrypted arm has no semantic Event input for the route or
@@ -217,7 +217,7 @@ export function registerAutomationEventRoutes(
                     machineId: request.body.caller.materialization.machineId,
                     machineInstallationId: publisher.installationId,
                     materializationId: request.body.caller.materialization.materializationId,
-                    immutableGenerationId: request.body.caller.immutableGenerationId,
+                    sourceCustody: request.body.caller.sourceCustody,
                 },
                 input: request.body.input,
             }));

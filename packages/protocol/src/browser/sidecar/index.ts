@@ -22,6 +22,7 @@ export {
   ChromiumForTestingPlatformSchema,
   ChromiumForTestingProductSourceV1Schema,
   resolveChromiumForTestingPlatform,
+  resolveChromiumForTestingAssetVersion,
   type ChromiumForTestingPlatform,
   type ChromiumForTestingPlatformAsset,
   type ChromiumForTestingProductSourceV1,

@@ -120,8 +120,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelMaxIdleMs]: "25",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -275,7 +273,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -345,7 +342,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -437,7 +433,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -516,8 +511,6 @@ describe("local service preview PMS tunnel opener", () => {
                 done: false,
                 value: responseBytes,
             });
-            expect(relay.close).not.toHaveBeenCalled();
-            await vi.runOnlyPendingTimersAsync();
             expect(relay.close).toHaveBeenCalledTimes(1);
         } finally {
             vi.useRealTimers();
@@ -533,7 +526,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -594,7 +586,6 @@ describe("local service preview PMS tunnel opener", () => {
             env: {
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
                 [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
-                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
                 [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
                 [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
@@ -637,7 +628,7 @@ describe("local service preview PMS tunnel opener", () => {
 
         await stream.endWrite();
         await expect(stream.write(new Uint8Array([8]))).rejects.toMatchObject({
-            reasonCode: "direction_half_closed",
+            reasonCode: "tunnel_closed",
         });
     });
 });

@@ -20,6 +20,7 @@ import {
     resolveCurrentAuthenticationEvidenceInTx,
 } from "@/app/auth/authenticationEvidence";
 import { AuthTokenAuthenticationEvidenceSnapshotV1Schema, type AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 const BASE64_URL_REGEX = /^[A-Za-z0-9_-]+$/;
 const EXPIRED_TERMINAL_AUTH_CLEANUP_LIMIT = 32;
@@ -427,6 +428,7 @@ export function registerTerminalAuthRequestRoutes(
             },
         }
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         debug({ module: 'auth-response' }, `Auth response endpoint hit - user: ${request.userId}`);
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(request.body.publicKey).length > 512) {
@@ -492,7 +494,7 @@ export function registerTerminalAuthRequestRoutes(
             }
             const evidence = request.body.authorizeUnattendedTeamAccess === true
                 ? await resolveCurrentAuthenticationEvidenceInTx(tx, {
-                    env: process.env,
+                    env: requestHomeEnv,
                     accountId: request.userId,
                     evidence: request.authTokenAuthenticationEvidence,
                 })

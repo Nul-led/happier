@@ -1,9 +1,10 @@
 import type { HomeAuthenticationPolicyV1 } from "@happier-dev/protocol";
 
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { createTeamInTx, type CreateTeamError } from "@/app/teams/lifecycle";
 import { db, isPrismaErrorCode } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
+import { isPersonalHomeRuntimePurpose } from "@/app/runtime/personalHomeRuntimePurpose";
 
 import {
     isHomeGovernancePolicyCreateConflictError,
@@ -12,7 +13,6 @@ import {
 } from "./governancePolicy";
 import { publishHomeGovernanceChangedInTx } from "./governanceChanges";
 import {
-    PERSONAL_HOME_RUNTIME_PURPOSE,
     resolvePersonalHomeBootstrapOwnerInTx,
 } from "./ownerAssignment";
 
@@ -170,8 +170,8 @@ async function bootstrapPersonalHomeTeamsInTx(
 export async function bootstrapPersonalHomeTeams(
     input: PersonalHomeTeamsBootstrapInput,
 ): Promise<PersonalHomeTeamsBootstrapResult> {
-    if (input.runtimePurpose !== PERSONAL_HOME_RUNTIME_PURPOSE) return { status: "not_personal_home" };
-    if (!isServerFeatureEnabledForRequest("teams", input.env)) return { status: "teams_unavailable" };
+    if (!isPersonalHomeRuntimePurpose(input.runtimePurpose)) return { status: "not_personal_home" };
+    if (!await isServerFeatureEnabledForHome("teams", { env: input.env })) return { status: "teams_unavailable" };
 
     // The absent singleton policy and reserved Team identity can each move only
     // once from absent to present. A competing committed creator therefore gives

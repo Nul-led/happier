@@ -84,7 +84,7 @@ const CARRIERS: readonly Readonly<{
           qualifiedIdentity,
           linkGeneration: 'link-generation-1',
           sourceGeneration: 'source-generation-1',
-          contributionGeneration: 'contribution-generation-1',
+          sourceCustody: { kind: 'development', registeredRootId: 'development-root-1' },
         },
         plan: 'materialize',
         targetStorageMode: 'external-linked',
@@ -139,7 +139,7 @@ const CARRIERS: readonly Readonly<{
         sessionId: 'session-1',
         link: { generation: 'link-generation-1', remoteSessionId },
         source: { qualifiedIdentity, generation: 'source-generation-1' },
-        contributionGeneration: 'contribution-generation-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'source-root-1' },
         cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
       });
       return parsed.success ? parsed.data.link.remoteSessionId : undefined;

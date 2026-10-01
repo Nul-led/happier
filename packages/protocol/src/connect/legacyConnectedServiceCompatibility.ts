@@ -13,7 +13,7 @@ import {
 import {
     ProviderAccountUsageSnapshotV1Schema,
     type ProviderAccountUsageSnapshotV1,
-} from './accountUsage.js';
+} from './providerAccountUsagePrimitives.js';
 import {
     BUNDLED_LEGACY_CONNECTED_ACCOUNT_COMPATIBILITY_BY_SERVICE_ID,
     type BuiltInLegacyConnectedAccountCompatibility,

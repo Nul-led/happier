@@ -33,7 +33,7 @@ const DIRECT_BEARER_CONSUMER_DISPOSITIONS = [
     {
         path: "app/api/socket.ts",
         verifies: ["auth.verifyTokenForRoute", "auth.verifyTokenForRoute"],
-        disposition: "Socket.IO authenticates route-compatible bearers and explicitly disconnects restricted Directory/PAT provenance before session access.",
+        disposition: "Socket.IO rejects Directory provenance and admits restricted PATs only through the canonical Session-viewer scope, origin, capability and final currentness boundary.",
     },
     {
         path: "app/api/utils/verifyRequestPrincipal.ts",
@@ -54,6 +54,11 @@ const DIRECT_BEARER_CONSUMER_DISPOSITIONS = [
         path: "app/api/socket/accessKeyHandler.ts",
         verifies: ["auth.verifyTokenForRoute"],
         disposition: "Canonical single secret-bearing socket read: it re-runs the connect-time credential verification once before disclosing an access key and disconnects the socket on failure, so a suspended or rotated credential cannot keep reading secrets on an already-authenticated socket. It authorizes no route of its own; eager eviction remains the primary invalidation path and there is no per-event middleware.",
+    },
+    {
+        path: "app/api/socket/socketCredentialCurrentness.ts",
+        verifies: ["auth.verifyTokenForRoute"],
+        disposition: "Canonical socket-operation credential currentness reuses the route verifier; admitted PAT viewers receive their freshly verified grant before an operation, while Directory and unadmitted restricted credentials remain forbidden.",
     },
 ] as const satisfies readonly DirectBearerConsumerDisposition[];
 
@@ -236,7 +241,7 @@ describe("Account Directory central route admission", () => {
                 installationPublicKey: "public-key-1",
                 creatorTokenEpoch: 0,
             },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "account" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "account" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -252,7 +257,7 @@ describe("Account Directory central route admission", () => {
                 installationPublicKey: "public-key-1",
                 creatorTokenEpoch: 0,
             },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "account" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "account" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -269,7 +274,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             params: { sessionId: "session-1" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -286,7 +291,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             params: { sessionId: "session-2" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -303,7 +308,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: "machine-1" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -320,7 +325,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: null },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -337,7 +342,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -354,7 +359,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: "machine-2" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -371,7 +376,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-2", machineId: "machine-1" },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -391,7 +396,7 @@ describe("Account Directory central route admission", () => {
                 initiatorMachineId: "machine-1",
                 consumer: { kind: "session", sessionId: "session-1" },
             },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -411,7 +416,7 @@ describe("Account Directory central route admission", () => {
                 initiatorMachineId: "machine-2",
                 consumer: { kind: "session", sessionId: "session-1" },
             },
-            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
+            routeOptions: { config: { restrictedCredentialBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "terminal",

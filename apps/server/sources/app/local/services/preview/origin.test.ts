@@ -26,7 +26,7 @@ describe("local service preview origin policy", () => {
         });
     });
 
-    it("builds path-mode fallback urls without losing query strings", async () => {
+    it("refuses path-mode previews on the API origin", async () => {
         const mod = await loadPreviewOriginModule();
 
         const result = mod?.resolveLocalServicePreviewUrl({
@@ -38,11 +38,19 @@ describe("local service preview origin policy", () => {
             token: "token_123",
         });
 
-        expect(result).toEqual({
-            ok: true,
-            url: "https://app.happier.test/v1/local-services/preview/preview_123/dashboard?tab=preview&previewToken=token_123",
-            origin: "https://app.happier.test",
-        });
+        expect(result).toEqual({ ok: false, reasonCode: "host_origin_unavailable" });
+    });
+
+    it("refuses a configured preview hostname that equals the API origin", async () => {
+        const mod = await loadPreviewOriginModule();
+        expect(mod?.resolveLocalServicePreviewUrl({
+            originMode: "host",
+            publicBaseUrl: "https://preview-123.preview.happier.test",
+            hostOriginBaseDomain: "preview.happier.test",
+            previewId: "preview_123",
+            initialPath: { pathname: "/", search: "" },
+            token: "token_123",
+        })).toEqual({ ok: false, reasonCode: "host_origin_unavailable" });
     });
 
     it("rejects path-mode fallback for non-http public base URLs", async () => {

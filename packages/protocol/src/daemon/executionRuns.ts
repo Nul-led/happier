@@ -492,6 +492,8 @@ const DaemonExecutionRunMarkerSchemaCore = DaemonExecutionRunMarkerFieldsSchema.
 
 export const DaemonExecutionRunMarkerOwnerWriteSchema =
   DaemonExecutionRunMarkerFieldsSchema.extend({
+    // Device-sealed, owner-local delivery custody. Never part of the public marker.
+    pendingWorkerUpdateCiphertext: z.string().min(1).optional(),
     executionRunConnectedServicesCleanupReceiptV1:
       ExecutionRunConnectedServicesCleanupReceiptV1Schema.optional(),
   }).strip().superRefine((value, ctx) => {
@@ -523,6 +525,7 @@ export type DaemonExecutionRunMarkerOwnerWrite = z.infer<
  * configuration rather than making it a second persisted marker contract.
  */
 const DaemonExecutionRunMarkerPersistenceReadSchemaCore = DaemonExecutionRunMarkerPersistenceReadFieldsSchema.extend({
+  pendingWorkerUpdateCiphertext: z.string().min(1).optional(),
   executionRunBrokerAuthorityV1: z.object({
     occurrenceId: z.string().trim().min(1).max(512),
     turnState: z.enum(['active_turn', 'idle']),

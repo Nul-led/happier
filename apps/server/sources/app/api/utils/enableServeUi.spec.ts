@@ -26,6 +26,43 @@ async function withApp(run: (app: ReturnType<typeof Fastify>) => Promise<void>) 
 }
 
 describe('enableServeUi (mountRoot)', () => {
+  it('permits framing only for the exact embed route prefix, including preview', async () => {
+    await withTempDir('happier-ui-framing-', async (dir) => {
+      await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ok</body></html>\n', 'utf-8');
+
+      await withApp(async (app) => {
+        enableServeUi(app, { dir, prefix: '/', mountRoot: true, required: false });
+        await app.ready();
+
+        for (const url of ['/', '/session/x', '/index.html', '/embed', '/embedder/session/x', '/%65mbed/session/x']) {
+          const res = await app.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(200);
+          expect(res.headers['content-security-policy'], url).toBe("frame-ancestors 'none'");
+        }
+        for (const url of ['/embed/session/x', '/embed/new', '/embed/preview?i=preview']) {
+          const res = await app.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(200);
+          expect(res.headers['content-security-policy'], url).toBeUndefined();
+          expect(res.headers['x-frame-options'], url).toBeUndefined();
+        }
+      });
+    });
+  });
+
+  it('blocks framing of prefixed and missing-bundle UI responses', async () => {
+    await withTempDir('happier-ui-framing-fallback-', async (dir) => {
+      await withApp(async (app) => {
+        enableServeUi(app, { dir, prefix: '/ui', mountRoot: false, required: false });
+        await app.ready();
+        for (const url of ['/ui/', '/ui/session/x', '/ui/embed/session/x']) {
+          const res = await app.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(200);
+          expect(res.headers['content-security-policy'], url).toBe("frame-ancestors 'none'");
+        }
+      });
+    });
+  });
+
   it('serves an opaque no-store deployment identity and stays silent when it is absent', async () => {
     await withTempDir('happier-ui-deployment-', async (dir) => {
       await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ok</body></html>\n', 'utf-8');

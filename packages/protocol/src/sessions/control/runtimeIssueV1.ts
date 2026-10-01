@@ -227,6 +227,19 @@ export const SessionRuntimeIssueV1Schema = z.preprocess(
 );
 export type SessionRuntimeIssueV1 = z.infer<typeof SessionRuntimeIssueV1Schema>;
 
+export type SessionRuntimeIssueSignInRecovery = Readonly<{
+  kind: 'agent_sign_in'; machineId: string; agentId: string;
+}>;
+
+/** A client-side recovery projection; persisted runtime issue shapes stay unchanged. */
+export function resolveSessionRuntimeIssueSignInRecovery(
+  issue: SessionRuntimeIssueV1 | null | undefined,
+  machineId: string | null | undefined,
+): SessionRuntimeIssueSignInRecovery | null {
+  if (issue?.source !== 'auth_error' || !issue.agentId || !machineId?.trim()) return null;
+  return { kind: 'agent_sign_in', machineId: machineId.trim(), agentId: issue.agentId };
+}
+
 const SAFE_USAGE_LIMIT_STRING_MAX_LENGTH = 512;
 const SAFE_USAGE_LIMIT_ACTION_URL_MAX_LENGTH = 2_048;
 const SECRETISH_DIAGNOSTIC_VALUE_PATTERN =

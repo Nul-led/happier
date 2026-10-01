@@ -7,6 +7,7 @@ import {
     ACCOUNT_PASSWORD_MUTATION_CHALLENGE_PATH_V1,
     ACCOUNT_PASSWORD_REMOVE_PATH_V1,
     ACCOUNT_SECURITY_PATH_V1,
+    ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1,
     NATIVE_AUTH_PASSWORD_RESET_SUBMIT_PATH_V1,
     AccountEmailChangeCompleteRequestV1Schema,
     AccountEmailChangeRequestV1Schema,
@@ -18,6 +19,9 @@ import {
     AccountSecurityGetRequestV1Schema,
     AccountSecurityGetResponseV1Schema,
     AccountSecurityRouteErrorV1Schema,
+    AccountTerminalPresentUserPolicySetRequestV1Schema,
+    AccountTerminalPresentUserPolicySetResponseV1Schema,
+    TerminalPresentUserPolicySchema,
     AccountPasswordMutationResponseV1Schema,
     PasswordMutationPreparationRequestV1Schema,
     PasswordMutationPreparationResponseV1Schema,
@@ -34,6 +38,7 @@ import {
 import { requirePresentUser } from "@/app/api/utils/requirePresentUser";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { eventRouter } from "@/app/events/eventRouter";
 import { consumeAccountPasswordEnrollmentExternalAuthProofInTx } from "@/app/auth/accountEncryptionFirstKeyExternalAuthProof";
 import { auth } from "@/app/auth/auth";
 import {
@@ -42,7 +47,8 @@ import {
     type ResolveAuthEmailApplicationLinkTarget,
 } from "@/app/auth/email/nativeAuthEmailOperations";
 import { consumeNativeAuthOneTimeOperationInTx, readNativeAuthOneTimeOperation } from "@/app/auth/email/nativeAuthOneTimeOperations";
-import { resolveAuthEmailDelivery, resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { resolveAuthEmailReadiness } from "@/app/auth/email/resolveAuthEmailDelivery";
+import { createHomeAuthEmailDelivery } from "@/app/auth/email/homeAuthEmailDelivery";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import { consumePasswordMutationKeyChallengeInTx, issuePasswordMutationKeyChallengeV1 } from "@/app/auth/keyChallengeV2";
 import { checkAccountRetainsLoginRouteForDecisions, readAccountLoginViabilityFactsAfterProviderRemovalInTx } from "@/app/auth/methods/effectiveAccountLoginMethods";
@@ -54,12 +60,13 @@ import { linkIdentityInTx, ProviderAlreadyLinkedError, unlinkIdentityInTx } from
 import { countActiveHomeOwnersInTx } from "@/app/home/governance/homeCapabilities";
 import { upsertVerifiedMailboxEvidenceInTx } from "@/app/auth/verifiedMailboxEvidence";
 import { db, isPrismaUniqueConstraintError } from "@/storage/db";
-import { inTx } from "@/storage/inTx";
+import { afterTx, inTx } from "@/storage/inTx";
 import {
     acquireAccountSessionOwnerMetadataFenceInTx,
     AccountSessionOwnerMetadataFenceAccountNotFoundError,
 } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import type { Fastify } from "../../types";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 class InvalidResetMutation extends Error {}
 class CredentialMutationConflict extends Error {}
@@ -131,13 +138,14 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
 }> = {}): void {
     if (typeof app.authenticate !== "function") throw new Error("Account Security routes require app.authenticate");
     const authenticated = [app.authenticate, requirePresentUser];
-    const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
+    const authEmailDelivery = params.authEmailDelivery ?? createHomeAuthEmailDelivery();
     const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
         ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
     const isEmailDeliveryReady = params.isEmailDeliveryReady
-        ?? (() => resolveAuthEmailReadiness({ transportReady: authEmailDelivery.isReady, resolveApplicationLinkTarget }));
+        ?? (async () => await resolveAuthEmailReadiness({ transportReady: await authEmailDelivery.isReady(), resolveApplicationLinkTarget }));
 
     app.post(ACCOUNT_PASSWORD_MUTATION_CHALLENGE_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.mutate"), connectionAuthFailureError: "invalid_token" }, schema: { body: PasswordMutationPreparationRequestV1Schema, response: { 200: PasswordMutationPreparationResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const body = request.body;
         const passwordHashWork = await runPasswordHashWork(async () => body.action === "remove"
@@ -164,7 +172,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
             transitionRequestDigest: "transitionRequestDigest" in body ? body.transitionRequestDigest ?? null : null,
         });
         const challenge = account.encryptionMode === "e2ee"
-            ? await issuePasswordMutationKeyChallengeV1({ env: process.env, mutation: passwordMutation })
+            ? await issuePasswordMutationKeyChallengeV1({ env: requestHomeEnv, mutation: passwordMutation })
             : null;
         if (account.encryptionMode === "e2ee" && !challenge) return reply.code(503).send({ error: "challenge_unavailable" });
         if (!prepared) {
@@ -175,6 +183,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
     });
 
     app.post(NATIVE_AUTH_PASSWORD_RESET_SUBMIT_PATH_V1, { attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.reset.submit") }, schema: { body: PlainPasswordResetSubmitRequestV1Schema, response: { 200: PlainPasswordResetSubmitResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const passwordHashWork = await runPasswordHashWork(async () => await preparePlainAccountPasswordCredentialV1(request.body.password));
         if (!passwordHashWork.ok) return reply.code(503).send({ error: "password_hash_overloaded" });
@@ -188,14 +197,15 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
                 await acquireAccountSessionOwnerMetadataFenceInTx(tx, operation.accountId);
                 const account = await tx.account.findUnique({ where: { id: operation.accountId }, select: { status: true, encryptionMode: true } });
                 if (!account) return "invalid" as const;
-                const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: operation.accountId, provider: "email" } }, select: { providerUserId: true } });
+                const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: operation.accountId, provider: "email" } }, select: { id: true, providerUserId: true } });
                 const current = await tx.accountPasswordCredential.findUnique({ where: { accountId: operation.accountId }, select: { revision: true, credential: true } });
                 if (account.encryptionMode !== "plain" || !identity || identity.providerUserId !== operation.expectedNativeIdentity
+                    || identity.id !== operation.nativeIdentityId
                     || !current || current.revision !== operation.credentialRevision
                     || !parseAccountPasswordCredentialV1(account.encryptionMode, current.credential).ok) return "invalid" as const;
                 if (account.status !== "active") return "disabled" as const;
                 if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                    env: process.env,
+                    env: requestHomeEnv,
                     methodId: "email_password",
                     actionId: "login",
                 })) return "method_not_available" as const;
@@ -227,12 +237,14 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const row = await db.account.findUnique({
             where: { id: request.userId },
-            select: { encryptionMode: true, publicKey: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } },
+            select: { encryptionMode: true, publicKey: true, terminalPresentUserPolicy: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } },
         });
         if (!row) return reply.code(404).send({ error: "not_found" });
         if (row.encryptionMode !== "plain" && row.encryptionMode !== "e2ee") {
             return reply.code(409).send({ error: "credential_inconsistent" });
         }
+        const terminalPolicy = TerminalPresentUserPolicySchema.safeParse(row.terminalPresentUserPolicy);
+        if (!terminalPolicy.success) return reply.code(409).send({ error: "credential_inconsistent" });
         if (row.AccountPasswordCredential) {
             const parsed = parseAccountPasswordCredentialV1(row.encryptionMode, row.AccountPasswordCredential.credential);
             if (!parsed.ok || (parsed.mode === "e2ee"
@@ -240,10 +252,41 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
                 return reply.code(409).send({ error: "credential_inconsistent" });
             }
         }
-        return reply.send({ v: 1, encryptionMode: row.encryptionMode, nativeEmail: row.AccountIdentity[0]?.providerUserId ?? null, password: row.AccountPasswordCredential ? { status: "enrolled", revision: row.AccountPasswordCredential.revision } : { status: "not_enrolled", revision: null } });
+        return reply.send({ v: 1, encryptionMode: row.encryptionMode, terminalPresentUserPolicy: terminalPolicy.data, nativeEmail: row.AccountIdentity[0]?.providerUserId ?? null, password: row.AccountPasswordCredential ? { status: "enrolled", revision: row.AccountPasswordCredential.revision } : { status: "not_enrolled", revision: null } });
     });
 
-    app.post(ACCOUNT_PASSWORD_ENROLL_EMAIL_REQUEST_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.email.verify.request"), connectionAuthFailureError: "invalid_token" }, schema: { body: AccountPasswordEnrollEmailRequestV1Schema, response: { 200: AccountEmailChangeRequestResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+    app.post(ACCOUNT_TERMINAL_PRESENT_USER_POLICY_PATH_V1, {
+        preHandler: authenticated,
+        attachValidation: true,
+        config: { connectionAuthFailureError: "invalid_token" },
+        schema: {
+            body: AccountTerminalPresentUserPolicySetRequestV1Schema,
+            response: { 200: AccountTerminalPresentUserPolicySetResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES },
+        },
+    }, async (request, reply) => {
+        if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
+        const policy = request.body.policy;
+        const result = await inTx(async (tx) => {
+            const account = await tx.account.findUnique({
+                where: { id: request.userId },
+                select: { status: true, terminalPresentUserPolicy: true },
+            });
+            if (!account) return "not_found" as const;
+            if (account.status !== "active") return "disabled" as const;
+            if (account.terminalPresentUserPolicy !== policy) {
+                await tx.account.update({ where: { id: request.userId }, data: { terminalPresentUserPolicy: policy } });
+                await markAccountChanged(tx, { accountId: request.userId, kind: "account", entityId: "self" });
+                afterTx(tx, () => eventRouter.disconnectAccountTerminalSockets(request.userId));
+            }
+            return "updated" as const;
+        });
+        if (result === "not_found") return reply.code(404).send({ error: "not_found" });
+        if (result === "disabled") return reply.code(403).send({ error: "account-disabled" });
+        return reply.send({ policy });
+    });
+
+    app.post(ACCOUNT_PASSWORD_ENROLL_EMAIL_REQUEST_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.email.verify.requestAuthenticated"), connectionAuthFailureError: "invalid_token" }, schema: { body: AccountPasswordEnrollEmailRequestV1Schema, response: { 200: AccountEmailChangeRequestResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const recipient = normalizeVerifiedEmail(request.body.email);
         if (!recipient) return reply.code(400).send({ error: "invalid_request" });
@@ -262,7 +305,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
             if (account.AccountIdentity.length > 0 || account.AccountPasswordCredential) return "conflict" as const;
             if (account.encryptionMode !== "plain" && account.encryptionMode !== "e2ee") return "inconsistent" as const;
             const available = await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                env: process.env,
+                env: requestHomeEnv,
                 methodId: "email_password",
                 actionId: "connect",
                 mode: account.encryptionMode === "plain" ? "keyless" : "keyed",
@@ -283,6 +326,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
     });
 
     app.post(ACCOUNT_PASSWORD_ENROLL_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.mutate"), connectionAuthFailureError: "invalid_token" }, schema: { body: AccountPasswordEnrollRequestV1Schema, response: { 200: AccountPasswordMutationResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const body = request.body;
         const normalized = normalizeVerifiedEmail(body.email);
@@ -308,7 +352,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
                     || mailboxOperation.consumer.kind !== "password_enrollment"
                     || mailboxOperation.consumer.accountId !== request.userId) return "reauthentication" as const;
             }
-            if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, { env: process.env, methodId: "email_password", actionId: "connect", mode: body.kind === "plain" ? "keyless" : "keyed" })) return "unavailable" as const;
+            if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, { env: requestHomeEnv, methodId: "email_password", actionId: "connect", mode: body.kind === "plain" ? "keyless" : "keyed" })) return "unavailable" as const;
             if (body.kind === "plain") {
                 const passwordMutation = mutation({
                     action: "connect",
@@ -327,7 +371,7 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
                 const accepted = await consumePasswordMutationKeyChallengeInTx(tx, {
                     mutation: mutation({ action: "connect", accountId: request.userId, revision: null, email: normalized.normalizedEmail, credential: body.targetCredential }),
                     proof: body.proof,
-                    env: process.env,
+                    env: requestHomeEnv,
                 });
                 if (!accepted) return "reauthentication" as const;
             }
@@ -357,9 +401,10 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
     });
 
     app.post(ACCOUNT_PASSWORD_CHANGE_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.mutate"), connectionAuthFailureError: "invalid_token" }, schema: { body: AccountPasswordChangeRequestV1Schema, response: { 200: AccountPasswordMutationResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const body = request.body;
-        const snapshot = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
+        const snapshot = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, AccountIdentity: { where: { provider: "email" }, select: { id: true, providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
         if (!snapshot || snapshot.status !== "active" || snapshot.encryptionMode !== body.kind || !snapshot.AccountPasswordCredential) return reply.code(409).send({ error: "credential_inconsistent" });
         if (snapshot.AccountPasswordCredential.revision !== body.expectedCredentialRevision) return reply.code(409).send({ error: "credential_revision_conflict" });
         const parsed = parseAccountPasswordCredentialV1(snapshot.encryptionMode, snapshot.AccountPasswordCredential.credential);
@@ -380,15 +425,15 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         const passwordMutation = mutation({ action: body.kind === "e2ee" ? body.action : "change", accountId: request.userId, revision: body.expectedCredentialRevision, email, credential: prepared.credential });
         const outcome = await inTx(async (tx) => {
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, request.userId);
-            const current = await tx.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, publicKey: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
-            if (!current || current.status !== "active" || current.encryptionMode !== body.kind || current.AccountIdentity[0]?.providerUserId !== email || current.AccountPasswordCredential?.revision !== body.expectedCredentialRevision) return "conflict" as const;
+            const current = await tx.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, publicKey: true, AccountIdentity: { where: { provider: "email" }, select: { id: true, providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
+            if (!current || current.status !== "active" || current.encryptionMode !== body.kind || current.AccountIdentity[0]?.providerUserId !== email || current.AccountIdentity[0]?.id !== snapshot.AccountIdentity[0]?.id || current.AccountPasswordCredential?.revision !== body.expectedCredentialRevision) return "conflict" as const;
             const parsedCurrent = parseAccountPasswordCredentialV1(current.encryptionMode, current.AccountPasswordCredential.credential);
             if (!parsedCurrent.ok || (parsedCurrent.mode === "e2ee"
                 && !isE2eePasswordCredentialBoundToAccount(parsedCurrent.credential, current.publicKey))) return "inconsistent" as const;
             if (body.kind === "e2ee"
                 && (prepared.credential.kind !== "e2ee_password_envelope"
                     || !isE2eePasswordCredentialBoundToAccount(prepared.credential, current.publicKey))) return "inconsistent" as const;
-            if (body.kind === "e2ee" && !await consumePasswordMutationKeyChallengeInTx(tx, { mutation: passwordMutation, proof: body.proof, env: process.env })) return "authentication" as const;
+            if (body.kind === "e2ee" && !await consumePasswordMutationKeyChallengeInTx(tx, { mutation: passwordMutation, proof: body.proof, env: requestHomeEnv })) return "authentication" as const;
             const changed = await tx.accountPasswordCredential.updateMany({ where: { accountId: request.userId, revision: body.expectedCredentialRevision }, data: { credential: prepared.credential, revision: { increment: 1 } } });
             if (changed.count !== 1) throw new CredentialMutationConflict();
             await markAccountChanged(tx, { accountId: request.userId, kind: "account", entityId: "self" });
@@ -404,9 +449,10 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
     });
 
     app.post(ACCOUNT_PASSWORD_REMOVE_PATH_V1, { preHandler: authenticated, attachValidation: true, config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.password.mutate"), connectionAuthFailureError: "invalid_token" }, schema: { body: AccountPasswordRemoveRequestV1Schema, response: { 200: AccountPasswordMutationResponseV1Schema, ...ACCOUNT_SECURITY_ROUTE_ERROR_RESPONSES } } }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (request.validationError) return reply.code(400).send({ error: "invalid_request" });
         const body = request.body;
-        const snapshot = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, AccountIdentity: { where: { provider: "email" }, select: { providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
+        const snapshot = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, AccountIdentity: { where: { provider: "email" }, select: { id: true, providerUserId: true } }, AccountPasswordCredential: { select: { revision: true, credential: true } } } });
         if (!snapshot || snapshot.status !== "active" || snapshot.encryptionMode !== body.kind || snapshot.AccountPasswordCredential?.revision !== body.expectedCredentialRevision) return reply.code(409).send({ error: "credential_revision_conflict" });
         const parsed = parseAccountPasswordCredentialV1(snapshot.encryptionMode, snapshot.AccountPasswordCredential.credential);
         if (!parsed.ok) return reply.code(409).send({ error: "credential_inconsistent" });
@@ -421,19 +467,19 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         const outcome = await inTx(async (tx) => {
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, request.userId);
             const account = await tx.account.findUnique({ where: { id: request.userId }, select: { status: true, encryptionMode: true, publicKey: true, homeRole: true } });
-            const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: request.userId, provider: "email" } }, select: { providerUserId: true } });
+            const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: request.userId, provider: "email" } }, select: { id: true, providerUserId: true } });
             const current = await tx.accountPasswordCredential.findUnique({ where: { accountId: request.userId }, select: { revision: true, credential: true } });
-            if (!account || account.status !== "active" || account.encryptionMode !== body.kind || identity?.providerUserId !== email || !current || current.revision !== body.expectedCredentialRevision) return "conflict" as const;
+            if (!account || account.status !== "active" || account.encryptionMode !== body.kind || identity?.providerUserId !== email || identity?.id !== snapshot.AccountIdentity[0]?.id || !current || current.revision !== body.expectedCredentialRevision) return "conflict" as const;
             const parsedCurrent = parseAccountPasswordCredentialV1(account.encryptionMode, current.credential);
             if (!parsedCurrent.ok || (parsedCurrent.mode === "e2ee"
                 && !isE2eePasswordCredentialBoundToAccount(parsedCurrent.credential, account.publicKey))) return "inconsistent" as const;
-            const methods = await resolveEffectiveHomeAuthMethodsInTx(tx, { env: process.env });
-            const facts = await readAccountLoginViabilityFactsAfterProviderRemovalInTx(tx, { accountId: request.userId, env: process.env, excludedProviderId: "email", identityEligibility: "current" });
+            const methods = await resolveEffectiveHomeAuthMethodsInTx(tx, { env: requestHomeEnv });
+            const facts = await readAccountLoginViabilityFactsAfterProviderRemovalInTx(tx, { accountId: request.userId, env: requestHomeEnv, excludedProviderId: "email", identityEligibility: "current" });
             if (methods.status !== "ready" || !facts) return "last_login_method" as const;
             const otherActiveOwners = account.homeRole === "owner" ? await countActiveHomeOwnersInTx(tx, { excludeAccountId: request.userId }) : 0;
             const viability = checkAccountRetainsLoginRouteForDecisions(methods.decisions, { ...facts, hasPasswordCredential: false, isLastHomeAdministrator: account.homeRole === "owner" && otherActiveOwners === 0 }, { requireLastAdministratorProof: true });
             if (!viability.ok) return "last_login_method" as const;
-            if (body.kind === "e2ee" && !await consumePasswordMutationKeyChallengeInTx(tx, { mutation: passwordMutation, proof: body.proof, env: process.env })) return "authentication" as const;
+            if (body.kind === "e2ee" && !await consumePasswordMutationKeyChallengeInTx(tx, { mutation: passwordMutation, proof: body.proof, env: requestHomeEnv })) return "authentication" as const;
             const deleted = await tx.accountPasswordCredential.deleteMany({ where: { accountId: request.userId, revision: body.expectedCredentialRevision } });
             if (deleted.count !== 1) throw new CredentialMutationConflict();
             await unlinkIdentityInTx(tx, { accountId: request.userId, provider: "email" });
@@ -463,10 +509,10 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
         const current = await db.account.findUnique({ where: { id: request.userId }, select: { status: true, AccountIdentity: { where: { provider: "email" }, select: { id: true, providerUserId: true } } } });
         const currentIdentity = current?.AccountIdentity[0];
         const currentEmail = current?.AccountIdentity[0]?.providerUserId ?? null;
-        if (!current || current.status !== "active" || !currentEmail) return reply.code(409).send({ error: "identity_changed" });
+        if (!current || current.status !== "active" || !currentIdentity || !currentEmail) return reply.code(409).send({ error: "identity_changed" });
         const delivery = await requestNativeEmailVerification({ delivery: authEmailDelivery, resolveApplicationLinkTarget }, {
             recipient,
-            consumer: { kind: "sign_in_email_change", accountId: request.userId, expectedNativeIdentity: currentEmail },
+            consumer: { kind: "sign_in_email_change", accountId: request.userId, nativeIdentityId: currentIdentity.id, expectedNativeIdentity: currentEmail },
         });
         if (delivery.status !== "delivered" || delivery.delivery.status === "failed") {
             return reply.code(503).send({ error: "email_delivery_unavailable" });
@@ -487,8 +533,9 @@ export function registerAccountSecurityRoutes(app: Fastify, params: Readonly<{
             // former native identity cannot race past a committed email change.
             await acquireAccountSessionOwnerMetadataFenceInTx(tx, request.userId);
             const account = await tx.account.findUnique({ where: { id: request.userId }, select: { status: true } });
-            const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: request.userId, provider: "email" } }, select: { providerUserId: true } });
+            const identity = await tx.accountIdentity.findUnique({ where: { accountId_provider: { accountId: request.userId, provider: "email" } }, select: { id: true, providerUserId: true } });
             if (!account || account.status !== "active" || !identity
+                || identity.id !== operation.consumer.nativeIdentityId
                 || identity.providerUserId !== operation.consumer.expectedNativeIdentity) return "conflict" as const;
             if (!await consumeNativeAuthOneTimeOperationInTx(tx, { purpose: "verify_native_email", token: request.body.verificationToken })) return null;
             await linkIdentityInTx(tx, { accountId: request.userId, provider: "email", providerUserId: operation.normalizedEmail, providerLogin: null, profile: {}, showOnProfile: false });

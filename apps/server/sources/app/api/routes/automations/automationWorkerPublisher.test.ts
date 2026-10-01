@@ -36,17 +36,16 @@ describe("automationWorkerPublisher", () => {
         });
     });
 
-    it("admits the headerless worker vector emitted by supported released V2 CLIs only on the V2 compatibility seam", async () => {
+    it("refuses the headerless predecessor worker vector", async () => {
         const verifyPublisher = vi.fn(async () => {
             throw new PluginInstallationPublisherProofError(
                 "required",
                 "Plugin installation publisher proof is required",
             );
         });
-        const readMachineAvailability = vi.fn(async () => "available" as const);
 
         await expect(resolveExactAutomationWorkerPublisher({
-            dependencies: { verifyPublisher, readMachineAvailability },
+            dependencies: { verifyPublisher },
             accountId: "account-1",
             request: {
                 method: "POST",
@@ -55,11 +54,10 @@ describe("automationWorkerPublisher", () => {
             },
             path: "/v2/automations/runs/claim",
             machineId: "machine-1",
-            allowReleasedV2MissingProof: true,
-        })).resolves.toEqual({ kind: "releasedV2Bearer", machineId: "machine-1" });
+        })).resolves.toBeNull();
 
         await expect(resolveExactAutomationWorkerPublisher({
-            dependencies: { verifyPublisher, readMachineAvailability },
+            dependencies: { verifyPublisher },
             accountId: "account-1",
             request: {
                 method: "POST",
@@ -69,36 +67,7 @@ describe("automationWorkerPublisher", () => {
             path: "/v3/automations/runs/claim",
             machineId: "machine-1",
         })).resolves.toBeNull();
-        expect(readMachineAvailability).toHaveBeenCalledTimes(1);
     });
-
-    it.each(["revoked", "replaced"] as const)(
-        "rejects the released-V2 missing-proof seam when the claimed machine is %s",
-        async (state) => {
-            const verifyPublisher = vi.fn(async () => {
-                throw new PluginInstallationPublisherProofError(
-                    "required",
-                    "Plugin installation publisher proof is required",
-                );
-            });
-
-            await expect(resolveExactAutomationWorkerPublisher({
-                dependencies: {
-                    verifyPublisher,
-                    readMachineAvailability: vi.fn(async () => state),
-                },
-                accountId: "account-1",
-                request: {
-                    method: "POST",
-                    headers: RELEASED_V2_WORKER_HEADERS,
-                    body: { machineId: "machine-1" },
-                },
-                path: "/v2/automations/runs/claim",
-                machineId: "machine-1",
-                allowReleasedV2MissingProof: true,
-            })).resolves.toBeNull();
-        },
-    );
 
     it("does not turn a malformed released-V2 publisher proof into bearer-only admission", async () => {
         const verifyPublisher = vi.fn(async () => {
@@ -121,7 +90,6 @@ describe("automationWorkerPublisher", () => {
             },
             path: "/v2/automations/runs/claim",
             machineId: "machine-1",
-            allowReleasedV2MissingProof: true,
         })).resolves.toBeNull();
     });
 });

@@ -21,8 +21,6 @@ import { createV2SessionListServerTiming, V2_SESSION_LIST_SERVER_TIMING_REQUEST_
 
 /** Shared real-database contract for sparse audience/tag/attention paging. */
 export async function verifySparseSessionListing(provider: "sqlite" | "postgres" | "mysql"): Promise<void> {
-
-    vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "true");
     const [viewer, owner] = await Promise.all([0, 1].map(() => db.account.create({
         data: { publicKey: randomUUID(), encryptionMode: "plain" },
     })));

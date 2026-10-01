@@ -47,7 +47,6 @@ describe("human presence access transitions across Redis-adapter API nodes", () 
             initAuth: true,
             initEncrypt: true,
             env: {
-                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
                 HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
             },
         });

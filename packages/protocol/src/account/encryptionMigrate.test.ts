@@ -28,8 +28,6 @@ import {
   ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS,
   ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_STAGE_BATCH_MAX_UTF8_BYTES,
   AccountEncryptionMigrateKeyProofSchema,
-  AccountEncryptionMigratePredecessorRequestSchema,
-  AccountEncryptionMigratePredecessorSuccessResponseSchema,
   AccountEncryptionMigrateRequestSchema,
   AccountEncryptionMigrateSessionDraftsDirectiveSchema,
   AccountEncryptionMigrateRequestBindingDigestV1Schema,
@@ -115,6 +113,21 @@ describe('account/encryptionMigrate', () => {
       ...emptyRemainingAccountDomainDirectives,
     });
 
+  it('binds workspace KV replacements without widening the Todo namespace', () => {
+    const request = createPlainRequest();
+    const workspace = { action: 'migrate', items: [
+      { key: 'workspace:tabs:v1', expectedVersion: 7, value: 'dGFicw==' },
+      { key: 'workspace:handoff-tabs:v1:device:window', expectedVersion: 2, value: 'aGFuZG9mZg==' },
+    ] };
+    const parsed = AccountEncryptionMigrateRequestSchema.parse({ ...request, workspace });
+    expect(parsed).toHaveProperty('workspace', workspace);
+    expect(createAccountEncryptionMigrateRequestBindingDigestV1({ request: parsed, accountId: 'a', sourceMode: 'e2ee' }))
+      .not.toBe(createAccountEncryptionMigrateRequestBindingDigestV1({ request, accountId: 'a', sourceMode: 'e2ee' }));
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({ ...request, todos: workspace }).success).toBe(false);
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({ ...request, workspace: { action: 'migrate', items: [{ key: 'todo.index', expectedVersion: 7, value: 'dGFicw==' }] } }).success).toBe(false);
+    expect(AccountEncryptionMigrateRequestSchema.safeParse({ ...request, workspace: { ...workspace, unknown: true } }).success).toBe(false);
+  });
+
   it('carries bounded new-session draft replacements on the incumbent Account migration wire', () => {
     const address = {
       kind: 'newSession' as const,
@@ -171,39 +184,6 @@ describe('account/encryptionMigrate', () => {
     expect(AccountEncryptionMigrateSuccessResponseSchema.parse(response)).toEqual(response);
     expect(AccountEncryptionMigrateSuccessResponseSchema.safeParse({
       ...response, sessionDrafts: { records: response.sessionDrafts.records },
-    }).success).toBe(false);
-  });
-
-  it('preserves the released 0.2.11 unversioned draft migration request and response', () => {
-    // server-v0.2.11 / server-v0.2.11-preview.2 @ 98ea8fb76733b1dd785d38c31360179cafa84824;
-    // also current clean ../0.2 @ af1b427bfa9b61a2146a5f8f457a243449d19e38,
-    // packages/protocol/src/account/encryptionMigrate.ts and drafts/sessionDrafts.ts.
-    const address = { kind: 'newSession', draftId: '00000000-0000-4000-8000-000000000001' };
-    const content = { t: 'plain', v: { v: 1, address, document: {
-      v: 1,
-      composer: {
-        text: { mutationId: '00000000-0000-4000-8000-000000000002', value: 'retained' },
-        mentions: { mutationId: '00000000-0000-4000-8000-000000000003', value: [] },
-        attachments: { mutationId: '00000000-0000-4000-8000-000000000004', value: [] },
-      },
-      target: { kind: 'newSession', authoring: {} }, extensions: {},
-    } } };
-    const request = {
-      toMode: 'plain', expectedSettingsVersion: 0, settingsContent: null,
-      connectedServices: { action: 'assert_empty' }, automations: { action: 'assert_empty' },
-      sessionDrafts: { items: [{ address, expectedRevision: 0, content }] },
-    };
-    expect(AccountEncryptionMigratePredecessorRequestSchema.parse(request)).toEqual(request);
-    const response = {
-      success: true, mode: 'plain', settingsVersion: 1,
-      sessionDrafts: { records: [{ address, revision: 1, content, createdAt: 1, updatedAt: 2 }] },
-    };
-    expect(AccountEncryptionMigratePredecessorSuccessResponseSchema.parse(response)).toEqual(response);
-    expect(AccountEncryptionMigratePredecessorRequestSchema.safeParse({
-      ...request, sessionDrafts: { ...request.sessionDrafts, v: 2 },
-    }).success).toBe(false);
-    expect(AccountEncryptionMigratePredecessorSuccessResponseSchema.safeParse({
-      ...response, sessionDrafts: { ...response.sessionDrafts, v: 2 },
     }).success).toBe(false);
   });
 
@@ -323,7 +303,9 @@ describe('account/encryptionMigrate', () => {
           expectedBodyVersion: 6,
           header: 'plain-header',
           body: 'plain-body',
+          expectedDataEncryptionKey: 'source-key',
           dataEncryptionKey: 'plain-marker',
+          recipientKeyEnvelopes: [],
         }],
       },
       sessions: {
@@ -617,27 +599,9 @@ describe('account/encryptionMigrate', () => {
         qualifiedCredentials,
       },
     };
-    const predecessor = {
-      toMode: 'plain',
-      expectedSettingsVersion: 0,
-      settingsContent: { t: 'plain', v: {} },
-      connectedServices: {
-        action: 'migrate',
-        credentials: credentials.map(({
-          expectedCredentialRevision: _expectedCredentialRevision,
-          ...credential
-        }) => credential),
-        qualifiedCredentials,
-      },
-      automations: { action: 'assert_empty' },
-    };
 
     expect(AccountEncryptionMigrateRequestSchema.safeParse(current).success)
       .toBe(true);
-    expect(
-      AccountEncryptionMigratePredecessorRequestSchema.safeParse(predecessor)
-        .success,
-    ).toBe(true);
   });
 
   it('requires exact legacy credential and Automation revisions in current migration requests', () => {
@@ -793,58 +757,6 @@ describe('account/encryptionMigrate', () => {
     ).toBe(false);
   });
 
-  it('keeps the exact predecessor revisionless wire separate from current requests', () => {
-    const predecessorRequest = {
-      toMode: 'plain',
-      expectedSettingsVersion: 0,
-      settingsContent: { t: 'plain', v: {} },
-      connectedServices: {
-        action: 'migrate',
-        credentials: [{
-          serviceId: 'openai-codex',
-          profileId: 'work',
-          kind: 'plain',
-          record: {
-            v: 1,
-            serviceId: 'openai-codex',
-            profileId: 'work',
-            kind: 'token',
-            createdAt: 1,
-            updatedAt: 2,
-            expiresAt: null,
-            oauth: null,
-            token: {
-              token: 'token',
-              providerAccountId: null,
-              providerEmail: null,
-              raw: null,
-            },
-          },
-        }],
-      },
-      automations: {
-        action: 'migrate',
-        templates: [{
-          automationId: 'automation-1',
-          templateCiphertext: JSON.stringify({
-            kind: 'happier_automation_template_plain_v1',
-            payload: {},
-          }),
-        }],
-      },
-    } as const;
-
-    expect(
-      AccountEncryptionMigratePredecessorRequestSchema.safeParse(
-        predecessorRequest,
-      ).success,
-    ).toBe(true);
-    expect(
-      AccountEncryptionMigrateRequestSchema.safeParse(predecessorRequest)
-        .success,
-    ).toBe(false);
-  });
-
   it('accepts a bound trigger-definition target only on the current Automation transition item', () => {
     const base = {
       action: 'migrate' as const,
@@ -913,52 +825,6 @@ describe('account/encryptionMigrate', () => {
     ).toBe(false);
   });
 
-  it('admits the exact fae505 e2ee wire and preserves its strict error reader', () => {
-    // Provenance-pinned prospective predecessor:
-    // ../remote-dev@fae505bdc6916b3c9fa7a67eac3c4c88df759e9b
-    const predecessorRequest = {
-      toMode: 'e2ee',
-      expectedSettingsVersion: 0,
-      settingsContent: { t: 'encrypted', c: 'opaque-settings' },
-      connectedServices: { action: 'assert_empty' },
-      automations: { action: 'assert_empty' },
-    } as const;
-    const predecessorErrorReader = z.discriminatedUnion('error', [
-      z
-        .object({
-          error: z.literal('invalid-params'),
-          reason: z
-            .enum(['restore_required', 'key_proof_required'])
-            .optional(),
-        })
-        .strict(),
-      z.object({ error: z.literal('connected_services_not_empty') }).strict(),
-      z.object({ error: z.literal('automations_not_empty') }).strict(),
-    ]);
-
-    expect(
-      AccountEncryptionMigratePredecessorRequestSchema.safeParse(
-        predecessorRequest,
-      ).success,
-    ).toBe(true);
-    expect(
-      AccountEncryptionMigrateRequestSchema.safeParse(predecessorRequest)
-        .success,
-    ).toBe(false);
-    expect(predecessorErrorReader.parse({
-      error: 'invalid-params',
-      reason: 'key_proof_required',
-    })).toEqual({
-      error: 'invalid-params',
-      reason: 'key_proof_required',
-    });
-    expect(predecessorErrorReader.parse({
-      error: 'invalid-params',
-    })).toEqual({
-      error: 'invalid-params',
-    });
-  });
-
   it('parses stable invalid-params reasons and rejects oversized key proofs', () => {
     expect(AccountEncryptionMigrateBadRequestResponseSchema.parse({
       error: 'invalid-params',
@@ -979,35 +845,6 @@ describe('account/encryptionMigrate', () => {
       publicKey: 'p'.repeat(4097),
       signature: 'signature',
     }).success).toBe(false);
-  });
-
-  it('keeps predecessor and current success responses wire-distinct', () => {
-    const predecessorSuccess = {
-      success: true,
-      mode: 'plain',
-      settingsVersion: 2,
-    } as const;
-    const currentSuccess = {
-      ...predecessorSuccess,
-      accountVersion: 9,
-    } as const;
-
-    expect(
-      AccountEncryptionMigratePredecessorSuccessResponseSchema
-        .safeParse(predecessorSuccess).success,
-    ).toBe(true);
-    expect(
-      AccountEncryptionMigratePredecessorSuccessResponseSchema
-        .safeParse(currentSuccess).success,
-    ).toBe(false);
-    expect(
-      AccountEncryptionMigrateSuccessResponseSchema
-        .safeParse(predecessorSuccess).success,
-    ).toBe(false);
-    expect(
-      AccountEncryptionMigrateSuccessResponseSchema
-        .safeParse(currentSuccess).success,
-    ).toBe(true);
   });
 
   it('admits missing proof for a typed route refusal but rejects an incomplete present proof', () => {

@@ -5,10 +5,12 @@ describe('TargetActionApprovalRequestV1Schema', () => {
   it('requires an exact qualified action subject and correlation fingerprint', () => {
     const request = { v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli', qualifiedActionId: 'acme.alpha/actions/run',
-      input: { value: 'x' }, generation: '7', policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Run' };
+      input: { value: 'x' }, sourceCustody: { kind: 'development', registeredRootId: 'root-7' }, policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Run' };
     expect(TargetActionApprovalRequestV1Schema.parse(request)).toEqual(request);
     expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, qualifiedActionId: 'run' })).toThrow();
     expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, subjectFingerprint: 'short' })).toThrow();
+    expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, generation: 'occurrence-7' })).toThrow();
+    expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, occurrenceId: 'occurrence-7' })).toThrow();
   });
 
   it('requires API-created approvals to bind the exact daemon replay placement', () => {
@@ -22,7 +24,7 @@ describe('TargetActionApprovalRequestV1Schema', () => {
       requestedSurface: 'api',
       qualifiedActionId: 'acme.alpha/actions/run',
       input: { value: 'x' },
-      generation: '7',
+      sourceCustody: { kind: 'development', registeredRootId: 'root-7' },
       policyFingerprint: 'b'.repeat(64),
       subjectFingerprint: 'a'.repeat(64),
       summary: 'Run',
@@ -68,7 +70,7 @@ describe('TargetActionApprovalRequestV1Schema', () => {
   it('retains bounded host-rendered confirmation detail in the durable subject', () => {
     const request = { v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli', qualifiedActionId: 'acme.alpha/actions/run',
-      input: { value: 'x' }, generation: '7', policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64),
+      input: { value: 'x' }, sourceCustody: { kind: 'development', registeredRootId: 'root-7' }, policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64),
       summary: 'Start a new baseline', detail: 'Events in the history gap are not replayed.' };
     expect(TargetActionApprovalRequestV1Schema.parse(request)).toEqual(request);
     expect(() => TargetActionApprovalRequestV1Schema.parse({
@@ -80,7 +82,7 @@ describe('TargetActionApprovalRequestV1Schema', () => {
   it('rejects non-JSON and oversized approval subjects before persistence', () => {
     const request = { v: 1, kind: 'plugin_target_action', status: 'open', createdAtMs: 1, updatedAtMs: 1,
       createdBy: { surface: 'cli' }, requestedSurface: 'cli', qualifiedActionId: 'acme.alpha/actions/run',
-      input: { value: 'x' }, generation: '7', policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Run' };
+      input: { value: 'x' }, sourceCustody: { kind: 'development', registeredRootId: 'root-7' }, policyFingerprint: 'b'.repeat(64), subjectFingerprint: 'a'.repeat(64), summary: 'Run' };
     expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, input: { value: BigInt(1) } })).toThrow();
     expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, input: { value: 'x'.repeat(70_000) } })).toThrow();
     expect(() => TargetActionApprovalRequestV1Schema.parse({ ...request, summary: 'x'.repeat(2_000) })).toThrow();

@@ -23,6 +23,18 @@ import { MAX_PLUGIN_HOSTED_HTML_SOURCE_UTF8_BYTES_V1 } from './hostedHtmlSourceV
  * from drifting into a general data-binding surface.
  */
 describe('declarative node vocabulary v2', () => {
+  it('admits widget placements only for their target while keeping executable declarations closed', () => {
+    const widget = { id: 'glance', container: 'widget', renderer: 'native', target: { kind: 'session' } };
+    expect(PluginUiViewV2Schema.parse({ ...widget, placements: ['board', 'companion'] }))
+      .toMatchObject({ placements: ['board', 'companion'] });
+    expect(PluginUiViewV2Schema.safeParse({ ...widget, placements: ['home'] }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({ ...widget, placements: ['companion'], authority: 'forged' }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({ ...widget, container: 'detailsTab', placements: ['companion'] }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({ ...widget, target: { kind: 'app' }, placements: ['home'] }).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse({ ...widget, target: { kind: 'app' }, placements: ['board'] }).success).toBe(false);
+    expect(PluginUiViewV2Schema.parse(widget)).not.toHaveProperty('placements');
+  });
+
   it('admits inline HTML through the canonical UTF-8 source boundary without granting authority fields', () => {
     const renderer = { id: 'inline', kind: 'hostedHtml', source: { kind: 'html', html: '<p>Hello</p>' } };
     expect(PluginUiRendererV2Schema.safeParse(renderer).success).toBe(true);
@@ -98,7 +110,7 @@ describe('declarative node vocabulary v2', () => {
         ...targetedSurface.surface,
         contributor: {
           ...targetedSurface.surface.contributor,
-          immutableGenerationId: 'forged-generation',
+          immutableGenerationId: 'forged-occurrenceId',
         },
       },
     }).success).toBe(false);
@@ -217,6 +229,11 @@ describe('declarative node vocabulary v2', () => {
       'search',
       'change-open',
       'change-complete',
+      'issue',
+      'bug',
+      'pin',
+      'conversations',
+      'pause',
     ]);
 
     // Metadata is bounded, and an empty metadata block is a modeling mistake.
@@ -545,7 +562,7 @@ describe('destination presentation hints', () => {
         label: { key: 'review.badge.preview', fallback: 'Preview' },
         tone: 'accent',
       },
-      groupHint: 'sessions',
+      placement: { kind: 'column', column: 'sessions' },
       rankHint: -25,
     });
 
@@ -557,20 +574,20 @@ describe('destination presentation hints', () => {
           label: { key: 'review.badge.preview', fallback: 'Preview' },
           tone: 'accent',
         },
-        groupHint: 'sessions',
+        placement: { kind: 'column', column: 'sessions' },
         rankHint: -25,
       });
     }
   });
 
-  it('rejects arbitrary icon, group, rank, and unbounded badge input', () => {
+  it('rejects arbitrary icon, unknown placement, rank, and unbounded badge input', () => {
     expect(PluginUiViewV2Schema.safeParse({
       ...appPage,
       icon: 'brand-logo.svg',
     }).success).toBe(false);
     expect(PluginUiViewV2Schema.safeParse({
       ...appPage,
-      groupHint: 'permanent-bottom-bar',
+      obsoletePlacement: 'sessions',
     }).success).toBe(false);
     expect(PluginUiViewV2Schema.safeParse({
       ...appPage,
@@ -579,6 +596,33 @@ describe('destination presentation hints', () => {
     expect(PluginUiViewV2Schema.safeParse({
       ...appPage,
       badge: { label: 'x'.repeat(81) },
+    }).success).toBe(false);
+  });
+
+  it('admits a page column and restricts placement and column to app destinations', () => {
+    expect(PluginUiViewV2Schema.safeParse({
+      ...appPage,
+      placement: { kind: 'rail' },
+      column: { renderer: 'views-column' },
+    }).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse({
+      ...appPage,
+      placement: { kind: 'column', column: 'workflows' },
+    }).success).toBe(true);
+    expect(PluginUiViewV2Schema.safeParse({
+      ...appPage,
+      placement: { kind: 'column', column: 'Invalid Column' },
+    }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({
+      ...appPage,
+      container: 'rightSidebarTab',
+      column: { renderer: 'views-column' },
+    }).success).toBe(false);
+    expect(PluginUiViewV2Schema.safeParse({
+      ...appPage,
+      container: 'rightSidebarTab',
+      target: { kind: 'session' },
+      placement: { kind: 'rail' },
     }).success).toBe(false);
   });
 

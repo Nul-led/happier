@@ -4,9 +4,20 @@ import {
   exportPromptLibraryArtifact,
   installPromptRegistryItemInLibrary,
   updatePromptDocInLibrary,
+  readPromptDocInLibrary,
 } from './promptLibraryActionOperations.js';
 
 describe('prompt library action operations', () => {
+  it('refuses non-doc Artifacts and unreadable bodies without disclosing content', async () => {
+    for (const artifact of [
+      { id: 'memory', header: { kind: 'role.v1', title: 'Private' }, body: JSON.stringify({ v: 1, markdown: 'private', createdAtMs: 1, updatedAtMs: 1 }) },
+      { id: 'memory', header: { kind: 'prompt_doc.v2', title: 'Private' }, body: null },
+    ]) {
+      expect(await readPromptDocInLibrary({ artifactId: 'memory', store: {
+        read: async () => artifact, update: async () => {},
+      } })).toEqual({ ok: false, errorCode: 'prompt_doc_invalid_body', error: 'prompt_doc_invalid_body' });
+    }
+  });
   it('updates a prompt document through the injected canonical artifact store', async () => {
     const update = vi.fn(async () => undefined);
     const signal = new AbortController().signal;

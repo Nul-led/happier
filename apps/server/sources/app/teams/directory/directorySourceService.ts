@@ -19,7 +19,8 @@ import {
     WORKOS_DIRECTORY_SYNC_TARGET_MS,
 } from "./directorySourceProjection";
 import { revokeExternalSourceFactsInTx } from "../memberships/externalFacts";
-import { isDirectorySourceKindAllowedInTx } from "./directorySourcePolicy";
+import { isDirectorySourceAllowedInTx, isDirectorySourceKindAllowedInTx } from "./directorySourcePolicy";
+import type { ExpectedDirectorySourceCurrentness } from "./directorySourcePolicy";
 import { publishTeamChangedInTx } from "../teamChanges";
 
 export type CreateDirectorySourceInput =
@@ -97,9 +98,13 @@ export async function removeDirectorySourceForObservedDeletion(input: Readonly<{
     expectedPosition:
         | Readonly<{ eventCursor: string }>
         | Readonly<{ eventCursor: null; eventRangeStart: Date }>;
+    expectedCurrentness?: ExpectedDirectorySourceCurrentness;
+    env?: NodeJS.ProcessEnv;
 }>): Promise<DirectorySourceLifecycleWriteResult> {
     return await inTx(async (tx) => {
-        if (!await isDirectorySourceKindAllowedInTx(tx, "workos_directory")) {
+        if (!await isDirectorySourceAllowedInTx(tx, {
+            id: input.sourceId, kind: "workos_directory",
+        }, input.expectedCurrentness, input.env)) {
             return { applied: false, reason: "stale_run" };
         }
         const position = input.expectedPosition.eventCursor === null
@@ -391,6 +396,12 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
         if (!await isDirectorySourceKindAllowedInTx(tx, current.kind)) {
             return { ok: false, code: "directory_sync_needs_attention" } as const;
         }
+        // A request can arrive in the same persisted millisecond as the prior
+        // attempt. Consume its ordered marker even when this claim's clock has
+        // not advanced yet, so a failed one-shot retry cannot run forever.
+        const attemptAt = current.manualSyncRequestedAt !== null && current.manualSyncRequestedAt > now
+            ? current.manualSyncRequestedAt
+            : now;
 
         let binding: TeamDirectoryBindingConfigV1 | null = null;
         try {
@@ -413,7 +424,7 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
                     activeReconcileStartedAt: null,
                     // This claim is the attempt that consumed any outstanding
                     // request; stamping it keeps one press to one attempt.
-                    lastAttemptAt: now,
+                    lastAttemptAt: attemptAt,
                     lastErrorCode: "directory_source_identity_mismatch",
                     consecutiveFailureCount: 0,
                     retryNotBefore: null,
@@ -436,7 +447,7 @@ export async function claimDirectorySourceFullReconcile(params: Readonly<{
                 state: "initializing",
                 activeReconcileRunId: reconcileRunId,
                 activeReconcileStartedAt: now,
-                lastAttemptAt: now,
+                lastAttemptAt: attemptAt,
                 lastErrorCode: null,
                 consecutiveFailureCount: 0,
                 retryNotBefore: null,
@@ -817,7 +828,14 @@ export async function requestDirectorySourceSyncInTx(
     }
     await tx.teamDirectorySource.update({
         where: { id: params.sourceId },
-        data: { manualSyncRequestedAt: now },
+        data: {
+            // Preserve request-after-attempt ordering at database millisecond
+            // precision without changing the source's one-request/one-claim
+            // lifecycle or introducing another counter.
+            manualSyncRequestedAt: current.lastAttemptAt !== null && now <= current.lastAttemptAt
+                ? new Date(current.lastAttemptAt.getTime() + 1)
+                : now,
+        },
     });
     return {
         ok: true,

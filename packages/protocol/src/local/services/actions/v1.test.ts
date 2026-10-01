@@ -29,6 +29,18 @@ describe('LocalServiceActionTargetV1Schema', () => {
 });
 
 describe('LocalServiceActionRequestV1Schema', () => {
+  it('admits Undo only through Forget and rejects an undo key on other actions', () => {
+    const request = {
+      requestId: 'undo',
+      target: { kind: 'inventory_entry', inventoryEntryId: 'machine-a:tcp:loopback:127.0.0.1:5173', machineId: 'machine-a' },
+      action: 'forget',
+      undoKey: 'machine-a:tcp:loopback:127.0.0.1:5173',
+    };
+    expect(LocalServiceActionRequestV1Schema.parse(request)).toMatchObject({ undoKey: request.undoKey });
+    expect(LocalServiceActionRequestV1Schema.safeParse({ ...request, action: 'copy_url' }).success).toBe(false);
+    expect(LocalServiceActionRequestV1Schema.safeParse({ ...request, target: { ...request.target, inventoryEntryId: 'another-entry' } }).success).toBe(false);
+  });
+
   it('requires managed and destructive actions to carry a confirmation nonce', () => {
     expect(() => LocalServiceActionRequestV1Schema.parse({
       requestId: 'request-a',

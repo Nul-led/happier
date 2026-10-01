@@ -8,6 +8,8 @@ import {
     isSessionOwnerEnvelopeError,
     isSessionTeamCredentialBindingError,
     SessionInitialAccessError,
+    SessionCreationOriginError,
+    SessionCreationReportsToError,
     type Layout1SessionCreateOutcome,
 } from "./layout1SessionRowWrite";
 import type {
@@ -28,6 +30,8 @@ import type { SessionAccessAuthentication } from "@/app/session/access/sessionAc
 export function classifyLayout1SessionCreateThrow(
     error: unknown,
 ): FreshBoundLayout1SessionCreateRejection | null {
+    if (error instanceof SessionCreationOriginError) return { reason: "session-origin-forbidden" };
+    if (error instanceof SessionCreationReportsToError) return { reason: "session-reports-to-invalid", result: error.result };
     if (isSessionCreationPlacementError(error)) return { reason: "invalid-organization-placement" };
     if (isSessionOwnerEnvelopeError(error)) return { reason: "invalid-params" };
     if (error instanceof SessionInitialAccessError) {

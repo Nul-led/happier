@@ -148,7 +148,21 @@ async function scanGithubDirectory(params: Parameters<DirectoryProjectionScan>[0
             return true;
         },
     });
-    return nestedFailure ?? groupsResult;
+    if (nestedFailure) return nestedFailure;
+    if (!groupsResult.ok) return groupsResult;
+    return {
+        ok: true,
+        expectedCurrentness: {
+            kind: "github_directory_read",
+            directorySourceId: began.context.directorySourceId,
+            githubInstallationId: began.context.githubInstallationId,
+            registrationSecurityRevision: began.context.registrationSecurityRevision,
+            installationRevision: began.context.installationRevision,
+            networkPolicyFingerprint: began.context.networkPolicyFingerprint,
+            githubOrganizationId: began.context.githubOrganizationId,
+            organizationLogin: began.context.organizationLogin,
+        },
+    };
 }
 
 export const scanDirectorySource: DirectoryProjectionScan = async (params) => {
@@ -162,13 +176,16 @@ export const scanDirectorySource: DirectoryProjectionScan = async (params) => {
                 signal: params.signal,
             });
             if (!began.ok) return began;
-            return await scanWorkosDirectorySnapshot({
+            const result = await scanWorkosDirectorySnapshot({
                 context: began.context,
                 signal: params.signal,
                 writePeoplePage: params.writePeoplePage,
                 writeGroupsPage: params.writeGroupsPage,
                 writeGroupMembersPage: params.writeGroupMembersPage,
             });
+            return result.ok
+                ? { ...result, expectedCurrentness: began.expectedCurrentness }
+                : result;
         }
     }
 };
@@ -184,13 +201,16 @@ export const catchUpDirectorySource: DirectoryProjectionCatchUp = async (params)
                 signal: params.signal,
             });
             if (!began.ok) return began;
-            return await consumeWorkosDirectoryEvents({
+            const result = await consumeWorkosDirectoryEvents({
                 source: params.source,
                 context: began.context,
                 signal: params.signal,
-                writeWorkosEvent: params.writeWorkosEvent,
+                writeWorkosEvent: (event) => params.writeWorkosEvent(event, began.expectedCurrentness),
                 stageWorkosGroupMembersEventPage: params.stageWorkosGroupMembersEventPage,
             });
+            return result.ok
+                ? { ...result, expectedCurrentness: began.expectedCurrentness }
+                : result;
         }
     }
 };

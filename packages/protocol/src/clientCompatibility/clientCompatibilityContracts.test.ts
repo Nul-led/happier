@@ -24,6 +24,7 @@ import {
   AccountStoredContentCompatibilityDeclarationV1Schema,
   AccountStoredContentCompatibilityServerRequirementsV1Schema,
   AccountStoredContentUpgradeRequiredV1Schema,
+  AnyClientUpgradeRequiredV1Schema,
   buildAccountStoredContentCompatibilityHttpHeadersV1,
   buildAccountStoredContentCompatibilitySocketAuthV1,
   classifyCurrentAccountStoredContentServerCompatibility,
@@ -33,6 +34,19 @@ import {
 } from './index.js';
 
 describe('compatibility protocol contracts', () => {
+  it('accepts only the strict operation-scoped organization update requirement', () => {
+    const result = {
+      error: 'client-upgrade-required',
+      requirement: { v: 1, kind: 'session-organization', minimumProtocolVersion: 2 },
+    };
+    expect(AnyClientUpgradeRequiredV1Schema.parse(result)).toEqual(result);
+    expect(AnyClientUpgradeRequiredV1Schema.safeParse({
+      ...result, requirement: { ...result.requirement, minimumProtocolVersion: 1 },
+    }).success).toBe(false);
+    expect(AnyClientUpgradeRequiredV1Schema.safeParse({
+      ...result, requirement: { ...result.requirement, ignored: true },
+    }).success).toBe(false);
+  });
   it('owns independent session capability thresholds without a combined declaration protocol', () => {
     expect(SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY).toBe(2);
     expect(SESSION_SYNC_PROTOCOL_VERSION_PUBLISHER_AUTHORITY_CHECK).toBe(3);

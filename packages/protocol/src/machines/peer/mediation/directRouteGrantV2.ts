@@ -11,7 +11,7 @@ import { IrohEndpointIdV1Schema } from '../../../connectivity/iroh/endpointDescr
 export const PEER_ROUTE_EPHEMERAL_ED25519_KIND_V2 = 'ephemeral_ed25519' as const;
 
 /** Machine/1 purposes bound to the existing grant flow and scope below. */
-export const IROH_PEER_ROUTE_OPERATION_KINDS_V2 = ['finite_transfer', 'workspace_sync'] as const;
+export const IROH_PEER_ROUTE_OPERATION_KINDS_V2 = ['finite_transfer', 'workspace_sync', 'tcp_tunnel'] as const;
 export const IrohPeerRouteOperationKindV2Schema = z.enum(IROH_PEER_ROUTE_OPERATION_KINDS_V2);
 
 /** Closed application/transport identity of the party that opens `happier/machine/1`. */
@@ -136,6 +136,16 @@ function addIrohPeerRouteGrantBindingIssuesV2(
       });
     }
     if (
+      iroh.operationKind === 'tcp_tunnel'
+      && (payload.flowKind !== 'tcp_tunnel' || payload.scope.kind !== 'tcp_tunnel')
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['iroh', 'operationKind'],
+        message: 'TCP tunnels require the signed tcp_tunnel destination scope',
+      });
+    }
+    if (
       iroh.operationKind === 'workspace_sync'
       && (
         (payload.flowKind !== 'bounded_transfer' && payload.flowKind !== 'machine_rpc')
@@ -181,7 +191,7 @@ export const DirectRouteGrantPayloadV2Schema = z
     routeKind: AuthorizedPeerEndpointRouteKindV1Schema,
     scope: DirectRouteGrantScopeV2Schema,
     iat: z.number().int().nonnegative(),
-    exp: z.number().int().positive(),
+    exp: z.number().int().positive().nullable(),
     aud: z.literal(DIRECT_ROUTE_GRANT_AUDIENCE_V1),
     endpointFingerprint: z.string().min(1).optional(),
     iroh: IrohPeerRouteBindingV2Schema.optional(),
@@ -197,7 +207,16 @@ export const DirectRouteGrantPayloadV2Schema = z
         message: 'Grant scope kind must match flow kind',
       });
     }
-    if (payload.exp <= payload.iat) {
+    const preview = payload.scope.kind === 'tcp_tunnel' ? payload.scope.preview : undefined;
+    if (payload.exp === null && (!preview || payload.routeKind !== 'iroh_peer')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['exp'], message: 'Only registration-bound Iroh previews may omit expiry' });
+    }
+    if (preview && (payload.exp !== null || payload.machineId !== preview.machineId
+      || payload.scope.kind !== 'tcp_tunnel' || payload.scope.allowedPorts.length !== 1
+      || payload.scope.allowedPorts[0] !== preview.target.port || payload.routeKind !== 'iroh_peer')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['scope', 'preview'], message: 'Preview grants bind one registered target and its lifetime' });
+    }
+    if (payload.exp !== null && payload.exp <= payload.iat) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['exp'],

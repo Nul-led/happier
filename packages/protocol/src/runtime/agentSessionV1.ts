@@ -137,6 +137,8 @@ const AgentSessionConfigurationSnapshotCoreV1Schema = z.object({
   mode: TimestampedAgentValueV1Schema(exactString(MODEL_ID_MAX).nullable()),
   model: TimestampedAgentValueV1Schema(exactString(MODEL_ID_MAX).nullable()),
   permissionIntent: TimestampedAgentValueV1Schema(asProtocolZod(AgentPermissionIntentV1Schema).nullable()),
+  /** Host role restriction; independent of the permission intent used as delegation ceiling. */
+  workspaceWrites: z.enum(['allow', 'deny']).optional(),
   options: z.record(
     exactString(HOST_ID_MAX),
     TimestampedAgentValueV1Schema(AgentConfigurationScalarV1Schema),

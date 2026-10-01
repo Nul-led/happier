@@ -190,7 +190,8 @@ describe('actionCatalog action-definition adapter', () => {
 
     expect(definitions.length).toBeGreaterThan(0);
     for (const definition of definitions) {
-      expect(SerializedActionDefinitionV1Schema.safeParse(definition).success).toBe(true);
+      const parsed = SerializedActionDefinitionV1Schema.safeParse(definition);
+      expect(parsed.success, `${definition.id}: ${parsed.success ? '' : parsed.error.message}`).toBe(true);
     }
   });
 

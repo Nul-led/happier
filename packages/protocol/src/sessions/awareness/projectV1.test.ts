@@ -4,6 +4,7 @@ import {
   SESSION_AWARENESS_OPTIMISTIC_PENDING_INPUT_MS,
   SESSION_AWARENESS_RUNTIME_STALE_SIGNAL_MS,
   SessionAwarenessProjectionV1Schema,
+  SessionAwarenessLineageV1Schema,
   projectSessionAwarenessV1,
   type ProjectSessionAwarenessV1Input,
 } from './index.js';
@@ -26,6 +27,42 @@ function input(
 }
 
 describe('projectSessionAwarenessV1 — operational semantics', () => {
+  it('preserves server-visible origin independently of private fork lineage', () => {
+    const origin = { kind: 'run_step' as const, runId: 'workflow-run' };
+    const projection = projectSessionAwarenessV1(input({
+      origin,
+      content: { mode: 'e2ee', keyState: 'missing' },
+      lineage: { relation: 'fork', sourceSessionId: 'private-parent' },
+    }));
+    expect(projection).toMatchObject({ origin });
+    expect(projection.lineage).toBeUndefined();
+    expect(SessionAwarenessProjectionV1Schema.safeParse(projection).success).toBe(true);
+    expect(SessionAwarenessProjectionV1Schema.safeParse({
+      ...projection, origin: { ...origin, instructions: 'untrusted' },
+    }).success).toBe(false);
+  });
+
+  it('accepts fork/replay lineage and rejects retired subagent/message provenance lineage', () => {
+    for (const relation of ['fork', 'replay']) {
+      expect(SessionAwarenessLineageV1Schema.safeParse({ relation, sourceSessionId: 'source' }).success).toBe(true);
+    }
+    for (const relation of ['subagent', 'message_provenance']) {
+      expect(SessionAwarenessLineageV1Schema.safeParse({ relation, sourceSessionId: 'source' }).success).toBe(false);
+    }
+  });
+  it('preserves authorized relation ids and counts even when encrypted content is locked', () => {
+    const reportsTo = { sessionId: 'lead' };
+    const reports = { total: 3, working: 1, needsYou: 1, stalled: 1 };
+    const projection = projectSessionAwarenessV1(input({
+      content: { mode: 'e2ee', keyState: 'missing' },
+      reportsTo,
+      reports,
+    }));
+    expect(projection).toMatchObject({ reportsTo, reports });
+    expect(SessionAwarenessProjectionV1Schema.safeParse(projection).success).toBe(true);
+    expect(SessionAwarenessProjectionV1Schema.safeParse({ ...projection, reports: { ...reports, total: -1 } }).success).toBe(false);
+    expect(SessionAwarenessProjectionV1Schema.safeParse({ ...projection, reportsTo: { ...reportsTo, permission: 'admin' } }).success).toBe(false);
+  });
   it('keeps a terminal turn projection authoritative over stale thinking', () => {
     const projection = projectSessionAwarenessV1(input({
       lifecycle: { latestTurnStatus: 'completed', latestTurnStatusObservedAtMs: NOW - 5_000 },
@@ -399,12 +436,12 @@ describe('projectSessionAwarenessV1 — content availability', () => {
     const projection = projectSessionAwarenessV1(input({
       title: '  Release prep  ',
       content: { mode: 'e2ee', keyState: 'opened' },
-      lineage: { relation: 'subagent', sourceSessionId: 'session-0' },
+      lineage: { relation: 'replay', sourceSessionId: 'session-0' },
       workspace: { projectName: 'happier', path: '/home/alice/happier', machineId: 'machine-1' },
     }));
 
     expect(projection.title).toBe('Release prep');
-    expect(projection.lineage).toEqual({ relation: 'subagent', sourceSessionId: 'session-0' });
+    expect(projection.lineage).toEqual({ relation: 'replay', sourceSessionId: 'session-0' });
     expect(projection.workspace).toEqual({
       machineId: 'machine-1',
       projectName: 'happier',

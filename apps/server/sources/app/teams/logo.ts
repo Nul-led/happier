@@ -7,7 +7,7 @@ import {
 } from "@happier-dev/protocol/teams";
 
 import { deletePublicFile, writePublicFile } from "@/storage/blob/files";
-import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isServerFeatureEnabledForHome } from "@/app/features/catalog/serverFeatureGate";
 import { tryProcessImage } from "@/storage/blob/processImage";
 import { inTx, type Tx } from "@/storage/inTx";
 import { getActivePrismaRuntime } from "@/storage/prisma";
@@ -123,6 +123,7 @@ export async function setTeamLogo(input: Readonly<{
                 teamId: input.teamId,
                 actorAccountId: input.actorAccountId,
                 logo,
+                authentication: input.authentication,
             });
         });
     } catch (error) {
@@ -160,6 +161,7 @@ export async function removeTeamLogo(input: Readonly<{
             teamId: input.teamId,
             actorAccountId: input.actorAccountId,
             logo: null,
+            authentication: input.authentication,
         });
     });
     if (!committed.ok) return committed;
@@ -184,7 +186,7 @@ async function authorizeLogoMutationInTx(
         authentication?: TeamOperationAuthenticationContext;
     }>,
 ): Promise<TeamLogoError | null> {
-    if (!isServerFeatureEnabledForRequest("teams", input.env ?? process.env)) return "teams_unavailable";
+    if (!await isServerFeatureEnabledForHome("teams", { tx, env: input.env })) return "teams_unavailable";
     const context = await resolveTeamActorContextInTx(tx, input);
     const viewer = toTeamViewer(context);
     if (viewer === null) return "team_not_found";
@@ -204,7 +206,12 @@ async function authorizeLogoMutationInTx(
 
 async function commitTeamLogoInTx(
     tx: Tx,
-    input: Readonly<{ teamId: string; actorAccountId: string; logo: StoredTeamLogo | null }>,
+    input: Readonly<{
+        teamId: string;
+        actorAccountId: string;
+        logo: StoredTeamLogo | null;
+        authentication?: TeamOperationAuthenticationContext;
+    }>,
 ): Promise<LogoCommit> {
     const current = await tx.team.findUnique({
         where: { id: input.teamId },
@@ -222,7 +229,7 @@ async function commitTeamLogoInTx(
 
     return {
         ok: true,
-        team: await projectForActorInTx(tx, updated, input.actorAccountId),
+        team: await projectForActorInTx(tx, updated, input.actorAccountId, input.authentication),
         displacedPath: displaced?.path ?? null,
     };
 }

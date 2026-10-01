@@ -7,7 +7,7 @@ import {
   SessionDiscussionMessageContentV1Schema,
   SessionDiscussionTitleV1Schema,
 } from '../../sessions/discussions/content.js';
-import type { ActionCliBindContext, ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliBindContext, type ActionCliProjection } from '../actionCliProjection.js';
 import type { ActionInputHints } from '../metadata.js';
 
 const SessionSelectorSchema = z.string().trim().min(1);
@@ -62,41 +62,50 @@ function textContent(text: string) {
 }
 
 export function bindSessionDiscussionCreateCliInput(
-  value: SessionDiscussionCreateCliInput,
+  value: Readonly<Partial<SessionDiscussionCreateCliInput>>,
   context: ActionCliBindContext,
 ): Readonly<Record<string, unknown>> {
+  // Over canonical whole-input JSON this binder sees only the caller fields the
+  // caller actually typed, so each projection is conditional on its source: the
+  // first message exists exactly when the caller authored one.
   return {
-    sessionId: value.sessionId,
-    creationLocalId: value.creationLocalId ?? `discussion-${context.invocationId}`,
-    title: SessionDiscussionTitleV1Schema.shape.title.parse(normalizeAuthoredCliText(value.title)),
-    firstMessage: {
-      localId: value.messageLocalId ?? `message-${context.invocationId}`,
-      content: textContent(value.message),
-      mentionedAccountIds: value.mentionedAccountIds ?? [],
-    },
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
+    creationLocalId: value.creationLocalId ?? actionCliDerivedDefault(`discussion-${context.invocationId}`),
+    ...(value.title === undefined ? {} : {
+      title: SessionDiscussionTitleV1Schema.shape.title.parse(normalizeAuthoredCliText(value.title)),
+    }),
+    ...(value.message === undefined ? {} : {
+      firstMessage: {
+        localId: value.messageLocalId ?? `message-${context.invocationId}`,
+        content: textContent(value.message),
+        mentionedAccountIds: value.mentionedAccountIds ?? [],
+      },
+    }),
   };
 }
 
 export function bindSessionDiscussionRenameCliInput(
-  value: SessionDiscussionRenameCliInput,
+  value: Readonly<Partial<SessionDiscussionRenameCliInput>>,
 ): Readonly<Record<string, unknown>> {
   return {
-    sessionId: value.sessionId,
-    discussionId: value.discussionId,
-    title: SessionDiscussionTitleV1Schema.shape.title.parse(normalizeAuthoredCliText(value.title)),
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
+    ...(value.discussionId === undefined ? {} : { discussionId: value.discussionId }),
+    ...(value.title === undefined ? {} : {
+      title: SessionDiscussionTitleV1Schema.shape.title.parse(normalizeAuthoredCliText(value.title)),
+    }),
   };
 }
 
 export function bindSessionDiscussionPostCliInput(
-  value: SessionDiscussionPostCliInput,
+  value: Readonly<Partial<SessionDiscussionPostCliInput>>,
   context: ActionCliBindContext,
 ): Readonly<Record<string, unknown>> {
   return {
-    sessionId: value.sessionId,
-    discussionId: value.discussionId,
-    localId: value.localId ?? context.invocationId,
-    content: textContent(value.message),
-    mentionedAccountIds: value.mentionedAccountIds ?? [],
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
+    ...(value.discussionId === undefined ? {} : { discussionId: value.discussionId }),
+    localId: value.localId ?? actionCliDerivedDefault(context.invocationId),
+    ...(value.message === undefined ? {} : { content: textContent(value.message) }),
+    mentionedAccountIds: value.mentionedAccountIds ?? actionCliDerivedDefault([]),
   };
 }
 
@@ -148,7 +157,7 @@ export const SESSION_DISCUSSION_CREATE_CLI_PROJECTION: ActionCliProjection = {
   inputSchema: SessionDiscussionCreateCliInputSchema,
   inputHints: CREATE_HINTS,
   bindInput: (value, context) => bindSessionDiscussionCreateCliInput(
-    value as SessionDiscussionCreateCliInput,
+    value as Partial<SessionDiscussionCreateCliInput>,
     context,
   ),
 };
@@ -163,7 +172,7 @@ export const SESSION_DISCUSSION_POST_CLI_PROJECTION: ActionCliProjection = {
   inputSchema: SessionDiscussionPostCliInputSchema,
   inputHints: POST_HINTS,
   bindInput: (value, context) => bindSessionDiscussionPostCliInput(
-    value as SessionDiscussionPostCliInput,
+    value as Partial<SessionDiscussionPostCliInput>,
     context,
   ),
 };
@@ -184,7 +193,7 @@ export const SESSION_DISCUSSION_RENAME_CLI_PROJECTION: ActionCliProjection = {
       { path: 'title', title: 'Discussion title', widget: 'text', required: true },
     ],
   },
-  bindInput: (value) => bindSessionDiscussionRenameCliInput(value as SessionDiscussionRenameCliInput),
+  bindInput: (value) => bindSessionDiscussionRenameCliInput(value as Partial<SessionDiscussionRenameCliInput>),
 };
 
 export const SESSION_DISCUSSION_ARCHIVE_CLI_PROJECTION: ActionCliProjection = {

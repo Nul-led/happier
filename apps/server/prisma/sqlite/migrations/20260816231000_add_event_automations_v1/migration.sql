@@ -243,9 +243,11 @@ CREATE TABLE "new_AutomationRun" (
                             AND "occurrenceEvidenceEqualityTag" NOT GLOB '*[^A-Za-z0-9_-]*')))
                 OR ("causeTriggerKind" = 'sessionLifecycle' AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
                     AND "causeScheduledFor" IS NULL
-                    AND "causeSessionLifecycleEvent" IN ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired')
+                    AND "causeSessionLifecycleEvent" IN ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired', 'sessionStarted', 'sessionArchived')
                     AND "causeSourceSessionId" IS NOT NULL
-                    AND "causeSourceTurnId" IS NOT NULL AND "causeSourceSelectorId" IS NULL
+                    AND (("causeSessionLifecycleEvent" IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NULL)
+                        OR ("causeSessionLifecycleEvent" NOT IN ('sessionStarted', 'sessionArchived') AND "causeSourceTurnId" IS NOT NULL))
+                    AND "causeSourceSelectorId" IS NULL
                     AND "causeSessionLifecyclePolicyKind" IN ('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch')
                     AND (("causeSessionLifecycleEvent" = 'userActionRequired'
                             AND "causeSessionLifecycleRequestId" IS NOT NULL
@@ -326,7 +328,7 @@ CREATE TABLE "AutomationEventSourceStatus" (
     "reporterMachineId" TEXT NOT NULL,
     "reporterMachineInstallationId" TEXT NOT NULL,
     "reporterMaterializationId" TEXT NOT NULL,
-    "reporterImmutableGenerationId" TEXT NOT NULL,
+    "reporterSourceCustody" JSONB NOT NULL,
     "state" TEXT NOT NULL,
     "code" TEXT,
     "lastObservedAt" DATETIME,
@@ -344,7 +346,7 @@ CREATE TABLE "AutomationEventSourceCatalogStatus" (
     "reporterMachineId" TEXT NOT NULL,
     "reporterMachineInstallationId" TEXT NOT NULL,
     "reporterMaterializationId" TEXT NOT NULL,
-    "reporterImmutableGenerationId" TEXT NOT NULL,
+    "reporterSourceCustody" JSONB NOT NULL,
     "scopeKey" TEXT NOT NULL,
     "observedRevision" BIGINT NOT NULL,
     "adoptedRevision" BIGINT,

@@ -93,14 +93,19 @@ export type RegisterLocalServicePublicRoutesOptions = Readonly<{
     dnsTlsValid?: boolean;
     readOptionalAuthenticatedUser?: (request: unknown) => Promise<LocalServicePublicAuthenticatedUser | null>;
     openTunnel?: OpenLocalServicePreviewTunnel;
-    featureEnabled?: () => boolean;
+    /** The request is the one being served, so the decision reads that request's Home configuration. */
+    featureEnabled?: (request: object) => boolean | Promise<boolean>;
     observability?: LocalServicePublicWebSocketUpgradeOptions["observability"];
     proxyHttp?: (input: Parameters<typeof proxyLocalServicePreviewHttpRequest>[0]) => Promise<ProxyLocalServicePreviewHttpRequestResult>;
     proxyWebSocket?: LocalServicePublicWebSocketUpgradeOptions["proxyWebSocket"];
+    trustProxy?: LocalServicePublicWebSocketUpgradeOptions["trustProxy"];
+    externalProtocol?: LocalServicePublicWebSocketUpgradeOptions["externalProtocol"];
+    retainConnection?: LocalServicePublicWebSocketUpgradeOptions["retainConnection"];
 }>;
 
 type RouteRequest = Readonly<{
     method?: string;
+    protocol?: string;
     ip?: string;
     socket?: Readonly<{ remoteAddress?: string }>;
     params?: Record<string, unknown>;
@@ -322,6 +327,7 @@ function createPublicHttpRequest(request: RouteRequest, signal?: AbortSignal): L
         ),
         body: bodyChunks(request.body),
         signal,
+        externalProtocol: request.protocol === "https" ? "https" : "http",
     };
 }
 
@@ -366,10 +372,10 @@ function redirectPublicTokenExchange(
         .send?.();
 }
 
-function isPublicPreviewFeatureEnabled(options: RegisterLocalServicePublicRoutesOptions): boolean {
+async function isPublicPreviewFeatureEnabled(options: RegisterLocalServicePublicRoutesOptions, request: object): Promise<boolean> {
     if (!options.featureEnabled) return true;
     try {
-        return options.featureEnabled() === true;
+        return await options.featureEnabled(request) === true;
     } catch {
         return false;
     }
@@ -401,7 +407,7 @@ async function handleGetStatus(
     reply: RouteReply,
     options: RegisterLocalServicePublicRoutesOptions,
 ): Promise<void> {
-    if (!isPublicPreviewFeatureEnabled(options)) {
+    if (!await isPublicPreviewFeatureEnabled(options, request)) {
         sendNotFound(reply);
         return;
     }
@@ -453,7 +459,7 @@ async function handleCreateExposure(
     reply: RouteReply,
     options: RegisterLocalServicePublicRoutesOptions,
 ): Promise<void> {
-    if (!isPublicPreviewFeatureEnabled(options)) {
+    if (!await isPublicPreviewFeatureEnabled(options, request)) {
         sendNotFound(reply);
         return;
     }
@@ -509,7 +515,7 @@ async function handleRevokeExposure(
     reply: RouteReply,
     options: RegisterLocalServicePublicRoutesOptions,
 ): Promise<void> {
-    if (!isPublicPreviewFeatureEnabled(options)) {
+    if (!await isPublicPreviewFeatureEnabled(options, request)) {
         sendNotFound(reply);
         return;
     }
@@ -557,7 +563,7 @@ async function handlePublicPreviewRequest(
     reply: RouteReply,
     options: RegisterLocalServicePublicRoutesOptions,
 ): Promise<unknown> {
-    if (!isPublicPreviewFeatureEnabled(options)) {
+    if (!await isPublicPreviewFeatureEnabled(options, request)) {
         sendNotFound(reply);
         return undefined;
     }
@@ -654,7 +660,7 @@ export function registerLocalServicePublicRoutes(
     app.post(PUBLIC_CONTROL_ROUTE_PATH, {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -667,7 +673,7 @@ export function registerLocalServicePublicRoutes(
     app.post(PUBLIC_STATUS_ROUTE_PATH, {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -680,7 +686,7 @@ export function registerLocalServicePublicRoutes(
     app.delete(PUBLIC_RESOURCE_ROUTE_PATH, {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerBinding: {
+            restrictedCredentialBinding: {
                 scope: "session",
                 session: "body.sessionId",
                 machine: "body.machineId",
@@ -690,20 +696,26 @@ export function registerLocalServicePublicRoutes(
         await handleRevokeExposure(request as RouteRequest, reply as RouteReply, options);
     });
 
-    for (const method of PUBLIC_PROXY_HTTP_METHODS) {
-        const handler = async (request: unknown, reply: unknown) => {
-            await handlePublicPreviewRequest(request as RouteRequest, reply as RouteReply, options);
-        };
-        const registerProxyRoute = (path: string) => {
-            if (method === "GET") {
-                app.get(path, { exposeHeadRoute: false }, handler);
-                return;
+    app.register(async (dataPlane) => {
+        // Only application traffic bypasses API parsing; exposure control requests above
+        // keep Fastify's JSON parser in their parent scope.
+        dataPlane.removeContentTypeParser(["application/json", "text/plain", "*"]);
+        dataPlane.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
+        for (const method of PUBLIC_PROXY_HTTP_METHODS) {
+            const handler = async (request: unknown, reply: unknown) => {
+                await handlePublicPreviewRequest(request as RouteRequest, reply as RouteReply, options);
+            };
+            const registerProxyRoute = (path: string) => {
+                if (method === "GET") {
+                    dataPlane.get(path, { exposeHeadRoute: false }, handler);
+                    return;
+                }
+                dataPlane[method.toLowerCase() as Lowercase<typeof method>](path, handler);
+            };
+            if (method !== "DELETE") {
+                registerProxyRoute(PUBLIC_RESOURCE_ROUTE_PATH);
             }
-            app[method.toLowerCase() as Lowercase<typeof method>](path, handler);
-        };
-        if (method !== "DELETE") {
-            registerProxyRoute(PUBLIC_RESOURCE_ROUTE_PATH);
+            registerProxyRoute(PUBLIC_PROXY_ROUTE_PATH);
         }
-        registerProxyRoute(PUBLIC_PROXY_ROUTE_PATH);
-    }
+    });
 }

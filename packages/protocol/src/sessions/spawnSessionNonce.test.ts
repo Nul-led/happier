@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { normalizeSpawnSessionNonceResolution, settleSpawnSessionNonce } from './spawnSessionNonce.js';
 
 describe('normalizeSpawnSessionNonceResolution', () => {
+  it.each(['agent_cli_missing', 'agent_signed_out'])('retains Agent identity with %s and rejects an identity-less failure', (errorCode) => {
+    const failure = { status: 'error', errorCode, errorMessage: 'Agent setup required', agentId: 'codex' };
+    expect(normalizeSpawnSessionNonceResolution(failure)).toEqual(failure);
+    expect(normalizeSpawnSessionNonceResolution({ ...failure, agentId: undefined })).toEqual({ status: 'not_found' });
+  });
+
   it('normalizes the shared machine/local nonce result contract without inventing a second reader', () => {
     expect(normalizeSpawnSessionNonceResolution({ status: 'success', sessionId: ' session-settled ' }))
       .toEqual({ status: 'success', sessionId: 'session-settled' });

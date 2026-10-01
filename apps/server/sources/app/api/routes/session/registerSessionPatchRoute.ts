@@ -45,7 +45,7 @@ export function registerSessionPatchRoute(app: Fastify) {
     app.patch('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
         attachValidation: true,
-        config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
+        config: { restrictedCredentialBinding: { scope: "session", session: "params.sessionId" } },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: z.union([
@@ -77,6 +77,7 @@ export function registerSessionPatchRoute(app: Fastify) {
                 403: z.union([
                     z.object({ error: z.literal("Forbidden") }),
                     z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }),
+                    z.object({ error: z.literal("session_access_authentication_required") }),
                 ]),
                 404: z.object({ error: z.literal("Session not found") }),
                 409: z.union([
@@ -94,6 +95,7 @@ export function registerSessionPatchRoute(app: Fastify) {
                     SessionTeamCredentialBindingMutationRejectionV1Schema,
                 ]),
                 426: z.unknown(),
+                503: z.object({ error: z.literal("session_access_authentication_unavailable") }),
                 500: z.object({ error: z.literal("Failed to update session") }),
             },
         },
@@ -137,6 +139,12 @@ export function registerSessionPatchRoute(app: Fastify) {
             if (!tupleResult.ok) {
                 if (tupleResult.error === "invalid-params") return reply.code(400).send({ error: "Invalid parameters" });
                 if (tupleResult.error === "forbidden") return reply.code(403).send({ error: "Forbidden" });
+                if (tupleResult.error === "session_access_authentication_required") {
+                    return reply.code(403).send({ error: "session_access_authentication_required" });
+                }
+                if (tupleResult.error === "session_access_authentication_unavailable") {
+                    return reply.code(503).send({ error: "session_access_authentication_unavailable" });
+                }
                 if (tupleResult.error === "session-not-found") return reply.code(404).send({ error: "Session not found" });
                 if (tupleResult.error === "session_active") {
                     return reply.code(409).send({

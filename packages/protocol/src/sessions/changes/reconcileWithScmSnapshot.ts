@@ -100,6 +100,11 @@ function deriveRepositoryRelativePath(params: Readonly<{
   return normalizeRepositoryPathToken(filePath.slice(rootPath.length + 1));
 }
 
+/** Shared evidence identity: use the repository-relative path only when the root contains it. */
+export function normalizeRepositoryFilePath(filePath: string, repoRootPath?: string | null): string {
+  return deriveRepositoryRelativePath({ filePath, repoRootPath }) || normalizeRepositoryPathToken(filePath);
+}
+
 function buildRepositoryPathCandidates(
   filePath: string,
   previousFilePath: string | null | undefined,

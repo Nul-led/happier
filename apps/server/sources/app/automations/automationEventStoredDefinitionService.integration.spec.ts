@@ -36,7 +36,11 @@ const caller = {
     machineId: MACHINE_ID,
     machineInstallationId: MACHINE_INSTALLATION_ID,
     materializationId: MATERIALIZATION_ID,
-    immutableGenerationId: "github-stored-definition-generation-a",
+    sourceCustody: {
+        kind: "managed",
+        immutableGenerationId: "github-stored-definition-generation-a",
+        installSource: "archive",
+    },
 } as const;
 
 /** The one canonical trigger-identity fixture builder; branded at the boundary. */

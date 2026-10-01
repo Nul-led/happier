@@ -528,7 +528,20 @@ describe("pendingMessageService", () => {
         expect(currentTx.sessionPendingMessage.create).not.toHaveBeenCalled();
     });
 
-    it("stores supplied encrypted pending message role metadata", async () => {
+    it("rejects direct-token encrypted nonuser pending inputs before they can omit user constraints", async () => {
+        await expect(enqueuePendingMessageCompat({ authentication: { ...authentication, apiTokenGrant: {
+            v: 1, actions: { families: ["messaging"], ids: [] }, targets: null,
+            approve: false, origins: [], models: null, permissionModes: ["default"], create: null,
+        } }, actorUserId: "u1", sessionId: "s1", localId: "forged-role", ciphertext: "cipher", messageRole: "event" }))
+            .resolves.toMatchObject({ ok: false, error: "invalid-params" });
+        await expect(updatePendingMessage({ authentication: { ...authentication, apiTokenGrant: {
+            v: 1, actions: { families: ["messaging"], ids: [] }, targets: null,
+            approve: false, origins: [], models: null, permissionModes: ["default"], create: null,
+        } }, actorUserId: "u1", sessionId: "s1", localId: "forged-role", ciphertext: "cipher", messageRole: "event" }))
+            .resolves.toMatchObject({ ok: false, error: "invalid-params" });
+    });
+
+    it("stores encrypted pending message role metadata and verified token input constraints", async () => {
         const createdAt = new Date("2020-01-01T00:00:00.000Z");
 
         currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture());
@@ -552,12 +565,14 @@ describe("pendingMessageService", () => {
         });
 
         const res = await enqueuePendingMessageCompat({
-            authentication,
+            authentication: { ...authentication, apiTokenGrant: {
+                v: 1, actions: { families: ["messaging"], ids: [] }, targets: null,
+                approve: false, origins: [], models: null, permissionModes: ["default"], create: null,
+            } },
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
             ciphertext: "cipher",
-            messageRole: "user",
             requestedAction: { v: 1, kind: "enqueue" },
         });
 
@@ -567,6 +582,9 @@ describe("pendingMessageService", () => {
             expect.objectContaining({
                 data: expect.objectContaining({
                     messageRole: "user",
+                    inputAdmissionReceipt: expect.objectContaining({
+                        actorAccountId: "u1", callerInputConstraints: { models: null, permissionModes: ["default"] },
+                    }),
                 }),
             }),
         );
@@ -880,7 +898,7 @@ describe("pendingMessageService", () => {
         expect(currentTx.sessionPendingMessage.update).not.toHaveBeenCalled();
     });
 
-    it("updates pending content using plain envelopes when session encryptionMode is plain and storagePolicy is optional", async () => {
+    it("updates pending content using plain envelopes and stamps the editing token's input constraints", async () => {
         storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
 
         currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture({
@@ -892,7 +910,10 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.update = vi.fn();
 
         const res = await updatePendingMessageCompat({
-            authentication,
+            authentication: { ...authentication, apiTokenGrant: {
+                v: 1, actions: { families: ["messaging"], ids: [] }, targets: null,
+                approve: false, origins: [], models: null, permissionModes: ["default"], create: null,
+            } },
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -905,6 +926,10 @@ describe("pendingMessageService", () => {
                 data: expect.objectContaining({
                     content: { t: "plain", v: { type: "user", text: "hi" } },
                     messageRole: "user",
+                    inputAdmissionReceipt: expect.objectContaining({
+                        actorAccountId: "u1",
+                        callerInputConstraints: { models: null, permissionModes: ["default"] },
+                    }),
                 }),
             }),
         );

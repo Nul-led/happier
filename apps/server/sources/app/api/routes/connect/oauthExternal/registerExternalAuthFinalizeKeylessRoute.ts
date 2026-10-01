@@ -51,6 +51,7 @@ import {
     claimTeamInvitationPostAuthContinuationInTx,
     discardClaimedTeamInvitationPostAuthContinuationInTx,
 } from "@/app/teams/invitations/postAuthContinuation";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 function sha256Hex(value: string): string {
     return createHash("sha256").update(value, "utf8").digest("hex");
@@ -83,13 +84,14 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         const providerId = request.params.provider.toString().trim().toLowerCase();
         const pendingKey = request.body.pending.toString().trim();
         if (!pendingKey) return reply.code(400).send({ error: "invalid-pending" });
 
         const pending = await loadValidOAuthPending(pendingKey);
         if (!pending) {
-            if (!await resolveOAuthRuntimeById(process.env, providerId)) return reply.code(404).send({ error: "unsupported-provider" });
+            if (!await resolveOAuthRuntimeById(requestHomeEnv, providerId)) return reply.code(404).send({ error: "unsupported-provider" });
             return reply.code(400).send({ error: "invalid-pending" });
         }
 
@@ -143,16 +145,16 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                     : null;
         if (!pendingFormat) return reply.code(400).send({ error: "invalid-pending" });
 
-        const keylessEnv = readAuthOauthKeylessFeatureEnv(process.env);
+        const keylessEnv = readAuthOauthKeylessFeatureEnv(requestHomeEnv);
         if (!isAccountDirectory && !isTeamAdmission) {
             const allowed = await isEffectiveHomeAuthMethodActionEnabled({
-                env: process.env,
+                env: requestHomeEnv,
                 methodId: providerId,
                 actionId: "login",
                 mode: "keyless",
             });
             const availability =
-                resolveKeylessAccountsAvailability(process.env);
+                resolveKeylessAccountsAvailability(requestHomeEnv);
             if (!allowed) {
                 if (
                     !availability.ok
@@ -181,7 +183,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             }
         } else if (!isTeamAdmission && (
             parsedValue.securityBinding?.provider.source === "managed"
-            || !isAuthSignupProviderEnabled(process.env, providerId)
+            || !isAuthSignupProviderEnabled(requestHomeEnv, providerId)
         )) {
             // Account Directory continuations are admitted by the signup
             // provider policy in both modes. Consume that same canonical
@@ -199,6 +201,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         }
 
         const bindingInput = {
+            env: requestHomeEnv,
             providerId, pendingKey, binding: parsedValue.securityBinding,
             purpose: isAccountDirectory ? "account_directory" : (isTeamAdmission ? "team_admission" : null),
         } as const;
@@ -248,7 +251,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             isAccountDirectory
             && (
                 parsedValue.securityBinding?.provider.source === "managed"
-                || !isAuthSignupProviderEnabled(process.env, providerId)
+                || !isAuthSignupProviderEnabled(requestHomeEnv, providerId)
             )
         ) {
             return reply.code(403).send({ error: "signup-provider-disabled" });
@@ -309,7 +312,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                 if (!isAccountDirectory
                     && !isTeamOwnedConnectionAdmission(parsedValue.securityBinding)
                     && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         methodId: providerId,
                         actionId: "login",
                         mode: "keyless",
@@ -339,7 +342,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                 }
                 const teamAdmission = isTeamAdmission
                     ? await requireTeamOAuthAdmissionInTx(tx, {
-                        env: process.env,
+                        env: requestHomeEnv,
                         accountId: identity.accountId,
                         provider: parsedValue.securityBinding?.provider,
                         connection: parsedValue.securityBinding?.connection,
@@ -402,7 +405,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         }
 
         const blocked = !isTeamAdmission && shouldDenyPublicSignupProvisioningAction({
-            env: process.env,
+            env: requestHomeEnv,
             requestIp: request.ip,
             methodId: providerId,
             mode: "keyless",
@@ -416,7 +419,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             return reply.code(403).send({ error: "not-eligible" });
         }
 
-        const eligibility = resolveKeylessAutoProvisionEligibility(process.env);
+        const eligibility = resolveKeylessAutoProvisionEligibility(requestHomeEnv);
         if (!eligibility.ok) {
             return reply.code(403).send({ error: eligibility.error });
         }
@@ -424,7 +427,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         const usernameProvidedRaw = request.body.username?.toString().trim() || "";
         let desiredUsername: string | null = null;
         if (usernameProvidedRaw) {
-            const validation = validateUsername(usernameProvidedRaw, process.env);
+            const validation = validateUsername(usernameProvidedRaw, requestHomeEnv);
             if (!validation.ok) return reply.code(400).send({ error: "invalid-username" });
             desiredUsername = validation.username;
         } else {
@@ -432,7 +435,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             if (required) return reply.code(400).send({ error: "username-required" });
             const suggested = parsedValue.suggestedUsername?.toString().trim() || "";
             if (suggested) {
-                const validation = validateUsername(suggested, process.env);
+                const validation = validateUsername(suggested, requestHomeEnv);
                 if (validation.ok) desiredUsername = validation.username;
             }
         }
@@ -458,7 +461,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             const account = await inTx(async (tx) => {
                 await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
                 if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
-                    env: process.env,
+                    env: requestHomeEnv,
                     methodId: providerId,
                     actionId: "provision",
                     mode: "keyless",
@@ -469,13 +472,13 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                     }
                     throw new Error("not-eligible");
                 }
-                const currentKeyless = readAuthOauthKeylessFeatureEnv(process.env);
-                const currentEligibility = resolveKeylessAutoProvisionEligibility(process.env);
+                const currentKeyless = readAuthOauthKeylessFeatureEnv(requestHomeEnv);
+                const currentEligibility = resolveKeylessAutoProvisionEligibility(requestHomeEnv);
                 if (!currentEligibility.ok || (!isTeamAdmission && (
                     !currentKeyless.enabled || !currentKeyless.autoProvision
                     || !currentKeyless.providers.includes(providerId)
                     || shouldDenyPublicSignupProvisioningAction({
-                        env: process.env,
+                        env: requestHomeEnv,
                         requestIp: request.ip,
                         methodId: providerId,
                         mode: "keyless",
@@ -493,7 +496,7 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                     verifiedMailbox: identityConnection.verifiedMailbox,
                     ...(isTeamAdmission ? {
                         teamOAuthAdmission: {
-                            env: process.env,
+                            env: requestHomeEnv,
                             provider: parsedValue.securityBinding?.provider,
                             connection: parsedValue.securityBinding?.connection,
                             source: parsedValue.securityBinding?.admission,

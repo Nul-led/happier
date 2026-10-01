@@ -553,6 +553,81 @@ describe('canonical per-turn content selection', () => {
 
 
 describe('chronological content provenance', () => {
+  it('qualifies continuous recorded text spans without claiming complete file content', () => {
+    const result = mergeTurnChangeSets({ sessionId: 'session-1', turns: [
+      makeTurn([{ ...CHECKPOINT_FILE, source: 'provider_tool', oldText: 'start', newText: 'middle' }]),
+      makeTurn([{ ...CHECKPOINT_FILE, source: 'provider_tool', oldText: 'middle', newText: 'end' }], { turnId: 'turn-2' }),
+    ] });
+    expect(result.files[0]).toMatchObject({ oldText: 'start', newText: 'end', confidence: 'best_effort' });
+  });
+
+  it('does not call equal fragment endpoints a clean Session file', () => {
+    const result = mergeTurnChangeSets({ sessionId: 'session-1', turns: [
+      makeTurn([{ ...CHECKPOINT_FILE, source: 'provider_tool', oldText: 'start', newText: 'middle' }]),
+      makeTurn([{ ...CHECKPOINT_FILE, source: 'provider_tool', oldText: 'middle', newText: 'start' }], { turnId: 'turn-2' }),
+    ] });
+    expect(result.files[0]).toMatchObject({ oldText: null, newText: null, unifiedDiff: null, confidence: 'best_effort' });
+    expect(result.turns).toHaveLength(2);
+  });
+
+  it('normalizes aggregate-only and workspace fallback paths at the same root owner', () => {
+    const aggregate = mergeTurnChangeSets({ sessionId: 'session-1', turns: [makeTurn([
+      { ...CHECKPOINT_FILE, filePath: '/repo/src/shared.ts' },
+    ])] });
+    const legacy = combineChangedFilesAttribution({ sessionId: 'session-1', repoRootPath: '/repo',
+      canonicalChangeSet: { ...aggregate, turns: [] } });
+    const workspace = combineChangedFilesAttribution({ sessionId: 'session-1', repoRootPath: '/repo',
+      workspaceTouchedFiles: [{ filePath: '/repo/src/shared.ts', changeKind: 'modified' }] });
+    expect(legacy.files[0]?.filePath).toBe('src/shared.ts');
+    expect(workspace.files[0]?.filePath).toBe('src/shared.ts');
+  });
+
+  it('does not present a last-turn patch or statistics as the net Session change', () => {
+    const result = mergeTurnChangeSets({ sessionId: 'session-1', turns: [
+      makeTurn([{ ...CHECKPOINT_FILE, oldText: 'one\ntwo\n', newText: 'ONE\ntwo\n' }]),
+      makeTurn([{ ...CHECKPOINT_FILE, oldText: 'ONE\ntwo\n', newText: 'ONE\nTWO\n',
+        unifiedDiff: 'last turn only', stats: { addedLines: 1, removedLines: 1 } }], { turnId: 'turn-2' }),
+    ] });
+    expect(result.files[0]).toMatchObject({ oldText: 'one\ntwo\n', newText: 'ONE\nTWO\n', unifiedDiff: null });
+    expect(result.files[0]?.stats).toBeUndefined();
+  });
+
+  it.each([
+    { oldText: null, newText: 'middle' },
+    { oldText: 'before', newText: 'unrelated fragment' },
+    { oldText: 'before', newText: 'middle', truncated: true as const },
+  ])('does not fabricate net content from missing or discontinuous evidence: %j', (first) => {
+    const result = mergeTurnChangeSets({ sessionId: 'session-1', turns: [
+      makeTurn([{ ...CHECKPOINT_FILE, ...first }]),
+      makeTurn([{ ...CHECKPOINT_FILE, oldText: 'middle', newText: 'after' }], { turnId: 'turn-2' }),
+    ] });
+    expect(result.files[0]).toMatchObject({ oldText: null, newText: null, unifiedDiff: null, confidence: 'best_effort' });
+    expect(result.turns[1]?.files[0]?.oldText).toBe('middle');
+  });
+
+  it('combines absolute tool paths and relative checkpoint paths using the repository root', () => {
+    const provider = { ...CHECKPOINT_FILE, filePath: '/repo/src/shared.ts', source: 'provider_tool' as const,
+      provider: 'codex', agentTurnId: 'native-turn' };
+    const result = combineChangedFilesAttribution({ sessionId: 'session-1', repoRootPath: '/repo', turns: [
+      makeTurn([provider, CHECKPOINT_FILE], { repositoryCheckpoint: makeCheckpointMetadata('shared_worktree') }),
+    ] });
+    expect(result.files).toEqual([expect.objectContaining({ filePath: 'src/shared.ts', source: 'scm_checkpoint',
+      confidence: 'exact', attribution: { confidence: 'session_exact', reason: 'provider_correlated' },
+      agentTurnId: 'native-turn', checkpointOverlap: 'observed' })]);
+    expect(result.turns[0]?.files[0]?.filePath).toBe('/repo/src/shared.ts');
+  });
+
+  it.each([
+    ['C:\\Users\\Alice\\repo', 'c:/users/alice/repo/src/shared.ts'],
+    ['\\\\server\\share', '//server/share/src/shared.ts'],
+  ])('combines platform path aliases through the existing SCM root owner: %s', (repoRootPath, filePath) => {
+    const result = combineChangedFilesAttribution({ sessionId: 'session-1', repoRootPath, turns: [
+      makeTurn([{ ...CHECKPOINT_FILE, filePath, source: 'provider_tool' }, CHECKPOINT_FILE]),
+    ] });
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.filePath).toBe('src/shared.ts');
+  });
+
   it('does not label a later provider delta as an earlier exact checkpoint', () => {
     const turns = [
       makeTurn([{ ...CHECKPOINT_FILE, oldText: 'start', newText: 'checkpoint' }]),
@@ -560,9 +635,9 @@ describe('chronological content provenance', () => {
         unifiedDiff: 'later provider diff', oldText: 'checkpoint', newText: 'latest' }], { turnId: 'turn-2' }),
     ];
     const result = mergeTurnChangeSets({ sessionId: 'session-1', turns });
-    expect(result.files[0]).toMatchObject({ source: 'provider_tool', confidence: 'strong',
-      oldText: 'start', newText: 'latest', unifiedDiff: 'later provider diff' });
-    expect(result.confidenceSummary).toMatchObject({ source: 'provider_tool', confidence: 'strong' });
+    expect(result.files[0]).toMatchObject({ source: 'provider_tool', confidence: 'best_effort',
+      oldText: 'start', newText: 'latest', unifiedDiff: null });
+    expect(result.confidenceSummary).toMatchObject({ source: 'provider_tool', confidence: 'best_effort' });
   });
 
   it('does not fill absent checkpoint content from weaker evidence in either order', () => {
@@ -614,7 +689,7 @@ describe('chronological content provenance', () => {
       source: 'provider_tool',
       oldText: 'start',
       newText: 'latest',
-      unifiedDiff: 'later provider diff',
+      unifiedDiff: null,
     });
     expect(result.files[0]?.turns).toEqual(['turn-1', 'turn-2']);
   });

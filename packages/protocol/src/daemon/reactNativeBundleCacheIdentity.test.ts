@@ -1,103 +1,41 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1,
+  DaemonPluginHostedWebArtifactCacheIdentityV1Schema,
+  DaemonPluginReactNativeBundleCacheIdentityV1Schema,
   deriveDaemonPluginHostedWebArtifactCacheIdentityKeyV1,
+  deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1,
   isSameDaemonPluginHostedWebArtifactCacheIdentityV1,
   isSameDaemonPluginReactNativeBundleCacheIdentityV1,
   type DaemonPluginReactNativeBundleCacheIdentityV1,
 } from './contributionRegistryProjection.js';
 
 const BASE_IDENTITY: DaemonPluginReactNativeBundleCacheIdentityV1 = {
-  pluginId: 'acme.preview',
-  contributionId: 'native-preview',
   artifactDigest: `sha256:${'b'.repeat(64)}`,
-  hostAppVersion: '2.0.0',
-  hostUiApiVersion: '1.0.0',
-  reactVersion: '19.0.0',
-  reactNativeVersion: '0.83.4',
-  expoRuntimeVersion: '0.2.0-native',
-  hermesVersion: '0.15.0',
-  platform: 'ios',
-  channel: 'internal',
-  nativeCapabilitiesDigest: `sha256:${'c'.repeat(64)}`,
-  projectionGeneration: 12,
 };
 
-const VARIANT_BY_FIELD: {
-  readonly [K in keyof Required<DaemonPluginReactNativeBundleCacheIdentityV1>]:
-    Required<DaemonPluginReactNativeBundleCacheIdentityV1>[K];
-} = {
-  pluginId: 'acme.other',
-  contributionId: 'other-preview',
-  artifactDigest: `sha256:${'d'.repeat(64)}`,
-  hostAppVersion: '2.0.1',
-  hostUiApiVersion: '1.1.0',
-  reactVersion: '19.1.0',
-  reactNativeVersion: '0.84.0',
-  expoRuntimeVersion: '0.3.0-native',
-  hermesVersion: '0.16.0',
-  platform: 'android',
-  channel: 'development',
-  nativeCapabilitiesDigest: `sha256:${'e'.repeat(64)}`,
-  projectionGeneration: 13,
-};
-
-describe('daemon React Native bundle cache identity', () => {
-  it('derives one stable key from the complete Protocol-owned identity', () => {
-    expect(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(BASE_IDENTITY)).toBe([
-      'acme.preview',
-      'native-preview',
-      `sha256:${'b'.repeat(64)}`,
-      '2.0.0',
-      '1.0.0',
-      '19.0.0',
-      '0.83.4',
-      '0.2.0-native',
-      '0.15.0',
-      'ios',
-      'internal',
-      `sha256:${'c'.repeat(64)}`,
-      '12',
-    ].join(':'));
-  });
-
-  it('binds every identity field into the cache key', () => {
-    const baseKey = deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(BASE_IDENTITY);
-    const fields = Object.keys(VARIANT_BY_FIELD) as ReadonlyArray<
-      keyof DaemonPluginReactNativeBundleCacheIdentityV1
-    >;
-
-    expect(fields.length).toBe(Object.keys(BASE_IDENTITY).length);
-    for (const field of fields) {
-      expect(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1({
-        ...BASE_IDENTITY,
-        [field]: VARIANT_BY_FIELD[field],
-      }), field).not.toBe(baseKey);
-    }
-  });
-
-  it('separates an absent optional runtime version from a declared one', () => {
-    const { expoRuntimeVersion: _expo, ...withoutExpo } = BASE_IDENTITY;
-
-    expect(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(withoutExpo))
-      .not.toBe(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(BASE_IDENTITY));
-  });
-
-  it('owns strict equality for both RN and hosted identities', () => {
-    expect(isSameDaemonPluginReactNativeBundleCacheIdentityV1(BASE_IDENTITY, { ...BASE_IDENTITY })).toBe(true);
-    expect(isSameDaemonPluginReactNativeBundleCacheIdentityV1(BASE_IDENTITY, {
+describe('daemon UI bundle cache identity', () => {
+  it('keys executable bytes by digest only', () => {
+    const key = deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(BASE_IDENTITY);
+    expect(key).toBe(`sha256:${'b'.repeat(64)}`);
+    expect(DaemonPluginReactNativeBundleCacheIdentityV1Schema.safeParse({
       ...BASE_IDENTITY,
-      projectionGeneration: BASE_IDENTITY.projectionGeneration + 1,
-    })).toBe(false);
-    const hosted = {
-      pluginId: BASE_IDENTITY.pluginId,
-      contributionId: BASE_IDENTITY.contributionId,
-      artifactDigest: BASE_IDENTITY.artifactDigest,
-      platform: 'web' as const,
-      projectionGeneration: BASE_IDENTITY.projectionGeneration,
-    };
+      contributionId: 'native-preview',
+    }).success).toBe(false);
+  });
+
+  it('does not let semantic selection metadata redefine byte equality', () => {
+    const left = { ...BASE_IDENTITY };
+    const right = { ...BASE_IDENTITY };
+    expect(isSameDaemonPluginReactNativeBundleCacheIdentityV1(left, right)).toBe(true);
+    expect(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(left))
+      .toBe(deriveDaemonPluginReactNativeBundleCacheIdentityKeyV1(right));
+  });
+
+  it('uses the same digest-only identity for hosted-Web executable bytes', () => {
+    const hosted = { ...BASE_IDENTITY };
+    expect(DaemonPluginHostedWebArtifactCacheIdentityV1Schema.parse(hosted)).toEqual(hosted);
     expect(isSameDaemonPluginHostedWebArtifactCacheIdentityV1(hosted, { ...hosted })).toBe(true);
-    expect(deriveDaemonPluginHostedWebArtifactCacheIdentityKeyV1(hosted)).toContain('"platform":"web"');
+    expect(deriveDaemonPluginHostedWebArtifactCacheIdentityKeyV1(hosted)).toBe(hosted.artifactDigest);
   });
 });

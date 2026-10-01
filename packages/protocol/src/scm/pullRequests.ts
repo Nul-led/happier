@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ScmOperationOutcomeSchema } from './operationOutcome.js';
 
 import {
   ProviderRefreshPolicySchema,
@@ -331,6 +332,9 @@ export type ScmFollowupAction = z.infer<typeof ScmFollowupActionSchema>;
 const ScmPullRequestErrorResponseSchema = z
   .object({
     success: z.literal(false),
+    result: z.literal('opened_compose').optional(),
+    composeUrl: z.string().url().optional(),
+    outcome: ScmOperationOutcomeSchema.optional(),
     error: z.string().min(1),
     errorCode: ScmOperationErrorCodeSchema.optional(),
   })
@@ -402,6 +406,7 @@ export const ScmPullRequestOpenOrReuseRequestSchema = ScmRequestBaseSchema.exten
   headRepositoryNameWithOwner: z.string().trim().min(1).optional(),
   title: z.string().min(1).optional(),
   body: z.string().optional(),
+  draft: z.boolean().optional(),
   defaultBranchPushPolicy: ScmDefaultBranchPushPolicySchema.optional(),
 }).passthrough();
 export type ScmPullRequestOpenOrReuseRequest = z.infer<typeof ScmPullRequestOpenOrReuseRequestSchema>;
@@ -412,6 +417,8 @@ export const ScmPullRequestOpenOrReuseResponseSchema = z.union([
       success: z.literal(true),
       pullRequest: ScmPullRequestSummarySchema.nullable().optional(),
       reused: z.boolean().optional(),
+      result: z.enum(['created', 'reused', 'opened_compose']).optional(),
+      outcome: ScmOperationOutcomeSchema.optional(),
       composeUrl: z.string().url().optional(),
       nextAction: ScmFollowupActionSchema,
       authState: ScmPullRequestAuthStateSchema.optional(),
@@ -430,6 +437,7 @@ export const ScmPullRequestCheckoutResponseSchema = z.union([
   z
     .object({
       success: z.literal(true),
+      outcome: ScmOperationOutcomeSchema.optional(),
       pullRequest: ScmPullRequestSummarySchema.nullable().optional(),
       branch: z.string().min(1).optional(),
       headSha: z.string().min(1).nullable().optional(),
@@ -459,6 +467,7 @@ export const ScmPullRequestPrepareWorktreeResponseSchema = z.union([
   z
     .object({
       success: z.literal(true),
+      outcome: ScmOperationOutcomeSchema.optional(),
       targetPath: z.string().min(1),
       branch: z.string().min(1).optional(),
       pullRequest: ScmPullRequestSummarySchema.nullable().optional(),
@@ -524,6 +533,7 @@ export const ScmPullRequestRunStackedResponseSchema = z.union([
   z
     .object({
       success: z.literal(true),
+      outcome: ScmOperationOutcomeSchema.optional(),
       pullRequest: ScmPullRequestSummarySchema.nullable().optional(),
       composeUrl: z.string().url().optional(),
       branch: z.string().min(1).nullable().optional(),

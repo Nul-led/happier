@@ -6,6 +6,7 @@ import {
   ApprovalRequestCreatedBySchema,
 } from './approvalRequestV1.js';
 import { AgentRuntimeJsonValueV1Schema } from '../runtime/agentSessionV1.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
 export const TARGET_ACTION_APPROVAL_LIMITS_V1 = Object.freeze({
   artifactJsonBytes: 64 * 1024,
@@ -41,7 +42,8 @@ export const TargetActionApprovalRequestV1Schema = z.object({
   requestedSurface: z.string().min(1).max(TARGET_ACTION_APPROVAL_LIMITS_V1.surfaceUtf16Units),
   qualifiedActionId: z.string().max(TARGET_ACTION_APPROVAL_LIMITS_V1.idUtf16Units).regex(/^[a-z0-9][a-z0-9._-]*\/actions\/[a-z0-9][a-z0-9/-]*$/),
   input: AgentRuntimeJsonValueV1Schema, accountId: boundedId.optional(), resourceId: boundedId.optional(),
-  generation: boundedId, policyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  sourceCustody: PluginSourceCustodyV1Schema,
+  policyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   subjectFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   replayPlacement: TargetActionApprovalReplayPlacementV1Schema.optional(),
   executionOriginV1: ApprovalExecutionOriginV1Schema.optional(),

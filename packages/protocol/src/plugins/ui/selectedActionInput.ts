@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { pluginJsonValuesEqual } from '../contributions/jsonSchemaValues.js';
 import type { PluginUiJsonValueV1 } from '../contributions/ui/json.js';
+import { pluginSourceCustodyV1Equal } from '../runtime/sourceCustody.js';
 
 import type {
   PluginUiSelectActionInputResultV1,
@@ -120,8 +121,10 @@ export function pluginUiSelectedActionInputMatchesOperation(
     && selection.selection.point.protocol.version === operation.point.protocol.version
     && selection.selection.contributor.pluginId === operation.contributor.pluginId
     && selection.selection.contributor.contributionId === operation.contributor.contributionId
-    && selection.selection.contributor.immutableGenerationId
-      === operation.contributor.immutableGenerationId;
+    && pluginSourceCustodyV1Equal(
+      selection.selection.contributor.sourceCustody,
+      operation.contributor.sourceCustody,
+    );
 }
 
 /**
@@ -138,7 +141,7 @@ export function pluginUiTargetedContributionOperationKey(
     operation.point.protocol.version,
     operation.contributor.pluginId,
     operation.contributor.contributionId,
-    operation.contributor.immutableGenerationId,
+    operation.contributor.occurrenceId,
     operation.role,
     operation.action.pluginId,
     operation.action.localId,

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { asProtocolZod } from "../../plugins/actions/internalProtocolZodAdapter.js";
 
 import { SessionIdSchema } from '../idsV1.js';
+import { SpawnSessionTerminalSchema } from '../spawnSession.js';
 import { NonBlankOpaqueIdentifierSchema } from '../../strings/opaqueIdentifier.js';
 import { LinkedExternalSessionQualifiedIdentityV1Schema } from './linkedSessionMetadata.js';
 import {
@@ -72,6 +73,7 @@ const ExternalSessionTakeoverStartIntentRequestV1Schema = z.object({
   targetStorageMode: z.enum(['external-linked', 'persisted']),
   targetDirectory: ExternalSessionTakeoverTargetDirectoryV1Schema,
   targetRuntimeMode: z.literal('terminal'),
+  terminal: SpawnSessionTerminalSchema.optional(),
 }).strict();
 
 /**

@@ -3,7 +3,7 @@
  *
  * Protocol-safe projection of canonical Agent flavor aliases and vendor resume-id fields.
  * This file is emitted by:
- * - `scripts/migrations/extensions/generateBundledPluginEntries.ts`
+ * - `apps/cli/scripts/build-owned/generateBundledPluginEntries.ts`
  */
 
 export const GENERATED_SESSION_PRESENTATION_COMPAT_V1 = Object.freeze([

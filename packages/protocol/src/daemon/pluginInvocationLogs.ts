@@ -2,11 +2,12 @@ import { z } from 'zod';
 
 import { StrictJsonValueSchema } from '../json/strictJsonValue.js';
 import { utf8ByteLength } from '../bugs/reports/utf8.js';
+import { SERVER_IDENTITY_ID_PATTERN } from '../features/payload/capabilities/serverIdentityCapabilities.js';
 
 const PluginInvocationLogIdentifierSchema = z.string().trim().min(1).max(32_768);
 const PluginInvocationLogRecordIdentitySchema = z.string().max(2_048);
 const PluginInvocationLogFieldKeySchema = z.string().max(256);
-const ServerIdentityIdSchema = z.string().trim().regex(/^srv_[A-Za-z0-9._-]{1,60}$/u);
+const ServerIdentityIdSchema = z.string().trim().regex(SERVER_IDENTITY_ID_PATTERN);
 
 const PluginInvocationLogMessageV1Schema = z.string().refine(
   (value) => utf8ByteLength(value) <= 4_096,

@@ -25,12 +25,15 @@ import {
   ReviewCommentSnapshotContentV1Schema,
   ReviewCommentSnapshotV1Schema,
   ReviewCommentStateV1Schema,
+  ReviewCommentScopeV1Schema,
+  validateReviewCommentScopeV1,
   ReviewCommentSuggestedFixV1Schema,
   ReviewCommentTombstoneV1Schema,
   ReviewCommentTransitionV1Schema,
   ReviewCommentV1Schema,
   type ReviewCommentEventV1,
   type ReviewCommentV1,
+  type ReviewCommentWorkspaceV1,
 } from './v1.js';
 
 const ReviewCommentAnchorKindV1Schema = z.enum([
@@ -52,31 +55,7 @@ export const ReviewCommentAnchorIndexV1Schema = z.object({
   kind: ReviewCommentAnchorKindV1Schema,
   filePath: z.string().min(1).optional(),
   folderPath: z.string().min(1).optional(),
-}).strict().superRefine((value, ctx) => {
-  const filePathKinds = new Set([
-    'line',
-    'range',
-    'hunk',
-    'file',
-    'binary',
-    'submodule',
-    'symlink',
-  ]);
-  if (filePathKinds.has(value.kind) && !value.filePath) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['filePath'],
-      message: `${value.kind} anchors require a filePath index`,
-    });
-  }
-  if (value.kind === 'folder' && !value.folderPath) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['folderPath'],
-      message: 'folder anchors require a folderPath index',
-    });
-  }
-});
+}).strict();
 export type ReviewCommentAnchorIndexV1 = z.infer<typeof ReviewCommentAnchorIndexV1Schema>;
 
 const ReviewCommentStructuralEditV1Schema = ReviewCommentEditV1Schema.pick({
@@ -98,22 +77,27 @@ export const ReviewCommentStructuralV1Schema = z.object({
   v: z.literal(1),
   id: z.string().min(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   workspaceId: z.string().min(1).optional(),
   sessionId: z.string().min(1).optional(),
   runId: z.string().min(1).optional(),
   engineId: z.string().min(1).optional(),
   findingId: z.string().min(1).optional(),
+  findingIdentity: ReviewCommentV1Schema.shape.findingIdentity,
+  findingSeverity: ReviewCommentV1Schema.shape.findingSeverity,
+  reviewedFingerprint: ReviewCommentV1Schema.shape.reviewedFingerprint,
   anchorIndex: ReviewCommentAnchorIndexV1Schema,
   bodyVersion: z.number().int().positive(),
   editHistory: z.array(ReviewCommentStructuralEditV1Schema),
   author: ReviewCommentActorRefV1Schema,
   state: ReviewCommentStateV1Schema,
+  reviewTriageStatus: ReviewCommentV1Schema.shape.reviewTriageStatus,
   flags: z.object({
     stale: z.boolean().optional(),
     outdated: z.boolean().optional(),
     muted: z.boolean().optional(),
     redacted: z.boolean().optional(),
+    disputed: z.boolean().optional(),
   }).strict(),
   dispositions: z.record(z.string().min(1), ReviewCommentDispositionV1Schema),
   parentCommentId: z.string().min(1).optional(),
@@ -126,7 +110,7 @@ export const ReviewCommentStructuralV1Schema = z.object({
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
   serverRevision: z.number().int().positive(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentStructuralV1 = z.infer<typeof ReviewCommentStructuralV1Schema>;
 
 export const ReviewCommentSensitiveContentV1Schema = z.object({
@@ -215,11 +199,11 @@ export type ReviewCommentSensitiveMigrationSourceV1 = z.infer<
 export const ReviewCommentSensitiveBindingV1Schema = z.object({
   v: z.literal(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   commentId: z.string().min(1),
   serverRevision: z.number().int().positive(),
   bodyVersion: z.number().int().positive(),
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentSensitiveBindingV1 = z.infer<typeof ReviewCommentSensitiveBindingV1Schema>;
 
 export const ReviewCommentSensitivePayloadV1Schema = z.object({
@@ -257,8 +241,6 @@ export type StoredReviewCommentV1 = z.infer<typeof StoredReviewCommentV1Schema>;
 function anchorIndex(anchor: ReviewCommentV1['anchor']): ReviewCommentAnchorIndexV1 {
   return ReviewCommentAnchorIndexV1Schema.parse({
     kind: anchor.kind,
-    ...('filePath' in anchor ? { filePath: anchor.filePath } : {}),
-    ...('folderPath' in anchor ? { folderPath: anchor.folderPath } : {}),
   });
 }
 
@@ -267,6 +249,7 @@ function sensitiveBinding(structural: ReviewCommentStructuralV1): ReviewCommentS
     v: 1,
     accountId: structural.accountId,
     projectId: structural.projectId,
+    ...(structural.workspace === undefined ? {} : { workspace: structural.workspace }),
     commentId: structural.id,
     serverRevision: structural.serverRevision,
     bodyVersion: structural.bodyVersion,
@@ -295,11 +278,16 @@ export function splitReviewCommentV1(commentInput: ReviewCommentV1): ReviewComme
       id: comment.id,
       accountId: comment.accountId,
       projectId: comment.projectId,
+      workspace: comment.workspace,
       workspaceId: comment.workspaceId,
       sessionId: comment.sessionId,
       runId: comment.runId,
       engineId: comment.engineId,
       findingId: comment.findingId,
+      findingIdentity: comment.findingIdentity,
+      findingSeverity: comment.findingSeverity,
+      reviewedFingerprint: comment.reviewedFingerprint,
+      reviewTriageStatus: comment.reviewTriageStatus,
       anchorIndex: anchorIndex(comment.anchor),
       bodyVersion: comment.bodyVersion,
       editHistory: comment.edits.map(({ editId, editedAt, editedBy }) => ({
@@ -320,9 +308,7 @@ export function splitReviewCommentV1(commentInput: ReviewCommentV1): ReviewComme
       tombstone: comment.tombstone
         ? (({ reason: _reason, ...structuralTombstone }) => structuralTombstone)(comment.tombstone)
         : undefined,
-      fingerprintIndex: comment.fingerprint
-        ? { normalizedMessageHash: comment.fingerprint.normalizedMessageHash }
-        : undefined,
+      fingerprintIndex: undefined,
       createdAt: comment.createdAt,
       updatedAt: comment.updatedAt,
       serverRevision: comment.serverRevision,
@@ -347,16 +333,23 @@ function reconstructComment(
   structural: ReviewCommentStructuralV1,
   sensitive: ReviewCommentSensitiveContentV1,
 ): ReviewCommentV1 | null {
+  if (structural.anchorIndex.filePath !== undefined && (!('filePath' in sensitive.anchor) || sensitive.anchor.filePath !== structural.anchorIndex.filePath)) return null;
+  if (structural.anchorIndex.folderPath !== undefined && (!('folderPath' in sensitive.anchor) || sensitive.anchor.folderPath !== structural.anchorIndex.folderPath)) return null;
+  if (structural.fingerprintIndex !== undefined && sensitive.fingerprint?.normalizedMessageHash !== structural.fingerprintIndex.normalizedMessageHash) return null;
   const parsed = ReviewCommentV1Schema.safeParse({
     v: 1,
     id: structural.id,
     accountId: structural.accountId,
     projectId: structural.projectId,
+    ...(structural.workspace === undefined ? {} : { workspace: structural.workspace }),
     ...(structural.workspaceId === undefined ? {} : { workspaceId: structural.workspaceId }),
     ...(structural.sessionId === undefined ? {} : { sessionId: structural.sessionId }),
     ...(structural.runId === undefined ? {} : { runId: structural.runId }),
     ...(structural.engineId === undefined ? {} : { engineId: structural.engineId }),
     ...(structural.findingId === undefined ? {} : { findingId: structural.findingId }),
+    ...(structural.findingIdentity === undefined ? {} : { findingIdentity: structural.findingIdentity }),
+    ...(structural.findingSeverity === undefined ? {} : { findingSeverity: structural.findingSeverity }),
+    ...(structural.reviewedFingerprint === undefined ? {} : { reviewedFingerprint: structural.reviewedFingerprint }),
     anchor: sensitive.anchor,
     snapshot: sensitive.snapshot,
     body: sensitive.body,
@@ -364,6 +357,7 @@ function reconstructComment(
     edits: sensitive.edits,
     author: structural.author,
     state: structural.state,
+    ...(structural.reviewTriageStatus === undefined ? {} : { reviewTriageStatus: structural.reviewTriageStatus }),
     flags: structural.flags,
     dispositions: structural.dispositions,
     ...(structural.parentCommentId === undefined ? {} : { parentCommentId: structural.parentCommentId }),
@@ -381,7 +375,7 @@ function reconstructComment(
   });
   if (!parsed.success) return null;
   const resplit = splitReviewCommentV1(parsed.data);
-  if (!exactJson(resplit.structural, structural)) return null;
+  if (!exactJson(resplit.structural, { ...structural, anchorIndex: { kind: structural.anchorIndex.kind }, fingerprintIndex: undefined })) return null;
   return parsed.data;
 }
 
@@ -675,14 +669,14 @@ const ReviewCommentEventExpectedCurrentnessV1Schema = z.discriminatedUnion('kind
 export const ReviewCommentEventRequestBindingV1Schema = z.object({
   v: z.literal(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   actionId: ReviewCommentMutationActionIdV1Schema,
   eventKind: ReviewCommentEventKindV1Schema,
   actor: ReviewCommentActorRefV1Schema,
   clientMutationId: z.string().min(1),
   target: ReviewCommentEventRequestTargetV1Schema,
   expectedCurrentness: ReviewCommentEventExpectedCurrentnessV1Schema,
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentEventRequestBindingV1 = z.infer<
   typeof ReviewCommentEventRequestBindingV1Schema
 >;
@@ -716,7 +710,8 @@ function requiredBindingPositiveInteger(input: Record<string, unknown>, key: str
 
 export function buildReviewCommentEventRequestBindingV1(params: Readonly<{
   accountId: string;
-  projectId: string;
+  projectId?: string;
+  workspace?: ReviewCommentWorkspaceV1;
   actor: z.input<typeof ReviewCommentActorRefV1Schema>;
   actionId: z.input<typeof ReviewCommentMutationActionIdV1Schema>;
   input: Record<string, unknown>;
@@ -766,6 +761,7 @@ export function buildReviewCommentEventRequestBindingV1(params: Readonly<{
     v: 1,
     accountId: params.accountId,
     projectId: params.projectId,
+    workspace: params.workspace,
     actionId,
     eventKind: actionEventKind[actionId],
     actor: params.actor,
@@ -787,7 +783,7 @@ export const ReviewCommentEventSensitiveBindingV1Schema = z.object({
   eventId: z.string().min(1),
   commentId: z.string().min(1),
   accountId: z.string().min(1),
-  projectId: z.string().min(1),
+  ...ReviewCommentScopeV1Schema.shape,
   eventKind: ReviewCommentEventKindV1Schema,
   actor: ReviewCommentActorRefV1Schema,
   createdAt: z.number().int().nonnegative(),
@@ -797,7 +793,7 @@ export const ReviewCommentEventSensitiveBindingV1Schema = z.object({
   authorDeviceId: z.string().min(1).optional(),
   clientLamport: z.number().int().nonnegative().optional(),
   requestBinding: ReviewCommentEventRequestBindingV1Schema,
-}).strict();
+}).strict().superRefine(validateReviewCommentScopeV1);
 export type ReviewCommentEventSensitiveBindingV1 = z.infer<typeof ReviewCommentEventSensitiveBindingV1Schema>;
 
 export const BoundReviewCommentEventSensitiveEnvelopeV1Schema = z.object({
@@ -837,6 +833,7 @@ function eventBinding(
     commentId: event.commentId,
     accountId: event.accountId,
     projectId: event.projectId,
+    workspace: event.workspace,
     eventKind: event.eventKind,
     actor: event.actor,
     createdAt: event.createdAt,
@@ -905,10 +902,13 @@ export function buildReviewCommentMutationEventEnvelopeV1(params: Readonly<{
       randomBytes: (length: number) => Uint8Array;
     }>
 )): StoredJsonContentEnvelope {
-  const projectId = requiredBindingString(params.input, 'projectId');
+  const scope = ReviewCommentScopeV1Schema.superRefine(validateReviewCommentScopeV1).parse({
+    projectId: params.input.projectId,
+    workspace: params.input.workspace,
+  });
   const requestBinding = buildReviewCommentEventRequestBindingV1({
     accountId: params.accountId,
-    projectId,
+    ...scope,
     actor: params.actor,
     actionId: params.actionId,
     input: params.input,
@@ -927,6 +927,16 @@ export function buildReviewCommentMutationEventEnvelopeV1(params: Readonly<{
         material: params.material,
         randomBytes: params.randomBytes,
       });
+}
+
+/** Plain mutations share the event binding; encrypted CRUD uses the prepared-record transport. */
+export function buildReviewCommentPlainMutationTransportInputV1(
+  params: Extract<Parameters<typeof buildReviewCommentMutationEventEnvelopeV1>[0], { mode: 'plain' }>,
+): Record<string, unknown> {
+  return {
+    ...params.input,
+    eventEnvelope: buildReviewCommentMutationEventEnvelopeV1(params),
+  };
 }
 
 export function bindReviewCommentEventSensitiveEnvelopeV1(params: Readonly<{

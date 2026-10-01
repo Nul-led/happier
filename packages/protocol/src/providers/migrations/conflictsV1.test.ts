@@ -336,7 +336,7 @@ describe('classifyLegacyProfileMigrationConflictsV1', () => {
     });
     expect(reviewed.ok).toBe(true);
     if (!reviewed.ok) throw new Error('expected reviewed resolution');
-    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, reviewed.context);
+    const migrated = migrateLegacyAiLaunchProfilesV1(rawSettings, reviewed.context, { lastUsedProfile: null });
     expect(migrated.ok).toBe(true);
     if (!migrated.ok) throw new Error('expected migration');
     expect(migrated.settings.favoriteProfiles).toEqual([]);

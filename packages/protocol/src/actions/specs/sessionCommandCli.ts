@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { parseAgentPermissionIntentV1Alias } from '../../runtime/permissionIntentV1.js';
-import type { ActionCliProjection } from '../actionCliProjection.js';
+import { actionCliDerivedDefault, type ActionCliProjection } from '../actionCliProjection.js';
 
 /**
  * The friendly spellings of the one-shot Session Actions.
@@ -60,11 +60,15 @@ export const SessionPermissionModeSetCliInputSchema = z.object({
 export type SessionPermissionModeSetCliInput = z.infer<typeof SessionPermissionModeSetCliInputSchema>;
 
 export function bindSessionPermissionModeSetCliInput(
-  value: SessionPermissionModeSetCliInput,
+  value: Readonly<Partial<SessionPermissionModeSetCliInput>>,
 ): Readonly<Record<string, unknown>> {
+  // Over canonical whole-input JSON this binder sees only the caller fields the
+  // caller actually typed, so each projection is conditional on its source.
   return {
-    sessionId: value.sessionId,
-    permissionMode: parseAgentPermissionIntentV1Alias(value.permissionMode)!,
+    ...(value.sessionId === undefined ? {} : { sessionId: value.sessionId }),
+    ...(value.permissionMode === undefined
+      ? {}
+      : { permissionMode: parseAgentPermissionIntentV1Alias(value.permissionMode)! }),
   };
 }
 
@@ -82,7 +86,7 @@ export const SESSION_PERMISSION_MODE_SET_CLI_PROJECTION: ActionCliProjection = {
       { path: 'permissionMode', title: 'Permission mode or alias', widget: 'text', required: true },
     ],
   },
-  bindInput: (value) => bindSessionPermissionModeSetCliInput(value as SessionPermissionModeSetCliInput),
+  bindInput: (value) => bindSessionPermissionModeSetCliInput(value as Partial<SessionPermissionModeSetCliInput>),
 };
 
 /**
@@ -164,7 +168,9 @@ export function bindSessionWaitIdleCliInput(
 ): Readonly<Record<string, unknown>> {
   return {
     sessionId: value.sessionId,
-    timeoutSeconds: resolveSessionWaitTimeoutSeconds(value.timeoutSeconds),
+    timeoutSeconds: value.timeoutSeconds === undefined
+      ? actionCliDerivedDefault(resolveSessionWaitTimeoutSeconds(undefined))
+      : resolveSessionWaitTimeoutSeconds(value.timeoutSeconds),
   };
 }
 

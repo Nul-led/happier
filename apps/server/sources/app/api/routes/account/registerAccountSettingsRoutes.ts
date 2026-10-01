@@ -29,6 +29,7 @@ import {
     requirePresentUser,
 } from "@/app/api/utils/requirePresentUser";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { readRequestHomeEnv } from "@/app/home/settings/requestHomeEnv";
 
 export function registerAccountSettingsRoutes(app: Fastify): void {
     // Get Account Settings API
@@ -258,6 +259,7 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
+        const requestHomeEnv = await readRequestHomeEnv(request);
         if (!await enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest(
             request,
             reply,
@@ -273,7 +275,7 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
         // not refresh its server-readable remote-alert projection. Existing
         // rows remain compatibility-readable and become stale as the document
         // version advances; the delivery owner is independently feature-gated.
-        const admittedRemoteAlertPolicy = isServerFeatureEnabledForRequest("sessions.following", process.env)
+        const admittedRemoteAlertPolicy = isServerFeatureEnabledForRequest("sessions.following", requestHomeEnv)
             ? remoteAlertPolicy
             : undefined;
 

@@ -1532,6 +1532,9 @@ export async function readQualifiedConnectedAccountQuota(
             content: {
                 t: "encrypted" as const,
                 c: record.sealedPayload.ciphertext,
+                ...(record.sealedPayload.subscription
+                    ? { subscription: record.sealedPayload.subscription }
+                    : {}),
             },
             metadata,
         };

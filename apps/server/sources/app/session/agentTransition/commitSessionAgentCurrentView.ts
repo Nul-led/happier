@@ -406,6 +406,8 @@ function toCommitError(
         | "version-mismatch"
         | "metadata_privacy_upgrade_required"
         | "session_team_credential_binding_rejected"
+        | "session_access_authentication_required"
+        | "session_access_authentication_unavailable"
         | "publisher-superseded"
         | "internal",
 ): CommitSessionAgentCurrentViewError {
@@ -416,6 +418,7 @@ function toCommitError(
     if (error === "session_archived") return "archived";
     if (error === "metadata_privacy_upgrade_required") return "invalid-params";
     if (error === "session_team_credential_binding_rejected") return "invalid-params";
+    if (error === "session_access_authentication_required" || error === "session_access_authentication_unavailable") return "forbidden";
     if (error === "publisher-superseded") return "version-mismatch";
     return error;
 }

@@ -210,6 +210,7 @@ export const AutomationRunState = {
     pause_requested: "pause_requested",
     paused: "paused",
     interrupted: "interrupted",
+    waiting_for_review: "waiting_for_review",
 } as const;
 
 export type AutomationRunState = (typeof AutomationRunState)[keyof typeof AutomationRunState];
@@ -221,21 +222,13 @@ export const WorkflowRunCustodyState = {
 
 export type WorkflowRunCustodyState = (typeof WorkflowRunCustodyState)[keyof typeof WorkflowRunCustodyState];
 
-export const WorkflowRunResultDeliveryState = {
-    pending: "pending",
-    accepted: "accepted",
-    unavailable: "unavailable",
-    workflow_outcome_unresolved: "workflow_outcome_unresolved",
-} as const;
-
-export type WorkflowRunResultDeliveryState = (typeof WorkflowRunResultDeliveryState)[keyof typeof WorkflowRunResultDeliveryState];
-
 export const WorkflowInvocationLifecycle = {
     pending: "pending",
     waiting_for_capacity: "waiting_for_capacity",
     admitting: "admitting",
     running: "running",
     waiting_for_approval: "waiting_for_approval",
+    waiting_for_review: "waiting_for_review",
     needs_attention: "needs_attention",
     completed: "completed",
     failed: "failed",
@@ -261,6 +254,8 @@ export const AutomationSessionLifecycleEvent = {
     parentTurnFailed: "parentTurnFailed",
     parentTurnCancelled: "parentTurnCancelled",
     userActionRequired: "userActionRequired",
+    sessionStarted: "sessionStarted",
+    sessionArchived: "sessionArchived",
 } as const;
 
 export type AutomationSessionLifecycleEvent = (typeof AutomationSessionLifecycleEvent)[keyof typeof AutomationSessionLifecycleEvent];

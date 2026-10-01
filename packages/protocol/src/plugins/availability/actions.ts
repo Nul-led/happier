@@ -3,7 +3,6 @@ import { asProtocolZod } from "../actions/internalProtocolZodAdapter.js";
 
 import { PluginCollectionContractRefV1Schema } from '../data/collectionContractRefV1.js';
 import { PluginIdSchema } from '../pluginId.js';
-import { PluginUiArtifactCompatibilityKeyV1Schema } from '../ui/artifactCompatibility.js';
 import { PluginUiArtifactDigestV1Schema } from '../ui/artifactIntegrity.js';
 import {
   PluginAccountAvailabilityIntentReadResponseV1Schema,
@@ -14,6 +13,7 @@ import {
   PluginAccountPluginPackageAssetLinkV1Schema,
   PluginAccountPluginUiArtifactLinkV1Schema,
   PluginMachineMaterializationSnapshotV1Schema,
+  PluginPortableReleaseManifestV1Schema,
   PluginReleaseFactsV1Schema,
   PluginReleaseRefV1Schema,
   PluginUiReleaseSlotV1Schema,
@@ -32,6 +32,7 @@ export const PLUGIN_AVAILABILITY_ACTION_IDS_V1 = Object.freeze([
   'account.plugins.availability.intent.read',
   'account.plugins.availability.intents.list',
   'account.plugins.availability.intent.set',
+  'account.plugins.availability.collectionWriters.claim',
   'account.plugins.availability.release.read',
   'account.plugins.availability.release.publish',
   'account.plugins.availability.materializations.report',
@@ -56,6 +57,7 @@ export const PluginAvailabilityActionHttpPathsV1 = Object.freeze({
   'account.plugins.availability.intent.read': '/v1/plugins/availability/intents/read',
   'account.plugins.availability.intents.list': '/v1/plugins/availability/intents/list',
   'account.plugins.availability.intent.set': '/v1/plugins/availability/intents/set',
+  'account.plugins.availability.collectionWriters.claim': '/v1/plugins/availability/collection-writers/claim',
   'account.plugins.availability.release.read': '/v1/plugins/availability/releases/read',
   'account.plugins.availability.release.publish': '/v1/plugins/availability/releases/publish',
   'account.plugins.availability.materializations.report': '/v1/plugins/availability/materializations/report',
@@ -81,7 +83,7 @@ export const PluginAvailabilityIntentReadActionOutputV1Schema: typeof PluginAcco
 export type PluginAvailabilityIntentReadActionOutputV1 = z.infer<typeof PluginAvailabilityIntentReadActionOutputV1Schema>;
 
 /**
- * Lists only selected intent ids for Availability bootstrap. Exact intent
+ * Lists every Account intent id (release-selected or release-less claim) for Availability bootstrap. Exact intent
  * details stay on the incumbent per-plugin read operation.
  */
 export const PluginAvailabilityIntentsListActionInputV1Schema = z.object({
@@ -112,9 +114,29 @@ export const PluginAvailabilityIntentSetActionOutputV1Schema = z.object({
 }).strict();
 export type PluginAvailabilityIntentSetActionOutputV1 = z.infer<typeof PluginAvailabilityIntentSetActionOutputV1Schema>;
 
+/**
+ * A daemon-selected plugin (bundled first-party, trusted development, or
+ * drop-in) has no portable Account release. Its host claims the Account's
+ * release-less intent with the plugin's own admitted normalized manifest: the
+ * server stores it as the release-less declaration that webhook and Event
+ * currentness read, and rebuilds every Collection contract and digest from its
+ * `contributes.accountCollections`. The claim lands on the same intent row as
+ * `intent.set`, never overrides a present-user release selection, and never
+ * lowers a collection's schemaVersion or the declaration version.
+ */
+export const PluginAvailabilityCollectionWritersClaimActionInputV1Schema = z.object({
+  manifest: PluginPortableReleaseManifestV1Schema,
+}).strict();
+export type PluginAvailabilityCollectionWritersClaimActionInputV1 =
+  z.infer<typeof PluginAvailabilityCollectionWritersClaimActionInputV1Schema>;
+
+export const PluginAvailabilityCollectionWritersClaimActionOutputV1Schema =
+  PluginAvailabilityIntentSetActionOutputV1Schema;
+export type PluginAvailabilityCollectionWritersClaimActionOutputV1 =
+  z.infer<typeof PluginAvailabilityCollectionWritersClaimActionOutputV1Schema>;
+
 /** The only source kinds eligible to bind a portable Account release. */
 export const PluginAvailabilityPortableReleaseSourceClassV1Schema = z.enum([
-  'bundledFirstParty',
   'registryPackage',
   'versionedArchive',
 ]);
@@ -154,13 +176,14 @@ export type PluginAvailabilityReleaseReadActionOutputV1 =
   z.infer<typeof PluginAvailabilityReleaseReadActionOutputV1Schema>;
 
 export const PluginAvailabilityMaterializationsReportActionInputV1Schema = z.object({
+  expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
   snapshot: PluginMachineMaterializationSnapshotV1Schema,
 }).strict();
 export type PluginAvailabilityMaterializationsReportActionInputV1 = z.infer<typeof PluginAvailabilityMaterializationsReportActionInputV1Schema>;
 
 export const PluginAvailabilityMaterializationsReportActionOutputV1Schema = z.object({
-  snapshot: PluginMachineMaterializationSnapshotV1Schema,
-  outcome: z.enum(['replaced', 'rejoined']),
+  revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+  outcome: z.enum(['replaced', 'rejoined', 'conflict']),
 }).strict();
 export type PluginAvailabilityMaterializationsReportActionOutputV1 = z.infer<typeof PluginAvailabilityMaterializationsReportActionOutputV1Schema>;
 
@@ -187,13 +210,7 @@ export type PluginAvailabilityArtifactCreateEnvelopeV1 = z.infer<typeof PluginAv
 export const PluginAvailabilityUiArtifactPublishActionInputV1Schema = z.object({
   release: PluginReleaseRefV1Schema,
   slot: PluginUiReleaseSlotV1Schema,
-  /**
-   * Current host/adoption facts belong to the classified Artifact link, not
-   * the portable release slot. The server verifies their portable projection
-   * before it persists the link.
-   */
-  hostCompatibility: PluginUiArtifactCompatibilityKeyV1Schema,
-  artifactId: ArtifactIdSchema,
+  accountArtifactId: ArtifactIdSchema,
   artifact: PluginAvailabilityArtifactCreateEnvelopeV1Schema,
 }).strict();
 export type PluginAvailabilityUiArtifactPublishActionInputV1 = z.infer<typeof PluginAvailabilityUiArtifactPublishActionInputV1Schema>;
@@ -207,6 +224,7 @@ export type PluginAvailabilityUiArtifactPublishActionOutputV1 = z.infer<typeof P
 const PluginAvailabilityUiArtifactTargetV1Schema = z.object({
   release: PluginReleaseRefV1Schema,
   contributionId: PluginUiReleaseSlotV1Schema.shape.contributionId,
+  artifactId: PluginUiReleaseSlotV1Schema.shape.artifactId,
   tier: PluginUiReleaseSlotV1Schema.shape.tier,
   platform: PluginUiReleaseSlotV1Schema.shape.platform,
 }).strict();
@@ -307,6 +325,7 @@ export type PluginAvailabilityPackageAssetRemoveActionOutputV1 =
 export const PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1Schema = z.object({
   release: PluginReleaseRefV1Schema,
   contributionId: PluginUiReleaseSlotV1Schema.shape.contributionId,
+  artifactId: PluginUiReleaseSlotV1Schema.shape.artifactId,
   tier: z.literal('hostedWeb'),
   platform: z.literal('web'),
   expectedArtifactDigest: PluginUiArtifactDigestV1Schema,
@@ -351,6 +370,7 @@ export const PluginAvailabilityActionInputSchemasV1: Readonly<
   'account.plugins.availability.intent.read': PluginAvailabilityIntentReadActionInputV1Schema,
   'account.plugins.availability.intents.list': PluginAvailabilityIntentsListActionInputV1Schema,
   'account.plugins.availability.intent.set': PluginAvailabilityIntentSetActionInputV1Schema,
+  'account.plugins.availability.collectionWriters.claim': PluginAvailabilityCollectionWritersClaimActionInputV1Schema,
   'account.plugins.availability.release.read': PluginAvailabilityReleaseReadActionInputV1Schema,
   'account.plugins.availability.release.publish': PluginAvailabilityReleasePublishActionInputV1Schema,
   'account.plugins.availability.materializations.report': PluginAvailabilityMaterializationsReportActionInputV1Schema,
@@ -370,6 +390,7 @@ export const PluginAvailabilityActionOutputSchemasV1: Readonly<
   'account.plugins.availability.intent.read': PluginAvailabilityIntentReadActionOutputV1Schema,
   'account.plugins.availability.intents.list': PluginAvailabilityIntentsListActionOutputV1Schema,
   'account.plugins.availability.intent.set': PluginAvailabilityIntentSetActionOutputV1Schema,
+  'account.plugins.availability.collectionWriters.claim': PluginAvailabilityCollectionWritersClaimActionOutputV1Schema,
   'account.plugins.availability.release.read': PluginAvailabilityReleaseReadActionOutputV1Schema,
   'account.plugins.availability.release.publish': PluginAvailabilityReleasePublishActionOutputV1Schema,
   'account.plugins.availability.materializations.report': PluginAvailabilityMaterializationsReportActionOutputV1Schema,

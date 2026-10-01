@@ -98,7 +98,14 @@ export async function admitTeamCredentialResourceTestRequestInTx(
             : 'resource_forbidden',
     );
 
-    const broker = await admitTeamCredentialBrokerMachineForResourceInTx(tx, { resource, brokerMachineId });
+    // The relay authorization already pins this exact target: the Home selected
+    // it for this test before minting the authorization, so Pool membership
+    // governs only future selections (11.03 §B3).
+    const broker = await admitTeamCredentialBrokerMachineForResourceInTx(tx, {
+        resource,
+        brokerMachineId,
+        selection: 'established',
+    });
     if (!broker.ok) return failure(broker.error === 'update_required' ? 'broker_unavailable' : broker.error);
     let sourceValue: unknown;
     try {

@@ -142,21 +142,37 @@ describe("Team directory (SQLite integration)", () => {
         expect(qualified.page.items.find((item) => item.id === restricted.id)?.capabilities.manageMembers)
             .toBe(true);
 
-        const homeAdmin = await account("admin");
+        const homeAdmin = await account("admin", "e2ee");
         const administered = await list(homeAdmin.id, { scope: "administered" });
         expect(administered.ok).toBe(true);
         if (!administered.ok) return;
         expect(administered.page.items.map((item) => item.id)).toContain(restricted.id);
+
+        // Adding a Team role must not silently qualify that independent Home
+        // administrator's ordinary credential in the administered scope.
+        await db.teamMembership.create({ data: { teamId: restricted.id, accountId: homeAdmin.id, role: "owner" } });
+        const combined = await list(homeAdmin.id, { scope: "administered" });
+        expect(combined.ok).toBe(true);
+        if (!combined.ok) return;
+        const combinedRow = combined.page.items.find((item) => item.id === restricted.id);
+        expect(combinedRow?.capabilities).toEqual(administered.page.items.find((item) => item.id === restricted.id)?.capabilities);
+        const qualifiedAdmin = await list(homeAdmin.id, { scope: "administered", authentication: {
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            authenticationAuthority: "present_user",
+        } });
+        expect(qualifiedAdmin.ok).toBe(true);
+        if (!qualifiedAdmin.ok) return;
+        expect(qualifiedAdmin.page.items.find((item) => item.id === restricted.id)?.capabilities.manageMembers).toBe(true);
     });
 
-    it("bounds authentication fact reads for one versus a full page of restricted Teams", async () => {
+    it.each(["member", "administered"] as const)("bounds authentication fact reads for one versus a full %s page of restricted Teams", async (scope) => {
         const authenticationPolicy = {
             v: 1,
             mode: "restricted",
             accepted: [{ kind: "home_method", methodId: "key_challenge" }],
         } as const;
         const createViewerWithTeams = async (prefix: string, count: number) => {
-            const viewer = await account("member", "e2ee");
+            const viewer = await account(scope === "administered" ? "admin" : "member", "e2ee");
             const teams = Array.from({ length: count }, (_, index) => ({
                 id: `${prefix}-team-${index}`,
                 name: `${prefix} Team ${String(index).padStart(3, "0")}`,
@@ -170,8 +186,9 @@ describe("Team directory (SQLite integration)", () => {
             })) });
             return viewer;
         };
-        const oneViewer = await createViewerWithTeams("bounded-one", 1);
-        const manyViewer = await createViewerWithTeams("bounded-many", 100);
+        // Sort this bounded page before earlier fixtures, including in the
+        // Home-admin scope that intentionally sees other Accounts' Teams.
+        const viewer = await createViewerWithTeams(`!!bounded-${scope}`, 100);
 
         const listWithQueryCount = async (viewerId: string, limit: number) => await inTx(async (tx) => {
             let queryCount = 0;
@@ -196,7 +213,7 @@ describe("Team directory (SQLite integration)", () => {
             const result = await listTeamsForActorInTx(observedTx, {
                 actorAccountId: viewerId,
                 v: 1,
-                scope: "member",
+                scope,
                 archived: "active",
                 limit,
                 authentication: {
@@ -207,13 +224,14 @@ describe("Team directory (SQLite integration)", () => {
             return { result, queryCount };
         });
 
-        const one = await listWithQueryCount(oneViewer.id, 1);
-        const many = await listWithQueryCount(manyViewer.id, 100);
+        const one = await listWithQueryCount(viewer.id, 1);
+        const many = await listWithQueryCount(viewer.id, 100);
         expect(one.result.ok).toBe(true);
         expect(many.result.ok).toBe(true);
         if (!one.result.ok || !many.result.ok) return;
         expect(one.result.page.items).toHaveLength(1);
         expect(many.result.page.items).toHaveLength(100);
+        expect(many.result.page.items.every((item) => item.viewerRole === "member" && item.capabilities.viewTeam)).toBe(true);
         expect(one.queryCount).toBeGreaterThan(0);
         expect(many.queryCount).toBe(one.queryCount);
     });
@@ -274,7 +292,11 @@ describe("Team directory (SQLite integration)", () => {
             ],
         });
 
-        const administered = await list(homeAdmin.id, { scope: "administered" });
+        let administered = await list(homeAdmin.id, { scope: "administered" });
+        while (administered.ok && !administered.page.items.some(item => item.id === ownerless.id)
+            && administered.page.nextCursor !== null) {
+            administered = await list(homeAdmin.id, { scope: "administered", cursor: administered.page.nextCursor });
+        }
         expect(administered.ok).toBe(true);
         if (!administered.ok) return;
         expect(administered.page.items.find((item) => item.id === ownerless.id)?.recovery).toEqual({
