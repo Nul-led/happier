@@ -206,7 +206,6 @@ describe('provider catalog merge', () => {
       descriptor: {
         name: 'Curated name',
         description: 'Curated presentation',
-        extendedContextModelId: 'listed-by-probe[1m]',
         contextWindowTokens: 1_000_000,
         modelOptions: [{ currentValue: 'max' }],
         capabilities: {
@@ -217,6 +216,19 @@ describe('provider catalog merge', () => {
       sources: { manual: false, static: true, probe: true },
       confidence: 'probe',
     });
+  });
+
+  it('removes omitted authoritative controls while retaining curated presentation', () => {
+    const old = { id: 'same', name: 'Curated', description: 'Presentation', contextWindowTokens: 200_000,
+      extendedContextModelId: 'same-long', capabilities: { reasoningControls: 'supported' as const },
+      modelOptions: [{ id: 'effort', name: 'Effort', type: 'boolean' as const, currentValue: 'true' }] };
+    const previous = applyProviderCatalogRefreshV1({ snapshot: null, staleProbeModels: [] },
+      { status: 'success', observedAt: 1, models: [{ id: old.id, modelOptions: old.modelOptions, capabilities: old.capabilities }] });
+    const next = applyProviderCatalogRefreshV1(previous,
+      { status: 'success', observedAt: 2, models: [{ id: 'same' }] });
+    expect(mergeProviderCatalogV1({ staticModels: [old], manualModels: [], probeState: next,
+      membershipPolicy: 'probe-authoritative' }).rows[0]?.descriptor)
+      .toEqual({ id: 'same', name: 'Curated', description: 'Presentation' });
   });
 
   it('treats a successful empty authoritative snapshot as empty instead of static fallback', () => {

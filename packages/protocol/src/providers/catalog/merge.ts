@@ -174,9 +174,9 @@ function authoritativeProbeDescriptor(
   const descriptor = probeDescriptor(probe);
   if (!curated) return descriptor;
   return {
-    ...curated,
     ...descriptor,
     name: curated.name,
+    ...(curated.description === undefined ? {} : { description: curated.description }),
   };
 }
 
