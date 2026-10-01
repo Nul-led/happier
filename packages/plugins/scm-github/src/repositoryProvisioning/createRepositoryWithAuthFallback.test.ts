@@ -207,6 +207,7 @@ describe('GitHub repository provisioning authority', () => {
         profileKind: 'no_auth',
         remediation: {
           kind: 'auth_required',
+          action: 'connect_github',
         },
       },
       targets: [],

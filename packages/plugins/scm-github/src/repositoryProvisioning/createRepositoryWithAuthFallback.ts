@@ -45,13 +45,14 @@ function shouldTryRest(provider: ScmHostingProviderRef): boolean {
   return isGithubDotComRepositoryProvider(provider);
 }
 
-function createNoAuthTargetDiscoveryResult(): ScmHostingProviderRepositoryDescribePublishTargetsResult {
+function createNoAuthTargetDiscoveryResult(provider: ScmHostingProviderRef): ScmHostingProviderRepositoryDescribePublishTargetsResult {
   return {
     auth: {
       state: 'authentication_required',
       profileKind: 'no_auth',
       remediation: {
         kind: 'auth_required',
+        ...(shouldTryRest(provider) ? { action: 'connect_github' } : {}),
       },
     },
     targets: [],
@@ -193,13 +194,13 @@ export function createGithubRepositoryProvisioningAdapter(params?: Readonly<{
     ...githubHostingProviderAdapter,
     async describePublishTargets(input: ScmHostingProviderRepositoryDescribePublishTargetsInput) {
       if (!shouldTryRest(input.provider) || !restAdapter.describePublishTargets) {
-        return createNoAuthTargetDiscoveryResult();
+        return createNoAuthTargetDiscoveryResult(input.provider);
       }
       try {
         return await restAdapter.describePublishTargets(input);
       } catch (error) {
         if (isGithubRepositoryAuthRequiredError(error)) {
-          return createNoAuthTargetDiscoveryResult();
+          return createNoAuthTargetDiscoveryResult(input.provider);
         }
         throw error;
       }
