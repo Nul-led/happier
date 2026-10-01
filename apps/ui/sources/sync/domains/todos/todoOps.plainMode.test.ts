@@ -75,7 +75,8 @@ vi.mock('@/sync/domains/state/storage', () => ({
 }));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
-    getSyncSingleton: () => ({ encryption: mocks.accountEncryption }),
+    getSyncSingleton: () => ({ encryption: mocks.accountEncryption,
+        getCredentials: () => ({ token: 'token', secret: LEGACY_SECRET }) }),
 }));
 
 vi.mock('@/platform/randomUUID', () => ({

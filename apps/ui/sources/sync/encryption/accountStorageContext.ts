@@ -1,5 +1,6 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { isDataKeyAuthCredentials } from '@/auth/storage/tokenStorage';
+import { resolveAuthCredentialsScopeKey } from '@/auth/storage/resolveAuthCredentialsScopeKey';
 import {
     createAccountScopedCryptoMaterialSnapshotV1,
     convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
@@ -43,9 +44,9 @@ export async function resolveAccountStorageContext(
         request?: ServerFetch;
     }> = {},
 ): Promise<AccountStorageContext> {
-    const encryption = options.encryption === undefined
-        ? getSyncSingleton().encryption
-        : options.encryption;
+    const sync = options.encryption === undefined ? getSyncSingleton() : null;
+    const encryption = sync ? sync.encryption : options.encryption;
+    const mountedCredentials = sync && encryption ? sync.getCredentials() : null;
     try {
         const currentness = await fetchAccountEncryptionCurrentness(credentials, {
             ...(options.request ? {
@@ -55,6 +56,10 @@ export async function resolveAccountStorageContext(
         if (currentness.mode === 'plain') return { mode: 'plain', encryption: null };
         if (!encryption || !currentness.contentKeyFingerprint) {
             throw new Error('Account content-key material is unavailable');
+        }
+        if (sync && (!mountedCredentials
+            || resolveAuthCredentialsScopeKey(mountedCredentials) !== resolveAuthCredentialsScopeKey(credentials))) {
+            throw new Error('The mounted Account cipher belongs to another credential scope');
         }
         const material = resolveAccountScopedCryptoMaterialFromCredentials(credentials);
         const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
