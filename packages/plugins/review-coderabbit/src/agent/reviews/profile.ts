@@ -1,3 +1,5 @@
+export const CODERABBIT_REVIEW_SCOPES: readonly ('worktree' | 'paths')[] = ['worktree'];
+
 export function createCodeRabbitReviewExecutionProfile() {
   return {
     id: 'review',
@@ -8,5 +10,6 @@ export function createCodeRabbitReviewExecutionProfile() {
     actions: [{ kind: 'hostAction' as const, actionId: 'reviews.comments.create' as const }],
     defaults: { retention: 'ephemeral' as const, runClass: 'bounded' as const, io: 'streaming' as const },
     compatibleAgents: ['coderabbit'],
+    metadata: { reviewScopes: CODERABBIT_REVIEW_SCOPES },
   };
 }

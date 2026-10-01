@@ -5,6 +5,7 @@ import {
 } from '@happier-dev/plugin-sdk/reviews';
 
 import { normalizeCodeRabbitReviewStartInput } from './startInput.js';
+import { CODERABBIT_REVIEW_SCOPES } from './profile.js';
 
 export type CodeRabbitReviewScopePreflightResult =
   | Readonly<{ ok: true; eligibleFileCount: number }>
@@ -64,6 +65,16 @@ export async function preflightCodeRabbitReviewScope(params: Readonly<{
     });
   } catch {
       return { ok: false, error: 'Invalid CodeRabbit review input.' };
+  }
+
+  if (
+    !CODERABBIT_REVIEW_SCOPES.includes('paths')
+    && params.intentInput !== null
+    && typeof params.intentInput === 'object'
+    && !Array.isArray(params.intentInput)
+    && ('selectedPaths' in params.intentInput || 'selectedFiles' in params.intentInput)
+  ) {
+    return { ok: false, error: 'CodeRabbit cannot review exact file paths; choose a worktree scope or another engine.' };
   }
 
   if (

@@ -96,4 +96,19 @@ describe('CodeRabbit review preflight', () => {
       error: expect.stringContaining('No reviewable files'),
     });
   });
+
+  it('refuses an explicit file selection that CodeRabbit cannot pass to its CLI', async () => {
+    await expect(preflightCodeRabbitReviewScope({
+      cwd: '/workspace',
+      intentInput: {
+        changeType: 'committed',
+        base: { kind: 'none' },
+        selectedPaths: ['a.txt'],
+      },
+      scope: createSupportedScmReviewScope(['a.txt']),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('exact file paths'),
+    });
+  });
 });
