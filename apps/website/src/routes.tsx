@@ -12,6 +12,7 @@ import { SERVICE_SUPPORT } from './data/usageLimits';
 import { AgentDetail } from './pages/AgentDetail';
 import { AgentsIndex } from './pages/AgentsIndex';
 import { CodexRemotePage } from './pages/CodexRemotePage';
+import { DownloadPage } from './pages/DownloadPage';
 import { EnterprisePage } from './pages/EnterprisePage';
 import { Home } from './pages/Home';
 import { SecurityPage } from './pages/SecurityPage';
@@ -511,6 +512,34 @@ const SECURITY: Route = {
 };
 
 /**
+ * /download is the URL that gets said out loud and printed on things — the QR
+ * codes on the DMG and marketing assets resolve through /appstore and
+ * /playstore (public/_redirects), and this page is the one address that covers
+ * "…and everything else". It auto-starts the right desktop download when the
+ * platform is certain; src/components/DownloadHub.tsx holds that reasoning.
+ *
+ * ENGLISH-ONLY, using the `locales` narrowing the Route type documents: the
+ * page is platform names, store names and an install command, and a
+ * mostly-English /zh/download would be a worse signal than none. Because it
+ * narrows, the per-locale metadata coverage rules never see it — no
+ * ROUTE_META_I18N entry, no overlay, no extra entry files beyond its own.
+ */
+const DOWNLOAD: Route = {
+    path: '/download',
+    locales: ['en'],
+    title: 'Download Happier — desktop, mobile and the CLI',
+    description:
+        'Get Happier for macOS on Apple Silicon or Intel, Windows and Linux, the iOS and Android apps, the APK, or the one-line CLI installer — in one place.',
+    ogTitle: 'Download Happier for every device',
+    ogDescription:
+        'The desktop app for macOS, Windows and Linux, the mobile apps for iOS and Android, and the CLI that runs the agents on your own computer. One page, every build.',
+    ogImage: '/images/og.png',
+    ogImageAlt: 'The Happier wordmark over the words: One client for every AI coding agent.',
+    jsonLd: [webPage('/download', 'webpage', 'Download Happier')],
+    render: () => <DownloadPage />,
+};
+
+/**
  * Every page below ships in every language the site has.
  *
  * Applied here rather than repeated on 21 route objects, and applied as a
@@ -536,6 +565,7 @@ export const ROUTES: ReadonlyArray<Route> = [
     TERMINAL,
     SECURITY,
     ENTERPRISE,
+    DOWNLOAD,
 ].map((route) => ({ locales: LOCALES, ...route }));
 
 export function findRoute(pathname: string): Route | undefined {

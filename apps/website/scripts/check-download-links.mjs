@@ -16,16 +16,20 @@
  */
 
 const TARGETS = [
-    // Desktop — filenames carry the version; bump DESKTOP_VERSION when this fails.
-    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-darwin-aarch64-v0.2.0.dmg',
-    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-darwin-x86_64-v0.2.0.dmg',
-    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-windows-x86_64-v0.2.0.exe',
-    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-linux-x86_64-v0.2.0.AppImage',
+    // Desktop — unversioned rolling aliases; must match src/data/downloads.ts.
+    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-darwin-aarch64.dmg',
+    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-darwin-x86_64.dmg',
+    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-windows-x86_64.exe',
+    'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable/happier-ui-desktop-linux-x86_64.AppImage',
     'https://github.com/happier-dev/happier/releases/tag/ui-desktop-stable',
 
-    // Mobile
+    // Mobile. The Play listing is also the target of the /playstore short link
+    // (public/_redirects, printed as a QR code on marketing assets), the App
+    // Store URL is /appstore's, and the stable APK is /apk's — a pulled listing
+    // or asset must fail this check.
     'https://apps.apple.com/app/happier-claude-codex-opencode/id6758554297',
-    'https://github.com/happier-dev/happier/releases/download/ui-mobile-preview/happier-preview.apk',
+    'https://github.com/happier-dev/happier/releases/download/ui-mobile-stable/happier-android.apk',
+    'https://play.google.com/store/apps/details?id=dev.happier.app',
 
     // Installer + trust surface
     'https://happier.dev/install',
@@ -34,7 +38,7 @@ const TARGETS = [
     'https://happier.dev/happier-release.pub',
 
     // Product surfaces
-    'https://app.happier.dev/',
+    'https://cloud.happier.dev/',
     'https://docs.happier.dev/',
     'https://docs.happier.dev/security',
     'https://docs.happier.dev/providers',

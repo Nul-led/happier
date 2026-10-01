@@ -15,12 +15,9 @@ import { useTheme } from '../islands/themeStore';
  *     variants (macOS Apple Silicon / Intel, Windows, Linux). The
  *     detected one is highlighted with a "Detected" chip.
  *
- * Every URL comes from data/downloads.ts. It used to build them here from
- * version-less filenames on the rolling `ui-desktop-stable` tag, on the
- * assumption that the tag published version-less assets. It does not — every
- * asset under that tag carries `-v0.2.0` — so all four desktop downloads were
- * 404 in production, and the Google Play badge pointed at a listing
- * (`id=dev.happier`) that has never existed.
+ * Every URL comes from data/downloads.ts. Public downloads use unversioned
+ * rolling aliases so a release never requires a website version bump.
+ * Immutable version tags remain available on GitHub for reproducibility.
  */
 
 import {
@@ -524,7 +521,7 @@ export function DownloadBadges({ webApp = false }: { webApp?: boolean } = {}) {
                 the four buttons fit two-per-row). */}
             {webApp && (
                 <a
-                    href="https://app.happier.dev/"
+                    href="https://cloud.happier.dev/"
                     target="_blank"
                     rel="noreferrer"
                     className="group inline-flex items-center gap-2 self-stretch rounded-2xl px-5 text-[14px] font-semibold transition-transform hover:-translate-y-[1px]"

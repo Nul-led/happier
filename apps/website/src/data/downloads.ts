@@ -4,27 +4,16 @@
  * This file exists because three separate surfaces were each hand-typing URLs
  * and three of them were dead on 2026-08-08:
  *
- *   - DownloadBadges linked Google Play at `id=dev.happier`. That listing does
- *     not exist (HTTP 404). The real package id is `dev.happier.app`, and even
- *     that has no public store page — it is a closed testing track, reachable
- *     only through the opt-in URL below.
- *   - DownloadBadges built desktop URLs from version-less filenames
- *     (`happier-ui-desktop-darwin-aarch64.dmg`). Every asset actually published
- *     to the `ui-desktop-stable` tag carries the version in the filename, so all
- *     four desktop downloads returned 404.
+ *   - DownloadBadges linked Google Play at `id=dev.happier`. That listing has
+ *     never existed (HTTP 404). The real package id is `dev.happier.app`,
+ *     which spent months as a closed testing track reachable only through the
+ *     opt-in URL below, and is now the public listing in ANDROID_PLAY_URL.
+ *   - DownloadBadges once pinned desktop URLs to v0.2.0. Rolling releases now
+ *     publish stable aliases specifically so public links never need a version bump.
  *
  * Anything that points off this site belongs here, and `yarn check:links`
  * (scripts/check-download-links.mjs) HEADs every one of them before a deploy.
  */
-
-/**
- * Version baked into the `ui-desktop-stable` asset filenames.
- *
- * The rolling tag is stable; the filenames under it are not. Bump this in the
- * same commit that publishes a new desktop release, and let `check:links` catch
- * it if you forget.
- */
-export const DESKTOP_VERSION = '0.2.0';
 
 const DESKTOP_ASSET_BASE =
     'https://github.com/happier-dev/happier/releases/download/ui-desktop-stable';
@@ -50,25 +39,25 @@ export const DESKTOP_PLATFORMS: ReadonlyArray<DesktopPlatform> = [
         id: 'mac-arm64',
         label: 'macOS',
         sublabel: 'Apple Silicon',
-        href: desktopAsset(`happier-ui-desktop-darwin-aarch64-v${DESKTOP_VERSION}.dmg`),
+        href: desktopAsset('happier-ui-desktop-darwin-aarch64.dmg'),
     },
     {
         id: 'mac-x86_64',
         label: 'macOS',
         sublabel: 'Intel',
-        href: desktopAsset(`happier-ui-desktop-darwin-x86_64-v${DESKTOP_VERSION}.dmg`),
+        href: desktopAsset('happier-ui-desktop-darwin-x86_64.dmg'),
     },
     {
         id: 'win-x86_64',
         label: 'Windows',
         sublabel: 'x64 · .exe installer',
-        href: desktopAsset(`happier-ui-desktop-windows-x86_64-v${DESKTOP_VERSION}.exe`),
+        href: desktopAsset('happier-ui-desktop-windows-x86_64.exe'),
     },
     {
         id: 'linux-x86_64',
         label: 'Linux',
         sublabel: 'x64 · AppImage',
-        href: desktopAsset(`happier-ui-desktop-linux-x86_64-v${DESKTOP_VERSION}.AppImage`),
+        href: desktopAsset('happier-ui-desktop-linux-x86_64.AppImage'),
     },
 ];
 
@@ -76,40 +65,42 @@ export const APP_STORE_URL =
     'https://apps.apple.com/app/happier-claude-codex-opencode/id6758554297';
 
 /**
- * Android has no public store listing.
+ * The direct APK, kept first-class beside the Play listing.
  *
- * `play.google.com/store/apps/details?id=dev.happier.app` is 404 for anyone who
- * is not an opted-in tester, because the track is closed. The opt-in URL is the
- * only working Play entry point, and it only works after a Google account joins
- * the tester list — so it is not a badge, it is a footnote.
- *
- * The APK on the `ui-mobile-preview` tag is the path Android users are actually
- * taking: 2,056 downloads as of 2026-08-08, against 762 Android users in
- * PostHog over 90 days. Lead with it and say plainly that it is a direct
- * download.
+ * It is not a legacy path: thousands of people chose the file over the store
+ * while the Play track was still closed, and some keep choosing it — no Google
+ * account, no store, reproducible from the release page. It follows the stable
+ * rolling tag; preview and dev APKs remain available from their explicitly
+ * named channel releases.
  */
 export const ANDROID_APK_URL =
-    'https://github.com/happier-dev/happier/releases/download/ui-mobile-preview/happier-preview.apk';
+    'https://github.com/happier-dev/happier/releases/download/ui-mobile-stable/happier-android.apk';
 
+/**
+ * The closed-track opt-in URL from before the listing went public. Still a
+ * working entry point for accounts already on the tester list, and still
+ * referenced by older docs, so it stays — as a footnote, not a badge.
+ */
 export const ANDROID_PLAY_TESTING_OPT_IN_URL =
     'https://play.google.com/apps/testing/dev.happier.app';
 
 /**
- * The public Play listing — WHICH DOES NOT EXIST YET.
+ * The public Play listing.
  *
- * This is here because the badge above it now leads with Play and keeps the APK
- * as the secondary choice, on the plan that the site and the listing go public
- * together. Until that happens this URL 404s for everyone, which is precisely
- * the failure the docblock above spent a paragraph arguing against.
+ * For a long time this docblock was a warning: the track was closed, the URL
+ * 404ed for everyone but opted-in testers, and the Play-first badge was only
+ * allowed to ship the day the listing went public. That day has come — the
+ * listing is live, DownloadBadges leads with Play, and the APK stays one click
+ * behind the chevron for the people who want the file.
  *
- * SO: do not deploy the site with this badge before the listing is live. If the
- * two ever have to ship apart, swap the Android badge's primary href back to
- * ANDROID_APK_URL — the popover already offers the other one either way, so it
- * is a one-line change and nothing else moves.
+ * The safety net outlives the warning: `yarn check:links`
+ * (scripts/check-download-links.mjs) HEADs this URL with every other outbound
+ * link before a deploy, so a pulled listing or a re-closed track fails the
+ * check instead of shipping as a dead badge.
  */
 export const ANDROID_PLAY_URL = 'https://play.google.com/store/apps/details?id=dev.happier.app';
 
-export const WEB_APP_URL = 'https://app.happier.dev/';
+export const WEB_APP_URL = 'https://cloud.happier.dev/';
 export const DOCS_URL = 'https://docs.happier.dev/';
 export const GUIDES_URL = 'https://guides.happier.dev/';
 export const GITHUB_REPO_URL = 'https://github.com/happier-dev/happier';

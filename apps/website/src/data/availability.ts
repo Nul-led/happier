@@ -107,11 +107,15 @@ export const SHIPPED_AGENT_IDS = [
     'kimi',
     'kilo',
     'kiro',
+    'devin',
     'customAcp',
     'pi',
     'copilot',
     'cursor',
     'grok',
+    'agy',
+    'fx',
+    'droid',
 ] as const;
 
 export type ShippedAgentId = (typeof SHIPPED_AGENT_IDS)[number];

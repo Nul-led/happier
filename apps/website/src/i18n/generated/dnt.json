@@ -508,15 +508,9 @@
       "`--ssh user@host`"
     ]
   },
-  "faq.FAQ_ITEMS.server.a.0": {
-    "dnt": [
-      "`happier setup`"
-    ]
-  },
   "faq.FAQ_ITEMS.server.a.1": {
     "dnt": [
-      "`happier home create`",
-      "`happier relay host install`"
+      "`happier home create`"
     ]
   },
   "faq.FAQ_ITEMS.plan.a.1": {

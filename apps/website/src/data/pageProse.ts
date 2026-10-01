@@ -22,7 +22,7 @@ export const PAGE_PROSE = {
     agentDetail: {
         p0: "Happier looks for <1>{binary}</1> on your PATH and runs the copy you installed. {vendor} distributes it with an install script rather than a package; Happier can show you that command, and it will not execute a vendor install script on its own — vendor recipes are refused unless you explicitly allow them.",
         p1: "Happier looks for <1>{binary}</1> on your PATH and runs the copy you installed. There is no install path for it inside Happier at all: install it the way {vendor} documents, and Happier picks it up from there.",
-        p2: "The iOS and Android apps, the desktop app for macOS, Windows and Linux, and <1>app.happier.dev</1> are all clients onto the {name} process running on your computer — not read-only mirrors. Answer a permission request, send the next instruction, browse the repository, read the diff. The transcript is end-to-end encrypted before it leaves your computer, so the server carrying it holds ciphertext.",
+        p2: "The iOS and Android apps, the desktop app for macOS, Windows and Linux, and <1>cloud.happier.dev</1> are all clients onto the {name} process running on your computer — not read-only mirrors. Answer a permission request, send the next instruction, browse the repository, read the diff. The transcript is end-to-end encrypted before it leaves your computer, so the server carrying it holds ciphertext.",
         p3: "Happier installs on the computer that already holds your repository, and <1>happier {id}</1> starts {name} there as an ordinary subprocess, in the directory you point it at, signed in the way you signed it in. There is no gateway between the agent and {vendor}, and no copy of your source anywhere else.",
         p4: "Configuration reference for the Happier side — <1>{name} in the Happier docs</1>.",
         p5: "{name} is one of {length} command-line coding agents Happier runs, and they share one session list, one permission inbox, one set of keyboard shortcuts and one MCP configuration.",
@@ -146,7 +146,7 @@ export const PAGE_PROSE = {
         p1: "Everything else\nyou didn’t know you needed.",
     },
     footer: {
-        p0: "One open-source client for every coding agent — thirteen of them, run on your own computer, with your own subscriptions or API keys, end-to-end encrypted.",
+        p0: "One open-source client for your coding agents, run on your own computer with your own subscriptions or API keys, end-to-end encrypted.",
         p1: "© {BUILD_YEAR} Happier. Open source. Made with care.",
     },
     getStarted: {
@@ -221,8 +221,8 @@ export const PAGE_PROSE = {
         p1: "Every tool.\nOne interface.",
     },
     terminalPage: {
-        p0: "Three of the thirteen, and they do not behave the same way. Codex is exclusive — one driver at a time. OpenCode is not, and Claude Code can be either, depending on which runtime you start it under.",
-        p1: "The other ten agents Happier runs still start from the terminal with <1>happier <agent></1> and still appear on your phone. What they do not do is let you take the session back into their own TUI half way through.",
+        p0: "These three illustrate different hand-offs. Codex is exclusive — one driver at a time. OpenCode is not, and Claude Code can be either, depending on which runtime you start it under.",
+        p1: "Other agents can also start from the terminal with <1>happier <agent></1> and appear on your phone. Mid-session hand-off to a vendor TUI depends on the agent and runtime; check the current capability reference before relying on it.",
         p2: "Nothing on this page needs configuration if you start your sessions from the terminal — that path works the moment the CLI is installed. The settings that do need a decision are tmux integration, the Windows session mode and where the embedded terminal docks, and all three are in the <1>configuration reference</1>.",
         p3: "Feature",
         p4: "Keep your Claude Code, Codex and OpenCode terminals, or work from the app",

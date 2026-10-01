@@ -38,6 +38,12 @@
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=3600
 
+/catalog.json
+  X-Robots-Tag: noindex
+  Content-Type: application/json; charset=utf-8
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=300, must-revalidate
+
 /happier-release.pub
   X-Robots-Tag: noindex
   Content-Type: text/plain; charset=utf-8
