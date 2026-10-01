@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   ProviderAccountUsageRecordIdSchema,
   type ProviderAccountUsageRecordId,
-} from '../../connect/accountUsage.js';
+} from '../../connect/providerAccountUsagePrimitives.js';
 
 export const PROVIDER_ACCOUNT_USAGE_REFS_METADATA_KEY = 'providerAccountUsageRefsV1' as const;
 export const PROVIDER_ACCOUNT_USAGE_REFS_MAX_RECORD_IDS = 32;
@@ -71,10 +71,17 @@ export function writeProviderAccountUsageRecordIdToMetadata(
     parsedRecordId.data,
   ]);
 
+  const previous = ProviderAccountUsageRefsV1Schema.safeParse(
+    base[PROVIDER_ACCOUNT_USAGE_REFS_METADATA_KEY],
+  );
+  const unchangedIds = previous.success
+    && previous.data.recordIds.length === recordIds.length
+    && previous.data.recordIds.every((id, index) => id === recordIds[index]);
+
   base[PROVIDER_ACCOUNT_USAGE_REFS_METADATA_KEY] = {
     v: 1,
     recordIds,
-    updatedAtMs: normalizeTimestampMs(input.updatedAtMs),
+    updatedAtMs: unchangedIds ? previous.data.updatedAtMs : normalizeTimestampMs(input.updatedAtMs),
   } satisfies ProviderAccountUsageRefsV1;
   return base;
 }

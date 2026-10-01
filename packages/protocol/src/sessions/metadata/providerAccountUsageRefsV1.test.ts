@@ -61,6 +61,26 @@ describe('provider account usage refs session metadata', () => {
     expect(readProviderAccountUsageRecordIdsFromMetadata(nextMetadata)).toEqual([recordId]);
   });
 
+  it('does not refresh the timestamp when an existing record id is published again', () => {
+    const recordId = buildProviderAccountUsageRecordId(key('acct_1'));
+    const metadata = writeProviderAccountUsageRecordIdToMetadata({ label: 'kept' }, {
+      recordId,
+      updatedAtMs: 500,
+    });
+
+    const repeated = writeProviderAccountUsageRecordIdToMetadata(metadata, {
+      recordId,
+      updatedAtMs: 1_000,
+    });
+
+    expect(repeated).toEqual(metadata);
+    expect(repeated.providerAccountUsageRefsV1).toEqual({
+      v: 1,
+      recordIds: [recordId],
+      updatedAtMs: 500,
+    });
+  });
+
   it('keeps the newest bounded record-id window', () => {
     const recordIds = Array.from({ length: 36 }, (_, index) => (
       buildProviderAccountUsageRecordId(key(`acct_${index}`))
