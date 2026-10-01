@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   buildDefaultPermissionHookResponse,
   readPermissionHookEventName,
@@ -54,16 +56,25 @@ function buildPermissionResponse(
 ): PermissionHookResponse {
   const hookEventName = readPermissionHookEventName(data);
   if (result.behavior === 'allow') {
+    // Both records use the same strict JSON normalization, including object prototypes.
+    // PermissionRequest rewrites trigger Claude's rule recheck; an approval of unchanged
+    // input must not claim a rewrite. PreToolUse keeps its interaction-answer contract.
+    const shouldIncludeUpdatedInput = hookEventName === 'PreToolUse'
+      || !isDeepStrictEqual(
+        readToolInputRecord(result.updatedInput),
+        readToolInputRecord(readToolInput(data)),
+      );
+    const updatedInput = shouldIncludeUpdatedInput ? { updatedInput: result.updatedInput } : {};
     return {
       continue: true,
       suppressOutput: true,
       hookSpecificOutput: {
         hookEventName,
         permissionDecision: 'allow',
-        updatedInput: result.updatedInput,
+        ...updatedInput,
         decision: {
           behavior: 'allow',
-          updatedInput: result.updatedInput,
+          ...updatedInput,
           ...(result.updatedPermissions ? { updatedPermissions: result.updatedPermissions } : {}),
         },
       },

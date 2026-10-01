@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createClaudePermissionHookHandler } from './permissionHookHandler.js';
 
 describe('createClaudePermissionHookHandler Agent tool interception', () => {
-  it('feeds one transformed provider-native input into the existing permission engine', async () => {
+  it.each(['PreToolUse', 'PermissionRequest'] as const)('preserves a transformed provider-native input through %s', async (hookEventName) => {
     const before = vi.fn(async () => ({
       status: 'continue' as const,
       input: { command: 'pwd', intercepted: true },
@@ -15,7 +15,7 @@ describe('createClaudePermissionHookHandler Agent tool interception', () => {
     } as never);
 
     const response = await handler({
-      hook_event_name: 'PreToolUse',
+      hook_event_name: hookEventName,
       session_id: 'provider-session-1',
       tool_name: 'Bash',
       tool_use_id: 'call-1',
@@ -36,6 +36,29 @@ describe('createClaudePermissionHookHandler Agent tool interception', () => {
       behavior: 'allow',
       updatedInput: { command: 'pwd', intercepted: true },
     }));
+  });
+
+  it('approves unchanged PermissionRequest input without a rewrite while retaining permission updates', async () => {
+    const originalInput = { command: 'pwd', options: { paths: ['a', 'b'], verbose: false } };
+    const approvedInput = { options: { verbose: false, paths: ['a', 'b'] }, command: 'pwd' };
+    // Host JSON boundaries may return null-prototype records with different property order.
+    Object.setPrototypeOf(approvedInput, null);
+    Object.setPrototypeOf(approvedInput.options, null);
+    const updatedPermissions = [{ type: 'setMode', mode: 'default' }];
+    const handler = createClaudePermissionHookHandler({
+      agentRuntime: { toolExecution: { before: async (request) => ({ status: 'continue', input: request.input }) } },
+      sessions: { current: { permissions: {
+        requestDecision: async () => ({ decision: 'approved', updatedInput: approvedInput, updatedPermissions }),
+      } } },
+    });
+
+    const response = await handler({
+      hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_use_id: 'original-call',
+      tool_input: originalInput,
+    });
+
+    expect(response.hookSpecificOutput?.decision).toEqual({ behavior: 'allow', updatedPermissions });
+    expect(response.hookSpecificOutput).not.toHaveProperty('updatedInput');
   });
 
   it('maps an explicit interception rejection to the existing provider-native denial', async () => {
