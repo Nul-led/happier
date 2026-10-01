@@ -81,6 +81,42 @@ function viewModel(): ConnectedServiceQuotaGaugeViewModel {
 }
 
 describe('AgentInputProviderUsageBadge', () => {
+    it('keeps the final selected meter reachable through the real capped popover scroll owner', async () => {
+        const meters = Array.from({ length: 24 }, (_, index) => ({
+            meterId: `reported_${index}`, label: `Reported ${index}`, used: index, limit: 100,
+            unit: 'count' as const, utilizationPct: null, resetsAt: null, status: 'ok' as const,
+            details: { limitCategory: 'usage_limit' as const },
+        }));
+        const vm = computeConnectedServiceQuotaGaugeViewModel({
+            snapshot: { v: 1, serviceId: 'openai-codex', profileId: 'work', fetchedAt: 1_000,
+                staleAfterMs: 60_000, planLabel: null, accountLabel: null, meters: [...meters, {
+                    meterId: 'requests', label: 'Requests', used: 99, limit: 100, unit: 'requests',
+                    utilizationPct: null, resetsAt: null, status: 'ok', details: { limitCategory: 'rate_limit' as const },
+                }] },
+            windowMode: 'most_constrained', additionalMeterIds: ['requests'], nowMs: 2_000,
+            formatter: fixtureFormatter,
+        });
+        if (!vm) throw new Error('Expected reported quota');
+        const screen = await renderScreen(<AgentInputProviderUsageBadge viewModel={vm} />);
+        act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
+        const scroll = screen.findAll((node) => typeof node.type === 'string'
+            && String(node.type).includes('ScrollView')
+            && node.findAll((child) => child.props.testID === 'agent-input-provider-usage-meter:requests').length > 0);
+        expect(scroll).toHaveLength(1);
+        expect(flattenStyle(scroll[0]!.props.style).maxHeight).toBeLessThanOrEqual(420);
+        expect(scroll[0]!.props.keyboardShouldPersistTaps).toBe('handled');
+        // Native measurement/scroll are I/O boundaries; the real overlay owns edge state.
+        act(() => {
+            scroll[0]!.props.onLayout({ nativeEvent: { layout: { width: 280, height: 200 } } });
+            scroll[0]!.props.onContentSizeChange(280, 1_400);
+        });
+        expect(screen.findAll((node) => node.props.name === 'caret-down').length).toBeGreaterThan(0);
+        act(() => { scroll[0]!.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1_200 } } }); });
+        expect(screen.findAll((node) => node.props.name === 'caret-down')).toHaveLength(0);
+        expect(screen.findAll((node) => node.props.name === 'caret-up').length).toBeGreaterThan(0);
+        expect(screen.findByTestId('agent-input-provider-usage-meter:requests')).toBeTruthy();
+    });
+
     it('includes every visible extra meter in the actual usage popover across comparison families', async () => {
         const vm = computeConnectedServiceQuotaGaugeViewModel({
             snapshot: {
