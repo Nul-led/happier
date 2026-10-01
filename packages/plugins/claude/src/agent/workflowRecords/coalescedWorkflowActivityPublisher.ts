@@ -38,8 +38,10 @@ export function createCoalescedWorkflowActivityPublisher(params: Readonly<{
 }>): CoalescedWorkflowActivityPublisher {
   const debounceMs = params.debounceMs ?? 300;
   const pendingChangedRunIds = new Set<string>();
+  const pendingRetryRunIds = new Set<string>();
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let activeFlushes = 0;
 
   const scheduler = createCoalescedScheduler({
     drain: async () => {
@@ -70,17 +72,28 @@ export function createCoalescedWorkflowActivityPublisher(params: Readonly<{
 
   function triggerNow(): void {
     clearDebounce();
+    takePendingRetries();
     scheduler.trigger();
+  }
+
+  function takePendingRetries(): void {
+    for (const runId of pendingRetryRunIds) pendingChangedRunIds.add(runId);
+    pendingRetryRunIds.clear();
+  }
+
+  function scheduleDebounce(): void {
+    if (debounceTimer !== null) return;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      takePendingRetries();
+      scheduler.trigger();
+    }, debounceMs);
   }
 
   function scheduleRetry(runIds: readonly string[]): void {
     if (disposed || runIds.length === 0) return;
-    for (const runId of runIds) pendingChangedRunIds.add(runId);
-    if (pendingChangedRunIds.size === 0 || debounceTimer !== null) return;
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      scheduler.trigger();
-    }, debounceMs);
+    for (const runId of runIds) pendingRetryRunIds.add(runId);
+    scheduleDebounce();
   }
 
   function notify(observation: WorkflowActivityObservationLike): void {
@@ -93,16 +106,12 @@ export function createCoalescedWorkflowActivityPublisher(params: Readonly<{
       || observation.statusChangedRunIds.length > 0
       || observation.terminalRunIds.length > 0;
 
-    if (immediate) {
+    if (immediate || activeFlushes > 0) {
       triggerNow();
       return;
     }
     // Progress-only: latest-wins debounce.
-    if (debounceTimer !== null) return;
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      scheduler.trigger();
-    }, debounceMs);
+    scheduleDebounce();
   }
 
   async function flush(): Promise<void> {
@@ -111,13 +120,20 @@ export function createCoalescedWorkflowActivityPublisher(params: Readonly<{
     // The generic scheduler owns the only publish loop. Its flush barrier waits for an already
     // active drain and coalesces these pending ids into a follow-up, avoiding a competing direct
     // publish that could return early or race record/headline revision ownership.
-    await scheduler.flush();
+    takePendingRetries();
+    activeFlushes += 1;
+    try {
+      await scheduler.flush();
+    } finally {
+      activeFlushes -= 1;
+    }
   }
 
   function dispose(): void {
     disposed = true;
     clearDebounce();
     pendingChangedRunIds.clear();
+    pendingRetryRunIds.clear();
     scheduler.dispose();
   }
 

@@ -7,6 +7,7 @@ import {
 
 import { createCoalescedWorkflowActivityPublisher } from './coalescedWorkflowActivityPublisher.js';
 import type { WorkflowActivityPublishInput } from './publishWorkflowActivitySnapshot.js';
+import { createWorkflowActivityPublisher } from './publishWorkflowActivitySnapshot.js';
 
 function runSnapshot(runId: string): SessionWorkflowRunSnapshotV1 {
   return {
@@ -26,6 +27,69 @@ function runSnapshot(runId: string): SessionWorkflowRunSnapshotV1 {
 }
 
 describe('createCoalescedWorkflowActivityPublisher', () => {
+  it('flush leaves failed durable writes on the delayed retry path instead of retrying in a tight loop', async () => {
+    let available = false;
+    const records: SessionWorkflowRunSnapshotV1[] = [];
+    const headlines: string[][] = [];
+    const publisher = createWorkflowActivityPublisher({
+      backendId: 'claude',
+      commitRecord: async (snapshot) => {
+        records.push(snapshot);
+        if (!available) throw new Error('Server unavailable');
+      },
+      writeHeadlines: (bundle) => { headlines.push(bundle.workflow.activeRuns.map((run) => run.runId)); },
+    });
+    const scheduler = createCoalescedWorkflowActivityPublisher({
+      publisher,
+      getSnapshots: () => new Map([['a', runSnapshot('a')]]),
+      debounceMs: 300,
+    });
+
+    scheduler.notify({ changedRunIds: ['a'], startedRunIds: [], terminalRunIds: [], statusChangedRunIds: [] });
+    await scheduler.flush();
+    expect(records).toHaveLength(1);
+    expect(headlines).toEqual([[]]);
+    await vi.advanceTimersByTimeAsync(299);
+    expect(records).toHaveLength(1);
+
+    available = true;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(records).toHaveLength(2);
+    expect(headlines).toEqual([[], ['a']]);
+    scheduler.dispose();
+  });
+
+
+  it.each(['active', 'complete'] as const)('serializes a %s notification arriving during a flush-driven record write', async (status) => {
+    let releaseFirstWrite!: () => void;
+    const firstWrite = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    const records: SessionWorkflowRunSnapshotV1[] = [];
+    const headlines: string[][] = [];
+    const snapshots = new Map([['a', runSnapshot('a')]]);
+    const publisher = createWorkflowActivityPublisher({
+      backendId: 'claude',
+      commitRecord: async (snapshot) => {
+        records.push(snapshot);
+        if (records.length === 1) await firstWrite;
+      },
+      writeHeadlines: (bundle) => { headlines.push((bundle.workflow.recentRuns ?? []).map((run) => run.runId)); },
+    });
+    const scheduler = createCoalescedWorkflowActivityPublisher({ publisher, getSnapshots: () => snapshots });
+    scheduler.notify({ changedRunIds: ['a'], startedRunIds: [], terminalRunIds: [], statusChangedRunIds: [] });
+    const flush = scheduler.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    snapshots.set('a', { ...{ ...runSnapshot('a'), status }, updatedAt: 2000, totalAgents: 2 });
+    scheduler.notify({ changedRunIds: ['a'], startedRunIds: [], terminalRunIds: status === 'complete' ? ['a'] : [], statusChangedRunIds: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    const writesBeforeRelease = records.length;
+    releaseFirstWrite();
+    await flush;
+    expect(writesBeforeRelease).toBe(1);
+    expect(records.map((record) => record.status)).toEqual(['active', status]);
+    expect(headlines.at(-1)).toEqual(status === 'complete' ? ['a'] : []);
+    scheduler.dispose();
+  });
+
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 

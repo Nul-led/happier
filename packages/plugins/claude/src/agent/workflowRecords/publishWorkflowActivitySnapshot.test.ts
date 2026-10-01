@@ -54,6 +54,33 @@ function agentSnapshot(params: Readonly<{
 }
 
 describe('createWorkflowActivityPublisher', () => {
+  it('keeps headline timestamps stable when republishing unchanged snapshots', async () => {
+    const written: SessionActivityHeadlineBundleV1[] = [];
+    let clock = 10_000;
+    const publisher = createWorkflowActivityPublisher({
+      backendId: 'claude',
+      now: () => clock,
+      commitRecord: async () => {},
+      writeHeadlines: async (bundle) => { written.push(bundle); },
+    });
+    const snapshot = runSnapshot({ runId: 'a', updatedAt: 1_000 });
+    await publisher.publish({ snapshots: new Map([['a', snapshot]]), changedRunIds: ['a'] });
+    clock = 20_000;
+    await publisher.publish({ snapshots: new Map([['a', snapshot]]), changedRunIds: [] });
+
+    expect(written).toHaveLength(1);
+    expect(written[0]?.workflow.updatedAt).toBe(1_000);
+    expect(written[0]?.agentActivity.updatedAt).toBe(1_000);
+
+    await publisher.publish({
+      snapshots: new Map([['a', runSnapshot({ runId: 'a', updatedAt: 2_000 })]]),
+      changedRunIds: [],
+    });
+    expect(written).toHaveLength(2);
+    expect(written[1]?.workflow.updatedAt).toBe(2_000);
+    expect(written[1]?.agentActivity.updatedAt).toBe(2_000);
+  });
+
   it('writes the durable record first, then the headline', async () => {
     const order: string[] = [];
     const commitRecord = vi.fn<CommitRecord>(async () => { order.push('record'); });
