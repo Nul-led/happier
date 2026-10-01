@@ -118,22 +118,34 @@ test('accepts only decimal NonZeroU32 receive limits', () => {
   try {
     const zero = run({ rate: '0', burst: '1' });
     assert.equal(zero.status, 64);
-    assert.match(zero.stderr, /1\.\.4294967295/);
+    assert.match(zero.stderr, /10\.\.4294967295/);
+
+    const belowRefillInterval = run({ rate: '9', burst: '1' });
+    assert.equal(belowRefillInterval.status, 64);
+    assert.match(belowRefillInterval.stderr, /10\.\.4294967295/);
+
+    // Reaching the fake sed proves the pinned relay's 100ms refill-compatible
+    // minimum is accepted before TOML substitution.
+    assert.equal(run({ rate: '10' }).status, 73);
+
+    const zeroBurst = run({ rate: '10', burst: '0' });
+    assert.equal(zeroBurst.status, 64);
+    assert.match(zeroBurst.stderr, /1\.\.4294967295/);
 
     // Reaching the fake sed proves both values passed entrypoint validation;
     // status 73 also proves leading zeros were removed before TOML substitution.
     assert.equal(run({ rate: '4294967295' }).status, 73);
     assert.equal(run({ rate: '0004294967295', burst: '0000000001' }).status, 73);
 
-    for (const [rate, burst] of [
-      ['4294967296', '1'],
-      ['1', '4294967296'],
-      ['999999999999999999999999999999999999', '1'],
-      ['1', '999999999999999999999999999999999999'],
+    for (const [rate, burst, expectedRange] of [
+      ['4294967296', '1', /10\.\.4294967295/],
+      ['10', '4294967296', /1\.\.4294967295/],
+      ['999999999999999999999999999999999999', '1', /10\.\.4294967295/],
+      ['10', '999999999999999999999999999999999999', /1\.\.4294967295/],
     ]) {
       const result = run({ rate, burst });
       assert.equal(result.status, 64);
-      assert.match(result.stderr, /1\.\.4294967295/);
+      assert.match(result.stderr, expectedRange);
     }
   } finally {
     rmSync(fakeBin, { recursive: true, force: true });
@@ -238,11 +250,21 @@ test('documents current development browser Home and finite Machine source wirin
   assert.match(readme, /canonical finite import\/export owners/i);
   assert.match(readme, /complete A7\.4 path passed in[\s\S]*loaded Chromium/i);
   assert.match(readme, /does not claim stable or preview availability/i);
-  assert.match(readme, /Lane 09 certification/i);
+  assert.doesNotMatch(readme, /Lane 09 certification/i);
+  assert.match(readme, /certification for released targets/i);
   assert.match(publishedDocs, /browser carries Home\s+HTTP and Socket\.IO over Iroh/i);
   assert.match(publishedDocs, /canonical finite file and attachment transfer owners/i);
   assert.match(publishedDocs, /does not claim stable or preview availability/i);
-  assert.match(publishedDocs, /Lane 09 certification/i);
+  assert.doesNotMatch(publishedDocs, /Lane 09 certification/i);
+  assert.match(publishedDocs, /certification for released targets/i);
+});
+
+test('documents the pinned relay receive rate and burst bounds', () => {
+  const surfaces = [read('README.md'), read('../../apps/docs/content/docs/self-hosting/iroh-relay.mdx')];
+  for (const surface of surfaces) {
+    assert.match(surface, /receive\s+rate[\s\S]{0,180}`10` through `4294967295`/i);
+    assert.match(surface, /burst[\s\S]{0,180}`1` through `4294967295`/i);
+  }
 });
 
 test('documents the exact upstream private admission allow response', () => {

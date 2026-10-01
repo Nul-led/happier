@@ -23,7 +23,8 @@ canonical finite file and attachment transfer owners in the development source,
 including encrypted chunks, destination finalization, cancellation, and the
 terminal no-fallback result. Its complete Chromium development journey has
 passed, but this does not claim stable or preview availability, multi-browser
-support, target certification, or Lane 09 certification. The browser form is
+support, or certification for released targets; release validation remains
+separate from this development-source path. The browser form is
 relay-only and shows **Secure relay**, never **Direct**. A browser is never a
 Home, and this adds no gateway, local-loopback emulation, JavaScript relay, or
 browser Mutagen workspace-sync engine.
@@ -75,10 +76,12 @@ effective configuration into the container's memory-only `/tmp` mount.
 
 The two receive settings are upstream token-bucket controls. Derive them from
 the capacity of the deployed link and instance; they are not Happier account
-quotas. Each receive value must be a decimal integer from `1` through
-`4294967295`, matching the relay's `NonZeroU32` input. All three variables must
-be non-empty or Compose stops before it starts the container; the relay
-entrypoint rejects receive values outside that range.
+quotas. The receive rate must be a decimal integer from `10` through
+`4294967295`; the pinned relay refills in 100ms intervals and rejects a lower
+rate. The burst must be a decimal integer from `1` through `4294967295`,
+matching the relay's `NonZeroU32` input. All three variables must be non-empty
+or Compose stops before it starts the container; the relay entrypoint rejects
+receive values outside those ranges.
 
 Pinned `iroh-relay` 1.1.0 declares `accept_conn_limit` and
 `accept_conn_burst`, but upstream documents them as unimplemented and
@@ -178,8 +181,10 @@ token is not supported.
   variables is unset or empty. Compose does not look at the image reference
   itself, so also confirm you pinned a digest rather than a tag such as
   `latest` or `preview`.
-- **The relay exits while reading receive limits.** Both token-bucket values
-  must be positive integers derived from measured capacity.
+- **The relay exits while reading receive limits.** The receive rate must be a
+  decimal integer from `10` through `4294967295`, and the burst must be a
+  decimal integer from `1` through `4294967295`; derive both from measured
+  capacity.
 - **TLS startup fails.** Confirm that `default.crt` contains the certificate
   chain and that `default.key` is its private key, mounted read-only under the
   deployment's `certs` directory.

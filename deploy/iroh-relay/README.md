@@ -24,7 +24,8 @@ finalization, cancellation, and the terminal no-fallback result remain owned by
 the same transfer lifecycle as native clients. The complete A7.4 path passed in
 loaded Chromium against the stock local relay and real Machine acceptor in the
 current development source. This does not claim stable or preview availability,
-multi-browser support, target certification, or Lane 09 certification. Browser
+multi-browser support, or certification for released targets; release
+validation remains separate from this development-source path. Browser
 Mutagen/workspace sync remains excluded. The browser form is relay-only and
 reports `Secure relay`, never `Direct`; it adds no gateway, loopback emulation,
 JavaScript relay, or browser Mutagen runtime.
@@ -72,10 +73,14 @@ Compose intentionally does not mount a second checkout copy over it; the
 entrypoint writes the effective configuration to the memory-only `/tmp` mount.
 Configure:
 
-- `HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND` and
-  `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: upstream token-bucket values derived
-  from the deployed link and instance capacity. Each must be a decimal integer
-  from `1` through `4294967295`, matching the relay's `NonZeroU32` input.
+- `HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND`: the upstream token-bucket receive
+  rate derived from the deployed link and instance capacity. It must be a
+  decimal integer from `10` through `4294967295`; the pinned relay refills in
+  100ms intervals and rejects a lower rate.
+- `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: the upstream token-bucket burst
+  derived from the deployed link and instance capacity. It must be a decimal
+  integer from `1` through `4294967295`, matching the relay's `NonZeroU32`
+  input.
 
 Pinned `iroh-relay` 1.1.0 also declares `accept_conn_limit` and
 `accept_conn_burst`, but upstream documents both as unimplemented and
