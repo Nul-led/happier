@@ -201,4 +201,50 @@ describe('system task prompt payload contracts', () => {
       ],
     });
   });
+
+  it('parses the one-CLI question (R12) and reads only an explicit answer', async () => {
+    const { parseSetupCliChoicePromptData, readSetupCliChoiceAnswer } = await import('./promptPayloadContracts.js');
+    const { SYSTEM_TASK_PROMPT_KINDS_V1 } = await import('./promptKindCatalog.js');
+    const { SETUP_THIS_COMPUTER_SYSTEM_TASK_STEP_IDS_V1 } = await import('./stepIdCatalog.js');
+
+    expect(SYSTEM_TASK_PROMPT_KINDS_V1).toContain('setup.cliChoice');
+    expect(SETUP_THIS_COMPUTER_SYSTEM_TASK_STEP_IDS_V1).toContain('setup.thisComputer.cliChoice');
+
+    expect(parseSetupCliChoicePromptData({
+      command: ' /usr/local/bin/happier ',
+      version: '0.2.13',
+      origin: 'npm',
+      removalCommand: 'npm uninstall -g @happier-dev/cli',
+      updateCommand: 'npm install -g @happier-dev/cli@latest',
+      belowSetupFloor: false,
+      missing: false,
+      keepBlockedBy: null,
+    } satisfies SystemTaskJsonObject)).toEqual({
+      command: '/usr/local/bin/happier',
+      version: '0.2.13',
+      origin: 'npm',
+      removalCommand: 'npm uninstall -g @happier-dev/cli',
+      updateCommand: 'npm install -g @happier-dev/cli@latest',
+      belowSetupFloor: false,
+      missing: false,
+      keepBlockedBy: null,
+    });
+    // Older producers omit the later fields; an unknown origin never names a command it cannot vouch for.
+    expect(parseSetupCliChoicePromptData({ command: '/opt/happier', origin: 'pip' } satisfies SystemTaskJsonObject)).toEqual({
+      command: '/opt/happier',
+      version: null,
+      origin: 'unknown',
+      removalCommand: null,
+      updateCommand: null,
+      belowSetupFloor: false,
+      missing: false,
+      keepBlockedBy: null,
+    });
+    expect(parseSetupCliChoicePromptData({ version: '1.0.0' } satisfies SystemTaskJsonObject)).toBeNull();
+
+    expect(readSetupCliChoiceAnswer({ choice: 'managed' })).toBe('managed');
+    expect(readSetupCliChoiceAnswer({ choice: 'own' })).toBe('own');
+    expect(readSetupCliChoiceAnswer({})).toBeNull();
+    expect(readSetupCliChoiceAnswer(null)).toBeNull();
+  });
 });

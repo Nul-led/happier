@@ -48,6 +48,38 @@ export type BackgroundServicePromptEntryWithServer = BackgroundServicePromptEntr
   serverUrl: string | null;
 }>;
 
+/** `managed`: install the managed CLI and put it first. `own`: keep using the user's CLI. */
+export type SetupCliChoice = 'managed' | 'own';
+
+export type SetupCliOrigin = 'npm' | 'brew' | 'unknown';
+
+/**
+ * `setup.cliChoice` (plan R12): this computer already has a `happier` this app did not install.
+ * Asked before setup writes anything, and only when no answer is recorded, the kept CLI
+ * disappeared, it cannot serve setup, or Settings asks to reconsider.
+ */
+export type SetupCliChoicePromptData = Readonly<{
+  /** Where that CLI resolves; a local filesystem path. */
+  command: string;
+  /** What `happier --version` answered; `null` when it answered nothing readable. */
+  version: string | null;
+  origin: SetupCliOrigin;
+  /** The command that removes that copy (shown, never run); `null` when its origin is unknown. */
+  removalCommand: string | null;
+  /** The command that updates that copy; `null` when its origin is unknown. */
+  updateCommand: string | null;
+  /** That CLI cannot drive desktop setup yet, so keeping it cannot finish setup until it is updated. */
+  belowSetupFloor: boolean;
+  /** The CLI this computer kept is no longer at `command`; keeping it means reinstalling it. */
+  missing: boolean;
+  /**
+   * The managed `happier` a new terminal runs first through something Desktop did not create (the
+   * official installer's link or `Path` entry), so "Keep my own" cannot work and is not offered.
+   * `null` when keeping it works.
+   */
+  keepBlockedBy: string | null;
+}>;
+
 export type SshTrustPromptData = Readonly<{
   kind: 'ssh.trustHost' | 'ssh.replaceHostKey';
   host: string;
@@ -220,6 +252,28 @@ export function parseReplaceRemoteBackgroundServicesPromptData(
     targetServerUrl: readTrimmedString(record, 'targetServerUrl'),
     services,
   };
+}
+
+/** Recognises the CLI-choice prompt data; `null` unless it names the CLI it is about. */
+export function parseSetupCliChoicePromptData(record: SystemTaskJsonObject): SetupCliChoicePromptData | null {
+  const command = readTrimmedString(record, 'command');
+  if (!command) return null;
+  return {
+    command,
+    version: readTrimmedString(record, 'version'),
+    origin: record.origin === 'npm' || record.origin === 'brew' ? record.origin : 'unknown',
+    removalCommand: readTrimmedString(record, 'removalCommand'),
+    updateCommand: readTrimmedString(record, 'updateCommand'),
+    belowSetupFloor: record.belowSetupFloor === true,
+    missing: record.missing === true,
+    keepBlockedBy: readTrimmedString(record, 'keepBlockedBy'),
+  };
+}
+
+/** The app's answer (`{ choice }`); `null` when it gave none — the question was dismissed. */
+export function readSetupCliChoiceAnswer(answer: unknown): SetupCliChoice | null {
+  const choice = answer && typeof answer === 'object' ? (answer as { choice?: unknown }).choice : null;
+  return choice === 'managed' || choice === 'own' ? choice : null;
 }
 
 export function parseSshTrustPromptData(

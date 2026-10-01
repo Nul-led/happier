@@ -22,6 +22,7 @@ export const SYSTEM_TASK_PROMPT_KINDS_V1 = [
   'daemon.takeOverManualRelayRuntimeForSetup',
   'daemon.replaceLocalBackgroundServices',
   'daemon.replaceRemoteBackgroundServices',
+  'setup.cliChoice',
 ] as const;
 
 export const SystemTaskPromptKindSchema = z.enum(SYSTEM_TASK_PROMPT_KINDS_V1);
