@@ -1,4 +1,4 @@
-export type TerminalHostKind = 'tmux' | 'zellij' | 'windows_console';
+export type TerminalHostKind = 'tmux' | 'zellij' | 'herdr' | 'windows_console';
 
 export type TerminalInjectionFailurePhase =
     | 'liveness'

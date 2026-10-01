@@ -26,6 +26,8 @@ export type TerminalHostHandle = Readonly<{
     sessionName: string;
     paneId?: string;
     socketDir?: string;
+    socketPath?: string;
+    terminalId?: string;
     expectedCommandFragments?: readonly string[];
     attachMetadata: TerminalHostAttachMetadata;
 }>;
@@ -40,8 +42,11 @@ export type TerminalInputState = Readonly<{
 
 export type TerminalHostAdapter = Readonly<{
     kind: TerminalHostKind;
+    /** Validate admission to a recovered host before launching into it; never create or replace it. */
+    validateExistingHostAdmission?(handle: TerminalHostHandle): Promise<void>;
     createOrAttachHost(opts: Readonly<{
         sessionName: string;
+        label?: string;
         workingDirectory: string;
         spawnArgv: readonly string[];
         spawnEnv: Readonly<Record<string, string>>;
