@@ -153,8 +153,8 @@ export const PRODUCT_STORY_WEBSITE_COPY_ENGLISH: Readonly<Partial<Record<Product
         body: 'Every action Happier can take — create a session, send it a message, set the model, start a review — is defined once, in one registry. The app, slash commands, voice, in-session agents, the CLI, and an external MCP host all call the same definition, and for each action you choose which of those surfaces can run it and which have to ask you first.',
     },
     worktrees: {
-        title: 'Run several agents on one repo. No collisions.',
-        body: 'Start each session in its own Git worktree — a real checkout, its own branch, the same repository. Pick any local or remote branch and Happier creates the worktree, suggests a name, and offers to reuse an existing one rather than duplicating it. Or start in the folder you’re already in: it’s a choice per session, not a mode you switch on.',
+        title: 'Git worktrees, when you want them.',
+        body: 'Start each session in its own Git worktree — a real checkout, its own branch, the same repository. Pick any local or remote branch and Happier creates the worktree, suggests a name, and offers to reuse an existing one rather than duplicating it. Or start in the folder you’re already in: it’s a choice per session, not a mode you switch on — all your sessions, none of them, or just this one.',
     },
     handoff: {
         title: 'Move a running session to another machine.',
