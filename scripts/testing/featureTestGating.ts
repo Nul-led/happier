@@ -1,12 +1,17 @@
 import {
   FEATURE_CATALOG,
   FEATURE_IDS,
-  evaluateFeatureBuildPolicy,
   isFeatureId,
+  type FeatureId,
+} from '../../packages/protocol/src/features/catalog';
+import { evaluateFeatureBuildPolicy } from '../../packages/protocol/src/features/buildPolicy';
+import {
   resolveEmbeddedFeaturePolicyEnv,
   resolveFeatureBuildPolicyFromEnvOrEmbedded,
-  type FeatureId,
-} from '@happier-dev/protocol';
+} from '../../packages/protocol/src/features/embeddedFeaturePolicy';
+
+// Vite loads configuration before the test workspace-source resolver exists.
+// Consume the policy owner directly instead of making config load require dist.
 
 function resolveDisabledFeatureIdsBase(env: NodeJS.ProcessEnv): Set<FeatureId> {
   const disabled = new Set<FeatureId>();

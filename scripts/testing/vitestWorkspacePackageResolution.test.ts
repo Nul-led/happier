@@ -29,6 +29,10 @@ function writeFixturePackage(): Readonly<{
     mkdirSync(resolve(sourceRoot, 'ui', 'public'), { recursive: true });
     writeFileSync(resolve(packageRoot, 'package.json'), JSON.stringify({
         name: '@happier-dev/plugins-fixture',
+        imports: {
+            '#transport': { node: './dist/transport.node.js', default: './dist/transport.js' },
+            '#outside': '../outside.js',
+        },
         exports: {
             '.': {
                 default: './dist/index.js',
@@ -53,6 +57,8 @@ function writeFixturePackage(): Readonly<{
     writeFileSync(resolve(sourceRoot, 'ui', 'public', 'index.ts'), 'export const visibility = \"internal\";\n', 'utf8');
     writeFileSync(resolve(sourceRoot, 'ui', 'public', 'index.public.ts'), 'export const visibility = \"public\";\n', 'utf8');
     writeFileSync(resolve(sourceRoot, 'private.ts'), 'export const privateValue = true;\n', 'utf8');
+    writeFileSync(resolve(sourceRoot, 'transport.ts'), 'export const transport = "fetch";\n', 'utf8');
+    writeFileSync(resolve(sourceRoot, 'transport.node.ts'), 'export const transport = "node";\n', 'utf8');
     writeFileSync(resolve(packageRoot, 'authored-script.cjs'), 'module.exports = {};\n', 'utf8');
     return Object.freeze({
         packageName: '@happier-dev/plugins-fixture',
@@ -129,6 +135,22 @@ test('workspace export resolution selects the react-native source entry when req
         ).resolveId(`${fixture.packageName}/ui/voice`),
         resolve(fixture.sourceRoot, 'ui', 'voice', 'index.native.ts'),
     );
+});
+
+test('package-private imports resolve in their owning workspace with its conditions', () => {
+    const fixture = writeFixturePackage();
+    const packages = [{ packageName: fixture.packageName, packageSourceRoot: fixture.sourceRoot }];
+    const sourcePlugin = createWorkspacePackageSourcesPlugin(packages);
+    const importer = `${resolve(fixture.sourceRoot, 'index.ts')}?import`;
+    assert.equal(sourcePlugin.resolveId('#transport', importer), resolve(fixture.sourceRoot, 'transport.ts'));
+    assert.equal(
+        createWorkspacePackageSourcesPlugin(packages, 'node-source', { exportConditions: ['node'] })
+            .resolveId('#transport', importer),
+        resolve(fixture.sourceRoot, 'transport.node.ts'),
+    );
+    assert.equal(sourcePlugin.resolveId('#transport', resolve(fixture.sourceRoot, '..', '..', 'another', 'index.ts')), null);
+    assert.equal(sourcePlugin.resolveId('#unknown', importer), null);
+    assert.equal(sourcePlugin.resolveId('#outside', importer), null);
 });
 
 test('bundled plugin workspace specs derive from the canonical shippable package membership', () => {

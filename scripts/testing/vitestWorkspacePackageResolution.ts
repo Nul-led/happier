@@ -42,29 +42,30 @@ function isPathInsideDirectory(filePath: string, directoryPath: string): boolean
 }
 
 type PackageExportsRecord = Record<string, unknown>;
+type WorkspacePackageMappings = Readonly<{ exports: PackageExportsRecord | null; imports: PackageExportsRecord | null }>;
 
-const packageExportsBySourceRoot = new Map<string, PackageExportsRecord | null>();
+const packageMappingsBySourceRoot = new Map<string, WorkspacePackageMappings>();
 
-function readWorkspacePackageExports(packageSourceRoot: string): PackageExportsRecord | null {
-    const cached = packageExportsBySourceRoot.get(packageSourceRoot);
+function readWorkspacePackageMappings(packageSourceRoot: string): WorkspacePackageMappings {
+    const cached = packageMappingsBySourceRoot.get(packageSourceRoot);
     if (cached !== undefined) {
         return cached;
     }
 
     const packageJsonPath = resolve(packageSourceRoot, '..', 'package.json');
-    let exportsRecord: PackageExportsRecord | null = null;
+    let mappings: WorkspacePackageMappings = { exports: null, imports: null };
 
     try {
-        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { exports?: unknown };
-        exportsRecord = packageJson.exports && typeof packageJson.exports === 'object' && !Array.isArray(packageJson.exports)
-            ? packageJson.exports as PackageExportsRecord
-            : null;
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { exports?: unknown; imports?: unknown };
+        const readRecord = (value: unknown): PackageExportsRecord | null => value && typeof value === 'object' && !Array.isArray(value)
+            ? value as PackageExportsRecord : null;
+        mappings = { exports: readRecord(packageJson.exports), imports: readRecord(packageJson.imports) };
     } catch {
-        exportsRecord = null;
+        // Unreadable manifests have no source mappings; let the ordinary resolver decide.
     }
 
-    packageExportsBySourceRoot.set(packageSourceRoot, exportsRecord);
-    return exportsRecord;
+    packageMappingsBySourceRoot.set(packageSourceRoot, mappings);
+    return mappings;
 }
 
 function readConditionalExportTarget(
@@ -128,7 +129,7 @@ function resolveWorkspacePackageExportSource(
     packageSourceRoot: string,
     options: WorkspacePackageSourceResolutionOptions,
 ): string | null {
-    const exportsRecord = readWorkspacePackageExports(packageSourceRoot);
+    const exportsRecord = readWorkspacePackageMappings(packageSourceRoot).exports;
     if (!exportsRecord) {
         return null;
     }
@@ -197,6 +198,14 @@ export function createWorkspacePackageSourcesPlugin(
         name,
         enforce: 'pre' as const,
         resolveId(id: string, importer?: string) {
+            if (id.startsWith('#') && importer) {
+                const owningWorkspace = workspacePackages.find((workspacePackage) =>
+                    isPathInsideDirectory(stripQueryAndHash(importer), workspacePackage.packageSourceRoot),
+                );
+                if (!owningWorkspace) return null;
+                const imports = readWorkspacePackageMappings(owningWorkspace.packageSourceRoot).imports;
+                return resolveExportTargetSource(owningWorkspace.packageSourceRoot, imports?.[id], options);
+            }
             for (const workspacePackage of workspacePackages) {
                 const resolved = resolveWorkspacePackageSource(
                     id,
