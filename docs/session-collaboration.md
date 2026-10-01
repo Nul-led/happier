@@ -100,6 +100,13 @@ relation.
 
 ## Key delivery is a separate fact
 
+The envelope collection preserves restricted Team authentication recovery for the
+management operation. A readable Session with an independent direct View grant does
+not satisfy `manageAccess`; the server returns a typed authentication-required or
+authentication-unavailable result when the Team policy needs qualification. The UI
+surfaces that recovery state, then refreshes and explicitly retries after qualification.
+A Session with no current read access remains concealed.
+
 Access says a recipient may read the Session. It does not say they can open it. For an encrypted
 Session, each recipient needs a data-key envelope, and the canonical record is the
 `(Session, recipient Account)` tuple behind
@@ -149,10 +156,24 @@ predicate — so a bulk Team or directory change never degrades into a per-Accou
 loop, and a genuinely new follower starts at the then-current ceiling rather than replaying the
 interval it was away.
 
-One gap worth knowing about: `packages/protocol/src/sessions/personal/eventEligibility.ts`
-classifies a `directly_shared` personal event, and the OS-alert leg deliberately excludes that
-kind, but **no producer emits it** in current development source. Treat it as a classifier that is
-ready for a producer, not as shipped behavior.
+In current development source, a newly committed direct grant and an assignment by another
+Account publish a content-free `session-personal-event` to the named recipient. The shared
+post-commit publisher uses the existing socket router's current credential-qualified Session
+access check. The UI presents share/assignment facts through its existing transient notice host;
+they do not create a notification history or replay on reconnect. Repeated unchanged mutations
+and self-assignment stay quiet. The assignment notice explains automatic Follow when that
+separate preference decision actually enrolled the recipient. Direct sharing never produces an
+OS alert, and receiving either in-app fact does not create Follow or read-state rows.
+
+The same development-only, content-free committed-event envelope carries transcript and
+Discussion activity, failed/cancelled turns, and unavailable Follow sources into the existing
+local Activity notification runtime. Mutation owners classify the committed event; clients do
+not infer a new event from ciphertext, a historical list refresh or an `active: false` transition.
+Publication occurs after commit, and socket delivery rechecks the recipient's current authority.
+The local notification owner then applies the recipient's Follow level and shared delivery,
+privacy and quiet-hours policy. A committed event is candidacy, not permission to display an
+alert. This adds no durable notification feed or reconnect replay, and does not turn a
+share/assignment notice into an OS alert.
 
 ## Discussion provenance
 

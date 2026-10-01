@@ -13,15 +13,22 @@ The host reads a plugin source, validates the manifest, checks version compatibi
 
 The host projects contributions into catalogs and UI data without importing daemon executable code.
 
-## Admission and generations
+## Admission, custody, and occurrences
 
 Catalog projection and executable admission are deliberately separate. The
-daemon validates a candidate, gathers the required trust decision, and adopts
-one immutable generation before it routes new executable work there. A
-candidate can therefore be visible in a review or a catalog without becoming
-the active implementation. A failed edit or update leaves the retained
-last-known-good generation serving; plugin authors do not manage a parallel
-activation, currentness, or rollback path.
+daemon validates a candidate, gathers the required trust decision, and gives an
+accepted activation one process-local occurrence before routing new executable
+work there. A candidate can therefore be visible in a review or a catalog
+without becoming active. A failed edit or update leaves the current in-process
+occurrence serving; plugin authors do not manage a parallel activation or
+currentness path.
+
+Custody depends on the source. Managed npm, archive, and non-development local
+installs keep immutable installation generations. Bundled first-party plugins
+load from the exact CLI version root or a pinned runner snapshot. Trusted
+development and drop-in plugins load from their selected source instead of a
+daemon-owned historical copy. After a daemon restart, current development
+source must build and activate again; the daemon does not revive an older copy.
 
 ## Activation
 
@@ -30,6 +37,8 @@ The host imports daemon code only after trust and validation. Activation receive
 ## Reload
 
 The daemon applies a fully validated replacement before it admits new calls to
-that plugin. A failed development edit or update leaves the previously working
-plugin active. Storage coordination, recovery, and byte-retirement details are
-host implementation concerns rather than author API concepts.
+that plugin. A failed development edit leaves the previous occurrence active
+for the rest of that daemon lifetime. A failed managed update leaves the
+installed generation unchanged. Storage coordination, recovery, and
+byte-retirement details are host implementation concerns rather than author API
+concepts.

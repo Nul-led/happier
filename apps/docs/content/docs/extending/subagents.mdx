@@ -167,6 +167,8 @@ For an in-session agent or action start, omit `sessionId` to host the run in the
 
 You can observe a run with a bounded wait. A wait timeout is nonterminal: the run may still be active, and the timeout does not stop or fail it. Retry a start only when the returned provider evidence marks the cause as retryable, such as a typed transient rate limit; other backend failures need their reported remedy rather than an assumed retry or backend switch.
 
+A review, plan or delegated task always reports its result back to the session that started it. The **Side conversations report back** setting covers only long-lived background runs (side conversations), and it is off unless you turn it on. In Happier 0.2 the same setting decided this for every background run, so reviews, plans and delegated tasks now report back even when it is off.
+
 If the session already has agents, the launch section stays collapsed by default so the roster remains visible first.
 
 ### Launch Claude teams and teammates

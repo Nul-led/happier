@@ -5,19 +5,19 @@ description: Manually validate plugin behavior through the app, CLI, daemon, and
 
 Manual QA should exercise real user flows:
 
-- review and **Install & Trust** a local or packed plugin
+- review and accept the trusted-code and authority decision for a local or packed plugin
 - configure it, invoke an action, and inspect current Diagnostics
 - run `hdev plugins dev` and verify an edit replaces the current surface
 - run `hdev plugins install . --dev` followed by `hdev plugins reload`
   from the package root and verify the same valid replacement path works
   without a watcher; when resolution is ambiguous or runs elsewhere, use
   `hdev plugins reload <developmentPluginId>` to select one
-- update, roll back, disable/enable, and uninstall; verify stale generations
+- update, roll back, disable/enable, and uninstall; verify stale occurrences
   cannot act and focus returns safely after each transition
 - disconnect the daemon while an executable surface is mounted; verify the
   visual snapshot remains, every control and host mutation is unavailable, and
   a screen reader announces the localized read-only summary
-- reconnect; verify generation/policy/context are revalidated without another
+- reconnect; verify release/digest, occurrence, policy, and context are revalidated without another
   trust prompt, controls work again, and prior focus returns only when safe
 - start an agent session, send a normal prompt, reject unsupported structured
   input explicitly, cancel a turn, stop/dispose the session, and start an
@@ -39,7 +39,7 @@ desktop host:
 | Locale | RTL reading/focus order, long translated strings, selectable labelled technical IDs |
 | Motion | Reduced-motion behavior and no essential state conveyed only by animation |
 | Targets | At least 44×44 points on iOS and 48×48 dp on Android; applicable web targets remain keyboard accessible |
-| Lifecycle | Install/review/configure/diagnose/update/rollback/uninstall plus offline/reconnect on the exact current generation |
+| Lifecycle | Install/review/configure/diagnose/update/rollback/uninstall plus offline/reconnect on the exact selected digest and current occurrence |
 
 Record the client/platform and loaded artifact identity, exact commands and
 actions, expected behavior, actual behavior, accessibility technology used,

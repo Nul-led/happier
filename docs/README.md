@@ -23,6 +23,11 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - enterprise-identity.md: Managed identity providers, the provider catalog and OAuth security binding, WorkOS/OIDC/GitHub identity, Team identity connections, and directory provisioning.
 - deployment.md: How to deploy the backend and required infrastructure.
 - cli-architecture.md: CLI and daemon architecture and how they interact with the server.
+- [runtime-core.md](runtime-core.md): Host-owned Session/turn lifecycle, native Agent seam and shared Execution Run adapters (0.3 development).
+- [plugin-platform.md](plugin-platform.md): Manifest, activation, currentness, projection and public SDK ownership (0.3 development).
+- [collection-presentation.md](collection-presentation.md): Shared Collection model, presentation engine and responsive detail ownership (0.3 development).
+- [surface-states.md](surface-states.md): Container-sized state composition, retained content and recovery presentation (0.3 development).
+- [triage-sources.md](triage-sources.md): Versioned Triage source ABI, feature-package boundary and caller-bound source administration (0.3 development).
 - ios-simulator-helper.md: iOS simulator helper architecture, trust chain, and the private-framework App Store / TOS posture.
 - issue-triage.md: How the GitHub issue triage workflows are wired to maintainer tooling.
 

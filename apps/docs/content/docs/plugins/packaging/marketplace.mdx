@@ -26,14 +26,31 @@ the catalog's publisher label and key rotation does not change the trusted
 plugin publisher. Catalog publisher names remain unverified discovery and
 presentation metadata.
 
-Two kinds of source ship today:
+Three source paths feed the same daemon-owned marketplace index today:
 
+- **Happier curated** — the configured Happier catalog, with reviewed
+  recommendation and provenance but no automatic execution trust.
 - **Community npm** — built in and always on: direct keyword discovery over
   the public npm registry, with no configuration.
-- **Marketplace sources** — the curated Happier catalog seeded on this
-  machine, plus any catalog document you add with `hdev plugins marketplace
+- **User catalogs** — catalog documents you add with `hdev plugins marketplace
   sources add`. Each entry points at an npm artifact, optionally bound to a
   private registry profile.
+
+## Curated catalog availability
+
+Development builds now produce a strict static snapshot for
+`https://marketplace.happier.dev/catalog.json`, but that hostname is not live
+yet and the snapshot contains no plugin listings. Happier's first-party plugin
+packages are bundled privately; they are not public npm coordinates that the
+marketplace can install.
+
+The first curated listing requires an approved review and a public, exact npm
+release whose integrity and plugin metadata can be verified. Curation records
+recommendation and provenance; it never makes a plugin trusted automatically.
+Community npm discovery and user-added catalogs remain available independently
+of curated content. A production website promotion will require the catalog
+hostname to resolve and will compare the served bytes with the release
+candidate before the deployment succeeds.
 
 ## Requirements
 
@@ -82,15 +99,18 @@ listing, so their install command only needs the plugin ID. `community-npm` is
 a CLI shorthand for the built-in source; it does not create or save another
 marketplace source.
 
-## Every first install is reviewed
+## First install and update authority
 
 Community npm listings and the marketplace sources you add are unreviewed,
 and every first install — from any source, including the curated catalog —
-reaches the full **Install & Trust** decision from
-[Install and trust](/plugins/packaging/install-trust). A curated listing the
-publisher withdraws cannot be newly installed, but withdrawal is a discovery
-fact: installed plugins keep working and keep updating under their own
-policy.
+reaches one concise trusted-code and declared-authority decision from
+[Install and trust](/plugins/packaging/install-trust). Exact package, version,
+registry origin, integrity, manifest digest, and compatibility remain technical
+admission checks under Details rather than separate approvals. An
+authority-neutral update does not prompt; an update that widens authority shows
+only that delta. A curated listing the publisher withdraws cannot be newly
+installed, but withdrawal is a discovery fact: installed plugins keep working
+and keep updating under their own policy.
 
 ## Private and custom registries
 

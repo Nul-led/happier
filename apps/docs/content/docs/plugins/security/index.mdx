@@ -8,7 +8,7 @@ Plugins are trusted executable packages. Happier keeps their behavior reviewable
 ## Security principles
 
 - Validate manifests before importing code.
-- Require an explicit whole-package Install & Trust decision before executable code runs.
+- Require one explicit package-level trusted-code decision before executable code runs.
 - Keep permissions explicit and scoped.
 - Keep secrets out of settings and logs.
 - Keep agent-specific logic in agent leaves.
@@ -21,7 +21,7 @@ Host access declarations constrain host-mediated services; they are not an opera
 
 ## In this section
 
-- [Trust model](/plugins/security/trust-model) — the whole-package Install & Trust boundary, and why it is whole-package.
+- [Trust model](/plugins/security/trust-model) — the package-level trusted-code boundary, and why it covers every executable realm.
 - [Isolation and boundaries](/plugins/security/sandboxing) — which surfaces are isolated and which are simply trusted code.
 - [Host access](/plugins/security/permissions) — declaring privileged operations, and which declarations the host actually enforces.
 - [Network access](/plugins/security/network) — host-mediated HTTP and narrowly scoped network reach.

@@ -161,6 +161,25 @@ duplicate Run, and pausing or deleting the trigger prevents future matches.
 The server remains the authority, so closing the app or taking a machine
 offline does not move matching into a client-side watcher.
 
+<Callout type="warn">
+  Session-scoped Workflow triggers are development-only, not a shipped stable
+  or preview feature. In current development source, a user or another Session's
+  turn can fire a turn-end trigger; host and Workflow turns do not. A request for
+  your attention still fires during those turns. Archive triggers fire only when
+  the Session changes from unarchived to archived.
+
+  Each scoped trigger keeps at most one active Run and one pending occurrence.
+  A newer pending occurrence replaces the older one, whose history records it
+  as skipped. Review Workflows can opt into skipping an unchanged worktree, but
+  only when the previous successful Run's final review panel certified the same
+  fingerprint. Missing certification always runs the review. Deleting the
+  Session retires its scoped Automations without removing retained Run history.
+
+  Session-start attachment and PR-comment/CI integration are not yet complete.
+  Keep going attachment is refused when the opened agent already owns native
+  goal continuation; reopening cleanup still needs its runtime integration.
+</Callout>
+
 For plugin authors using 0.3 development builds, the separate
 `@happier/runtime/turn-start`, `@happier/runtime/turn-complete`,
 `@happier/runtime/turn-failed`, and `@happier/runtime/turn-cancelled` Host Event
@@ -221,12 +240,46 @@ A Workflow is a JSON-compatible program that can be started directly or frozen
 inside an Automation. A direct Run has its own Account-scoped identity and does
 not create a hidden Session or Automation. An Automation Run also keeps its
 immutable trigger cause. Editing or deleting a saved definition does not rewrite
-an admitted Run.
+an admitted Run. A managed Run is executable from its frozen snapshot; observed agent activity is read-only history and cannot be run, edited, or saved without a managed definition. Scheduling freezes the reviewed snapshot: later edits to the saved definition or Automation affect only future Runs.
 
 Definitions can contain Session or detached-agent steps, parallel groups,
 conditions, and loops. References select declared inputs and earlier invocation
 results structurally. Happier does not interpolate `${...}`-style text or parse
 prose as control flow. Pass dynamic values as declared inputs or typed references.
+
+In current development source, a direct Run started by an Agent returns updates
+to its originating Session by default; a Run started by a person opts in. The
+Session reads the latest committed Run state and result as worker context, not
+as a new user message. A finished Run does not stay unfinished while waiting for
+the Session to consume its result.
+
+A scoped Automation also uses its bound Session as the Workflow origin. In
+development source, returning results to that Session is opt-in on the trigger;
+keeping an origin for steps or context does not enable result return by itself.
+
+A step can choose `origin_session` to work in the Session that started the Run.
+It waits behind user input and is checked again before dispatch, so a paused or
+cancelled step cannot start from an old queued offer. This is separate from a
+Channel conversation's reply handoff.
+
+In development Workflow definitions, `until` and `evaluate` loops accept a
+positive whole-number round limit or a reference to a declared number input.
+The limit is fixed when the work is admitted. Reaching it completes the loop
+with an `exhausted` outcome instead of failing the Run. Later steps can test
+the recorded outcome without asking the Agent or rechecking a stop condition.
+
+An evaluator declares `continue` and at least one finishing decision, such as
+`done` or `stuck`. It may return the decision alone or an object containing
+`decision` and an optional `reason`; the reason is retained. Other decision
+steps can declare their own values without being loop evaluators.
+
+An origin-context input includes the goal and recent turns. Its usage comes
+from Happier's session accounting, not the Agent's native goal counter. Without
+reported usage, a budget stop is unavailable; the authored round limit still
+applies. To fit the 256 KiB prepared-input bound, Happier drops the oldest turns
+and marks the context as truncated, but never truncates the goal. If that is
+still too large, the step fails before sending input. A context binding requires
+an originating Session.
 
 Parallel groups and item loops may include `maxConcurrent` as a positive integer.
 Omitting it means the Workflow adds no concurrency cap; the selected Session,

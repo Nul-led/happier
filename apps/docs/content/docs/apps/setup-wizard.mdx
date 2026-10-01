@@ -15,7 +15,7 @@ Layout notes:
 
 It helps you:
 
-- pick the active Home (discovered through the selected Account Service, or saved/direct)
+- pick the active Home (discovered through the selected sign-in service, or saved/direct)
 - sign in to that Home
 - set up a machine (background service)
 - create a local or SSH Personal Home (optional)
@@ -51,7 +51,7 @@ happier setup
 
 What it does (high level):
 
-- discovers a Home through the selected Account Service by default, or uses the currently saved Home when one is already active
+- discovers a Home through the selected sign-in service by default, or uses the currently saved Home when one is already active
 - accepts `--home <saved-home>`, `--home-url https://...`, or `--home-descriptor-file <path|->` for a direct target
 - asks you to approve sign-in interactively when needed
 - installs and enables the background service (unless skipped)
@@ -85,7 +85,7 @@ happier home create --ssh user@host
 
 Both forms install or reuse the same managed runtime and perform the atomic Personal Home bootstrap. An Iroh-only descriptor is sufficient for reachability, so public ingress is optional. Personal Home data is plaintext at rest on its host; choose a computer you trust.
 
-Use `happier home pair-device` to create a new short-lived device invite. Use `happier home link-account` to make the Home discoverable through your signed-in Account Service.
+Use `happier home pair-device` to create a new short-lived device invite. Use `happier home link-account` to make the Home discoverable through the sign-in service you are signed in to.
 
 #### What first run looks like
 

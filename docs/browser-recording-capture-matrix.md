@@ -28,6 +28,23 @@ only for an `UNSURFACE` cell that makes no product promise.
 
 ## Reference-only invariant (BRW-15)
 
+In 0.3 development, CDP recording and browser live viewing share the per-view producer in
+`apps/cli/src/daemon/browser/capture/cdpScreencast.ts`. The recording transport subscribes to it;
+it does not independently start, stop or acknowledge the CDP screencast. Releasing the last
+consumer stops capture, and view retirement terminates every consumer.
+
+In the current 0.3 development daemon, a finished recording is persisted in its Session's
+working directory by `persistSessionMedia`. The daemon then admits a media-only transcript
+attachment through its existing encrypted durable mutation custody, using the recording's
+message local id. `session_media.v1` carries the playable relative path, MIME type, size and
+hash; the normal transcript media renderer consumes it. Once admitted, draft-recording cleanup
+does not delete the attached bytes. A missing Session directory or failed custody admission
+fails recording finalization rather than reporting an attachment that was never admitted.
+
+Desktop recording capability uses the actual reverse-capture handler registration for the view's
+machine as well as the native capture shape. The surface refreshes that capability when handler
+readiness changes, preserving navigation state.
+
 Every producer reuses `sessionMediaWriter` + the existing recording caps
 (30s / 16MB / 12fps, `browserCapabilities.ts`) + the retention/redaction model, and persists media
 by **reference** (`local-file` / `local-uri`), never inline bytes. No producer accumulates unbounded

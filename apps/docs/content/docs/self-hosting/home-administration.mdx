@@ -103,14 +103,30 @@ origins Teams may connect GitHub Apps to, one per line.
 
 ### Sign-in and admission
 
-By default a Home uses the server's defaults and narrows nothing. When it does
-narrow them, it can only ever restrict what the deployment already allows:
+By default a Home uses the server's defaults. An owner can turn each of these on
+or off from here, in either direction, unless the server's environment sets it
+explicitly: then the row shows **Fixed by your deployment** with the setting's
+name, and only the operator can change it.
 
-- **Sign-in methods** — which of the deployment's methods this Home accepts.
+- **Sign-in methods** — which methods this Home offers. A method that needs
+  something the server does not have (for example GitHub sign-in without a GitHub
+  sign-in app) is shown as unavailable with what is missing.
 - **Account types** — **Plain**, **End-to-end encrypted**, or both, plus which is
   **Recommended for new accounts**. Changing the recommendation sets the default for
   new accounts and changes no existing one.
-- **Who can join** — **Self-service**, **Invitation only**, or **Closed**.
+- **Who can join** — **Self-service**, **Invitation only**, or **Closed**, and
+  **Anonymous sign-up** (an account with only a recovery key, no email).
+- **Storage policy** — whether accounts must use end-to-end encryption. It applies
+  when the server next starts; until then the page says **Applies after restart**.
+
+Nobody loses their last way to sign in: a change that would leave any account
+without one is refused. Changes apply to new accounts and sign-ins only; existing
+accounts keep their encryption.
+
+Turning something **on** asks you to confirm first, because it lets more people
+in or protects data less: the confirmation says who could now sign up and that the
+change is recorded in **Activity** with your name. Turning something off saves
+straight away.
 - **Sign-in service** — a Home whose deployment offers one can turn it off here
   (*The Home sign-in service is turned off.*). It cannot point the Home at a
   different service; that is the operator's environment configuration, described in
@@ -128,8 +144,9 @@ operator repairs it. It does not guess a safe interpretation.
 
 - **You cannot administer this Home.** Your account holds no Home administration
   authority there. Roles are per Home; being an owner elsewhere means nothing here.
-- **Home administration setup required.** The Home has no active owner yet. Assign the
-  first one from the machine running the server — see
+- **Home administration setup required.** The Home has no active owner yet. Print a
+  one-time claim code on the machine running the server and paste it here, or, on the
+  computer that hosts a Personal Home, choose **Make me the owner** — see
   [Home owner setup and recovery](/self-hosting/home-owner).
 - **This Home does not offer Home administration.** It is running a version without it.
 - **The Home is not answering.** You can keep reading the last known state; changes are

@@ -330,7 +330,12 @@ Art-directed imagery and narrative surfaces may need locally owned visual tokens
 - Preserve cancellation when a press or gesture moves away before commitment.
 - Keep interactive hit targets generous and non-overlapping across touch and pointer layouts.
 - Support keyboard focus, activation, dismissal, traversal, and shortcuts where the platform permits.
-- Focus indicators must remain visible against every supported background.
+- Focus must remain perceptible against every supported background. Editable
+  text fields use their native insertion caret and selection as the normal-mode
+  focus cue; do not add an outline, border, glow, or shadow around them. In
+  browser/OS forced-colors modes, restore the system-colored keyboard outline.
+  Controls without an insertion caret still require an explicit focus-visible
+  treatment.
 - Use destructive confirmation only for meaningful irreversible consequences; prefer undo for recoverable actions.
 - Never use dark patterns, false urgency, hidden opt-outs, or visually deceptive action hierarchy.
 - Keep back, cancel, skip, later, replay, retry, and recovery behavior consistent with the consequence and flow.
@@ -447,7 +452,9 @@ The baseline is WCAG 2.2 Level AA for applicable web, desktop, and native behavi
 - Support screen readers with correct roles, names, state, order, and announcements.
 - On web and desktop, support text scaling to 200% without loss of content or functionality except for applicable WCAG exceptions. On native platforms, support Dynamic Type according to platform conventions while keeping the content and actions needed to understand, operate, and recover from the flow available.
 - Meet applicable WCAG contrast requirements in light, dark, increased-contrast, transparent, image-backed, diff, and terminal contexts; meaningful non-text UI and focus indicators need contrast as deliberately as text.
-- Provide keyboard access and visible focus on web and desktop.
+- Provide keyboard access and perceptible focus on web and desktop. For
+  editable text fields the insertion caret/selection is the visible focus cue;
+  forced-colors mode additionally restores the browser outline.
 - Do not rely on color, hover, animation, spatial position, sound, or haptics alone.
 - Honor reduced motion and reduced transparency throughout a complete flow, not only in isolated components.
 - Target at least 44×44 points on iOS and 48×48 dp on Android for touch interactions, using the stricter applicable platform or canonical-primitive requirement elsewhere. Keep targets from overlapping; dense pointer layouts must still meet applicable WCAG target-size requirements and remain keyboard accessible.
@@ -531,8 +538,8 @@ live in the page-presentation owners in code.
 - **Back stays out of the title.** The title and purpose, or the leading mark, keep the content's
   left edge; on wide screens the back arrow sits in the gutter beside the column, level with the
   title, and moves onto the title row only when there is no room for it.
-- **Glyphs stand alone.** A plain icon never sits in a bordered tile. Real marks — logos, avatars,
-  tinted monograms — may sit on a borderless filled shape.
+- **Glyphs and logos stand alone.** No icon, agent, provider or service mark has a backing tile,
+  fill or border. Only avatars and an app icon rendered as an actual app icon are exceptions.
 - **Emptiness is designed.** An empty page shows a calm glyph without a tile, a short title, one line
   of purpose and one primary action; an empty list or rail says so in one quiet line. A rail and its
   detail never both show the full state.
@@ -545,8 +552,10 @@ live in the page-presentation owners in code.
   dropped.
 - **Hubs gather, they don't duplicate.** The app home (the empty main pane) is the primary hub:
   greeting, the start-session box, what needs your attention, setup, machines and usage. Settings →
-  Overview is the lighter hub: identity, attention, summary rows and quick settings. Both are built
-  from the same hub sections. A row with no data behind it drops out rather than leaving a hole,
+  Overview is the lighter hub: identity (with the Home and your role), attention, setup as a
+  checklist with its progress, machines, usage, security and quick settings, in one column and
+  without the greeting or start box; the settings navigation lists the pages, so the Overview does
+  not repeat them. Both are built from the same hub sections. A row with no data behind it drops out rather than leaving a hole,
   freshness is stated honestly ("As of …"), opening a hub asks no machine anything, and usage loads
   once, lazily, keeping its last value.
 - **Setup steps leave when they are done.** A step disappears once done (for the recovery key, saved

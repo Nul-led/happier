@@ -4,7 +4,10 @@ description: Create, develop, test, build, pack, and install a minimal Happier p
 ---
 
 The default scaffold contains one code-defined plugin module, one action, one
-focused test, and the package metadata needed by the current author tools.
+declarative UI surface, one focused test, and the package metadata needed by the
+current author tools. The default surface is declarative: Happier renders the
+nodes the manifest declares, so the plugin has a visible surface on every client
+without a bundler, a UI dependency tree, or a build step.
 
 For every authoring command and the exact review-decision lifecycle, see the
 [Plugin authoring CLI](/plugins/packaging/authoring-cli) reference.
@@ -33,7 +36,8 @@ hdev plugins dev
 directory name. Use `--id com.example.my-plugin` when you need a durable
 publisher-owned id.
 
-For an executable UI, keep the same journey and choose one mode:
+For an **executable** UI — one whose code you write and Happier builds — keep the
+same journey and choose one mode:
 
 ```bash
 hdev plugins create my-native-plugin --ui reactNative
@@ -64,13 +68,13 @@ repository example — one Agent declaration plus a distinct, import-safe
 Session-runner leaf — with a smaller behavior body to replace. The template
 takes no `--ui`.
 
-`plugins dev` is the automatic watcher flow: after trust, the CLI observes the
-source closure and submits each captured batch to the daemon. After submission,
-the daemon-owned candidate lifecycle materializes declared development
-dependencies, builds declared UI artifacts, evaluates the selected author
-module, and validates its projected manifest before adoption. The daemon imports
-the development module only as the activation entry and calls its generated
-`activate(api)` export.
+`plugins dev` registers the exact trusted source with the daemon and may remain
+attached for status output. The daemon owns observation, dependency
+preparation, artifact compilation, candidate validation, and the per-plugin
+swap. It imports the development module only as the activation entry and calls
+its generated `activate(api)` export. The CLI does not keep a second watcher or
+currentness model. Use `hdev plugins status [--json]` to read the daemon's
+canonical phase, occurrence, UI digest, and bounded diagnostic projection.
 
 This normal create-to-dev loop prepares dependencies automatically; do not run
 `hdev plugins dev install .` first. That command prepares an
@@ -95,10 +99,10 @@ runner imports only the exact named factory leaf in the Agent's
 separate and import-safe, because activation and runner execution can be
 different realms with no shared process-global singleton.
 
-The first use asks you to **Install & Trust** the local source. Normal edits
-under that approved source identity do not create a new trust prompt. A source
-root, plugin identity, executable realm, or required-access change is reviewed
-again.
+The explicit local install or development command is the code-trust action for
+that exact source, so it does not add a second trust prompt. Normal edits under
+the approved source identity do not prompt. New declared authority or
+credential access remains a separate user decision.
 
 ## Generated layout
 
@@ -109,6 +113,8 @@ my-plugin/
       happier-plugin-authoring/
         SKILL.md
   src/
+    ui/
+      surfaces.ts
     index.ts
   test/
     index.test.mjs
@@ -134,6 +140,10 @@ ordinary named `manifest` and `activate` ABI:
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import { defineProtocolObject, defineProtocolString } from '@happier-dev/plugin-sdk/protocol';
 
+import { mainSurface } from './ui/surfaces.js';
+
+export { mainSurface };
+
 export const { manifest, activate } = definePlugin({
   id: "com.example.my-plugin",
   version: "0.1.0",
@@ -146,7 +156,7 @@ export const { manifest, activate } = definePlugin({
       title: 'Save note',
       description: 'Returns the supplied note from one minimal plugin action.',
       scopes: ['global'],
-      surfaces: ['agent', 'cli', 'mcp'],
+      surfaces: ['agent', 'cli', 'mcp', 'ui'],
       execution: { target: 'daemon' },
       placementBindings: ['commandPalette'],
       dangerLevel: 'safe',
@@ -161,14 +171,34 @@ export const { manifest, activate } = definePlugin({
       },
     },
   },
+  ui: {
+    surfaces: [mainSurface],
+    translations: [{
+      locale: 'en',
+      messages: {
+        'scaffold.main.title': "My plugin",
+        'scaffold.main.greeting': "Hello from My plugin",
+        'scaffold.action.saveNote': 'Save note',
+      },
+    }, {
+      locale: 'fr',
+      messages: {
+        'scaffold.main.title': "My plugin",
+        'scaffold.main.greeting': "Bonjour de My plugin",
+        'scaffold.action.saveNote': 'Enregistrer la note',
+      },
+    }],
+  },
 });
 ```
 
 Without `--id`, the id is derived from the directory name as
-`local.my-plugin`. Adding `--ui reactNative` or `--ui hostedWeb` also emits
-`pluginUiBuild.ts` and `src/ui/`, re-exports `mainSurface` from this entry,
-adds `'ui'` to the action's surfaces, and adds the `ui` declaration with its
-translations to the same call.
+`local.my-plugin`. `src/ui/surfaces.ts` holds the one surface declaration this
+entry re-exports; the default declarative renderer is projected from the
+manifest, so nothing has to be built before it appears. Choosing
+`--ui reactNative` instead adds the renderer's exact package export; `--ui hostedWeb`
+adds a conventional `.happier-plugin/ui/hosted-web/<artifact-id>` directory. The
+daemon-owned compiler consumes either shape without an author-owned build config.
 
 The action id is local to the plugin. Happier owns its structured global
 identity and renders it as `com.example.my-plugin/actions/save-note` only where
@@ -207,10 +237,10 @@ path used by other plugin sources:
 hdev plugins install <printed-archive-path> --kind archive
 ```
 
-In an interactive terminal, Happier shows the exact package, manifest,
-executable realms, contributions, requested host integration, and source facts
-before asking for **Install & Trust**. `plugins pack` writes its default archive
-outside the plugin root; use the printed path rather than constructing one.
+The explicit install command trusts code from the exact printed archive path.
+If the package declares new authority or credential access, Happier shows that
+delta for a separate decision. `plugins pack` writes its default archive outside
+the plugin root; use the printed path rather than constructing one.
 
 ## Development without a watcher
 
@@ -224,11 +254,12 @@ hdev plugins reload
 ```
 
 The `--dev` installation and reload use the same daemon-owned trust,
-validation, generation replacement, and cleanup path as the watcher. When the
+validation, occurrence replacement, and cleanup path as automatic observation. When the
 current directory has more than one development plugin, or when you reload from
 another directory, select one explicitly: `hdev plugins reload
-com.example.my-plugin`. An invalid reload leaves the last accepted generation
-serving.
+com.example.my-plugin`. An invalid reload leaves the last accepted occurrence
+serving while that daemon remains alive. A daemon restart rebuilds current
+source and does not revive an older copied source tree.
 
 ## Next steps
 

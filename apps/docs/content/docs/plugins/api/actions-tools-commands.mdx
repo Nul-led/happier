@@ -116,8 +116,8 @@ transitions. Returning the validated Action result succeeds the operation;
 throwing fails it; host-owned cancellation uses the invocation signal when
 supported. There is deliberately no `complete()` or `fail()` API.
 
-Tracking requires `execution: { target: 'daemon' }`; a client-targeted Action
-cannot declare `operation`. Once accepted, tracking survives modal close,
+Tracking requires a daemon Action (a root `run` handler); a client-targeted
+Action cannot declare `operation`. Once accepted, tracking survives modal close,
 navigation, ordinary reconnect, and browser visibility changes while the same
 daemon process remains alive. The operation history is held in daemon memory,
 so daemon restart may make its status unavailable. It is not an offline queue,
@@ -136,7 +136,7 @@ The maintained source example is
 ## Invocation surface and execution target
 
 An Action is declared and implemented once. Its `surfaces` say who may invoke
-it; its required `execution` field says where its one handler runs. Those are
+it; its execution target says where its one handler runs. Those are
 independent decisions.
 
 The **External API & SDK** surface is host-owned rather than author-declared.
@@ -151,9 +151,13 @@ Adding another invocation surface does not create another handler. Every
 admitted surface resolves the same current declaration and its one registered
 target handler through the canonical dispatcher.
 
-- `execution: { target: 'daemon' }` runs through the daemon Action executor.
+- A root `run` handler makes a daemon Action: `definePlugin` emits
+  `execution: { target: 'daemon' }` for it, so you do not write that field.
+  The Action runs through the daemon Action executor.
 - `execution: { target: 'client', ... }` names one exact client artifact,
-  module, export, and supported platform list.
+  module, export, and supported platform list. A client Action has no `run`.
+- Omitted `scopes` default to `['global']` and omitted `dangerLevel` defaults
+  to `'safe'`; declare them only when an Action differs.
 - `host` is not a public plugin target; canonical host ActionSpecs keep their
   existing host executor.
 - `surfaces` may include `ui`, `plugin`, `voice`, `agent`, `mcp`, or `cli`.
@@ -196,7 +200,6 @@ export const { manifest, activate } = definePlugin({
         target: 'client',
         client: {
           artifactId: 'action-client',
-          modulePath: './clientRuntime',
           exportName: 'activate',
         },
         platforms: ['web', 'ios', 'android'],
@@ -219,46 +222,35 @@ export async function activate(api: PluginClientApi) {
 }
 ```
 
-Build that client module as a React Native client artifact with the public UI
-artifact builder. The build target id must match
+Expose that module through the package export matching
 `execution.client.artifactId`; this target is executable client code and does
 not need a `contributes.ui.renderers` entry:
 
-```ts
-import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';
-
-export default defineBuildConfig({
-  targets: [{
-    rendererId: 'action-client',
-    entry: 'src/client-runtime.ts',
-    kind: 'reactNative',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'com_example_details_action_client',
-      modulePath: './clientRuntime',
-      exportName: 'activate',
-    },
-  }],
-});
+```json
+{
+  "exports": {
+    "./happier-plugin-ui/action-client": "./src/client-runtime.ts"
+  }
+}
 ```
 
-Run `happier-plugin-build-ui --project-root .` to emit the artifact tree. The
-build API retains the field name `rendererId`, but for this non-renderer target
-it names the artifact consumed by the client Action declaration. See
-[UI artifacts](/plugins/ui/ui-artifacts#client-activation-artifacts) for the
-platform outputs and identity rules.
+Run `happier-plugin-build-ui --project-root .` to emit its one portable
+CommonJS artifact. See [UI artifacts](/plugins/ui/ui-artifacts#build-contract)
+for the export, output, and digest rules.
 
 Client handlers receive a client-safe context, including cancellation,
 invocation surface, plugin identity, current-UI context when available, and a
 bounded `ui` capability for opening a surface or invoking another eligible
 Action. The nullable `ephemeralSharedScope` can lease plugin-local in-process
-state shared with mounted UI in the same Account and immutable plugin
-generation. Use a versioned local key, handle a refused acquisition, and always
+state shared with mounted UI in the same Account and current plugin
+occurrence. Use a versioned local key, handle a refused acquisition, and always
 release the lease; do not replace a refusal with a global cache. Client handlers
-do not acquire daemon services. Existing schema
-validation, availability, generation currentness, cancellation, danger
-classification, confirmation, effect custody, result validation/redaction,
-and no-blind-retry rules remain canonical for every surface and target.
+do not acquire daemon services. Input schema
+validation, availability, occurrence currentness, cancellation, danger
+classification, confirmation, effect custody, and no-blind-retry rules remain
+canonical for every surface and target. A client handler's result is trusted
+plugin output: the host returns it as-is rather than re-validating it against
+the declared `outputSchema`.
 
 ## Calling host Actions
 
@@ -266,7 +258,7 @@ Bundled and externally installed plugins use this same service and dispatcher.
 External plugins are not placed on a smaller Action allowlist: once the user
 trusts the plugin, eligible host Actions are available according to the
 Account's **Trusted plugins** Action settings. The host still stamps plugin
-identity, generation, cancellation, and `account_automation` authority, so a
+identity, occurrence, cancellation, and `account_automation` authority, so a
 plugin cannot impersonate a present user or another plugin.
 
 The generated root activation from a daemon `actions.<id>.run` binds a Plugin's
@@ -449,7 +441,7 @@ and optional description; the executable payload stays local to the client.
 
 Immediately before execution, the client re-reads its current snapshot and
 resolves that opaque id again. A changed selection, retired surface, stale
-generation, or unknown id produces no effect. This preserves the existing
+occurrence, or unknown id produces no effect. This preserves the existing
 Action and navigation owners instead of creating a screen-specific Voice
 handler or callback registry.
 
@@ -465,6 +457,15 @@ Action's declared surface, required caller authority, current resource access,
 endpoint consent, and the Account's Action setting. A waiver can skip the
 confirmation step where policy permits; it cannot grant missing Session access
 or turn an automation caller into a present user.
+
+When a person runs an Action from Happier's own UI or from Voice, Happier asks
+for confirmation once, in the app, before the Action is sent, whether the Action
+runs on the client or on a daemon. It asks when the Action is not `safe`, or
+when the person set that Action to **Ask first**. The dialog uses the Action's
+declared `confirmation` wording, or its title and description when it has none.
+Declining sends nothing and leaves no pending approval. Agents, MCP clients, the
+CLI, the public API and automations are not present in the app, so their
+requests for the same Action create an approval request instead.
 
 For a deferred approval, the host records the immutable admitted execution
 origin before it asks. Applying the decision later revalidates current policy

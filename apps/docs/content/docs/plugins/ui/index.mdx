@@ -24,8 +24,8 @@ hdev plugins create ./my-hosted-plugin \
   --ui hostedWeb
 ```
 
-The generated project contains an isolated Vite application, relative assets,
-loading/error UI, and a public ready-to-bootstrap client. It does not make a
+The generated project contains a conventional hosted artifact directory, relative
+assets, loading/error UI, and a public ready-to-bootstrap client. It does not make a
 browser, desktop, iOS, or Android runtime-support claim. Do not treat a
 development preview, source checkout, or emitted asset tree as packaged frame
 support.
@@ -134,7 +134,7 @@ function ReviewDetails() {
 
 `publishCurrentUiContext(enrichment)` atomically replaces this mount's prior
 enrichment; passing `null` clears it. Unmount, parent or Account retirement,
-and generation replacement also remove it synchronously. The value is strict,
+and occurrence replacement also remove it synchronously. The value is strict,
 bounded JSON data. It cannot contain a callback or become a second route,
 selection, persistence, or navigation owner.
 
@@ -183,6 +183,12 @@ A `subPath` is only a location inside that plugin's `appPage`; it is ignored by
 non-page destinations such as `rightSidebarTab`. Do not construct host routes,
 choose another plugin's namespace, or add a local fallback destination.
 
+In the current development build, an app page can read
+`useSurfaceContext().page?.columnVisible` to see whether its host-provided
+navigation column is on screen. A page with its own list can show a selection
+prompt beside a visible column and keep the list when the column is hidden,
+including on a phone. The `page` fact is absent on other placements.
+
 ### Changing your own page's location
 
 `openSurface` selects a destination and adds a history entry. When your own page
@@ -224,24 +230,33 @@ rules—loaded mobile and tablet validation remains a separate host proof.
 > active. Plugin declarations remain installed and recoverable while the Board
 > is unavailable; availability does not grant Session access or Action authority.
 
-A `sessionWidget` view is embedded Session content, not a destination. Happier
+A `widget` view with a Session target is embedded Session content, not a destination. Happier
 frames it as one *widget* that a person can place on a Session Board and open
 from Details, the compact sidebar, the Companion and the mobile Cockpit — all
 through the same host. It never appears in navigation, collision domains, or
 `openSurface`, and it takes no `instancePolicy`.
 
+In the development-only widget placement contract, optional `placements`
+controls where a new widget can be added directly: Session views admit
+`'board'` and `'companion'`; App views admit only `'home'`. Omission preserves
+Session → Board and App → Home. Companion is explicit opt-in: declare it only
+for a view that works as a compact glance. Existing Companion references to
+Board items still reference that shared Board content; they are not direct
+plugin-widget additions.
+
 ```ts
 {
   id: 'review-status-widget',
-  container: 'sessionWidget',
+  container: 'widget',
   target: { kind: 'session' },
+  placements: ['board', 'companion'],
   renderer: 'review-native',
   fallbackRenderers: ['review-web'],
   title: 'Review status',
 }
 ```
 
-Because it is embedded content rather than a destination, `sessionWidget` sits
+Because it is embedded content rather than a destination, `widget` sits
 outside the destination-binding matrix above: the registry declares it for every
 supported UI platform, in `content` and `fill` presentations only. Whether a given
 person can actually see it still depends on their Home enabling the Board and on
@@ -249,7 +264,7 @@ their client admitting your renderer.
 
 What the host guarantees at every mount:
 
-- `mount.kind` is `embedded`, `role` is `sessionWidget`, and `presentation` is
+- `mount.kind` is `embedded`, `role` is `widget`, and `presentation` is
   `content` (a framed card whose host owns bounds and scrolling) or `fill` (the
   expanded host, where your surface owns its own content scroll). There is no
   compact or inline presentation: measured geometry, platform, theme, scale,
@@ -259,9 +274,9 @@ What the host guarantees at every mount:
   person is looking at, never from a stored value or the focused Home.
 - The stored Board item keeps only your `{ pluginId, localId }` identity plus a
   bounded launch input. A plugin update therefore keeps the widget in place: the
-  host retires the old generation and remounts the current one against the same
+  host retires the old occurrence and remounts the new one against the same
   surface identity. Declared `fallbackRenderers` may switch renderer within that
-  same surface; nothing switches surface, plugin, machine or generation.
+  same surface; nothing switches surface, plugin, or machine.
 - Each physical placement is its own mount with its own instance identity and
   lifetime. Only one placement per viewer and window is executable at a time;
   the others are inert previews.
@@ -297,6 +312,81 @@ remains open for each advertised realm. When a current client cannot admit its
 renderer, Happier preserves the item and shows a recoverable unavailable state
 rather than deleting, retargeting, or rewriting it.
 
+## Linked Session state and permission answers
+
+> **Development preview:** these host methods are in current development source. They
+> are not part of a released Happier version yet.
+
+A surface that links its own entries to Sessions can show what those Sessions are
+doing, and it can let the person answer a Session that is waiting for permission.
+It never opens the Session to do this. A typical case is an issue that an Agent is
+fixing. Three mounted host methods provide this, and the `useSessionState` hook
+wraps the first two:
+
+| Host method | What it does |
+|---|---|
+| `readSession(sessionId)` | Returns the Session's current state, or `null` when this Account cannot reach it. |
+| `watchSession(sessionId, listener)` | Subscribes to changes. It uses the same acknowledged-async setup and bounded `invalidated` signal as `watchResource`. After each `invalidated` event, re-read with `readSession`. An `error` event means the Session became unreachable. |
+| `respondToSessionPermission({ sessionId, requestId, answer })` | Answers one pending permission request with `allowOnce`, `allowForSession` or `deny`. |
+
+```tsx
+import { Button, usePluginHostApi, useSessionState } from '@happier-dev/plugin-ui';
+
+function AgentStep({ sessionId }: { sessionId: string }) {
+  const host = usePluginHostApi();
+  const { status, state } = useSessionState(sessionId);
+  const request = state?.pendingPermissions[0];
+  if (status !== 'ready' || !request) return null;
+  // request.summary / request.command say what it wants to run;
+  // state.workspace says where. Offer only request.answers.
+  return request.answers.map((answer) => (
+    <Button
+      key={answer}
+      title={answer}
+      onPress={() => host.respondToSessionPermission({ sessionId, requestId: request.requestId, answer })}
+    />
+  ));
+}
+```
+
+The host owns what these methods return, and the plugin never computes a
+second copy:
+
+- **Lifecycle, runtime and operational state** come from Happier's Session
+  awareness projection. That is the same answer the Session list shows.
+- **`pendingPermissions`** are the requests the Session's own permission prompt
+  is showing right now. Each one carries the tool, a readable summary, the exact
+  command for shell tools, and when it was asked.
+- **`answers`** lists what this person may give. It is empty when their Session
+  access does not include approving permissions. A standard edit or plan-exit
+  tool offers no `allowForSession`, and an Agent with no known prompt protocol
+  offers only `deny`.
+
+A Session is reachable when this Account's client can already open it. That is
+usually a Session linked to one of your entries, but no plugin-level list
+decides it. A plugin cannot widen that scope, and a Session the Account cannot
+reach reads as `null`.
+
+`respondToSessionPermission` is not a second permission authority. The host
+applies the answer through the same decision path as the Session's own
+permission prompt, and records it as that person's answer. Only call it from a
+user action in your surface, such as a button press. A request that is no longer
+pending, a Session the Account cannot reach, and an answer not listed in
+`answers` all resolve as `{ status: 'refused', reason }` without changing
+anything. If the answer cannot be delivered, the call rejects with a typed host
+error.
+
+These are client host methods of a mounted surface. They are not daemon
+Actions: a plugin's daemon code still cannot answer a permission request as the
+person.
+
+A Session publishes its review findings as Review comments. To read them for a
+linked Session, call the `reviews.comments.list` host Action with that
+`sessionId`, or use `useReviewCommentProposalsForEntry` for proposed comments
+linked to one entry. Tests can install `readSession`, `watchSession` and
+`respondToSessionPermission` handlers in `@happier-dev/plugin-sdk/testing`, and
+emit a watch signal with `invalidateSession`.
+
 ## Accessibility, currentness, and offline behavior
 
 Executable UI authors own the semantics inside their renderer while it is
@@ -311,8 +401,8 @@ renderer contract:
 - consume the semantic package's surface-context and accessibility hooks
   instead of guessing host settings or retaining a second host snapshot
 
-The host owns installed-generation currentness and host API availability.
-Authors must not cache a separate “current” generation or implement a
+The host owns process-local occurrence currentness and host API availability.
+Authors must not cache a separate “current” occurrence or implement a
 functional offline mode. Handle unavailable host operations and cancellation,
 and let the existing render-context/host-API subscription update the
 environment.
@@ -323,15 +413,19 @@ blocked. Because arbitrary executable subtrees cannot safely expose controls
 as read-only semantics, the host announces a localized static summary from the
 surface's declared display metadata. Give every executable surface a meaningful
 localized title, and keep the last rendered visual state understandable without
-requiring an action. Reconnection revalidates generation, policy, and context;
-it does not create a second trust prompt.
+requiring an action. Reconnection revalidates the selected release and digest,
+current occurrence, policy, and context; it does not create a second trust
+prompt.
 
 ## Build artifacts
 
-React Native UI is built into `dist/happier-plugin-ui` and described by
-`ui-artifacts.json`. Use the public build helpers from
-`@happier-dev/plugin-sdk/ui/build`; the host verifies emitted artifacts before
-loading them.
+Executable UI is compiled into one minified CommonJS bundle per artifact under
+`dist/happier-plugin-ui` and described by `ui-artifacts.json`. The package
+exposes each authored entry as `./happier-plugin-ui/<artifactId>`; the daemon
+compiler discovers those exact exports and verifies the emitted artifact tree.
+Hosted web stays a separate framed static artifact. See
+[UI artifacts](/plugins/ui/ui-artifacts) for the complete build and runtime
+contract.
 
 Start from a generated UI project when possible:
 
@@ -359,6 +453,7 @@ hdev plugins create ./my-plugin \
 
 ## In this section
 
+- [Configuration pages](/plugins/ui/configuration-pages) — compose settings and detail pages with Happier's public UI components.
 - [Host-rendered plugin UI](/plugins/ui/settings-ui) — declarative settings, status and actions, with no renderer code of your own.
 - [React Native UI](/plugins/ui/react-native) — trusted, native-feeling UI in supported clients.
 - [UI artifacts](/plugins/ui/ui-artifacts) — building, digesting and verifying a portable artifact tree.

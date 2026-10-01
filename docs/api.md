@@ -365,13 +365,26 @@ predecessor show that no supported authenticating client still needs it. This
 is a release-frontier decision based on immutable artifact evidence and current
 predecessor behavior.
 
-Signed terminal credentials carry `account_automation`, not present-user
-authority. Automation definition/run management reads and mutations, run
-cancellation, and webhook
-endpoint/status/replay/discard controls therefore return
-`present_user_required` to terminal callers. Automation worker routes use the
+Signed terminal credentials carry a minted `account_automation` floor. In 0.3
+development source, their effective authority is present-user when the Account's
+`terminalPresentUserPolicy` is `allowed` (the default). A CLI/daemon machine can
+force it off with `HAPPIER_CLI_PRESENT_USER=disallowed`; its HTTP
+`x-happier-authority-ceiling: account_automation` and socket `authorityCeiling`
+can only lower authority. With the effective policy disallowed, present-user
+operations return `present_user_required`. Automation worker routes use the
 separate machine path: the request must carry a current machine-installation
 publisher proof whose machine matches the requested `machineId`.
+
+Protocol's `readAuthTokenProvenance` is the shared signed-provenance reader for
+the Home, CLI and app. App/native redemption defaults to an Account credential;
+CLI redemption requests the literal `credentialKind: 'terminal'`, and the Home
+stamps that narrower kind. Neither a caller-supplied authority nor a UI stamp is
+credential provenance. The reader accepts the supported released raw top-level
+session and normalized `extras.session` shapes, but malformed or future
+structured markers fail closed rather than becoming legacy Account credentials.
+The CLI asks for one re-login when an installed stored bearer is Account-kind;
+it removes only the selected Home's bearer, preserving local material and other
+profiles. Supported pre-marker terminal credentials are not blanket-invalidated.
 
 ### API Tokens (development source)
 
@@ -380,11 +393,20 @@ digest-backed records and shown in plaintext only in the mint response. The
 canonical verifier accepts them as `account_automation`; it does not make the
 caller a present user. List responses retain only a shortened non-secret
 prefix in the same `hap_v1_` form (for example `hap_v1_2c67deea…`), never the
-complete bearer or secret. Token creation, revocation, revocation of all
-tokens, sign-out-everywhere, approval decisions, and security/API-policy
+complete bearer or secret. Root-token creation, revocation, revocation of all
+tokens, sign-out-everywhere and security/API-policy
 controls require `present_user`.
 
-There are no v1 token scopes. `account.sessions.signOutEverywhere` invalidates
+`ApiTokenGrantV1` is the canonical grant (optional only on root creation): Action families/ids,
+session/machine targets, opt-in `approve`, origins, models, permission modes and
+bound creation placement. A missing persisted grant reads as the full grant,
+whose `approve` is false. `evaluateApiTokenGrantV1` applies at HTTP, socket-event
+and declared RPC admission, and again in the daemon executor. Approval and
+permission decisions use `approve` plus target membership, without requiring
+the approved Action itself. Tokens may decide their own requests. Conversational
+`session.user_action.answer` instead uses the Action allowlist.
+
+`account.sessions.signOutEverywhere` invalidates
 signed sessions but intentionally leaves API Tokens active; revoke API Tokens
 through their individual or all-token controls instead. Server-origin
 verification sees revocation on its next verification. The daemon has only a
@@ -394,26 +416,80 @@ extended while server introspection is unavailable.
 The direct Account-server routes behind Settings and daemon verification are:
 
 - `POST /v1/auth/api-tokens/create` — requires `present_user` and returns the
-  plaintext bearer once with its non-secret summary. Its strict optional
+  plaintext bearer once with its non-secret summary; accepts optional `grant`
+  and `embedConfig`. Its strict optional
   `encryption` arm lets a trusted current device supply one token-bound wrapped
   Account content key in the same atomic insert; a partial arm is rejected and
   never falls back to bearer-only creation.
 - `POST /v1/auth/api-tokens/list` — returns non-secret summaries through the
   signed Account credential path, including the required
-  `hasEncryptionAccess` fact; an API Token is not accepted as the route
+  `hasEncryptionAccess` fact, grant, embed configuration and `activeChildCount`.
+  It lists roots only; an API Token is not accepted as the route
   credential.
 - `POST /v1/auth/api-tokens/revoke` — requires `present_user` and revokes the
   exact Account-owned token id.
 - `POST /v1/auth/api-tokens/revoke-all` — requires `present_user` and revokes
   every API Token for the authenticated Account.
+- `POST /v1/auth/api-tokens/update` — `account.apiTokens.update`, present-user;
+  accepts `{tokenId, label?, grant?, embedConfig?}` with at least one changed
+  field. Changing the grant revokes children and disconnects their sockets;
+  label/configuration-only edits retain them.
+- `POST /v1/auth/api-tokens/children/create` — parent API-token bearer; strict
+  `{tokenId, label, expiresAt, grant, requireCreatedByChildTokenId?}`. The expiry
+  is required, future and no later than the parent's, with no additional TTL
+  cap. The grant must monotonically attenuate the parent's. A child cannot
+  mint grandchildren and carries no encryption access or authentication evidence.
+  The optional creation witness verifies every requested session was created by
+  that child of the caller before the explicit-session credential is minted.
+- `POST /v1/auth/api-tokens/children/revoke` — parent API-token bearer;
+  `{tokenId}` can revoke only its own child.
+- `GET /v1/auth/api-tokens/self` — API-token bearer; returns
+  `{accountId, credentialId, parentTokenId, expiresAt, grant, embedConfig}`.
+  Children receive their parent's embed configuration. No secret or content key
+  is returned. Child/self operations are Home-only, independent of the Action
+  executor; the SDK reports `unsupported_endpoint` for a daemon-local origin.
 - `POST /v1/auth/api-tokens/introspect` — uses the daemon's signed Account
   credential to verify a PAT supplied as the request subject. It returns only
-  the minimal Account-bound `account_automation` principal and never returns
+  the Account-bound `account_automation` principal including grant, parent and
+  embed configuration, and never returns
   the bearer.
 - `POST /v1/auth/api-tokens/encryption-access` — accepts an API Token and returns
   only that exact token's current wrapped Account content key. It cannot select
   another token, initialize or repair Account keys, or return the local
   wrapping secret.
+
+Parent revocation cascades to children. Revocation and grant edits disconnect
+token viewer sockets; socket expiry is enforced independently of later traffic.
+These unreleased 0.3 authority-bearing carriers require the current 0.3 Home
+and daemon together. The upgrade is one-way; mixed 0.2/0.3 running components
+are not supported, while retained 0.2 Account and Session data remain readable.
+Optional-looking proof fields are authority-bearing and must not be treated as
+safely ignorable by older receivers. This is the existing
+[0.3 compatibility contract](compatibility.md), not an additional update gate.
+
+API tokens can open only a session-scoped viewer connection, never user/machine
+rooms or RPC receivers. Each token-usable socket event and RPC declares an
+Action id, and capabilities are intersected with the grant's ceiling.
+
+Requests carrying `Origin` must match `grant.origins` or the configured Happier
+web-app origin. The server checks this before JSON parsing and uses the same
+rule at socket admission. Missing `Origin` leaves non-browser requests
+unaffected. HTTP preflight is handled by server CORS; daemon loopback stays
+closed to browsers. This is an origin policy, not isolation from same-user
+processes or a defense against callers that can omit the header.
+
+Grant/target denial is `credential_scope_denied`; origin denial is
+`credential_origin_denied`. Child widening or invalid expiry is
+`api_token_child_invalid`; grandchild creation is `api_token_child_forbidden`.
+The daemon enforces effective per-input model/mode restrictions with
+`model_not_granted` and `permission_mode_not_granted`, including native/default
+selection and inputs without an override. A grant is never stored on a Session.
+
+`GET /v1/account/security` projects the plain `terminalPresentUserPolicy`.
+`POST /v1/account/security/terminal-present-user` is the present-user Action
+`account.security.terminalPresentUser.set`, accepting and returning `{policy}`.
+It disconnects terminal sockets once after commit so reconnect verifies the new
+policy. The plain policy has one owner; it is not duplicated in sealed settings.
 
 The trusted creator combines an encryption-capable token locally as `hapc_v1`.
 Only its embedded `hap_v1` bearer crosses HTTP authentication; the local
@@ -467,12 +543,15 @@ Home-relay, and daemon implementation with focused automated coverage. A loaded
 end-to-end direct/relay journey has not yet run, so this is development contract
 and implementation status rather than activation or release evidence.
 
-The protected restricted-Runner arm is not implemented or available. It remains
-fail-closed because the current bootstrap has no Account signing public key
-authenticated independently of the Home: accepting a key returned by that Home
-would let one authority substitute both the Runner Machine envelope and its
-attestation key. This limitation does not remove the protected ordinary-daemon
-path or authorize a second executor, gateway, or plaintext fallback.
+Current development source also supports protected delivery to a restricted
+Runner by its Machine or exact activated Session. The SDK resolves the Runner's
+content key through the canonical signed Machine binding; a Session target also
+requires the activation-signed claim for that exact Session, Machine and
+activation. A substituted or ambiguous claim fails before Action dispatch.
+The Runner uses the canonical receiver with its own content key and refuses
+foreign targets before opening their envelope. It receives no Account encryption
+material. These source paths do not establish a released or loaded-runtime
+certification, and they preserve the same active-Home trust boundary above.
 
 Raw V1 External Action calls made with the ordinary `hap_v1` bearer are
 deliberately Home-readable in transit. Use the combined `hapc_v1` credential
@@ -531,7 +610,8 @@ session bearers and `x-happier-daemon-token` are distinct credentials for other
 surfaces. Each public ingress verifies the PAT in Fastify `onRequest`, before
 the JSON body parser runs. The API does not use SSE, has a 32 MiB
 (33,554,432-byte) request-body ceiling, sends `Cache-Control: no-store`, and
-does not enable CORS. The server-to-daemon relay accepts a 33 MiB
+admits Home browser requests under the token origin policy above; daemon-local
+delivery does not enable CORS. The server-to-daemon relay accepts a 33 MiB
 (34,603,008-byte) request carrier, leaving one MiB of framing headroom above
 the public body limit. The server-mediated design is intentionally plaintext to
 the configured server and avoids requiring an inbound public daemon address;
@@ -544,7 +624,8 @@ contributed Action still requires the canonical live current-intent confirmation
 Allowed does not suppress the contribution's independent safety contract. A
 present user can change either setting to require approval or turn the Action
 off; neither setting exposes host-internal Actions or raises an API Token or
-plugin above `account_automation`. Token management, approval decisions, and
+plugin above `account_automation`. Approval decisions require the token's
+opt-in `approve` grant and target membership. Token management and
 other present-user controls remain discoverable where applicable but return
 `present_user_required`.
 
@@ -597,6 +678,28 @@ Action's API setting, plugin authorization/grants, availability, and any
 non-safe current-intent confirmation; installation alone grants none of those
 decisions.
 
+In development source, a limited API-token grant requires the exact valid
+qualified Action id in `grant.actions.ids`; an unrestricted `actions: null`
+grant also grants contributed invocation. A native qualified outer Action
+id follows the normal exact-identity grant path. For the encrypted
+`action.invoke` wrapper, the Home cannot see its inner identity. Its opaque
+pre-open check admits the request for opening when the grant is unrestricted or
+names at least one valid qualified Action id. The existing daemon then decrypts the
+input and checks the exact resolved identity before execution or approval.
+
+The signed frozen grant snapshot fixes the admitted invocation's scope.
+Current grants are checked for liveness and attenuation, not used to widen or
+replace that snapshot. `readCurrentExternalActionPrincipal` in
+`apps/server/sources/app/auth/externalActionExecutionAuthorization.ts` requires
+the entire frozen grant to remain within the current grant. Narrowing any part
+of it, including an unrelated browser origin, invalidates that authorization and
+prevents a deferred approval from executing even if its own Action and target
+remain granted. Work whose effects were already admitted is not cancelled.
+This uses the existing protected carrier: there is no
+plaintext header selector, new carrier or contributed-Action API exclusion.
+`contributedActionAdmission: 'pre_open'` is an internal authentication/currentness
+stage, never a caller-supplied option.
+
 Both the daemon-local and server origins limit the complete serialized response
 envelope—not only `execution.result`—to 24,000,000 UTF-8 bytes. When an Action
 finishes but its response would exceed that limit, the admitted HTTP response
@@ -623,6 +726,83 @@ generated [Host Actions reference](../apps/docs/content/docs/plugins/api/host-ac
 Runtime callers discover available Actions with `actions.search` and
 `action.spec.get`, then use raw `actions.execute` when the id is selected
 dynamically. None of these should be duplicated as a hand-written Action list.
+
+## Live Session client (0.3 development source)
+
+With `client` connected to the Account server, the public SDK root adds
+`client.sessions.get(sessionId).live()` for an ordered
+transcript, metadata, Agent state, pending requests, connection status and
+available actions. Socket and Action adapters consume the same session-core
+interpretation; they do not own a second transcript or permission model.
+The private `@happier-dev/sync-client` package owns the shared wire-level socket,
+RPC, envelope, page and catch-up primitives used by the UI, CLI and SDK.
+Protocol owns `SessionMessagesPageV1Schema` and
+`SessionPermissionRespondRpcParamsV1Schema`; consumers do not define rival wire
+schemas.
+Session detail reads use `accessProjectionVersion=1` and the canonical current
+stored-content declaration. Availability comes from
+`effectiveAccess.capabilities`; answering Agent questions uses Send authority.
+
+Automatic transport selects `action` for an E2EE Session without a content
+credential, and otherwise selects a session-scoped viewer socket. Failure to
+open socket content is not a reason to silently switch transports. The Action adapter
+uses the existing finite transcript Actions with `openedMessagesV1`, preserving
+canonical rows, Agent-state versions and recipient-safe shared metadata. The
+opened projection carries `sharedMetadata: {version, value} | null`, with the
+strict `SessionSharedMetadataV1` value and a caller `sharedMetadataVersion`;
+unchanged versions return null. Shared metadata supplies Action confirmations
+and public completion facts to the same pending reader, never Account-private
+owner metadata. A shared editor receives no owner Agent state.
+An unopened row retains its identity and sequence with
+`content: {t: 'plain', v: null}` and a typed `openFailure` of
+`mode_mismatch` or `corrupt_or_unopenable`; it discloses no stored content.
+The controller renders the canonical unsupported-content row and advances past
+it. Both adapters open a session-scoped viewer socket. For the Action adapter,
+opaque change notifications wake the follower; idle observation makes no interval
+requests. The Session-filtered changes feed repairs reconnect gaps and revised rows;
+the snapshot and daemon-opened rows refresh on a notification. Inactivity keeps
+observation alive so external reactivation is visible.
+Permission responses use the existing
+permission Action's full protocol vocabulary; `action` has no abort Action.
+Daemon-opened Action content crosses the Account server in plaintext; the socket variant
+retains E2EE content framing end to end.
+Controller cancellation/disposal is scoped to that controller, and root-client
+closure also closes its controllers.
+
+The public `followTranscript()` iterator uses the same viewer notifications to wake
+finite `transcript.follow` reads, without a polling-interval option. Its existing cursor,
+backpressure, final inactive drain and lease-release owner remain unchanged; reconnection
+wakes a cursor catch-up. The development implementation currently uses the Account Home
+viewer endpoint; preserving daemon-local iterator support remains an unresolved integration
+boundary, not an approved endpoint restriction.
+
+Execution-run iterators instead use the existing `execution.run.stream.read` Action
+with `waitForEvents: true`. The canonical stream owner holds an empty cursor read
+until an append or terminal transition, with caller cancellation propagated through
+the relay. This also covers detached runs and daemon-local endpoints. Omitting the
+option preserves finite reads for other Action callers. A producer that returns an
+empty nonterminal page to a waiting SDK read is reported as
+`execution_run_stream_update_required`; the SDK starts no polling fallback.
+The stream handle remains owned until `execution.run.stream.cancel` releases it,
+including after a terminal read. The SDK releases automatically; finite Action
+callers must also release their handles. Run/controller retirement removes access
+to any remaining stream identities and terminal pages.
+
+The same root uses a Node HTTP adapter or browser Fetch according to package
+conditions. Browser use requires an allowed origin and an appropriately scoped
+credential; never distribute a broad parent credential. These are development
+additions, not a claim that an already published SDK supports them. See the
+[SDK usage guide](../packages/sdk/README.md) for caller examples.
+
+`client.sessions.list({ folderIds, tagIds })` uses the existing filtered
+Session-list Action: any exact viewer folder assignment AND any viewer tag
+assignment, with no descendant expansion. Unknown ids produce an empty match,
+and existing cursor/access predicates remain in effect.
+`GET /v2/changes?after=...&sessionId=...` provides exact Session/share revision
+invalidation through the existing Account feed. Its cursor advances over the
+raw page even when no matching rows are visible; `410 cursor-gone` requires a
+snapshot rebuild. The separate `sessionAccessSessionId` probe cannot be combined
+with `sessionId` (`400 invalid_params`).
 
 ## Endpoint catalog
 ### Sessions
@@ -788,10 +968,10 @@ the approving caller.
 
 The Action family projects readable semantic documents after the trusted CLI/daemon host opens
 the stored envelopes. Account automation may list, get, read and post within its authenticated
-Session/runtime boundary. Create, rename, archive, restore and personal read-state mutation remain
-`present_user` operations. API Token and SDK catalogs therefore expose only the public readable
-subset; omission of the management operations preserves their authority contract rather than
-removing the underlying UI and CLI features.
+Session/runtime boundary. Discussion creation/management and personal read-state
+mutation are also automation operations in current 0.3 source. API-token access
+uses the canonical Action grant and target admission; Agent/MCP exposure stays
+disabled for these human-discussion operations.
 
 #### Personal relevance and attention from discussions (development)
 
@@ -976,7 +1156,13 @@ transaction.
 The mutating Board Actions — `session.board.item.upsert`, `session.board.item.remove`
 and `session.board.layout.update` — declare this route as their `serverTransport`, so
 UI, CLI and Agent callers share one writer. `session.board.get` declares no transport
-and composes the System Record reads above. When a request carries an API Token, the
+and composes the System Record reads above. Layout placements may carry an optional
+`frameStyle: 'card' | 'plain'` override. Editors set it through
+`session.board.layout.update` with
+`{ op: 'item.frameStyle', tabId, itemId, frameStyle }`; `null` clears the override.
+It belongs to that shared placement, survives ordinary layout and item edits, and
+wins over each viewer's Appearance default. The same item in another Board view
+keeps its own placement style. When a request carries an API Token, the
 route additionally requires an authorized external Action execution whose target is
 this exact Session and whose root and effect Action id both equal the Board Action
 matching the operation; anything else is `session_board_forbidden`. Raw `hap_v1`
@@ -1154,15 +1340,66 @@ integrated package and loaded-Provider validation is still open.
 
 ### Key-value store
 - `GET /v1/kv/:key`
-- `GET /v1/kv?prefix=...&limit=...`
+- `GET /v1/kv?prefix=...&limit=...&afterKey=...`
 - `POST /v1/kv/bulk`
 - `POST /v1/kv` (batch mutate)
+
+The development `afterKey` query continues the ascending key list after the exact
+last key from the previous page. It preserves the prefix, excludes versioned
+tombstones, and retains the existing list page-size boundary. Account encryption
+migration drains the Todo and Workspace namespaces through this same read owner;
+its [encryption contract](encryption.md#key-value-store) requires complete active
+inventories before any mode change.
 
 ### Account and usage
 - `GET /v1/account/profile`
 - `GET /v1/account/settings`
 - `POST /v1/account/settings`
 - `POST /v1/usage/query`
+
+### Authoring memory (0.3 development)
+
+Remembered session-authoring state uses reserved Account KV rows, rather than
+replacing the Account Settings document. The schema and response contracts live in
+`packages/protocol/src/account/authoringMemory.ts`:
+
+- `GET /v1/account/authoring-memory` returns `{rows:[{key,revision,content}]}`,
+  including versioned tombstones with `content:null`.
+- `GET /v1/account/authoring-memory/:key` returns `present` with its revision and
+  content, `deleted` with its revision, or `absent` for a never-created row.
+- `POST /v1/account/authoring-memory/:key` accepts
+  `{expectedRevision:number|'absent',content:envelope|null}` and returns `updated`
+  with its revision and durable change cursor, or `conflict` with the current
+  revision (`-1` when the row has never existed).
+
+Keys are `recentMachinePaths`, `lastUsedProfile`, and
+`engineSelection:<canonicalScope>`. The authoring selection owner normalizes scope
+identity before transport. Each mutation publishes a content-free AccountChange
+hint `{authoringMemory:true,key,revision}` for exactly that row. Account identity
+comes from authentication; `/v1/kv` cannot enumerate, read, or mutate the physical
+`@happier/account/authoring-memory/v1/` namespace. Unreadable, inconsistent, or
+mode-mismatched content returns `503 authoring_memory_storage_unavailable` before
+disclosure or mutation. See [Account-mode encryption](encryption.md#account-mode-invariant).
+
+The app reads the inventory once on Account/Home activation. Existing socket
+wakes and the durable changes cursor refresh only hinted rows; successful
+materialization is required before the cursor advances. Remembered-selection
+rows contain `{v:1,selectionsByScope}` so legacy aliases and opaque future
+carriers survive while sharing one row per canonical scope. The preference
+`rememberLastEngineSelectionsV1` remains in Account Settings.
+
+The materialized values retain the previous device-local read continuity: a
+validated projection is persisted through the existing local adapter under the
+canonical Account/Home scope and hydrated before transport. This projection is
+not a sync writer, pending-write queue, or Account-mode authority.
+
+The one-way 0.2 import reads the authoritative settings envelope under the
+persisted Account mode, creates each destination only if absent, then removes
+that source key by exact Settings CAS. Conflicts re-read the winner; interruption
+leaves a recoverable source and repeat import cannot replace an existing row or
+tombstone. Current consumers never dual-write the old settings keys.
+The CLI uses that same destination-first policy for the remembered profile before
+reading it, including when the app has not initialized that Account yet.
 
 ### Push tokens
 - `POST /v1/push-tokens`

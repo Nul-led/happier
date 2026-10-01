@@ -27,8 +27,8 @@ the public surface; it does not create a separate stability tier per export.
   runtime import. In production code, import the specific type or value you
   need from the same path.
 - `host/*` paths are intentionally public to Happier host packages, not to
-  installed plugins. `ui/build` is only for a build configuration, and
-  `ui/client` is only for a hosted-web client.
+  installed plugins. `ui/build` exposes build-realm toolchain compatibility
+  facts, and `ui/client` is only for a hosted-web client.
 - A normal target or contributor imports a feature-owned protocol package. Only
   a reusable feature-protocol package imports the browser-safe `/protocol`
   schema constructors and `/contributions` contribution constructors.
@@ -41,7 +41,7 @@ the public surface; it does not create a separate stability tier per export.
 | Call host behavior from an invoked handler | `/actions` through `context.services.actions` | use the exact action contract documented by the feature that owns it |
 | Build a daemon integration | the final daemon capability path | `/exec`, `/fs`, `/http`, `/storage`, or `/connected-accounts` |
 | Add a custom Agent | `/agents` | `/agents/runtime`, `/sessions`, and `/sessions/work-state` |
-| Render Plugin UI | `/ui` | `/ui/build` for packaging or `/ui/client` only in hosted-web code |
+| Render Plugin UI | `/ui` | exact `./happier-plugin-ui/<artifactId>` package exports, `/ui/build` for toolchain facts, or `/ui/client` only in hosted-web code |
 | Declare and use data | `/settings`, `/collections`, or `/resources` | `/storage` for daemon persistence contracts |
 | Test a Plugin module | `/testing` | use the source owner’s capability path for precise types |
 | Work on Happier host code | `/host/registration`, `/host/fs/json-owner-file-lock`, or `/host/ui` | never import these paths from an installed Plugin |
@@ -56,7 +56,7 @@ the public surface; it does not create a separate stability tier per export.
 | `@happier-dev/plugin-sdk/agents/runtime` | Daemon-realm custom Agent runtime, factory, and session contracts. | `import type * as AgentRuntime from '@happier-dev/plugin-sdk/agents/runtime';` |
 | `@happier-dev/plugin-sdk/async` | Cancellation-aware asynchronous utility types. | `import type * as Async from '@happier-dev/plugin-sdk/async';` |
 | `@happier-dev/plugin-sdk/automations` | Automation admission and result-delivery contracts; it does not provide an Automation scheduler or run store. | `import type * as Automations from '@happier-dev/plugin-sdk/automations';` |
-| `@happier-dev/plugin-sdk/background-services` | Generation-scoped background-service declaration and runtime types; it is not a scheduler API. | `import type * as BackgroundServices from '@happier-dev/plugin-sdk/background-services';` |
+| `@happier-dev/plugin-sdk/background-services` | Occurrence-scoped background-service declaration and runtime types; it is not a scheduler API. | `import type * as BackgroundServices from '@happier-dev/plugin-sdk/background-services';` |
 | `@happier-dev/plugin-sdk/browser` | Public browser target and Action descriptors plus the toolchain compatibility packet; browser Actions bind canonical Actions to declared targets. | `import type * as Browser from '@happier-dev/plugin-sdk/browser';` |
 | `@happier-dev/plugin-sdk/collections` | Daemon-realm Account collection definitions, references, queries, and collection service types. | `import type * as Collections from '@happier-dev/plugin-sdk/collections';` |
 | `@happier-dev/plugin-sdk/connected-accounts` | Daemon-realm Connected Account references, purpose bindings, health, and materialization result types. | `import type * as ConnectedAccounts from '@happier-dev/plugin-sdk/connected-accounts';` |
@@ -93,7 +93,7 @@ the public surface; it does not create a separate stability tier per export.
 | `@happier-dev/plugin-sdk/storage` | Key-value storage and manifest-declared daemon database contracts; there is no `/database` entrypoint. | `import type * as Storage from '@happier-dev/plugin-sdk/storage';` |
 | `@happier-dev/plugin-sdk/testing` | Daemon-realm testkit for manifest/activation/handler cleanup and bounded semantic UI fixtures; it runs inside your Node test process — jsdom UI tests included — and needs no running Happier daemon; use its context fixture rather than hand-writing host snapshots. | `import { createPluginTestkit } from '@happier-dev/plugin-sdk/testing';` |
 | `@happier-dev/plugin-sdk/ui` | UI contribution descriptors plus host-API, Resource-content, and surface-context types. | `import type * as PluginUi from '@happier-dev/plugin-sdk/ui';` |
-| `@happier-dev/plugin-sdk/ui/build` | Build-realm only: define the managed Plugin UI build configuration and use its compatibility packet. | `import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';` |
+| `@happier-dev/plugin-sdk/ui/build` | Build-realm only: read the managed Plugin UI toolchain compatibility and scaffold bindings. | `import { PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1 } from '@happier-dev/plugin-sdk/ui/build';` |
 | `@happier-dev/plugin-sdk/ui/client` | Browser-realm hosted-web bootstrap client; do not import it from a React Native renderer. | `import type * as PluginUiClient from '@happier-dev/plugin-sdk/ui/client';` |
 | `@happier-dev/plugin-sdk/voice` | Voice contribution, catalog, credential, and runtime contracts. | `import type * as Voice from '@happier-dev/plugin-sdk/voice';` |
 | `@happier-dev/plugin-sdk/voice/client` | Client-realm Voice conversation and media contracts. | `import type * as VoiceClient from '@happier-dev/plugin-sdk/voice/client';` |
@@ -181,7 +181,7 @@ publish that one everywhere.
 `@happier-dev/plugin-sdk/testing` is for deterministic author-facing contracts:
 manifest validation, activation and handler behavior, cancellation/cleanup, and
 the bounded semantic UI fixture, including selectable `option` targets. It does
-not prove installed discovery, on-demand activation, generation replacement,
+not prove installed discovery, on-demand activation, occurrence replacement,
 machine routing, native reconciliation, Account encryption, or packaged-artifact
 behavior; use the
 real CLI, daemon, and UI validation paths for those lifecycle claims.

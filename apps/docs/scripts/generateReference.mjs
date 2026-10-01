@@ -15,7 +15,12 @@ import { OUTPUT_PATH as DOWNLOADS_OUT, renderDownloadsPageMarkdown } from './gen
 import { OUTPUT_PATH as KEYS_OUT, renderKeyboardReferenceMarkdown } from './generateKeyboardReference.mjs';
 import { OUTPUT_PATH as LIMITS_OUT, renderRateLimitReferenceMarkdown } from './generateRateLimitReference.mjs';
 import { OUTPUT_PATH as PLUGIN_AVAIL_OUT, renderPluginAvailabilityMarkdown } from './generatePluginAvailability.mjs';
-import { OUTPUT_PATH as FEATURE_ENV_OUT, renderFeatureEnvReferenceMarkdown } from './generateFeatureEnvReference.mjs';
+import {
+  ENV_OUTPUT_PATH as SERVER_ENV_OUT,
+  FEATURE_ENV_OUTPUT_PATH as FEATURE_ENV_OUT,
+  renderEnvReferenceMarkdown,
+  renderFeatureEnvReferenceMarkdown,
+} from './generateServerConfigReference.mjs';
 import { OUTPUT_PATH as RUNTIME_EVENTS_OUT, renderRuntimeEventReferenceMarkdown } from './generateRuntimeEventReference.mjs';
 import { OUTPUT_PATH as BUNDLED_PLUGINS_OUT, renderBundledPluginReferenceMarkdown } from './generateBundledPluginReference.mjs';
 import { OUTPUT_PATH as SDK_SURFACE_OUT, renderSdkSurfaceReferenceMarkdown } from './generateSdkSurfaceReference.mjs';
@@ -29,6 +34,7 @@ export const GENERATORS = [
   { name: 'keyboard shortcuts', outputPath: KEYS_OUT, render: renderKeyboardReferenceMarkdown },
   { name: 'plugin availability', outputPath: PLUGIN_AVAIL_OUT, render: renderPluginAvailabilityMarkdown },
   { name: 'feature environment', outputPath: FEATURE_ENV_OUT, render: renderFeatureEnvReferenceMarkdown },
+  { name: 'server configuration', outputPath: SERVER_ENV_OUT, render: renderEnvReferenceMarkdown },
   { name: 'runtime events', outputPath: RUNTIME_EVENTS_OUT, render: renderRuntimeEventReferenceMarkdown },
   { name: 'bundled plugins', outputPath: BUNDLED_PLUGINS_OUT, render: renderBundledPluginReferenceMarkdown },
   { name: 'SDK API surface', outputPath: SDK_SURFACE_OUT, render: renderSdkSurfaceReferenceMarkdown },

@@ -76,6 +76,46 @@ The most common start flow is:
 3. review any session-only chips such as MCP or Resume ID
 4. send the first message
 
+### Start without choosing a folder
+
+<Callout type="info">
+  Folderless sessions are planned for the 0.3 development line. The workflow below is
+  being implemented and awaits integrated verification; it is not a released feature.
+</Callout>
+
+The planned workflow keeps the machine choice and lets you remove the folder:
+
+1. Choose an online machine and your Agent.
+2. Open the folder picker and choose **No folder**. On a keyboard, **Delete** or
+   **Backspace** on the focused folder chip does the same; **Remove folder** is also
+   available from its action menu. The trailing × is a pointer or keyboard shortcut.
+3. Send your first message. **Add folder** lets you restore a folder before sending.
+
+Removing the folder preserves your prompt, attachments, machine, Agent, model, profile,
+permissions and MCP choices. Checkout controls disappear until you restore a folder.
+This choice applies to normal machine targets, not Temporary computers, whose endpoint
+chooses the working folder.
+
+Happier will create a separate working folder under `session-directories` in the selected
+daemon's server-specific data directory. You do not need to choose its path. Session info
+will show **Folder** with a disclosure to reveal and copy the path. The session will appear under
+**Chats**; Files, terminal and attachments still use that real folder. Git will appear
+only if the folder becomes a repository.
+
+<Callout type="warn">
+  A private folder is a working directory, not a sandbox. The Agent runs with the
+  daemon's OS-user permissions and can access other files that user can access.
+  Folder permissions protect against other OS users, not other Agents running as
+  the same user. Claude's existing folder-trust choice still applies.
+</Callout>
+
+The planned folder survives daemon restarts and archiving. Deleting the session stops its
+tracked process and removes its private files; archiving keeps them. If the machine is
+offline when you delete, cleanup stays pending until its daemon reconnects. See
+[resume](/sessions/session-resume#resume-a-folderless-session),
+[forking](/sessions/session-forking#fork-a-folderless-session) and
+[handoff](/sessions/session-handoff#handoff-a-folderless-session) for continuity rules.
+
 ### Typing a path vs browsing
 
 Use manual entry when:

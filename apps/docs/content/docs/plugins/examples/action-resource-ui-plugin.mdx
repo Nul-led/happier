@@ -25,15 +25,6 @@ const statusPanel = defineUiSurfaceDefinition({
     // Name only the host methods the surface cannot run without.
     requiredHostMethods: ['context', 'executeAction', 'readResource'],
   },
-  build: {
-    entry: 'src/ui/StatusPanel.tsx',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'happier_plugin_com_example_build_status_status_renderer',
-      modulePath: './StatusPanel',
-      exportName: 'renderSurface',
-    },
-  },
 });
 
 let lastBuild = 'never';
@@ -78,6 +69,17 @@ export const { manifest, activate } = definePlugin({
   },
   ui: { surfaces: [statusPanel] },
 });
+```
+
+The high-level surface derives the executable artifact id `status-renderer`.
+Expose its `renderSurface` module through the matching package export:
+
+```json
+{
+  "exports": {
+    "./happier-plugin-ui/status-renderer": "./src/ui/StatusPanel.tsx"
+  }
+}
 ```
 
 Three things are doing the work:

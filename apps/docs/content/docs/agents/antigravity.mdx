@@ -31,6 +31,11 @@ Happier ships the vendor's own install recipe and can run it for you from
 **Settings → Agents → Antigravity**. When Happier drives the install it asks
 first — running a vendor script is not something it will do silently.
 
+In unreleased 0.3 development builds, this install runs as one daemon job on the
+selected machine, with steps for the `agy` CLI, the managed ACP server, and a
+final CLI check. See [install and update jobs](/agents#install-and-update-jobs-in-03-development)
+for reconnecting, progress, and cancellation limits.
+
 To install it yourself:
 
 ```bash
@@ -49,9 +54,18 @@ Google's own instructions are at
 
 ## Authentication
 
-Antigravity logs in through its own terminal flow. From
-**Settings → Agents → Antigravity** Happier can open that flow on the
-selected machine.
+Happier sessions authenticate the managed ACP server, independently from the
+interactive `agy` CLI. From **Settings → Agents → Antigravity**, Happier opens
+the ACP server's provider-owned browser login on the selected machine. The same
+plugin-declared flow is available from a shell:
+
+```bash
+happier agents auth login antigravity
+```
+
+Wait for the command to confirm completion before starting a session. Signing
+in through the interactive `agy` CLI alone does not authenticate Happier's ACP
+server.
 
 Happier does not probe Antigravity's login state in the background — the agent
 exposes no safe non-interactive signal — so the status may read **Unknown** even
@@ -99,3 +113,9 @@ export HAPPIER_ANTIGRAVITY_PATH=/absolute/path/to/agy
 Happier ignores an override that does not point at an executable file, falling
 back to `PATH` rather than reporting an error — so a typo here looks exactly
 like no override at all.
+
+### "Authentication required"
+
+Run `happier agents auth login antigravity` on the agent machine, or open the
+login flow from **Settings → Agents → Antigravity**. Keep the flow open until it
+reports completion; the ACP server owns browser login and credential storage.

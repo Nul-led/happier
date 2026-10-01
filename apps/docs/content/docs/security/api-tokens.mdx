@@ -21,12 +21,12 @@ separately from your signed-in sessions.
 ## What you need first
 
 - A development build that includes this preview.
-- A signed-in account. Creating or revoking a token requires a present user;
-  automation cannot change the controls that protect it.
+- A signed-in account. Creating or revoking root tokens requires a present user;
+  parent tokens can manage only their own children as described below.
 
 ## Create a token
 
-1. Open **Settings → Account → Account Security → API Tokens**.
+1. Open **Settings → Account → Sign-in & security → API Tokens**.
 2. Choose **Create token**, give it a label you will recognize, and select its
    expiry (30 days, 90 days, one year, or no expiry).
    On an E2EE account, you can also enable **Encryption access** from a trusted
@@ -37,8 +37,15 @@ separately from your signed-in sessions.
 
 Happier shows the full secret once. The list keeps only a shortened, non-secret
 prefix such as `hap_v1_2c67deea…` plus metadata, so it cannot reveal the same
-secret later. A token is broad account automation
-in this first version; it does not have scopes.
+secret later. Choose full access or a limited grant covering the Actions,
+sessions and computers it needs. A limited grant can also restrict models,
+permission modes and websites. Content access is a separate choice.
+
+Approvals are opt-in per token. Enabling them lets it decide tool-use prompts
+and requests in its granted targets, including requests it started itself.
+It cannot change root tokens, security or plugin trust. A token answering an Agent's
+question needs conversational Send access; that is separate from approving a
+tool or Action.
 
 An encryption-capable credential begins with `hapc_v1`. In the development SDK,
 the extra local material protects the complete Action request and result from the
@@ -89,24 +96,102 @@ authority, runtime availability, or placement, and host-internal Actions are
 not exposed at all.
 
 <Callout type="warn">
-  API access is intentionally broad and enabled by default. Before sharing a
-  token, review the Actions that integration needs and set anything else to
-  **Ask first** or **Off**. Happier does not silently narrow a token to a small
-  hard-coded subset on your behalf.
+  Full access covers API-eligible built-in and contributed Actions allowed by your
+  Action settings; approval authority remains opt-in. Before sharing a token,
+  choose the grant it needs and review
+  **Ask first** or **Off** for Actions that need additional controls.
 </Callout>
 
-An API Token follows the **External API & SDK** setting. An installed trusted
+Limited grants require the exact qualified ids of contributed Actions.
+**Full access** also grants contributed invocation, subject to Action settings
+and plugin grants.
+
+An API Token invoking an Action follows the **External API & SDK** setting. An installed trusted
 plugin follows the **Trusted plugins** setting. Start with the smallest set of
 Actions your automation needs.
 
-An API token cannot create, revoke, or replace API tokens; sign out every
-device; change Action, API, or security policy; approve requests; install or
+An API token cannot create, revoke, or replace root API tokens; sign out every
+device; change Action, API, or security policy; install or
 uninstall plugins; change Agent session-hook installations; or make other
 present-user security and trust decisions. Those operations remain discoverable
 where applicable but return `present_user_required` instead of treating a
 bearer token as an interactive user. Trusted plugins have the same
 `account_automation` ceiling: their **Trusted plugins** setting cannot turn one
 of these controls into a present-user operation.
+
+## Credentials for an embedded app
+
+Keep the parent API token on your backend. Use the SDK's
+`client.apiTokens.createChild({ label, expiresAt, grant })` against the Home
+origin to issue a browser credential with only the session and website access
+that page needs. The child expiry is required, must be in the future and cannot
+exceed the parent's expiry. There is no fixed maximum lifetime.
+
+A child can only narrow its parent's grant. It has no Account content-access
+material, cannot create another child and cannot manage root tokens. Use
+`client.apiTokens.self()` to inspect its non-secret grant, expiry and parent;
+`client.apiTokens.revokeChild(tokenId)` revokes a child owned by that parent.
+These operations are Home routes and return `unsupported_endpoint` through a
+daemon-local SDK endpoint.
+
+Browser calls need an origin allowed by the grant. Happier's own app origin is
+also admitted so its embedded session view can connect. API-token sockets are
+bound to one session, and the same grant controls HTTP, messages and session
+RPCs. The daemon's loopback endpoint does not enable browser CORS.
+
+Revoking the parent revokes its children. Editing its grant also revokes active
+children and disconnects their sockets; mint new children for the updated
+access. A label or appearance-only edit keeps their credentials valid.
+
+Narrowing a token's grant also invalidates pending Action approvals authorized
+under the old grant, even when the change only removes an unrelated website.
+The whole original grant must still fit within the current grant before a
+deferred Action can execute. Effects already admitted are not cancelled.
+
+Model defaults come from the first allowed model for the session's Agent, not
+another Agent's model. Permission-mode defaults use the grant's order and keep
+an already allowed selection.
+
+## CLI and daemon approvals
+
+In 0.3 development, an Agent or MCP call can ask you to create, edit or revoke an
+API token (including an embed configuration), or change CLI/daemon approval policy.
+These calls always create an Ask-first request; they never apply automatically.
+Approving any present-user change requires your signed-in present-user authority.
+An Approve-scoped token can reject the request, but cannot approve its own or another
+agent's security change. Direct token/security mutations from an API token stay refused.
+Agents can read non-secret token summaries and Account security state normally.
+When you approve token creation, the deciding app shows the new bearer once in
+the existing token reveal dialog; approval history never stores it. Requester-owned
+encryption wrapping material is not reconstructed on your device.
+
+CLI and daemon approvals and account changes are allowed by default for a
+stored interactive login. Read or change the Account choice with:
+
+```bash
+hdev auth cli-approvals get --json
+hdev auth cli-approvals set disallowed --yes --json
+```
+
+Changing the policy briefly reconnects the Account's CLI/daemon sockets. Set
+`HAPPIER_CLI_PRESENT_USER=disallowed` on a computer to opt out independently;
+an Account `allowed` value cannot override that machine choice. With the
+policy disallowed, restore it from the signed-in app, which retains
+present-user authority.
+
+The environment accepts only `allowed` or `disallowed`; leaving it unset uses
+the Account choice. An invalid value refuses CLI/daemon startup rather than
+silently restoring approval authority.
+
+During this development migration, the CLI may ask you to sign in again when
+its stored bearer is an app Account credential rather than a terminal
+credential. It clears only that Home's bearer, preserving local Account
+material and your other Home profiles.
+
+This prevents supported automation paths from raising their own authority.
+A process running as your OS user can still read local credentials; when
+CLI/daemon approvals are allowed, a local process able to run the CLI or reach
+the daemon control route can approve.
 
 ## Revoke access
 
@@ -154,6 +239,12 @@ available in the current Developer Preview source.
   create a replacement.
 - If an operation returns `present_user_required`, complete it from the app
   while signed in rather than widening the token's authority.
+- `credential_scope_denied` means the Action or target is outside the grant;
+  `credential_origin_denied` means the browser website is outside its origin
+  allowlist. Correct the parent grant and issue a new child when needed.
+- `model_not_granted` or `permission_mode_not_granted` means the effective model
+  or mode is outside the grant, including an automatic/default model when the
+  grant names specific models. Select an allowed value.
 - If **External API & SDK** is **Off**, or is **Ask first** without a completed
   approval, adjust the Action setting or complete the approval from the app.
 - At either HTTP origin, a malformed, expired, unknown, or revoked API Token

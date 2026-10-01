@@ -95,7 +95,10 @@ machine environment variable on the execution machine instead.
 In the current Developer Preview source, API Tokens are server-side credentials:
 the server retains a digest-backed record, while the full token is shown only to
 its creator. They authenticate automation, not a present user, so they cannot
-approve requests or loosen the security controls that limit them.
+loosen the security controls that limit them. A token can opt into approving
+tool-use prompts and requests inside its granted targets, including requests
+it started itself. That scope never permits root-token administration or security
+and plugin-trust changes.
 
 On an E2EE account, a trusted current device can optionally create a compound
 credential whose token-bound wrapper opens only the Account content key. The
@@ -112,9 +115,22 @@ token, open each needed Action under **Settings → Actions**, then review
 where appropriate. A non-safe contributed Action can still require its own live
 current-intent confirmation; **Allowed** does not suppress that independent
 safety contract. These settings do not expose host-internal Actions or override
-present-user-only controls such as API-token administration, plugin uninstall,
-Agent session-hook changes, approval decisions, and security-policy changes.
+present-user-only controls such as root API-token administration, plugin uninstall,
+Agent session-hook changes and security-policy changes.
 Trusted plugins have the same account-automation authority ceiling.
+
+The development source lets you narrow tokens to Actions, targets, models,
+permission modes and browser websites. Your backend can issue an expiring child
+credential for a browser, with access no wider than its parent. Revoking or
+changing the parent's grant revokes its children and disconnects their sockets.
+
+CLI and daemon credentials can approve and change Account controls by default.
+The Account policy and `HAPPIER_CLI_PRESENT_USER=disallowed` machine override
+can restrict that authority, with the most restrictive choice winning. This
+guarantees that supported automation paths cannot raise their own authority;
+it does not isolate processes running as the same OS user. Such a process can
+read local credentials, and, when approvals are allowed, can approve through
+the CLI or daemon control route.
 
 The Developer Preview Action API is a separate transport boundary. A configured
 server can read a request and response when it mediates that traffic, even when

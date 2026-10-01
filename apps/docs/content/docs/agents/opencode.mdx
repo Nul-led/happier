@@ -8,10 +8,9 @@ This page documents how Happier integrates with **OpenCode** and what matters fo
 ## Requirements
 
 - OpenCode CLI installed on your machine.
-- Binary available on `PATH` (or set `HAPPIER_OPENCODE_PATH`).
+- Binary available on `PATH` as the released `opencode` or `opencode2` command.
 
-Happier also recognises the OpenCode **V2 beta** executable, `opencode2`. See
-[OpenCode V2 beta](#opencode-v2-beta).
+Happier supports OpenCode V2 through the same integration. See [OpenCode V2](#opencode-v2).
 
 ## Install OpenCode
 
@@ -69,97 +68,120 @@ For most users, the important part is:
 
 By default, Happier uses a **managed local OpenCode server** on the machine and reuses it across sessions. Advanced users can set an explicit OpenCode server URL in settings; when you do that, Happier will keep using that explicit server for the session.
 
-## OpenCode V2 beta
-
-OpenCode's V2 beta ships as a separate executable named `opencode2`. Happier recognises it through
-the same server-native backend — there is no separate OpenCode integration to enable.
-
-Happier speaks the standalone V2 `/api/*` contract through the same server-native backend: creating
-and resuming sessions, prompting, model and variant selection, cancelling, compacting, reading the
-transcript, answering permissions and questions, listing skills, and listing providers and models.
-A short list of features has no V2 route at all — see
-[What V2 does not support yet](#what-v2-does-not-support-yet).
+## OpenCode V2
 
 <Callout type="warn">
-  Happier's V2 support is built against OpenCode's published V2 protocol, but it has **not yet been
-  exercised against a live `opencode2` server**. Treat it as untested in practice rather than
-  unsupported, and report anything that misbehaves.
+  This V2 integration describes current development source, not the Happier CLI 0.2.12 stable
+  release. That release sends V1 `/session` requests and cannot start OpenCode 2.x sessions.
 </Callout>
 
-**Which executable Happier runs.** Happier looks for `opencode` first and `opencode2` second. So:
+Released OpenCode V2 publishes both the `opencode` and `opencode2` command aliases. Happier
+recognises both through the same integration — there is no second OpenCode Agent to enable.
 
-- only `opencode` installed → Happier runs the stable CLI;
-- only `opencode2` installed → Happier runs the beta;
-- both installed → Happier keeps running the stable `opencode`, so a beta install never silently
-  replaces your working setup.
+The current development integration is pinned to OpenCode 2.0.15 and has been exercised against
+that real server binary. Happier adapts the released `/api/*` contract rather than sending V1
+shapes to V2 routes:
 
-**Starting the server.** Happier waits for the server it started to report itself ready, and it
-asks on the route that binary actually answers: `/global/health` for `opencode`, `/api/health` for
-`opencode2`. It reads this from the executable it resolved, not from any setting.
+- prompts use the released flat body (`id`, `text`, files, agents, skills, metadata, delivery, and
+  resume fields) rather than nesting it under `prompt`;
+- permission rules use `{ action, resource, effect }`, and replies use `{ decision, message? }`;
+- `form.created`, `form.replied`, and `form.rejected` replace the old question events; Happier
+  preserves field order, typed answers, conditions, defaults, and opaque option values;
+- Happier MCP servers register with `PUT /api/experimental/mcp/:name` and `{ config }`, then read
+  registration state from `GET /api/mcp`. In OpenCode 2.0.15, that state can become `connected`
+  before the asynchronously refreshed tool catalog includes the server's tools. OpenCode exposes no
+  public tool-ready signal, so an immediate first invocation can still fail as an unknown tool even
+  though later invocations see it;
+- conversation fork uses `POST /api/session/:id/fork` with an optional `before` checkpoint, while
+  fork from a particular Happier message remains unsupported;
+- manual compaction is admitted through the V2 compact route and finishes only when OpenCode emits
+  `session.compaction.ended` or `session.compaction.failed`.
+
+The same live check covered session creation, permissions, forms, MCP registration, prompting,
+events, ordered message history, conversation fork, diff, and cancellation. Diff exists in the
+released API, although Happier does not currently expose a separate user-facing diff action.
+
+**Which executable Happier runs.** Choose **Auto**, **Stable**, or **V2** under
+**Settings → Agents → OpenCode**:
+
+- **Auto** prefers `opencode` and falls back to `opencode2`;
+- **Stable** requires the `opencode` command. For managed servers Happier reads that executable's
+  version, so a released 2.x `opencode` still uses V2 routes;
+- **V2** prefers `opencode2`, falls back to `opencode`, and uses the V2 server contract. This lets a
+  machine with both released aliases select either one explicitly.
+
+**Starting the server.** Happier waits for a server it starts to report itself ready. An explicit
+V2 selection chooses the V2 request contract. Auto and Stable recognise released `opencode` 2.x
+by its `--version` result, while the `opencode2` alias identifies V2 directly. OpenCode 2.0.15
+answers the authenticated `/api/info` route. Happier chooses the attach argument form from the
+resolved executable generation as well as choosing its HTTP dialect.
 
 **Which routes Happier then uses.** The same fact decides that too. When Happier started an
-`opencode2` server itself, that session uses the V2 request routes with no configuration. A server
-you run yourself and point Happier at is different: Happier cannot see which binary you started, so
-it keeps the stable routes unless you ask for V2 in the session's launch environment:
+`opencode2` or released `opencode` 2.x server itself, that session uses the V2 request routes with
+no configuration. For a server you run yourself, Auto probes the authenticated HTTP surface before
+choosing the route; you can instead require V2 through the setting or session launch environment:
 
 ```bash
 HAPPIER_OPENCODE_SERVER_DIALECT=v2
 ```
 
-Whenever V2 is asked for — by that opt-in or by Happier having spawned `opencode2` — Happier
-confirms it once per session, before the first request:
+For an attached server in Auto mode, Happier probes through the authenticated managed endpoint
+before the first read:
 
-- the server answers `/global/health` → it is a stable server (stable builds serve `/api/health`
-  too, so the legacy route is what tells them apart) and Happier uses the stable routes;
-- only `/api/health` answers, with `{ "healthy": true }` → Happier uses the V2 routes and the V2
-  event stream;
-- neither answers, or the answer is unusable → Happier keeps the stable routes rather than guessing.
+- a shaped `/api/info` answer selects V2;
+- a shaped `/global/health` answer selects V1;
+- an error or an unrelated `200` response selects neither dialect and the read fails instead of
+  guessing.
 
-The resolved choice — requested and actual, plus the health route and status that decided it — is
-recorded in the OpenCode server log for that session, alongside the readiness route and the
-executable it came from.
+An explicit V2 selection keeps V2 routing authoritative.
 
-**The V2 event stream is live, not replayable.** The server sends no event ids and offers no
-backlog, so Happier receives events only from the moment it is connected. If the connection drops,
-Happier reconnects and subscribes again from that point; anything the server published while no
-connection was open is not delivered afterwards. The stable transport behaves the same way.
+In current development source, V2 model, reasoning and agent-mode controls use
+the exact native Session writers before Happier reports them applied, including
+idle changes and preparation before opening its TUI. V1 retains selections for
+the next Happier-submitted prompt; it does not immediately change an attached
+native TUI. The mode picker still exposes a known native inventory when the
+current mode cannot be observed, without presenting staged intent as accepted.
+Catalog failures retain the last known choices; a successful empty read removes
+them. Catalog refresh follows the existing startup, connection and catalog events.
+
+The OpenCode server log records the requested and resolved route choice. For Auto attachments it
+also records the deciding probe; for managed servers it records the resolved executable and
+readiness route. Explicit attached V2 has no separate health probe.
+
+**The V2 event stream is live, not replayable.** Happier subscribes to `/api/event`, which carries
+both durable and live frames but provides no event-id replay cursor. After a disconnect, Happier
+subscribes again and resynchronizes the transcript, session status, and outstanding permission and
+form requests from their owning APIs. Events published only while the connection was down cannot be
+replayed, so the resync repairs current state rather than reconstructing every missed frame.
+
+**Server credentials stay with the host.** For a server Happier starts, the host mints a Basic-auth
+password and injects it only into the managed OpenCode process. For a server you configure by URL,
+the host uses the password from the **OpenCode server password** setting. The URL itself must not
+contain credentials. Connected-account credential projection accepts only end-to-end encrypted
+credential material and is separate from the server password. For a server Happier starts, qualified
+connected-account OAuth reaches V2 through an isolated provider-scoped request-auth plugin; Happier
+does not project that private capability into a server you configured by URL.
 
 ### What V2 does not support yet
 
-These are gaps in OpenCode's V2 protocol, not settings you can turn on. Each one fails on its own
-and is recorded in the OpenCode server log for that session; none of them stops you prompting.
+These are current development gaps. They are not settings you can turn on:
 
-- **Happier's MCP tools, including automatic title updates.** V2 has no route for registering an
-  MCP server at runtime, so Happier cannot attach its tool bridge to a V2 session. This is the one
-  case where Happier deliberately does *not* fail the turn — the capability is absent rather than
-  refused, so the session keeps working without Happier's own tools.
-- **Forking a session.** V2 declares no fork route, so forking fails with that reason rather than
-  quietly starting an unrelated session.
+- **Fork from a particular message.** V2 conversation fork is supported, but the from-message
+  checkpoint path is not yet safe to advertise. Forking the conversation at its current point works.
 - **The native to-do work state.** V2 publishes `todo.updated` events but offers no route to read
   the list back, so the to-do panel stays empty.
 - **Per-prompt configuration overrides**, and OpenCode's global configuration read that Happier uses
   to guess a default model. Model and variant selection themselves do work: Happier sets them on the
   session's own V2 model route immediately before the prompt.
-- **Connected accounts are unproven on the V2 transport.** When you sign OpenCode in through a
-  Happier connected account, Happier installs a small OpenCode plugin that supplies the provider
-  credential. That plugin uses OpenCode's V1 plugin `auth` hook, which has no counterpart in
-  OpenCode's V2 plugin API. Happier records a warning in the OpenCode server log for such a session.
-  Use a provider API key or OpenCode's own `opencode auth login` if the connected account does not
-  work.
 - OpenCode's V2-only configuration keys (for example the V2 `permissions` block) are rejected by
-  the stable `opencode` binary. Keep V2-only configuration for machines running `opencode2`.
-- **Live turn state for a linked session you are not watching.** When Happier reconciles a linked
-  external session in the background it reads the stable server's session-status route, which a V2
-  server does not serve. Those checks simply fail rather than reporting a wrong state, and opening the
-  session reads its transcript normally.
-- There is no Settings control for the manual opt-in yet; it is a launch-environment value while the
-  transport is unproven against a live `opencode2` server.
-
-Browsing external OpenCode sessions does work on a beta-only machine. When Happier starts its own
-server for that surface, it reads the resolved executable first — the same way a session does — so an
-`opencode2` server is checked for readiness and then listed, opened and paged over the V2 routes. A
-server **you** started and pointed Happier at is always read over the stable routes, because Happier
-resolved no executable for it and the `/api` surface alone does not prove which engine is behind it.
+  V1 installations of `opencode`. Keep V2-only configuration for machines running V2.
+Browsing external OpenCode sessions works with a Happier-started released V2 server.
+Happier reads the resolved executable and version first — the same way a session does — so the
+server is checked on its actual readiness route, then listed and paged over V2 routes. For a server
+you started, managed-service readiness and subsequent reads use the same authenticated,
+shaped-response negotiation described above: released V2 is tried first and retained V1 second,
+within the existing readiness deadline. An unrelated successful HTTP response is not treated as
+either OpenCode dialect.
 
 ## Start OpenCode from a terminal
 
@@ -232,14 +254,18 @@ For the full switching workflow, see [Features → Attach to a running session](
 
 ## Authentication (connected services)
 
-OpenCode can reuse connected services profiles when spawned by Happier (for example):
+On the V1 and V2 server paths and in ACP mode, OpenCode can reuse connected services profiles when
+spawned by Happier (for example):
 
 - `openai-codex` (subscription OAuth) or `openai` (API key) for OpenAI-backed usage
 - `claude-subscription` setup-token profiles or `anthropic` (API key) for Anthropic-backed usage
 
 If multiple compatible profiles exist, Happier will let you pick one when starting a new session.
 
-OpenCode accepts `claude-subscription` only for setup-token profiles. Claude subscription OAuth profiles are hidden from OpenCode selection and require Claude itself.
+OAuth profiles use qualified per-request authorization without exposing access or refresh tokens in
+OpenCode configuration. Direct API keys and Claude setup tokens remain on OpenCode's native auth
+path. Connected-account authentication requires a server Happier starts; it is rejected for a server
+you configured by URL rather than silently changing that external process.
 
 See: [Connected services](/accounts/connected-services)
 

@@ -19,7 +19,7 @@ The window accepts the same duration strings the defaults use (`1 minute`,
 per signed-in account, so one busy user cannot exhaust another's budget.
 `IP address` limits apply before Happier knows who is calling — they protect
 unauthenticated routes, and behind a reverse proxy they are only as accurate as
-the forwarded client address your proxy sets. 42 of the 67 limits are
+the forwarded client address your proxy sets. 43 of the 69 limits are
 per-account.
 
 Two clusters are worth knowing about before a rollout, because they throttle
@@ -75,6 +75,8 @@ account from a headless machine.
 | `diagnostics.bugReportSnapshot` | 30 / 1 minute | Account | `HAPPIER_DIAGNOSTICS_BUG_REPORT_SNAPSHOT_RATE_LIMIT_MAX`<br />`HAPPIER_DIAGNOSTICS_BUG_REPORT_SNAPSHOT_RATE_LIMIT_WINDOW` |
 | `features` | 120 / 1 minute | IP address | `HAPPIER_FEATURES_RATE_LIMIT_MAX`<br />`HAPPIER_FEATURES_RATE_LIMIT_WINDOW` |
 | `feed` | 300 / 1 minute | Account | `HAPPIER_FEED_RATE_LIMIT_MAX`<br />`HAPPIER_FEED_RATE_LIMIT_WINDOW` |
+| `home.governance.claim` | 10 / 1 minute | IP address | `HAPPIER_HOME_GOVERNANCE_CLAIM_RATE_LIMIT_MAX`<br />`HAPPIER_HOME_GOVERNANCE_CLAIM_RATE_LIMIT_WINDOW` |
+| `home.mailDelivery.test` | 5 / 1 minute | Account | `HAPPIER_HOME_MAIL_DELIVERY_TEST_RATE_LIMIT_MAX`<br />`HAPPIER_HOME_MAIL_DELIVERY_TEST_RATE_LIMIT_WINDOW` |
 | `kv.list` | 600 / 1 minute | Account | `HAPPIER_KV_LIST_RATE_LIMIT_MAX`<br />`HAPPIER_KV_LIST_RATE_LIMIT_WINDOW` |
 | `liveActivity.hostedRelay` | 120 / 1 minute | IP address | `HAPPIER_LIVE_ACTIVITY_HOSTED_RELAY_RATE_LIMIT_MAX`<br />`HAPPIER_LIVE_ACTIVITY_HOSTED_RELAY_RATE_LIMIT_WINDOW` |
 | `machines` | 300 / 1 minute | Account | `HAPPIER_MACHINES_RATE_LIMIT_MAX`<br />`HAPPIER_MACHINES_RATE_LIMIT_WINDOW` |

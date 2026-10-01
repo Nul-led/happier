@@ -97,15 +97,6 @@ export const mainSurface = defineUiSurfaceDefinition({
     kind: 'reactNative',
     requiredHostMethods: ['context', 'executeAction'],
   },
-  build: {
-    entry: 'src/ui/PluginPanel.tsx',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'happier_plugin_com_example_my_plugin_main_renderer',
-      modulePath: './PluginPanel',
-      exportName: 'renderSurface',
-    },
-  },
 });
 
 export const { manifest, activate } = definePlugin({
@@ -118,29 +109,22 @@ export const { manifest, activate } = definePlugin({
 });
 ```
 
-`definePlugin(...)` projects the cold manifest, while the plugin UI build
-config is a build-only source input that must load before the daemon module has
-compiled. Derive its targets from the same surface declaration through
-`buildUiSurfaceTargets`; do not import `dist/index.js` and do not restate the
-renderer, entry, platforms, or Module Federation identity a second time:
+`definePlugin(...)` projects the cold manifest and derives the renderer and
+artifact id `main-renderer` from the surface id. Export that renderer entry from
+the matching package path; the daemon-owned compiler resolves the exact export
+and emits one universal CommonJS artifact:
 
-```ts
-import { buildUiSurfaceTargets, defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';
-
-import { mainSurface } from './src/ui/surfaces.ts';
-
-export default defineBuildConfig({
-  targets: [...buildUiSurfaceTargets(mainSurface)],
-});
+```json
+{
+  "exports": {
+    "./happier-plugin-ui/main-renderer": "./src/ui/mainRenderer.tsx"
+  }
+}
 ```
 
-`hdev plugins create --ui …` generates exactly this shape: one
-`src/ui/surfaces.ts` declaration, a `pluginUiBuild.ts` that derives from it, and
-a `src/index.ts` that projects the same surface into `ui.surfaces`. Moving the
-source entry is therefore a single edit. Use explicit `ui.views`, `ui.renderers`
-and a hand-written `targets` array only for advanced forms such as a shared
-renderer, fallback chain, or custom artifact; those raw forms remain supported
-rather than becoming a second beginner path.
+`hdev plugins create --ui …` generates this exact-export shape together with a
+`src/index.ts` that projects the same artifact id into `ui.surfaces`. There is no
+platform matrix or author-owned bundler configuration.
 
 `requiredHostMethods` is a renderer admission requirement, not a
 method-availability claim. Name only the host methods without which the
@@ -224,6 +208,252 @@ Collection and declared preferences in Plugin Settings; one value never has both
 Settings and KV authority. Account KV is not available inside a hosted-web
 surface, whose host bridge carries Collection UI queries only.
 
+## Session tabs
+
+A surface mounted as a session tab (`rightSidebarTab`) sits under the pane header
+Happier already draws for that tab: its name on desktop, the large title on a
+phone. Put the tab's add action and its one live fact there with
+`PaneHeaderContent`, never in a header of your own:
+
+```tsx
+<PaneHeaderContent
+  line={needsYou > 0 ? [{ text: `${needsYou} needs you`, attention: true }] : []}
+  actions={<Menu trigger="Link a conversation" triggerIcon="add" triggerAccessibilityLabel="Link a conversation" items={bots} onSelect={link} open={open} onOpenChange={setOpen} />}
+/>
+```
+
+The actions render in the header, outside your surface's tree, and keep your
+plugin's context. Where the host mounts the surface without a pane header (a
+page or a widget), `PaneHeaderContent` renders nothing, so keep an add path in
+the body as well (an empty state's action). `triggerIcon` on `Menu` and `Popover`
+draws the trigger as a glyph alone, the way the host's own "+" and ⋯ look.
+
+In the Developer Preview source contract, a page Collection can supply
+`detailHeader(key)` with the item's `title`, optional `subtitle` and `actions`.
+Happier renders them in its details band and supplies Close. The same
+`renderDetail(key, { headerHosted })` body runs in every container; omit its
+inline heading and close controls when `headerHosted` is true. Keep item
+selection in the page location, and pair a pushed detail location with
+`backLocation` so phone Back returns to the collection.
+
+A row can open in place: pass `expanded` and `expandedContent` to `List.Item`
+and toggle `expanded` from its `onPress`. Put a few calm facts in it
+(`Metadata`), then the row's own actions at the bottom as buttons, one of them
+primary. Use it for what an item is to this tab, not for a page; open the page
+with `openSurface` instead. The motion and reduced motion are the host's.
+
+People are drawn with `Avatar({ name })`, the same mark Happier uses for people
+elsewhere. It takes a name, never an image URL.
+
+## Show a live session
+
+A surface can show one of the Account's sessions live — the real transcript,
+its prompts and its composer — rendered by Happier's own session view. The
+plugin never draws a transcript or a composer itself.
+
+Get a session id through Actions you already have (`session.spawn_new` or
+`session.fork`, from UI or from `activate(api)`), keep it in your own storage,
+and render it:
+
+```tsx
+import { SessionChat } from '@happier-dev/plugin-ui';
+
+<SessionChat sessionId={leadSessionId} />                     // transcript, prompts and composer
+<SessionChat sessionId={leadSessionId} variant="transcript" /> // read-only
+```
+
+For your own arrangement, put the parts under one `SessionProvider`. The provider
+is the one controller for that session; the parts are views of it wherever they
+sit, and each part appears at most once per provider (a duplicate renders
+nothing, and so does a part outside a provider):
+
+```tsx
+import { ListDetailLayout, SessionComposer, SessionProvider, SessionTranscript } from '@happier-dev/plugin-ui';
+
+<SessionProvider sessionId={leadSessionId}>
+  <ListDetailLayout
+    minListWidth={280} minDetailWidth={420} preferredListRatio={0.35}
+    list={<LeadFacts />}
+    detail={<><SessionTranscript /><SessionComposer /></>}
+  />
+</SessionProvider>
+```
+
+- **Bounded region.** The parts fill a bounded flex column: the transcript takes
+  the remaining height and the composer keeps its natural height. There is no
+  auto-height mode; an unbounded parent gives the session no room. On iOS and
+  Android the composer part must be the bottom element of a region that reaches
+  the screen bottom, because it carries the keyboard and safe-area lift.
+- **Inside tabs.** `Tabs` sizes to its selected panel by default
+  (`layout="content"`), which is right inside a scroll area but leaves a session
+  no height. Pass `layout="fill"` so the tab root and the active panel take the
+  parent's remaining height:
+
+  ```tsx
+  <Tabs value={tab} onValueChange={setTab} ariaLabel="Lead" layout="fill">
+    <Tabs.Item value="facts" title="Facts"><LeadFacts /></Tabs.Item>
+    <Tabs.Item value="chat" title="Chat"><SessionChat sessionId={leadSessionId} /></Tabs.Item>
+  </Tabs>
+  ```
+- **Test ids.** `SessionChat`, `SessionTranscript` and `SessionComposer` take an optional `testID`.
+- **Read-only.** `SessionProvider readOnly` (or `variant="transcript"`) shows no
+  composer, and its permission and question prompts say to open the session to
+  respond.
+- **What the plugin gets.** Nothing: no transcript content, callbacks or approval
+  authority. The session resolves only inside the Account the surface is mounted
+  in; a session that is missing, deleted or out of reach shows one neutral
+  "isn't available" state. The person approves prompts as themselves, exactly as
+  in the full session.
+- **No nesting.** Nothing inside the embedded session mounts a plugin surface,
+  including the one showing it.
+- **Where it renders.** React Native and React Native Web surfaces only. Hosted-web
+  surfaces, isolated tests and hosts without the session view render the
+  `fallback` you pass (nothing by default); for a web page outside Happier, use
+  the embed. `createPluginUiRnwSemanticSurfaceAdapter({ sessions: true })` presents
+  the parts in tests as semantic stand-ins (a group named "Session <id>").
+
+The session components are Developer Preview.
+
+## Show an agent working on your surface
+
+When an agent acts on something your surface shows (a board, a canvas, a
+preview), use the same co-presence pieces Happier's browser and shared-window
+viewers use. Render them inside the box they narrate; they position themselves
+on its edges.
+
+```tsx
+import { AgentCursor, PresenceCapsule, StatusCapsule, usePluginHostApi } from '@happier-dev/plugin-ui';
+
+const hostApi = usePluginHostApi();
+
+<View style={{ flex: 1 }}>
+  <Board />
+  <AgentCursor target={activeTarget} testID="board-cursor" />
+  <PresenceCapsule
+    presence={presence}                 // { kind: 'agent' | 'stopping' | 'human' | 'unconfirmed' | 'idle', controlEpoch }
+    agentName="Claude"
+    agentTitle="Claude is editing the board"
+    agentDetail="Moving “Launch plan”"
+    onTakeControl={() => hostApi.executeAction('take-control')}
+    onHandBack={() => hostApi.executeAction('hand-back')}
+    testID="board-presence"
+  />
+  <StatusCapsule visible={reconnecting} busy text="Reconnecting to the board" testID="board-status" />
+</View>
+```
+
+- **`PresenceCapsule`** says who is driving and offers the one control: Take
+  control, then "Stopping Claude…" until `presence.controlEpoch` moves, then
+  "You have control" with Hand back. `unconfirmed` never claims the person has
+  control; pass `onCheckAgain` for the fresh look that confirms the stop. The
+  capsule holds no authority: wire both buttons to your own Actions, and feed
+  `presence` from whatever owns control of your surface. `placement="inline"` or
+  `"strip"` puts it in flow, `onWatch` adds a Watch button, and
+  `renderAgentMark` draws your mark (for example `BrandMark`).
+- **`AgentCursor`** draws the agent's hand where it acts and a ring around the
+  element. `target` is normalized to the page (0..1, with optional `width` and
+  `height` for the ring); pass `pageRect` when the page is letterboxed inside the
+  box. It is decorative: it takes no input and is hidden from screen readers, so
+  pair it with a `PresenceCapsule`.
+- **`StatusCapsule`** is one quiet sentence at the top edge while something is
+  not normal, with an optional `action` as the way out. Keep it mounted and flip
+  `visible` so it leaves smoothly; healthy is quiet.
+
+In a Happier window these use the app's own glass, type, buttons and motion. In
+a hosted-web realm they draw a plain solid capsule and changes land at once.
+Advanced authors find the shared owners in `/presentation`
+(`HappierPresenceCapsule`, `HappierAgentCursor`, `HappierStatusCapsule`, and
+`HappierStatusDot` with its `halo` ring). Live streams and Session images are not
+available to plugins yet. These components are Developer Preview.
+
+## Work lists and maps
+
+A surface that shows agent work — runs your plugin started, steps it is waiting
+on, work grouped by where it stands — can draw it with the primitives Happier's
+own Work tab, Inbox and workflow maps use, from
+`@happier-dev/plugin-ui/presentation`:
+
+- `HappierWorkSection`: a group of a live work list (a compact title and a quiet
+  count), or with `anatomy="page"` a configuration section laid flat on the pane.
+- `HappierWorkRowShell` and `HappierWorkSummary`: a Work row's pressable shell
+  and its identity leaf (mark, title, one line of facts, the state word at the
+  trailing edge).
+- `buildHappierWorkMap` and `HappierWorkMapView`: a map of work built only from
+  the parent each node declares, drawn as cards on a rail or in side-by-side lanes;
+  `density="compact"` is the mini-map a row carries.
+- The status language: map your own facts to `{ bucket, tone, word }`
+  (`HappierWorkStatusPresentation`). Buckets read in `HAPPIER_WORK_STATUS_BUCKETS`
+  order and `resolveHappierWorkStatusBucketLabel` labels them in the host's
+  locale. `HappierWorkStatusWord` and `resolveHappierWorkStatusSurfaceStyle` draw
+  the tone: a soft ring and tint only for work that needs the person or failed.
+
+```tsx
+import * as React from 'react';
+import { useHappierUiLocalization } from '@happier-dev/plugin-ui/environment';
+import {
+  buildHappierWorkMap,
+  HappierWorkMapView,
+  HappierWorkRowShell,
+  HappierWorkSection,
+  HappierWorkStatusWord,
+  HappierWorkSummary,
+  resolveHappierWorkStatusBucketLabel,
+} from '@happier-dev/plugin-ui/presentation';
+
+function DeployWork({ deploys, onOpen }: DeployWorkProps) {
+  const { translate } = useHappierUiLocalization();
+  const waiting = deploys.filter((deploy) => deploy.status.bucket === 'needs_you');
+  return (
+    <HappierWorkSection
+      testID="deploys-needs-you"
+      title={resolveHappierWorkStatusBucketLabel('needs_you', translate)}
+      count={String(waiting.length)}
+      countTone="attention"
+    >
+      {waiting.map((deploy) => (
+        <HappierWorkRowShell
+          key={deploy.id}
+          testID={`deploy:${deploy.id}`}
+          accessibilityLabel={`${deploy.name}, ${deploy.status.word}`}
+          onPress={() => onOpen(deploy.id)}
+        >
+          <HappierWorkSummary
+            title={deploy.name}
+            phase="attention"
+            mark={<DeployMark />}
+            facts={[deploy.environment, deploy.stepLabel]}
+            trailingState={deploy.status}
+            accessibilityLabel={`${deploy.name}, ${deploy.status.word}`}
+          />
+        </HappierWorkRowShell>
+      ))}
+    </HappierWorkSection>
+  );
+}
+
+const map = buildHappierWorkMap({
+  relationships: 'authored',
+  nodes: [
+    { nodeId: 'release', label: 'Release 4.2', parentNodeId: null, open: { kind: 'run', runId: 'release' } },
+    { nodeId: 'smoke', label: 'Smoke checks', parentNodeId: 'release', open: { kind: 'run', runId: 'smoke' } },
+  ],
+});
+
+<HappierWorkMapView
+  map={map}
+  selectedNodeId={null}
+  testIDPrefix="release-map"
+  accessibilityLabelForNode={(node) => node.label}
+  renderStatus={(node) => <HappierWorkStatusWord tone="neutral" role="rowState">{wordFor(node)}</HappierWorkStatusWord>}
+  onOpen={(node) => openRun(node.open)}
+/>;
+```
+
+Inside a mounted surface these read the theme, page palette and text scale from
+the surface environment. The words stay yours: a row says the owner's own state
+("Waiting for approval"), never the bucket label. A row carries no answer
+controls; open the place where the request is answered once.
+
 ## Accessibility and offline snapshots
 
 Use the semantic package's accessibility-aware controls and preserve a logical
@@ -233,7 +463,7 @@ semantic surface context rather than copying host state. Support Dynamic Type,
 RTL and long strings, high contrast, reduced motion, and 44×44-point iOS or
 48×48-dp Android targets.
 
-The host owns generation currentness. Do not retain a competing currentness
+The host owns occurrence currentness. Do not retain a competing currentness
 flag. If a host operation becomes unavailable, preserve useful rendered state
 and present a recoverable status instead of assuming the mutation succeeded.
 
@@ -248,12 +478,11 @@ context before interaction resumes.
 ## Build output
 
 For a production artifact, `hdev plugins dev build .` writes the portable
-UI artifact tree under `dist/happier-plugin-ui`. React Native targets use
-public presets from `@happier-dev/plugin-sdk/ui/build`. The generated
-`--ui reactNative` project declares one package graph with web, iOS, and Android
-artifacts: web uses React Native Web, while iOS and Android use the generated
-Re.Pack configuration. Do not narrow that scaffold to web-only output or run a
-separate native bundler outside the managed build command.
+UI artifact tree under `dist/happier-plugin-ui`. The generated
+`--ui reactNative` project exposes one exact source entry through
+`./happier-plugin-ui/<artifactId>`. The daemon compiler emits one minified
+CommonJS bundle that web, iOS, and Android evaluate through the same host-module
+contract. Do not run a second platform-specific bundler.
 
 Artifact targets are not a mobile/tablet availability promise. The current host
 registry admits every declared UI binding on web/desktop and native tablet. On
@@ -268,28 +497,16 @@ The manifest declares the direct view and artifact references.
 `ui-artifacts.json` describes the emitted files and digests. Authors do not
 hand-author the final content digest.
 
-## Crash disable and reset
+## Failure isolation
 
-Repeated renderer crashes can cause the daemon-owned crash watchdog to disable
-the exact destination and renderer binding. The plugin does not choose the
-threshold, persist a competing disabled flag, or reset itself. When the current
-binding is disabled and the host can reset it, Happier's unavailable-surface
-card shows **Reset**. A successful request does not remount the stale tree: the
-client waits for the daemon to publish a newer crash-state projection before it
-mounts that binding again.
-
-For loaded-runtime QA, the same unavailable-surface diagnostics identify
-`crash_threshold_reached`. After a reset request they also carry a structured
-`crash_reset_context:...` diagnostic with the binding identity, request status,
-projected epoch, and bounded result. Use those structured diagnostics instead
-of localized copy, and do not expose crash details or credentials in plugin UI.
-Exercise the real sequence: crash the loaded renderer until the host disables
-it, observe the unavailable card and its diagnostics, choose **Reset**, and
-verify that a newer daemon projection admits a fresh mount.
+Evaluation and render failures are contained to the affected local surface.
+Happier presents the standard unavailable-surface state and may retain a
+verified last-known-good visual. Crash containment is device-local and is not a
+plugin projection or byte-selection input.
 
 ## Boundary
 
-The host owns navigation, permissions, app state, session lifecycle, and native services. Use the Plugin UI host API for supported interactions. Whole-package Install & Trust covers this client code, daemon code, dependencies, and build artifacts together.
+The host owns navigation, permissions, app state, session lifecycle, and native services. Use the Plugin UI host API for supported interactions. The package-level trusted-code decision covers this client code, daemon code, dependencies, and build artifacts together.
 
 Cross-plugin contribution points and targeted contributions are available in
 Developer Preview where the generated capability matrix marks both rows

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { parseRateLimitCatalog, toUpperSnakeCase } from './generateRateLimitReference.mjs';
 
 const CATALOG = join(
-  import.meta.dirname, '..', '..', 'server', 'sources', 'app', 'api', 'utils', 'apiRateLimitCatalog.ts',
+  import.meta.dirname, '..', '..', 'server', 'sources', 'app', 'api', 'utils', 'apiRateLimitDefaults.ts',
 );
 
 test('id-to-env-key derivation matches the server implementation', () => {

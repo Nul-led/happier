@@ -1,149 +1,94 @@
 ---
 title: UI artifacts
-description: Build, digest, and verify portable plugin UI artifact trees.
+description: Build, digest, and verify portable plugin UI artifacts.
 ---
 
-Plugin UI artifacts are written to:
+The daemon-owned UI compiler writes one portable artifact tree:
 
 ```text
 dist/happier-plugin-ui/
   ui-artifacts.json
-  hosted-web/<contributionId>/...             # one portable Vite graph
-  react-native/<contributionId>/...           # ios/android, Re.Pack-built
-  react-native-web/<contributionId>/...       # web, Vite + react-native-web-built
+  react-native/<artifactId>/entry.cjs.bundle
+  hosted-web/<artifactId>/...
 ```
 
-The hostedWeb scaffold emits the packaged artifact and canonical bootstrap contract; each host then reports the one physical frame adapter it can construct, so packaged runtime availability is per host rather than a single global claim. See [Hosted web UI](/plugins/ui/hosted-web#build-and-runtime-availability) for the derived per-host status. An emitted hosted-web directory is not an advertised runtime contract by itself.
+Each executable artifact is one minified, platform-neutral CommonJS bundle used
+unchanged by web, iOS, and Android. The manifest names its `artifactId`, exported
+functions, content digest, and compatible Host UI API range. It does not contain
+platform-specific entries, framework patch versions, Module Federation module
+paths, or author-selected bundler configuration.
 
-A React Native contribution can emit platform-specific entries distinguished by
-`platform` and `builtWith.bundler` (`repack` for iOS/Android and `vite` for
-React Native Web). Use the scaffold and public build presets rather than
-assuming that one declared contribution automatically targets every client.
+The same-realm host map supplies only these exact specifiers:
+
+```text
+react
+react/jsx-runtime
+react/jsx-dev-runtime
+react-native
+react-native-web
+@react-navigation/native
+@react-navigation/native-stack
+react-native-reanimated
+@happier-dev/plugin-ui
+@happier-dev/plugin-ui/components
+@happier-dev/plugin-ui/hostApi
+@happier-dev/plugin-ui/data
+@happier-dev/plugin-ui/presentation
+@happier-dev/plugin-ui/environment
+@happier-dev/plugin-ui/advanced
+@happier-dev/plugin-sdk/ui/client
+```
+
+The loader does not use prefix matching. `zod`, Happier Protocol, AJV,
+semver, the Plugin SDK root, and every other plugin dependency are bundled into
+the artifact; they are not host-provided modules. Import `react-native`, not
+`react-native-web`, from executable plugin source. This fixed map preserves
+identity-sensitive singletons; it is a loading contract, not a sandbox.
 
 ## Build contract
-
-The build command emits a manifest and computes content digests from emitted
-bytes. Authors do not supply the final digest manually.
 
 ```bash
 happier-plugin-build-ui --project-root .
 ```
 
-The command discovers one of these config files at the plugin root:
-`pluginUiBuild.mjs`, `pluginUiBuild.js`, `pluginUiBuild.ts`,
-`happier-plugin-ui.config.mjs`, `happier-plugin-ui.config.js`, or
-`happier-plugin-ui.config.ts`. It also accepts `--config <path>` and prints the
-same contract with `--help`.
+Executable artifacts are discovered from manifest references and exact package
+exports named `./happier-plugin-ui/<artifactId>`. For example:
 
-The React Native scaffold uses the public SDK build surface and declares every
-Preview artifact it is responsible for. The managed builder derives its Vite
-and Re.Pack configuration for that operation; the package declares source
-targets only. Do not replace them with a web-only target or a second hand-run
-bundler path:
-
-```ts
-import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';
-
-export default defineBuildConfig({
-  targets: [{
-    rendererId: 'main-native',
-    entry: 'src/ui/renderSurface.tsx',
-    kind: 'reactNative',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'com_example_my_plugin_main_native',
-      modulePath: './renderSurface',
-      exportName: 'renderSurface',
-    },
-  }],
-});
-```
-
-The hosted scaffold instead declares one graph with no `platforms` field:
-
-```ts
+```json
 {
-  rendererId: 'main-web',
-  entry: 'src/ui/index.ts',
-  kind: 'hostedWeb',
+  "exports": {
+    "./happier-plugin-ui/main-native": "./src/ui/renderSurface.tsx"
+  }
 }
 ```
 
-The platform-admission owner, not this build config, decides whether that exact
-hosted graph is usable in a browser/desktop frame, iOS WebView, or Android
-WebView.
+The referenced module exports the function named by the contribution, such as
+`renderSurface` or `activate`. There is no `pluginUiBuild.ts`, platform matrix,
+container name, or module path to keep in sync.
 
-### Client activation artifacts
-
-A React Native build target may contain a client `activate(api)` module without
-being a visual renderer. Client Actions and conversation Voice providers use
-this shape when their declaration points at an exact client artifact, module,
-and `activate` export:
-
-```ts
-import { defineBuildConfig } from '@happier-dev/plugin-sdk/ui/build';
-
-export default defineBuildConfig({
-  targets: [{
-    rendererId: 'client-runtime',
-    entry: 'src/clientRuntime.ts',
-    kind: 'reactNative',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'com_example_plugin_client_runtime',
-      modulePath: './clientRuntime',
-      exportName: 'activate',
-    },
-  }],
-});
-```
-
-For this non-renderer target, `rendererId` is the build API's retained name for
-the emitted artifact id. It must equal the declaration's `artifactId`; the
-`modulePath` and `exportName` must also match. Do not add a
-`contributes.ui.renderers` row unless the artifact separately exports a visual
-surface that a UI contribution actually mounts.
-
-The one `reactNative` target emits a React Native Web artifact for `web` and
-Re.Pack artifacts for `ios` and `android`. The client source exports the normal
-`activate(api)` entrypoint and registers its declared local ids there. See
-[Actions, tools, and commands](/plugins/api/actions-tools-commands#invocation-surface-and-execution-target)
-for the matching Action declaration and handler.
-
-If no config is found, the config is invalid, or it declares no targets, the
-command exits non-zero with an actionable error.
-
-## Account-hosted packaged assets (development)
-
-Development builds can host a portable release's packaged assets, including its
-brand icon, in your Account when the server supports artifact hosting. Enabling
-hosting requires an explicit confirmation; installing or trusting a plugin does
-not upload its bytes.
-
-The first upload needs the selected online daemon with the exact admitted
-release. Once publication is confirmed, another client can read the hosted brand
-without that daemon. Until then, or if the icon fails validation, the client uses
-the plugin's display name and neutral fallback. Hosting assets does not make
-machine-side plugin execution available offline.
-
-Hosted bytes consume Account storage. In a plaintext Account the server can read
-them; in an E2EE Account the client encrypts them, while release metadata remains
-visible to the server. Turning hosting off stops future uploads. The separate
-disable-and-remove action also removes that release's hosted UI and packaged
-asset bytes.
+Hosted web remains a distinct static capability. Put its files under
+`.happier-plugin/ui/hosted-web/<artifactId>/`, including a root `index.html`.
+Files are copied and digested recursively. If the directory contains
+`entry.ts`, the builder compiles it as a browser application to
+`assets/app.js`; `index.html` should load that file. Symlinks and non-regular or
+empty files are rejected.
 
 ## Runtime verification
 
-The daemon re-derives the digest when loading artifacts. Mismatched, missing, unsafe, or schema-invalid artifact trees fail closed.
+The daemon verifies every declared file and the complete artifact digest before
+making bytes available. Clients request bytes by digest and evaluate executable
+artifacts in the app realm through the fixed host-module map. Unknown imports or
+missing exports fail only the affected plugin surface; a previously verified
+local artifact may remain as the last-known-good visual while current host
+operations are unavailable.
 
-Artifact kinds may use bundle suffixes such as `reactNativeBundle`. Runtime mode ids do not: use `reactNative`.
+Release and availability metadata can arrive before artifact bytes. The client
+fetches the exact digest lazily from an eligible cache, app bundle, daemon, or
+Account-hosted source and verifies it before adoption. The digest identifies
+bytes only: it does not select a release, grant trust, or identify a daemon
+occurrence. Account release intent selects portable installed UI, while the
+selected daemon projection supplies bundled first-party and trusted
+development/drop-in UI.
 
-The daemon-selected installed generation is the only current artifact
-authority. A client cache may preserve a verified last-mounted snapshot during
-disconnection, but it does not authorize host calls or select current bytes.
-After reconnect, the client revalidates the complete graph, generation,
-compatibility, and policy before restoring interaction.
-
-## Path safety
-
-Artifact paths must be relative, non-traversing, and safe to serve. Do not include absolute paths or symlinks.
+Artifact paths must be relative, non-traversing, and portable. Authors never
+write final digests or select a client-side loader.

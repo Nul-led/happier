@@ -155,9 +155,9 @@ The host owns credential storage, refresh, scoping, selection UX, and log redact
 
 ## Observe invalidation
 
-`watch(purpose, listener)` installs a generation-local subscription and then schedules an initial opaque `{ kind: 'resync' }` event. Binding, current group member, credential, revocation, configured-origin, or producer changes may coalesce into another resync. On every resync, discard reliance on the previous snapshot and call `getBinding()`, `listAccounts()`, or a materialization again.
+`watch(purpose, listener)` installs an occurrence-local subscription and then schedules an initial opaque `{ kind: 'resync' }` event. Binding, current group member, credential, revocation, configured-origin, or producer changes may coalesce into another resync. On every resync, discard reliance on the previous snapshot and call `getBinding()`, `listAccounts()`, or a materialization again.
 
-The subscription does not deliver every intermediate change, expose a cursor, or make copied bytes revocable. Dispose it when no longer needed. The host also disposes it when the invoking plugin generation retires; a replacement generation must receive fresh authorization and materialize again.
+The subscription does not deliver every intermediate change, expose a cursor, or make copied bytes revocable. Dispose it when no longer needed. The host also disposes it when the invoking plugin occurrence retires; a replacement occurrence must receive fresh authorization and materialize again.
 
 Fail closed when a required account is unavailable, expired, or denied. Agent session authentication refresh uses the session runtime's host services rather than Agent-global state.
 

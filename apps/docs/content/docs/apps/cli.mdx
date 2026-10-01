@@ -72,6 +72,32 @@ happier self release-channel use dev
 
 If this computer has a default-following automatic startup entry, changing the release channel also handles the background-service follow-up so automatic startup keeps using the selected lane.
 
+Updating another lane (for example `hprev self update`) or letting the desktop app install its own CLI never changes which lane `happier` runs; only `self release-channel use` or the installer's channel choice does.
+
+### Using the desktop app with a CLI you installed yourself
+
+In the current development build (unreleased), when the desktop app sets up this computer and finds
+that new terminals run a `happier` it did not install (npm, Homebrew or a manual copy), it asks once,
+naming that CLI's version and path:
+
+- **Let Happier manage it** — the app installs its own CLI, puts it first on your `PATH` for new
+  terminals, and moves its background service to it. Your old copy is left in place; Settings ›
+  This computer › Command line shows the command that removes it (for example
+  `npm uninstall -g @happier-dev/cli` or `brew uninstall <formula>`). The app never runs it for you.
+- **Keep my own** — the app installs nothing and adds nothing to your `PATH`; the app, its background
+  service and your terminal all use your CLI. Updating it stays with you (for example
+  `npm install -g @happier-dev/cli@latest`). If it is too old for desktop setup, the app says so and
+  names that command instead of replacing it.
+
+The answer applies to every Happier app on this computer. Change it any time in Settings › This
+computer › Command line. You are asked again only if the CLI you kept disappears or cannot serve
+setup; if it disappears, the app asks before installing anything in its place. Until you answer, the
+app adds nothing to your `PATH` in front of your own `happier`.
+
+On Windows, a `happier` on the system-wide `Path` (for example from a machine-wide Node.js install)
+still runs first in new terminals after **Let Happier manage it**, because Windows puts the system
+`Path` ahead of yours. Remove that copy with the command Settings shows.
+
 The CLI can also show periodic update notices in TTY sessions; disable with:
 
 ```bash
@@ -150,7 +176,7 @@ perform these mutations.
 
 API Token authentication for automation is available in the current Developer
 Preview source; it is not a released CLI feature yet. Create a token from
-**Settings → Account → Account Security → API Tokens**. Supply it for one invocation without
+**Settings → Account → Sign-in & security → API Tokens**. Supply it for one invocation without
 changing your saved CLI credential:
 
 Run the commands in this Developer Preview section with `hdev`, unless you have
@@ -332,12 +358,12 @@ another Home's URL.
 
 `--machine-id` is an exact target, never a best-effort hint. When the selected
 endpoint cannot reach that machine, the command returns a typed target error
-instead of silently using another machine. If an Account-server connection has
-multiple eligible machines and an Action cannot determine its machine from its
-input, use `hdev machines list` and pass the intended ID.
+instead of silently using another machine. If the selected Home has multiple
+eligible machines and an Action cannot determine its machine from its input,
+use `hdev machines list` and pass the intended ID.
 
 When a command talks directly to a daemon, omitting `--machine-id` means that
-daemon's current machine. Through the Account server, Happier can relay the
+daemon's current machine. Through the Home, Happier can relay the
 same Action to a NAT-hidden connected machine after exact target selection.
 
 ### JSON output and failures
@@ -473,7 +499,7 @@ use your terminal's capabilities; its font and background remain yours.
 
 With no usable active Home, setup starts with four choices:
 
-1. Find linked Homes through the selected Account Service (recommended;
+1. Find linked Homes through the selected sign-in service (recommended;
    Happier Cloud is the default service).
 2. Connect to an existing Home by saved name, HTTPS address, or Home descriptor
    file.
@@ -484,10 +510,10 @@ An explicit Home target skips both interactive menus. A valid active Home also
 skips selection and continues with readiness or machine-registration repair. If
 the active Home cannot be reached, setup keeps its target and stored credential
 and offers retry, another Home, or exit before showing fresh-setup choices.
-Account Service discovery enrolls the preferred linked Home; if none is
+Discovery through the sign-in service enrolls the preferred linked Home; if none is
 available, its recovery path offers creation, direct connection, or exit. Local
 creation delegates to the same canonical flow as `happier home create`. The
-Account Service is optional discovery and sign-in authority; Home traffic
+sign-in service is optional discovery and sign-in authority; Home traffic
 continues directly to the Home.
 
 Connect directly when you already have a saved Home, HTTPS address, or strict descriptor:
@@ -536,7 +562,7 @@ Both forms use the same managed Happier server runtime and atomic Personal Home 
 
 Creation is interactive unless you explicitly pass `--yes`. That `home create --yes` consent is separate from `setup --yes`: a successful creation can complete deterministically, while setup still needs human enrollment approval.
 
-`--yes` never authorizes replacing an existing service or changing the default managed release channel. If creation reports either conflict, review it first and rerun with the narrow flag that matches your decision: `--replace-services` allows replacement of conflicting Happier services, and `--switch-channel` allows the default managed channel to change. The flags work with local and `--ssh` creation and are accepted only by `happier home create`.
+`home create --yes` never authorizes replacing an existing service or changing the default managed release channel. If creation reports either conflict, review it first and rerun with the narrow flag that matches your decision: `--replace-services` allows replacement of conflicting Happier services, and `--switch-channel` allows the default managed channel to change. The flags work with local and `--ssh` creation. Among `happier home` subcommands only `create` accepts them; `happier setup` accepts the same two flags for the background service it installs.
 
 After creation, re-enter the device and discovery flows with:
 
@@ -546,11 +572,11 @@ happier home link-account [--home PROFILE] [--relink]
 happier home unlink-account [--home PROFILE]
 ```
 
-`pair-device` requires the Home's current `bound-qr-v2` capability and starts a new short-lived QR/link session; expired or cancelled sessions are not resumable. `link-account` publishes the Home to the signed-in Account Service for later discovery. Linking is optional and never puts the Account Service in the Home traffic path.
+`pair-device` requires the Home's current `bound-qr-v2` capability and starts a new short-lived QR/link session; expired or cancelled sessions are not resumable. `link-account` publishes the Home to the sign-in service you are signed in to, so your other devices can discover it. Linking is optional and never puts the sign-in service in the Home traffic path.
 
-`unlink-account` is the reverse: it stops the selected Account Service from signing in to this Home. The Home refuses future delegated sign-ins from that service, but it does **not** revoke Home credentials the service already issued — devices that are signed in keep their access until you sign them out on the Home itself. The same action is available in the app under **Settings → Account → Homes** as **Stop delegated sign-in to this Home**.
+`unlink-account` is the reverse: it stops the selected sign-in service from signing in to this Home. The Home refuses future delegated sign-ins from that service, but it does **not** revoke Home credentials the service already issued — devices that are signed in keep their access until you sign them out on the Home itself. The same action is available in the app under **Settings → Account → Homes** as **Stop delegated sign-in to this Home**.
 
-You can also inspect, change, or sign out of the Account Service this CLI uses:
+You can also inspect, change, or sign out of the sign-in service this CLI uses:
 
 ```bash
 happier auth service status
@@ -558,7 +584,7 @@ happier auth service use <endpoint>
 happier auth service logout
 ```
 
-`status` verifies the selected service's current identity and Account Service role before naming it. `use` points this CLI at a service and signs in through it. `logout` drops only this CLI's Account Service credential; Homes you already entered keep their own credentials.
+`status` verifies the selected service's current identity and sign-in role before naming it. `use` selects a service and signs in to it: in a terminal it asks how you want to sign in, and a still-valid stored sign-in is reused without asking. It only signs in; it never enters or switches your active Home (run `happier setup` for that). Without a terminal, `use` succeeds only when a valid sign-in is already stored; otherwise it exits with an error and names the command to run in a terminal. `logout` drops only this CLI's sign-in credential; Homes you already entered keep their own credentials.
 
 ### Repair an existing setup
 
@@ -609,7 +635,7 @@ For advanced operator workflows, `--install-relay-runtime` installs the generic 
 - the global `--server <saved-home>` prefix (target one saved Home)
 - `--server-url <url>` / `--local-server-url <url>` / `--webapp-url <url>` (advanced compatibility/manual URL targeting)
 - `--require-local-approval` (fail closed when the current machine cannot approve the pairing request)
-- `--yes` (auto-accept prompts for non-interactive runs)
+- `--yes` (auto-accept prompts for non-interactive runs; this also replaces conflicting Happier background services on the remote host, so pass `--service-mode none` to leave them untouched)
 - `--json` (stream protocol JSON events/results)
 
 SSH auth modes:
@@ -864,9 +890,9 @@ Important notes:
 - tmux and other terminal-host attach flows work only for sessions that are still owned by the current machine.
 - You must target the same Happier account/server profile that owns the session.
 
-Attach strategy depends on the Agent:
+Attach strategy depends on the Agent and terminal host:
 
-- Some Agents use Happier's `tmux`-backed attach flow.
+- Terminal-hosted sessions reconnect to their existing `tmux`, zellij, or Herdr terminal.
 - OpenCode uses an Agent-native attach flow for server-backed sessions.
 
 For OpenCode, the supported reattach command is still `happier attach <session-id-or-prefix-or-tag>`. Do not rely on a raw vendor `opencode attach ...` command as your normal Happier workflow.
@@ -874,14 +900,17 @@ For OpenCode, the supported reattach command is still `happier attach <session-i
 Supported attach styles include:
 
 - **tmux-backed sessions** on machines where tmux is enabled
+- **zellij- and Herdr-hosted sessions** on supported macOS and Linux machines
 - **Windows Terminal** or **Console** hosted sessions on Windows
 - **Agent-native attach** for supported Agent sessions such as OpenCode
 
 For the full workflow, see [Features → Attach to a running session](/sessions/attach-to-session).
 
-## Resume an inactive session
+In development builds, `happier herdr` opens Herdr from the terminal. Both the installed executable and the running server must be a stable Herdr release, version `0.9.2` or newer. If you are already inside a Herdr pane, use Herdr's pane controls instead of starting a nested client.
 
-If a Happier session is inactive but still vendor-resumable, you can resume it directly from the CLI.
+## Continue a session
+
+`happier resume` attaches to a running, attachable session or resumes a stopped, vendor-resumable session.
 
 ### Interactive selector
 
@@ -889,7 +918,7 @@ If a Happier session is inactive but still vendor-resumable, you can resume it d
 happier resume
 ```
 
-In a supported TTY, Happier shows an interactive picker of resumable inactive sessions.
+In a supported TTY, Happier shows running sessions you can attach to and stopped sessions you can resume in one picker.
 
 ### Resume by id
 
@@ -902,8 +931,9 @@ You can use a full Session id, an unambiguous id prefix, or an exact Session tag
 Important behavior:
 
 - resume is strict: if the Agent resume fails, Happier errors instead of starting a fresh session
-- archived or already-active sessions cannot be resumed
-- the command restores the session working directory before launching the Agent again
+- active sessions use the existing attach flow; an attachment failure does not launch a second Agent
+- archived sessions cannot be continued
+- for stopped sessions, the command restores the working directory before launching the Agent again
 
 For the full user guide and the meaning of “resumable”, see [Features → Resume inactive sessions](/sessions/session-resume).
 

@@ -15,7 +15,7 @@ If you want to change the Agent without branching at all, see [Continue with ano
 - **Ancestor context without duplication**: the child renders read-only ancestor messages inline; scrolling pages parent segments automatically.
 - **Branch-and-edit**: when you fork on a user message, the child composer is prefilled with that message so you can revise and resend.
 - **Recognizable child titles**: when the parent has a session title, the child keeps it with `(fork 1)` appended. Forking that child increments the number instead of stacking another suffix.
-- **Provider-native when available**: OpenCode server-native fork-at-message; Codex app-server native fork-at-latest plus rollback-to-point; ACP fork-at-latest when supported. Compatibility callers that choose `auto` can use replay otherwise.
+- **Provider-native when available**: Codex app-server supports native fork-at-latest plus rollback-to-point, and ACP can support fork-at-latest. OpenCode server-native sessions use replay: V1 has a native route, but the generic child admission cannot safely distinguish it from pure V2 before launch.
 
 ## How fork selection works
 
@@ -29,6 +29,25 @@ reports that outcome instead of silently creating a replay child. Existing calle
 use the compatibility `auto` strategy may still let the daemon choose its established native-or-replay
 policy. Native forks stay in progress until the provider resolves them; Happier does not abandon one
 after an arbitrary deadline or run a fork-specific readiness poll.
+
+## Fork a folderless session
+
+<Callout type="info">
+  Folderless forks are implemented in the 0.3 development line and await
+  integrated verification. They are not a released feature.
+</Callout>
+
+The development fork gets its own private working folder. On the same machine, Happier copies
+the source session's files into that folder before starting the child Agent. Each copy can
+change independently; deleting either session removes only that session's private folder.
+
+A cross-machine fork starts with an empty private folder and reports that the files were
+not copied. Transcript or replay context does not imply that referenced files exist on
+the new machine. To move the same session with its files instead, use
+[handoff](/sessions/session-handoff#handoff-a-folderless-session).
+
+Starting a new session from a folderless session also keeps the no-folder choice, but
+does not copy its files. See [starting without a folder](/sessions/start-a-session#start-without-choosing-a-folder).
 
 ## What replay does
 
@@ -67,7 +86,7 @@ The machine running the session supplies the default when no setting is chosen. 
 ## OpenCode specifics
 
 - Two backends:
-  - **Server-native (default)**: supports native fork-at-message, question events, and richer lifecycle. Uses a managed local OpenCode server unless you set an explicit server URL.
+  - **Server-native (default)**: uses replay for forks. Legacy V1 has a native fork route and pure V2 does not, but Happier cannot safely authorize the child from that live-only distinction before launch, so it publishes no native server-fork claim. Server mode uses a managed local OpenCode server unless you set an explicit server URL.
   - **ACP (legacy fallback)**: best-effort fork-at-latest when the ACP backend exposes `session/fork`; otherwise replay is used.
 - Explicit external server URL (Settings) is opt-in; only loopback `http` or `https` origins without credentials are accepted. Happier persists this URL per session when you explicitly set it; managed servers are not persisted.
 - Managed OpenCode server is shared per machine; if it dies, Happier restarts it automatically instead of blocking new sessions.

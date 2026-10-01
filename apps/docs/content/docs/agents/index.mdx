@@ -53,6 +53,51 @@ Installing an agent and authenticating it are separate steps. After a managed
 install, follow that agent's page to complete its own sign-in before starting a
 session.
 
+### Install and update jobs in 0.3 development
+
+<Callout>
+  This flow is in unreleased 0.3 development builds. It requires a matching 0.3
+  daemon on the selected machine.
+</Callout>
+
+From the agent's settings page, select the online machine and confirm its install
+or reinstall action. You can do this from the browser or phone: the machine's
+daemon runs the install. Closing the settings page or disconnecting the client
+does not cancel it, and reopening the app reconnects to the daemon's job.
+
+The job includes the agent's CLI and its declared managed dependencies, followed
+by a check that the CLI runs. Download progress is available when the download
+source supplies it; some installers have no known download size. Vendor install
+scripts require your confirmation. If automatic installation is unavailable,
+follow the installation instructions on that agent's page.
+
+Agent updates on the Updates page use the same job. Happier can check the latest
+version only where the agent declares an npm or managed GitHub release source;
+an unknown latest version does not mean the installed version is current.
+
+From a shell on the machine, use the same development flow:
+
+```bash
+happier agents install codex --dry-run
+happier agents install codex
+happier agents update codex
+```
+
+`--dry-run` previews the local plan without starting an install job. Real installs
+and updates need the local daemon to be running; if it is unavailable, run
+`happier daemon start` and retry. Vendor install or update recipes require
+`--yes`, `--allow-vendor-recipe`, or confirmation in an interactive terminal.
+Use `--force` with `agents install` when you intend to reinstall an existing CLI.
+Ctrl+C requests cancellation and waits for the daemon's final outcome.
+
+Cancellation stops the current operation and removes partial download or staging
+files. It can leave software installed by an earlier completed step, and it does
+not undo every change a vendor script made. Jobs are kept only while the daemon
+process runs. If that daemon restarts, refresh detection and check what is
+installed before retrying.
+If cancellation reports that process cleanup failed, stop that process manually
+before restarting the daemon; a restart alone does not prove the installer stopped.
+
 Agent settings live with each agent's plugin rather than in one hardcoded
 screen, so an agent's page in the app can show two different auth surfaces: its
 **Authentication** state on the selected machine, and the **Connected service**

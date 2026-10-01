@@ -93,6 +93,29 @@ Use Keep direct when you want the target machine to keep following the Agent-nat
 
 Use Convert to Happier when you want to move out of the machine-bound direct model and let Happier own the session going forward.
 
+## Handoff a folderless session
+
+<Callout type="info">
+  Folderless handoff is planned 0.3 development behavior. Implementation and integrated
+  verification are still pending; this is not a released availability claim.
+</Callout>
+
+For a folderless session, the planned destination is a new private folder owned by the
+target daemon. The picker will show **Private folder on** the selected machine rather
+than an editable destination path. Happier copies the source folder's files to that
+destination through its existing workspace transfer, without creating a Project or an
+ongoing workspace-sync relationship for the private folders.
+
+The same session id and transcript continue on the target. The source copy stays on the
+source machine for recovery; handing back creates another private destination copy rather
+than reusing that older folder. Session deletion removes all private copies bound to the
+session on each machine. Cleanup on an offline machine stays pending until its daemon
+returns, and archiving retains the copies.
+
+These are separate working directories with the daemon's OS-user permissions, not isolated
+execution environments. Target Agent support and authentication requirements still apply.
+See [starting without a folder](/sessions/start-a-session#start-without-choosing-a-folder).
+
 ## Your files are a separate decision
 
 Moving a session and moving its files are two different things, and Happier keeps them
@@ -137,6 +160,17 @@ Advanced is also where workspace content selection and ignored-file handling liv
 If a sync relationship already exists between these two folders, it appears in the same menu
 by name and endpoints, showing the mode it was actually created with. Pick it to continue
 that relationship instead of creating a second one.
+
+On the 0.3 development line, an existing linked destination can also appear as **Use linked
+workspace · via** the hub machine. For example, a session on C can move to B through its
+existing C–A and A–B links. Happier updates those two links in order, using each link's
+own content policy; it does not create a C–B relationship or replace B's existing folder.
+One-way links only carry changes from their original source to destination, while a two-way
+link can carry changes in either direction. If a selected link is paused, unavailable,
+conflicted, or reports an endpoint problem, the session does not resume on B. A failure on
+the second link can leave the first link synchronized; repair the blocked link and retry
+the handoff to check the current route again. An unrelated linked folder is not part of
+that preparation.
 
 ### One confirmation for the destination
 
@@ -197,8 +231,10 @@ absolute path. Handoff will not sync a folder that broad.
 ## Living with a synced workspace
 
 A relationship appears as a row in Projects, in session details, and in Settings — the same
-row in all three, showing the workspaces, the direction, one plain-language status, when it
-last synchronized, and whether anything needs attention. Every row opens details.
+row in all three, showing the workspaces, the direction, one plain-language status, and
+whether anything needs attention. **Last checked**, when available, is when the controller
+observed a synchronization cycle. It is not a per-file transfer time or proof that every
+linked machine has the same files. Every row opens details.
 
 The actions on a relationship are:
 
@@ -224,28 +260,48 @@ A conflict is one path that changed on both sides in a way the engine will not d
 you. Conflicts are surfaced on the session and open a details view built around the decision
 you have to make.
 
-The view leads with the relationship — its mode, its live status, its two endpoints with
-their machine names and current folders — then the conflicts themselves, with a refresh
-action. Counts are honest: if the list is bounded, it tells you how many more conflicts exist
-beyond the ones shown rather than implying you are looking at all of them.
+The view identifies the linked machines and their current folders, then the paths needing
+attention. Each link retains its own mode, content selection and status. Conflict pages can
+be loaded progressively; incomplete or unavailable coverage is shown rather than treating
+unread machines or unloaded pages as conflict-free.
 
-Opening one conflict shows both versions, with a text diff where both sides are readable, and
-an explicit state where they are not — binary, too large, missing, or changed since the list
-was built. Then you choose: **Keep Local Version** or **Keep Remote Version** (or the endpoint
-names, when neither side is local to you).
+Opening one conflict shows the endpoint versions, with a text diff where the selected
+versions are readable, and an explicit state where they are not — binary, too large,
+missing, or changed since the list was built. Choose the version by its machine name.
+The comparison reads current endpoint content, not a history of earlier saves.
 
 What that choice does, and what it will not do:
 
-- The version you did not keep is removed **only after** Happier verifies it has not changed
-  since you looked at it.
-- If it *did* change, nothing is deleted. The conflict refreshes in place and tells you to
-  review the newer versions before choosing again.
-- If a file has no current fingerprint, it cannot be removed safely, so that choice is not
-  offered at all — with an explanation, rather than a button that fails.
-- Choosing between two ordinary files does not ask for an extra confirmation. The choice *is*
-  the decision.
-- Removing a **directory** does ask, because the removal is recursive. A conflict at the
-  workspace root is refused outright.
+- The approval identifies the selected content and each version it will replace. Happier
+  captures that reviewed content and installs it directly; it does not delete a version and
+  hope the next synchronization cycle copies the intended one back.
+- Choosing a destination's version in a one-way relationship deliberately applies it to the
+  source. It does not reverse the relationship's ongoing direction.
+- If the selected source changes before application begins, or a destination changes before
+  its replacement, Happier stops that replacement and asks you to inspect again. Changes
+  already applied elsewhere are reported separately, not rolled back.
+- Binary files and files too large for the text preview can still be selected when their
+  complete content can be verified. Preview limits are not file-transfer limits.
+- Replacing a **directory** requires a complete observation of the affected subtree, not
+  merely a check that the path is still a directory. A conflict at the workspace root is
+  refused outright.
+- A disconnected machine is not reported as resolved. Refresh its state when it reconnects;
+  an earlier approval does not schedule a later unattended replacement.
+
+For ordinary files, **Keep both** can retain alternatives beside the selected file at the
+locations shown in the approval. Happier chooses a location that survives the link's mode;
+it does not leave an included alternative only on an exact replica where normal syncing
+would remove it. An existing different file is never overwritten to make room for an
+alternative. Directory and other structural conflicts still use explicit version selection.
+
+Preservation and propagation are separate outcomes. A preserved file can be available on
+the main workspace while a paused or disconnected link has not transferred it. The result
+shows known exclusions and unverified propagation; it does not claim that every linked
+machine already has the alternative. Use the reported machine and path to find each copy.
+
+These reviewed-content operations are part of the 0.3 development line and require matching
+workspace-operation support on the participating daemons. An unsupported operation asks for
+an update rather than falling back to the older deletion behavior.
 
 At the bottom of the view, a closed **Details** disclosure holds the raw material for a
 support conversation: relationship and machine identifiers, the live folder paths on each

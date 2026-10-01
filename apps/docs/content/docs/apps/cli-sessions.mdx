@@ -67,7 +67,7 @@ Use **attach** when the session is still running and you want to reconnect to th
 happier attach <session-id-or-prefix-or-tag>
 ```
 
-Use **resume** when the session is inactive but vendor-resumable:
+Use **resume** to continue a session without checking its state first:
 
 ```bash
 happier resume <session-id-or-prefix-or-tag>
@@ -76,7 +76,7 @@ happier resume <session-id-or-prefix-or-tag>
 Short version:
 
 - **attach** = reconnect to a running session
-- **resume** = reopen an inactive session through its Agent runtime
+- **resume** = attach if running and attachable; otherwise reopen an inactive vendor-resumable session
 
 For the full workflows, see [Attach to a running session](/sessions/attach-to-session) and [Resume inactive sessions](/sessions/session-resume).
 

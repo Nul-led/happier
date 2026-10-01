@@ -365,7 +365,7 @@ automatic fallback. Do not select it while included credits are exhausted.
 
 Repository desktop builds use the shared UI tooling adapter
 `apps/ui/scripts/tauriActoolEnvironment.mjs`: the release pipeline's build/bundle
-commands and `hstack build --tauri` consume it.
+commands, `hstack build --tauri`, and UI `tauri:build:*` scripts all consume it.
 It temporarily wraps the resolved Xcode `actool` executable to reopen stdin on
 `/dev/null`, preserving arguments, environment, exit status, and layered icons.
 The native Node Tauri CLI otherwise closes inherited stdin at exec, which can

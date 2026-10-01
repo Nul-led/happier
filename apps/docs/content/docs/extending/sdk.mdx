@@ -76,12 +76,57 @@ the same Action result to every external client.
 ## Supported environment
 
 The SDK requires Node.js 18.17 or newer and supports server-side Node.js
-programs through its ESM root export. Use NodeNext (or an equivalent ESM-aware
+programs through its ESM root export. Current development source also provides
+a browser Fetch transport through that same root. Use NodeNext (or an equivalent ESM-aware
 configuration); CommonJS `require()` and package deep imports are not public
 entry points. Direct HTTP clients may use any language that can send JSON over
-HTTPS. The Action API does not enable CORS, and no same-origin browser delivery
-is proven in this preview. Do not put an API Token in browser code or expect an
-arbitrary browser origin to call either Action endpoint.
+HTTPS. In 0.3 development source, the Home admits browser origins from the
+token's grant, plus Happier's own app origin. Keep parent credentials on your
+backend and issue a child with the session, website and expiry that browser
+needs. The daemon-local loopback endpoint does not enable browser CORS.
+
+## Observe a live Session (development source)
+
+Connect `client` to the Account server and use
+`client.sessions.get(sessionId).live()` when building a transcript view.
+It exposes ordered messages, metadata, Agent state, pending requests and
+connection status through a subscribable snapshot:
+
+```ts
+const controller = await client.sessions.get(sessionId).live();
+const unsubscribe = controller.subscribe(() => {
+  const snapshot = controller.getSnapshot();
+  render(snapshot.transcript, snapshot.pendingRequests, snapshot.connection);
+});
+
+// On disposal:
+unsubscribe();
+await controller.close();
+```
+
+Automatic transport uses a Session viewer socket for plain Sessions and for
+E2EE Sessions with a content credential. A bearer-only E2EE credential uses
+daemon-opened Action content, which crosses the Account server in plaintext; socket
+content stays E2EE. A content-opening failure never silently switches transports.
+Permission responses preserve the same decision vocabulary on both transports;
+the Action transport does not support `abort()`. Both open a viewer socket; on the Action
+transport, pushes wake daemon-opened reads without an idle polling timer. Reconnect
+repairs missed changes. In the current development implementation, `followTranscript()`
+also wakes on Home viewer pushes. Its daemon-local push integration remains unresolved;
+finite transcript Actions do not replace existing iterator support.
+Pending requests disappear only when
+reconciled Agent state or shared Action-confirmation metadata clears them, not
+immediately after a response. The Action transport carries the recipient-safe shared metadata
+and public completion facts, never Account-private owner metadata.
+Closing the root client also closes its controllers.
+
+For Session discovery, `client.sessions.list({ folderIds, tagIds })` matches
+any supplied folder and any supplied tag, combining the two selectors with AND.
+Folders match exact membership, without including descendants.
+
+These additions are development-only, not an already published SDK contract.
+Keep broad parent credentials on your backend; browser views need an allowed
+origin and a narrowly scoped credential.
 
 ## Choose how to connect
 
@@ -110,6 +155,47 @@ An SDK `token` is either an ordinary `hap_v1_…` bearer or an encryption-capabl
 `hapc_v1_…` credential; see
 [Protect whole requests and results](#protect-whole-requests-and-results).
 
+### Issue a browser child from your backend
+
+Use the Home origin for token lifecycle operations; they do not need an online
+daemon or an Action target. The expiry is your explicit choice and cannot
+exceed the parent's expiry. The grant must be a subset of the parent's.
+
+```ts
+const parent = connect({ endpoint: homeOrigin, token: parentToken });
+try {
+  const parentInfo = await parent.apiTokens.self();
+  const child = await parent.apiTokens.createChild({
+    label: 'Lead chat',
+    expiresAt,
+    grant: {
+      v: 1,
+      actions: { families: [], ids: ['session.transcript.get', 'session.message.send', 'session.user_action.answer'] },
+      targets: { sessions: [sessionId], machines: [] },
+      approve: false,
+      origins: [dashboardOrigin],
+      models: parentInfo.grant.models,
+      permissionModes: parentInfo.grant.permissionModes,
+      create: null,
+    },
+  });
+  // Return child.token only to the intended browser; keep parentToken secret.
+  // Later: await parent.apiTokens.revokeChild(child.apiToken.tokenId).
+} finally {
+  await parent.close();
+}
+```
+
+`self()` returns only the Account/credential ids, parent id, expiry, grant and
+embed configuration. Children have no Account content-access material and cannot
+mint grandchildren. If exchanging a spawn-only child for a session child,
+provide `requireCreatedByChildTokenId` to verify that every requested session
+was created by that child, and revoke the spawn child only after the exchange.
+
+The checked-in child-token example demonstrates create → self → revoke with a
+read-only session grant. Using these methods against a daemon-local endpoint
+throws `HappierTransportError` with `code: 'unsupported_endpoint'`.
+
 ## First five minutes
 
 This page describes the current workspace source, so the commands below invoke
@@ -122,7 +208,7 @@ connects with an explicit token and endpoint, creates a Session on the daemon's
 current machine, sends one message, reads the assistant response, stops the
 Session, and closes the client.
 
-1. In **Settings → Account → Account Security → API Tokens**, create a token and copy it when
+1. In **Settings → Account → Sign-in & security → API tokens**, create a token and copy it when
    it is shown. The SDK does not load this token from a CLI profile or any other
    credential store.
 2. Start a signed-in daemon, then read its current HTTP port. The port is not
@@ -162,11 +248,12 @@ whole recipe blindly:
 | What happened | SDK result | What to do |
 | --- | --- | --- |
 | The selected Agent is missing, disabled, or lacks a Session identity | `HappierAgentUnavailableError` with `reason` set to `not_installed`, `disabled`, or `identity_unavailable` | Install or enable that Agent on the target machine, or use its exact available id. |
-| Action policy is **Off** or **Ask first** | `HappierActionError` with `code` `action_disabled` or `approval_required` | Change **External API & SDK** or complete the approval from a signed-in app. The token cannot approve its own request. |
+| Action policy is **Off** or **Ask first** | `HappierActionError` with `code` `action_disabled` or `approval_required` | Change **External API & SDK** or complete the approval with a present user or an approve-enabled token in the request's target. |
 | A server-origin call has no exact machine or resolvable Session target | `HappierActionError` with `code` `target_required` | Select a machine as shown below and use a machine-bound client. |
 | The Session committed but its requested initial message did not settle as admitted | `HappierSessionInitialInputError` with the committed `session` and `result.initialInput` | Inspect that Session instead of spawning another one blindly. |
 | Authentication, HTTP admission, networking, JSON, or response validation fails | `HappierTransportError`; HTTP failures retain `status` and a typed `code` when supplied | Correct the token or endpoint. Inspect current state before retrying an interrupted mutation. |
 | A successful response carries a result the Action's declared output schema does not admit | `HappierTransportError` with `code` `invalid_action_output` | The SDK never presents an unchecked value as a typed result. Check that the target Home and this SDK version are current. |
+| A bound run's `history()` read finds no valid current transcript correspondence for that run | `HappierActionError` with `code` `execution_run_correspondence_unavailable` | No transcript is read. Check the run still exists on the target Home before retrying. |
 
 ### Use the configured server and an exact machine
 
@@ -432,9 +519,10 @@ const terminal = await run.wait({ timeoutSeconds: 300 });
 - `wait()` observes a **terminal** run status, not conversational idle. A typed
   observation timeout leaves the run running.
 - `history()` reads the run's own sidechain and never falls back to the main
-  transcript. A response that names no sidechain correspondence is not a result
-  `execution.run.get` can return, so it rejects as `invalid_action_output`
-  before any transcript request is sent.
+  transcript. A run read that succeeds without a valid current sidechain
+  correspondence rejects as a `HappierActionError` with code
+  `execution_run_correspondence_unavailable` before any transcript request is
+  sent.
 - Bound `sessionId`, recipient, wait mode, and transcript scope are written
   after your input, and every bound method validates its finished body against
   the canonical public Action schema first: a host-only or unknown field
@@ -448,9 +536,9 @@ Human discussions inside a Session use ordinary generated Actions. The public
 API Token and SDK surfaces expose `actions.session.discussion.list`, `.get`,
 `.read`, and `.post`; the inputs and results contain authored documents, not
 ciphertext. The daemon owns the Session cipher, so an external caller never
-handles Session keys. Interactive UI and CLI clients can also create and manage
-discussions, but those present-user-only operations stay off the API Token and
-SDK surface.
+handles Session keys. In 0.3 development source, discussion management and
+personal read-state Actions are also available to automation within its token
+grant and target; Agent/MCP exposure for these human discussions stays disabled.
 
 ### Follow transcript and execution-run streams
 
@@ -580,6 +668,12 @@ settings. Their **External API & SDK** enablement and approval choice is
 enforced just like the corresponding setting for a built-in Action; installing
 an Action does not bypass an **Off** or **Ask first** decision.
 
+With a limited grant, the API token must name the exact qualified id in
+`grant.actions.ids`. An unrestricted `actions: null` grant also grants contributed
+invocation, subject to Action settings and plugin grants. The daemon resolves
+and checks the inner identity of `action.invoke` before
+execution or approval, including when the protected request is opaque to the Home.
+
 The **External API & SDK** setting starts **Allowed** for API-eligible built-in
 and contributed Actions, so Action Settings add no approval prompt unless the
 user changes that control under **Settings → Actions → Integrations**. A
@@ -587,14 +681,14 @@ non-safe contributed Action still requires the host's live current-intent
 confirmation; **Allowed** does not suppress the Action's independent safety
 contract. The corresponding **Trusted plugins** setting is also **Allowed** by
 default for Actions it supports. Those settings cannot elevate a PAT or trusted
-plugin above `account_automation`: present-user-only controls such as approval
-decisions, plugin uninstall, Agent session-hook changes, and security-policy
+plugin above `account_automation`: present-user-only controls such as root-token
+administration, plugin uninstall, Agent session-hook changes, and security-policy
 changes return `present_user_required`.
 
 Use the types exported by `@happier-dev/sdk` as the canonical static contract
 for SDK methods, inputs, and results. The generated
 [SDK API inventory](https://github.com/happier-dev/happier/blob/v0.3/packages/sdk/API.md)
-and [exported declarations](https://github.com/happier-dev/happier/blob/v0.3/packages/sdk/api-declarations.md)
+and the `api-declarations.md` shipped in the installed package
 show that public surface. At runtime, use `actions.search(...)` and
 `actions.get(...)` to inspect the Actions available from the selected machine,
 then call the raw `actions.execute(...)` primitive when the Action id is
@@ -691,7 +785,8 @@ outcomes, not proof that the HTTP transport failed.
 An **Ask first** setting creates an approval request instead of running the
 Action. Raw clients receive that admitted approval result; the SDK surfaces it
 as `HappierActionError` with code `approval_required`. Complete the approval
-from a signed-in app. An API Token cannot approve its own work.
+from a signed-in app or an approve-enabled token admitted for that request's
+target. An approve-enabled token may decide a request it started itself.
 
 Transport admission failures have a different shape and status:
 
@@ -840,7 +935,8 @@ v1 uses finite JSON request/response messages—there is no SSE endpoint. Public
 Action ingress verifies the API Token before JSON parsing. The shared request
 body ceiling is 32 MiB (33,554,432 bytes); the server-to-daemon relay admits a
 33 MiB (34,603,008-byte) request carrier, reserving one MiB for relay framing.
-Responses send `Cache-Control: no-store`, and public Action routes do not enable
+Responses send `Cache-Control: no-store`. Home browser origins are admitted by
+the token grant's website allowlist; daemon-local delivery does not enable
 CORS. Put the bearer token in the `Authorization` header, never in a query
 string.
 
@@ -892,6 +988,12 @@ handle has `runId`, `streamId`, `cancel()`, and an async iterator; normal
 completion, early return, caller abort, and `await close()` cancel that stream.
 On a machine-bound client, stream start, read, and cancel remain on its selected
 machine. Snapshot Actions remain ordinary methods.
+
+In development source, execution-run iterators wait for producer events through
+the existing stream-read Action, including detached runs and daemon-local endpoints.
+An idle read remains pending until events arrive, the stream finishes, or you cancel.
+There is no interval. A finite-only older producer reports
+`execution_run_stream_update_required`; update that daemon to use the iterator.
 
 ## Server relay, readability, and revocation
 

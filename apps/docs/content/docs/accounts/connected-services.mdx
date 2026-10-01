@@ -25,11 +25,11 @@ They exist so you can:
 
 Happier models different credential types as distinct connected services:
 
-- `openai-codex`: OpenAI Codex subscription auth
+- `openai-codex`: ChatGPT subscription auth (shown as **ChatGPT**; Codex is the agent that uses it)
 - `openai`: OpenAI API key auth
 - `claude-subscription`: Claude subscription auth
 - `anthropic`: Anthropic API key auth
-- `gemini`: Gemini OAuth auth
+- `gemini`: Gemini account credentials (in development builds, an API key or Google service account)
 - `github`: GitHub token auth for source-control workflows, in builds that expose GitHub connected accounts
 
 This split is intentional. Subscription auth and API-key auth have different account behavior, billing paths, and Agent materialization requirements, so Happier does not merge them into a single generic "Claude" or "OpenAI" credential type. A model Provider connection may bind an appropriate Saved Secret independently; it is not automatically a connected-service account.
@@ -42,13 +42,17 @@ In the app:
 
 - Settings -> Connected services
 
-From there you can:
+The page lists each service with the agents that use it, and each account with how much of each limit
+is left and when it resets. From there you can:
 
-- add one or more profiles for the same service
-- give profiles custom labels
-- set a default profile per service
-- inspect profile details such as provider email, account id, and quota meters
-- disconnect individual profiles
+- connect a service or add another account: the sign-in opens in place on the page, on the machine you
+  pick, and the account then works on every machine
+- sign an account in again from its row when the provider signed it out
+- give accounts custom labels
+- choose, per agent, which account (or pool, or the agent's own login) it signs in with under
+  **How accounts are used**
+- inspect an account's usage, the agents and pools that use it, and how it signed in
+- remove individual accounts (an account a pool uses is removed from the pool first)
 
 In the CLI:
 
@@ -162,10 +166,10 @@ This is the Anthropic Console API-key path. It is separate from `claude-subscrip
 
 ### Gemini
 
-Supported methods:
+Gemini uses a Gemini account or API key; Happier does not offer a native Gemini login terminal. In development builds, supported connection methods are:
 
-- paste redirect URL
-- in-app browser on native only
+- manual Gemini API key entry
+- Google service-account JSON entry
 
 ### GitHub source-control credentials
 
@@ -196,7 +200,7 @@ Connected services are not global “works everywhere” credentials. Each Agent
 | --- | --- |
 | Claude | `claude-subscription` (setup-token or OAuth), `anthropic` (API key) |
 | Codex | `openai-codex` (OAuth), `openai` (API key) |
-| Gemini | `gemini` (OAuth) |
+| Gemini | `gemini` (API key or Google service account in development builds) |
 | OpenCode | `openai-codex` (OAuth), `openai` (API key), `claude-subscription` (setup-token only), `anthropic` (API key) |
 | Pi | `openai-codex` (OAuth), `openai` (API key), `claude-subscription` (setup-token only), `anthropic` (API key) |
 
@@ -303,8 +307,12 @@ GitHub connected accounts do not currently expose quota meters in Happier.
 
 They appear in:
 
-- the Connected services list as badges on the effective profile
-- per-profile detail screens
+- the Connected services page, beside each account (what is left and when each window resets)
+- account detail pages
+- the **Usage** popover in the app's sidebar rail (hover for a one-line peek); the Usage icon shows a
+  red count only when an account needs a new sign-in, never for low limits
+- a session banner above the composer when an account has 10% or less left and a usage reset can be
+  applied (once per limit window, dismissible)
 - the new-session auth picker for connected profiles
 
 Each profile detail view lets you:

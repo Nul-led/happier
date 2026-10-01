@@ -1,0 +1,177 @@
+---
+title: Embed sessions in your app
+description: The development contract for putting a Happier conversation inside a trusted host application.
+---
+
+Put a Happier conversation beside the work it belongs to: a lead, support case or
+internal dashboard. The embed contract uses Happier's real transcript, composer,
+tool cards and approvals inside an iframe.
+
+<Callout>
+  **Unreleased Developer Preview:** this guide describes the 0.3 development
+  contract being implemented in the workspace. It is not a stable or publicly
+  shipped integration. The host package is private workspace source; npm and
+  script-tag installation are not available until an approved publication.
+</Callout>
+
+## What you need first
+
+- A development checkout and stack with the embed, scoped-token and Session
+  contracts, plus a connected machine with the selected Agent installed.
+- A trusted host backend that can authenticate your users and decide who may open
+  each Happier Session. Keep the embed's parent API Token on that backend.
+- Trusted code on the host page, including its third-party scripts. The key
+  handoff does not protect content against a compromised host page.
+- An allowed host origin and a reachable Happier UI origin. The dashboard should
+  enforce its own framing policy, as described below.
+- For E2EE, an encryption-capable parent credential and a standalone Session-key
+  envelope. Use a dedicated Account whose content you trust your backend to read.
+
+## Connect a host and a conversation
+
+The development setup is managed from **Settings → Embeds**. The owner chooses
+allowed sites, Send, optional Approve, allowed models and permission modes,
+creation placement, and appearance. The screen's backend and frontend snippets
+are the intended integration starting point once the composed development flow
+has been verified.
+
+An embed is a parent API Token with a saved configuration. Your backend mints
+short-lived child credentials; a conversation child is limited to the selected
+Session. Authenticate the host user and check their right to open that Session
+before minting. Possession of a Session id is not authorization.
+
+The backend parent key can apply its granted Actions to every Session the Account
+can access. Configured folder and tags are listing defaults, not restrictions on
+that key. Your backend's user authorization and the Session child's target limit
+which conversation each user receives.
+
+The host package's `mountHappierSession` and React `HappierSession` surface accept
+the Happier UI URL, a Session id and a `getCredential` callback. That callback
+calls your backend, which uses the SDK's `embed.createCredential`. Supply a useful
+iframe title. Credentials travel through the validated frame bridge, not in the
+iframe URL or persistent browser storage.
+
+`getCredential` receives the frame's `embedPublicKey`, an optional `sessionId`
+and a refresh `reason`. Your backend returns `token`, `expiresAt` and, for E2EE,
+the optional sealed `sessionKey` and `sessionOptions`. Keep the SDK result's
+`tokenId` on the backend; do not forward it as an extra credential field because
+the bridge validates a strict schema.
+
+For a new chat, omit the Session id only when creation is granted and the saved
+new-chat choice is enabled. First Send creates on the bound computer and Agent
+in a managed directory with the chosen folder/tags. The host receives
+`onSessionCreated`; that notification is a fact, not authorization. Your backend
+must associate the issued new-chat child with its signed-in user and pass
+`requireCreatedBy` when exchanging it for the Session credential. Happier verifies
+creation attribution at mint time.
+
+For that exchange, the callback's `reason` is `created` and its
+`createdByTokenId` must match the child your backend associated with the signed-in
+user. Do not trust an arbitrary child id supplied by the page.
+
+The backend may also create a Session through `embed.createSession`, with an
+optional title, initial message, model and permission mode within the grant's
+bounds. Retain the `requestId` supplied in its second argument for an uncertain
+retry. `embed.listSessions` uses the configured folder/tag filter unless you pass
+explicit overrides (tags match ANY) and refuses an empty resolved filter; your
+app still filters what each user may see.
+
+## Allowed sites and dashboard framing
+
+Before using a child for any Session operation, the frame makes one token-self
+request, then checks its immediate parent's browser-supplied origin against the
+token's allowed sites. Where the browser exposes `location.ancestorOrigins`, it
+also checks every listed ancestor. A refused origin gets `origin_not_allowed`
+with no Session reads, subscriptions or mutations.
+
+Browsers without that ancestor API, including Firefox before version 148, leave
+the frame able to check only its immediate parent. Check the current
+[browser compatibility data](https://developer.mozilla.org/en-US/docs/Web/API/Location/ancestorOrigins#browser_compatibility).
+Protect the dashboard itself against being framed by an unrelated site. If your
+dashboard need not be framed, serve this response header:
+
+```http
+Content-Security-Policy: frame-ancestors 'none'
+```
+
+The [CSP framing directive](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors)
+checks every ancestor. If framing your dashboard is intentional, set an explicit
+trusted ancestor policy instead. This policy belongs on your dashboard pages. Happier's non-embed UI sends
+`frame-ancestors 'none'`; the exact `/embed/` route prefix, including the same-origin
+appearance preview, remains framable. A reverse proxy that adds a framing denial
+to those embed responses will prevent them from loading.
+
+Allowed sites restrict browser use. They do not stop server-to-server misuse of a
+stolen bearer: the child's target, grant and expiry bound that access. Keep both
+parent and child credentials out of URLs and logs.
+
+## Encryption and backend trust
+
+Plain Sessions need no Account encryption material. E2EE Sessions need a standalone
+Session-key envelope: the backend SDK opens the key and seals it to an ephemeral
+public key generated inside the Happier frame. A separate sealed projection
+supplies the permitted composer options. In the normal handoff, your page
+transports opaque blobs without receiving the opened Session key or owner metadata.
+
+<Callout type="warn">
+  Both the credential-serving backend and active host-page code are trusted.
+  An encryption-capable embed key gives the backend access to every Session the
+  Account can read. The opaque handoff avoids ordinary pass-through disclosure,
+  but an authorized hostile host script can send its own public key to the
+  credential endpoint and open the returned Session key and options. The endpoint
+  does not authenticate that key as belonging to a Happier frame. Use a dedicated
+  Account whose content you trust your application's backend and page code to access.
+</Callout>
+
+Support is determined by key availability, not Session age. A daemon with a legacy
+credential can still create a new Session encrypted with the Account secret and
+without a standalone key envelope. Such Sessions cannot be transferred to an
+embed and return `session_key_not_transferable`. Missing content access returns
+`encryption_credential_required`; missing or invalid frame material fails closed,
+without plaintext fallback.
+
+Revoking the parent ends future access and cascades to children. It cannot recall
+keys or content already disclosed to the backend or an open frame.
+
+## Appearance and controls
+
+Style the inside of the frame through theme tokens: colors, font families and
+font-file URLs, text scale, radius, density and part radii. Saved appearance is the
+baseline; host runtime style can override it. Use HTTPS font files (loopback is
+permitted in development); stylesheet URLs are unsupported and a failed font load
+falls back to Happier's family.
+
+Raw CSS, selector injection and generated class names are not a styling contract.
+Presentation options can hide attachment or model controls but cannot widen the
+grant. Send also authorizes stop and attachments; Approve is a separate opt-in.
+Model and permission-mode restrictions are enforced, not just hidden. Attachment
+upload, preview and retry use the Session-bound transfer path; arbitrary workspace
+and generated-file downloads are outside v1.
+
+With React, `style` configures the chat inside the iframe; `containerStyle` and
+`className` apply only to its host box. With the DOM API, the returned handle's
+`update({ title, ui, style })` changes presentation, `open(sessionId)` switches
+conversations, and `destroy()` removes the frame. `open(null)` selects the granted
+new-chat flow. Runtime style updates must preserve the current conversation.
+
+## When it goes wrong
+
+| Result | Next step |
+| --- | --- |
+| `origin_not_allowed` | Check the exact host origin and any exposed ancestor origins against the embed's allowed sites. |
+| `credential_unavailable` | Restore the host credential endpoint and retry without discarding the draft. |
+| `credential_rejected` | Check expiry, revocation and the host user's authorization before minting again. |
+| `session_key_not_transferable` | Choose a Session with a standalone key envelope; there is no Account-key fallback. |
+| `create_not_granted` | Enable and bind creation in the parent's grant, or provide an existing Session. |
+| `listing_filter_required` | Configure a folder or tags before listing through the embed helper. |
+
+Keep the current target when switching conversations. Late credential results
+must not replace a newer target, and removing a mounted embed must dispose its
+iframe and bridge. Grant edits revoke existing children; recovery re-mints through
+the host callback and preserves drafts. A deleted parent makes re-minting fail.
+
+## Related
+
+- [SDK and Action API](/extending/sdk) — the development client and transport.
+- [API Tokens](/security/api-tokens) — credential ownership and revocation.
+- [Encryption](/security/encryption) — Account modes and content trust.

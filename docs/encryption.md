@@ -63,6 +63,61 @@ locked/inconsistent/migration-required result before content disclosure or mutat
 while preserving the stored value; it must not become absence, defaults, or a
 fallback to the other branch.
 
+### Authoring memory (0.3 development)
+
+Recent machine paths, the last-used profile, and remembered engine selections use
+the shared reserved Account-row read/CAS owner. Plain content is `{t:'plain',v}`
+with a strict JSON value. E2EE content is `{t:'encrypted',c}` in the
+`authoring_memory` Account-scoped cipher purpose (kind byte 33). The encrypted
+payload is the strict `{key,value}` record; clients verify its key against the
+requested row before returning the value. Opaque engine carriers remain strict
+JSON, without reinterpretation at the server boundary.
+
+The server checks persisted Account mode and cipher purpose for reads, lists, and
+mutations. It never opens E2EE content. Tombstones retain the CAS revision, and
+push hints carry only the row key and revision. These are development source
+contracts; loaded-runtime validation and released availability are separate
+claims. The [HTTP API](api.md#authoring-memory-03-development) owns the route shapes.
+
+### Review Comment CRUD (0.3 development)
+
+The development CLI and UI adapters consume one Protocol-owned record transport.
+An E2EE mutation first sends its structural operation and a keyed content
+commitment to `/v1/reviews/comments/mutations/prepare`. The server authorizes
+the actor, scope and expected revision and returns server-generated structural
+facts with an opaque, authenticated preparation receipt. The client opens any
+previous record, checks its target/currentness, and seals the complete sensitive
+record against the authorized comment id, revision and body version. It then
+submits the receipt, record ciphertext and encrypted event to
+`/v1/reviews/comments/mutations/commit`. The server rechecks admission, Account
+mode/key binding and CAS before writing through the existing canonical storage
+and migration encoder; preparation creates no reservation row or second store.
+
+Anchors, snapshots, bodies, edit history, evidence, reasons, sensitive finding fingerprints, links,
+fixes and metadata remain inside the sensitive envelope. New structural records
+retain the anchor kind, not raw path or message-hash indexes. Host-signed current
+intent for host-authorized creates is checked against the logical effect locally and bound to the keyed
+commitment and actual HTTP bytes on both mutation phases. Existing finding identities
+and reviewed fingerprints remain structural identity/currentness facts. Equivalent-create
+retries preserve the existing record and event; semantic finding dedupe consumes
+the shared workspace-or-project/session scope. Later review-group membership is
+a separate CAS transition, not a duplicate-create rewrite.
+
+Reads request stored records and open them locally using the persisted Account
+mode. Path, severity and taxonomy filters are applied after opening, while the
+shared client drains structural pages to fill the requested logical page.
+Missing E2EE material returns `review_comment_encryption_material_unavailable`
+before HTTP; mode mismatches and unreadable or substituted record bindings fail
+closed. Ordinary E2EE reads and mutation preparation also reject legacy split
+records with `review_comment_encryption_mode_mismatch` before returning their
+source, because those rows can contain clear sensitive metadata. Their explicit
+Account migration/recovery path remains available; ordinary plaintext legacy
+reads remain supported. Retained sources are not new writers or a generic
+untagged-ciphertext fallback. Plaintext mutations keep their
+HTTP surface but use the same structural derivation and canonical record storage.
+The separate publication transport remains unchanged. This is 0.3 development
+source behavior, not a released availability or loaded-runtime certification claim.
+
 ### Terminology and rollout status
 
 Older descriptions used **keyed** and **keyless** as shorthand for whether
@@ -367,6 +422,45 @@ packet-beta
 
 - `version` is currently `0`.
 
+In current development source,
+`packages/protocol/src/crypto/sessionDataKeyBundleV0.ts` owns this version-0
+framing, its 12-byte nonce and 16-byte tag boundaries, and the existing serialized
+JSON value format. `packages/protocol/src/crypto/sessionDataKeyBundleWebCrypto.ts`
+owns the shared browser WebCrypto seal/open implementation. This extraction leaves
+the version-0 wire bytes unchanged.
+
+The UI's `AES256Encryption` and browser AES wrappers consume those owners while
+retaining the native string-cipher adapter and native-worker batching path. The
+CLI's data-key adapter retains synchronous Node AES-GCM and delegates framing and
+serialization to Protocol. These are platform adapters, not separate bundle
+formats; the shared open result distinguishes authenticated content, unsupported
+framing, authentication failure, and authenticated invalid JSON. This describes
+development implementation ownership, not released SDK availability.
+
+## Live-stream frame and input transport (0.3 development)
+
+Live-stream socket payloads follow Account mode explicitly. Pixels are represented as
+`{ t: 'plain', v: <base64> }` or `{ t: 'encrypted', c: <base64 ciphertext> }`; input
+sidebands wrap the complete typed control object instead of exposing text, coordinates,
+event or lease details on E2EE paths. No key is generated, fabricated or consulted for
+a plain Account.
+
+`machines/peer/mediation/stream/payloadV1.ts` in Protocol owns seal/open and validation,
+using the incumbent Machine content cipher (`MachineContentCodec` in the daemon,
+`MachineEncryption` in the UI), with its existing legacy/data-key framing. The authenticated
+content contains the purpose `machine_live_stream_v1` and the decoded envelope. Opening
+reconstructs and compares all clear routing/frame headers, so changing the source, target,
+viewer socket, stream or sequence cannot redirect authenticated content. Missing keys,
+mode mismatch, wrong keys and binding mismatch return typed failures before disclosure
+or input dispatch; neither encrypted failure nor an absent mode becomes plaintext.
+
+The server admits against persisted `Account.encryptionMode`, meters actual transport bytes
+(including cipher overhead), and never opens frame/input ciphertext. Capture and player
+objects remain decoded only inside their processes. The former advisory `encryption`
+metadata is not a security contract and has been replaced by mandatory payload envelopes.
+This describes current development source, not published-release or live-certification
+evidence. See [Peer mediation](peer-mediation.md#live-stream-payload-privacy-03-development).
+
 ## Data encryption key (dataKey variant)
 
 ```mermaid
@@ -451,9 +545,12 @@ implemented on exactly that footing: the independently authenticated producer is
 the creator-generated activation signing identity, and the SDK verifies the
 published binding against the Home, creator Account and Machine taken from its
 own locally pinned credential before it seals anything. The Machine-targeted
-carrier is described under "Machine metadata + daemon state" below; a **Session**-targeted
-protected call to a Runner is the remaining half of that work and is not
-implemented yet.
+carrier is described under "Machine metadata + daemon state" below. Session-targeted
+protected calls also resolve the Session's exact Machine and verify its
+creator-authenticated activation binding before sealing the request; they do not
+treat a Home-returned Machine envelope as an independent authenticity proof.
+This describes the implemented transport contract, not certification of the
+complete Runner activation and runtime journey.
 
 The development server's `accountRecipientEnvelopeReadiness.ts` derives recipient
 readiness from that Account currentness owner. Healthy Plain Accounts remain unavailable
@@ -547,6 +644,12 @@ owners. It never replaces them:
   derived authentication key before releasing the real envelope and expected Account;
   authentication then reuses the existing Key Challenge V2 owner and the existing
   `{ token, secret }` credential shape.
+- Native-password currentness binds the existing `AccountIdentity.id` and credential
+  revision together. Removing and re-enrolling the same email creates a new identity
+  lifetime, so revision reuse cannot revive an old reset, first-key proof, verified
+  login snapshot, or delayed password provenance. Sign-in-email verification also
+  binds that identity lifetime and its expected address. These checks reuse the
+  identity lifecycle; they add no credential generation or history table.
 - Password creation, change, reset, removal, and mode transitions mutate only the
   credential row (and the mode bit where applicable). They never re-encrypt Session or
   Account content, never alter signing or content keys, and never introduce a second
@@ -659,7 +762,35 @@ with the owning Account lifetime. Its predecessor workflow adapter is read-only
 and uses the same content codec without manufacturing record revisions.
 
 Managed Workflow accepted snapshots, checkpoints, invocation progress, and final
-results follow the same Account-mode authority. The server validates each outer
+results follow the Run owner's persisted Account-mode authority. Current 0.3
+development source uses one random per-run data key for E2EE content, with
+recipient envelopes in `WorkflowRunDataKeyEnvelope`. Caller Account material
+opens only that caller's recipient envelope; the private binding retains the
+owner Account, Run, purpose and, for progress, exact invocation identity.
+Plain Runs need no client encryption material or recipient-key rows.
+
+Boundary Resume is a key-free control write. Its nullable
+`workflowResumeRequestedRevision` is server-readable control metadata in both
+plain and E2EE Accounts, written with the Run's state/revision CAS and consumed
+by the successful worker claim. It discloses a Resume request revision, not
+private content or new authority; the key-holding worker still checks live
+controller dominance before acting.
+
+The active development V4 Account-mode transition includes retained current Run
+content, invocation content tokens and recipient envelopes in its Automation
+inventory. Inventory GET and migration POST use the same captured-Home
+stored-content compatibility admission. A missing inventory route returns an
+operation-scoped `update_required` refusal for `account.encryption.migrate`, not
+an empty census. The existing Account transaction owns the complete comparison,
+re-sealing, key replacement and exact replay; dormant V5 remains inactive.
+
+This is a development direct cut, not a released migration: the codec rejects
+pre-cut Account-derived Workflow ciphertext and old private payloads. It does
+not reseal historical rows or fall back to an Account-derived content key.
+Missing run history and missing recipient material remain explicit unavailable
+results, never permission to reinterpret encrypted content as plain.
+
+The server validates each outer
 stored-content envelope against the persisted Account mode and stores or projects
 only opaque bytes plus public indexes; it never opens private workflow content to
 infer recovery safety. An authorized daemon or client opens the envelope with the
@@ -671,6 +802,21 @@ advertise only coarse public eligibility, while the client requires opened priva
 `workspace_unavailable` progress with the recorded creation intent and checkout
 descriptor. Neither ciphertext presence nor a server-visible Run state authorizes
 a filesystem effect by itself.
+
+Development saved-workflow Run summaries use only the frozen public source id,
+owner, timestamps, Run/custody states and indexed invocation lifecycle facts.
+They neither open accepted definitions nor decrypt private progress/results.
+The source id is attribution, not an access grant. Unfiltered Run lists remain
+caller-owned; source-filtered history and summaries also include Runs whose
+frozen Team has a live source-Artifact Team grant and whose caller is an effective
+member of that Team. Exact reads, recipient census, key preparation and wake
+audience use the same Run access owner. A personal grant or another Team's grant
+does not preserve that Run visibility after its frozen Team grant is removed.
+The source Artifact's effective grant level determines authority only after
+those visibility prerequisites hold.
+Lean Run cards receive the server's `attentionRequired` membership without
+opening invocation content. This public boolean adds no result, prompt or
+decision content and is refreshed independently of the parent control revision.
 
 #### Shared Board records (development)
 
@@ -786,6 +932,30 @@ sequenceDiagram
   `encryptionMode`, stores it as `SessionMessage.content`, and emits the same
   canonical envelope in `new-message` updates.
 
+### 0.2 legacy-secret Account recovery
+
+Some 0.2 E2EE Accounts have a signing public-key anchor but no signed Account
+content-key binding. The current Home keeps these Accounts behind the E2EE
+currentness fence; a bearer token alone cannot make their ciphertext readable.
+An existing-Account secret-key sign-in can repair exactly this missing-binding
+state. The client proves possession of the retained 0.2 recovery secret through
+the key challenge and signs the content public key derived from that same secret.
+The Home verifies both proofs, records the binding, and rechecks currentness
+before admitting the Account. CLI recovery-key login and the shared web, desktop,
+and mobile secret-key sign-in flow use this same server admission path, including
+ordinary v2 sign-in when content-key sharing is off. Without
+the secret or a valid signature, recovery fails closed; neither the Home nor a
+client fabricates key material or reinterprets encrypted data as plain.
+When a 0.3 CLI/daemon or focused UI client reads currentness with a retained 0.2
+`{ token, secret }` credential, it automatically uses that secret for the same
+verified existing-Account key challenge, checks that the repaired token names
+the stored Account, then retries currentness with the original bearer. A bearer
+without retained secret material cannot perform this repair. The CLI's explicit
+`happier auth recovery-key login --key <recovery-key>` and the UI's Secret Key
+restore remain available when the device has no usable retained secret; the
+UI's existing recovery result links to restore even when Account encryption
+opt-out is disabled.
+
 ### Machine metadata + daemon state
 - E2EE Machines retain the client-encrypted per-Machine branch. In current development
   source, a present `dataEncryptionKey` envelope selects the exact Machine content key
@@ -833,6 +1003,14 @@ sequenceDiagram
   both released behaviours. Every reader shares that one decision owner: UI Machine sync,
   the `new-machine` socket hint, the server-scoped exact-Machine RPC pool, the CLI daemon
   reader and the SDK. None of them keeps a local "is this a Runner?" rule of its own.
+  The development UI awaits durable creator custody before selecting E2EE Machine
+  semantics, including after a cold start. Failed or corrupt custody is unavailable,
+  never cached absence; a later read can retry. The scoped RPC cache shares the
+  published row and opened envelope, then verifies each caller's current trust through
+  the same resolver, including callers joining an in-flight lookup. Unavailable
+  resolution retires the previous Machine cipher and rejects with
+  `MACHINE_ENCRYPTION_UNAVAILABLE` before socket creation or payload emission. Only
+  an explicitly resolved legacy Machine uses the released absent-envelope fallback.
 - **Accepted residual (ruled 2026-09-23): a device that did not create the Runner inherits
   the released persistent-Machine trust level.** Such a device holds no device-local
   creator custody, so it supplies no `trustedMachineKind`; it can open the creator-sealed
@@ -941,6 +1119,40 @@ resource admission path.
 - Stored as `Bytes` in the DB.
 - Emitted in `new-artifact` / `update-artifact` events as base64 strings.
 
+Development document sharing uses `artifactAccessService.ts` as the common
+HTTP, socket, write and audience authority. Direct Account, Team and Group grants
+resolve against current membership; owners and admin grantees change grants,
+while only the owner may assign admin. Other grantees may inspect them.
+Shared documents retain the owner's Account encryption mode
+and plain at-rest storage path. Grantee changes use content-free AccountChange
+wakes and a fresh authorized read, not the owner's legacy Artifact payload event.
+
+Plain documents require no client data key or recipient envelopes. E2EE documents
+stay opaque on the server: a current key-holding client seals the same document
+data key to each eligible recipient's verified content key. The recipient census
+binds preparation to the caller's opened envelope; the separate envelope commit
+rechecks the document key, live access and canonical
+`content-public-key-sha256:<hex>` fingerprint. Reads project only that caller's
+current envelope, never the owner's envelope to a grantee. Missing or rotated
+recipient keys leave content unavailable, and the existing document encryption
+transition invalidates old recipient envelopes. The development UI and CLI use
+the same Artifact access Action owner and workflow, role and Launch Profile kind
+adapters. The UI's captured Account context supplies the grant HTTP transport;
+its Artifact sync opener runs recipient preparation on encrypted grant-aware
+opens and after grant list/set/remove. Plain documents do no recipient-key work.
+The development Account-transition builder reads the recipient census through
+its captured Home/Account request and wraps the replacement Artifact key even
+for recipients whose old envelopes were current. The signed migration item
+carries the required source owner-key token (the explicit plain marker for a plain
+source) and required prepared subset, which may be empty. Under the existing
+Account transition fence, the Artifact migration owner checks that token and
+content revisions, replaces ciphertext and key, deletes old recipient envelopes,
+and uses the same commit owner to insert only recipients with live access and
+matching verified content-key fingerprints. Unprepared or changed recipients
+remain locked until a later key-holder pass. Plain targets carry an explicit empty
+recipient-envelope list. This is an in-place 0.3 development contract: requests
+omitting either field are rejected, and the 0.2 transition had no Artifact directive.
+
 Plugin Account-hosted UI and Package Asset archives use this same mode-aware
 Artifact envelope, not a separate encryption format. The client requires explicit
 Account hosting consent before publishing bytes; install and trust are not
@@ -967,6 +1179,25 @@ Account rather than by projection generation or app/runtime compatibility metada
 - `kvMutate` expects base64 strings; `kvGet/list/bulk` return base64 strings.
 - Each domain using KV owns its content contract. For example, Todo owns its explicit
   plain/encrypted envelope; KV must not guess by attempting decryption.
+
+The development `todo.*` and `workspace:*` namespaces share one Account-json KV
+mode admission and Account-transition fence. Ordinary reads and CAS writes must
+match the persisted Account mode; a transition reuses the same KV mutation owner
+after checking the complete active namespace inventory and exact per-key versions.
+The strict `todos` directive is unchanged. The optional `workspace` directive
+carries the shared open-tab record and per-device/window handoff records; omission
+asserts that the Workspace namespace is empty. Versioned tombstones are untouched.
+Exact lost-response replay checks the committed versions and bytes without writing.
+The client pages the existing KV list with `afterKey` under the captured Home and
+Account lifetime and rejects repeated keys before submitting the transition.
+The existing list page boundary is not a workspace inventory ceiling.
+
+Personal WorkBoards use the development Account JSON KV record
+`workspace:work-boards:v1`; they are not the Session-owned widget Board records.
+The existing Workspace namespace inventory opens and reseals this JSON record
+during an Account-mode transition without interpreting its Board document.
+The protocol Board record port owns semantic intent reconciliation and per-key
+version CAS for both the optimistic UI queue and UI/CLI Actions.
 
 Session drafts reserve a typed `UserKVStore` key prefix instead of exposing their rows through the
 generic KV API. The draft routes carry an explicit content envelope and enforce its owner:
@@ -1101,6 +1332,36 @@ POST /v1/kv
   ]
 }
 ```
+
+The development UI's `sync/encryption/accountStorageContext.ts` owns the shared
+Account mode and content-key fingerprint admission for JSON KV readers and writers.
+Todo operations delegate to that owner and preserve their Todo-specific typed
+failures. `sync/ops/account/accountKvJsonTransport.ts` supplies opaque JSON reads and
+per-key CAS writes through the caller's captured Home/Account request and lifetime;
+workspace record parsing and reconciliation remain with the workspace owner.
+It rejects mismatched envelopes before disclosure, missing or mismatched E2EE
+material before KV access, and unreadable ciphertext rather than treating it as an
+absent record. Plain Accounts need no Account cipher. Existing ciphertext-only
+E2EE values remain accepted alongside explicit encrypted envelopes.
+The mounted cipher and its `Sync.getCredentials()` binding are captured together
+before the currentness read. E2EE access requires the canonical credential-scope
+key to match the caller; publishing new authentication before Sync adopts its
+cipher cannot reuse the previous Account's material.
+
+KV deletion keeps a versioned tombstone. The single-key GET deliberately reports
+it as not found, while a CAS conflict returns its retained version and a raw null
+value. This raw tombstone is distinct from decoding an explicit plain JSON-null
+envelope; the JSON transport marks only raw CAS nulls with `tombstone: true`.
+Callers must preserve that distinction when reconciling records.
+Socket KV changes pass through `sync/engine/socket/kvUpdateDispatcher.ts`, which
+routes todo changes and notifies prefix subscribers under their captured Account
+lifetime. This describes development source behavior, not release certification.
+
+The CLI's `api/account/accountKvJsonTransport.ts` supplies the same opaque JSON
+read/CAS boundary for Board Actions at their captured Home. It admits persisted
+Account mode and the canonical content-key fingerprint before opening or writing
+KV bytes, uses the existing legacy/dataKey codecs, and preserves tombstone versions.
+Domain parsing and conflict rebase remain in the shared protocol Board port.
 
 ## Client-side content types
 
@@ -1254,8 +1515,49 @@ flowchart TD
 - If material is absent or ciphertext cannot be opened, preserve the stored value and
   return a typed locked/migration-required result. Do not try the plain branch after a
   decryption failure.
+- In the UI, a captured Account authority (an exact-Home or Account-lifetime operation)
+  carries a fresh Account owner with no Session readers. Anything that seals or opens one
+  Session under it hydrates that Session's reader on demand from its published envelope
+  (`resolveScopedSessionEncryption`). A Session with no openable reader fails with the
+  typed `session_encryption_not_found` / `scoped_session_encryption_unavailable` error,
+  never as a missing Session.
 
 For a published `dataEncryptionKey` bundle, clients first open the envelope with the appropriate recipient material, then use the recovered data key for content. A failed envelope open never authorizes an Account-key fallback; the historical absent-envelope reader is owner-only and is described under [Recipient key delivery](#recipient-key-delivery-development).
+
+## Embed key handoff (development)
+
+Embedding is an unreleased 0.3 Developer Preview contract; source-level key checks
+do not certify the composed browser flow. See [Embedded sessions](embed.md) for
+the authority, browser-origin and host-backend trust boundaries.
+
+The embed frame generates an in-memory X25519 keypair. For an E2EE Session, the
+host backend's SDK opens the standalone Session DEK and seals it to the frame's
+public key with the canonical 105-byte `EncryptedDataKeyEnvelopeV1`. A separate
+sealed box carries only the bounded composer-options projection. The host page
+transports opaque blobs without receiving the opened DEK or owner metadata during
+the normal handoff.
+Plain Sessions carry no key material. Missing or invalid E2EE material fails
+closed and never becomes plaintext or an Account-key fallback.
+
+Support depends on a standalone Session-key envelope being present, not on when
+the Session was created. The `legacy` branch of
+`apps/cli/src/api/client/encryptionKey.ts` still creates Sessions using the Account
+secret with no standalone DEK envelope. Both older and newly created Sessions of
+that kind are outside the embed transfer contract: `createCredential` must return
+`session_key_not_transferable`. An E2EE backend without content access must return
+`encryption_credential_required`.
+
+Both the credential-serving backend and active host-page code are trusted. The
+backend holding the embed's encryption-capable parent credential (`hapc`) can read
+every Session the Account can read. The opaque handoff avoids ordinary pass-through
+disclosure, but the host supplies the recipient public key to the credential
+endpoint. An authorized hostile host script can substitute its own key and open
+the returned Session key and options. The handoff does not authenticate that key
+as belonging to a Happier frame. Use a dedicated Account whose content the
+dashboard backend and page code are trusted to access.
+Revocation stops future credential access; it cannot erase keys or plaintext
+already disclosed. In-frame new-chat creation sends no message content until the Session key
+handoff completes, then uses the normal encrypted Session send path.
 
 ## Server-side at-rest sealing
 
@@ -1366,6 +1668,14 @@ action authorization level, not owner-private data access. Current-format operat
 require a current caller declaration. Release readiness remains gated by mixed-version
 proof and the remaining integration/live checks, not by an operator activation mode or
 legacy socket drainage.
+
+Current development role snapshots remain owner-private throughout this path.
+The metadata writer accepts the canonical `work.sessionRolesV1` produced by the
+role owner, seals it inside the Account-owned work category, and restores that
+same nested field in the local domain view. Clearing the selected role preserves
+the snapshot, notes, and admitted memory reference. Existing work-state and
+headline fields keep their flat domain shape; role snapshots gain no flat alias
+and never enter the recipient-safe shared projection.
 
 Sharing rules:
 
@@ -1497,6 +1807,14 @@ does not exist, while a readable Session the caller cannot manage gets an honest
 `forbidden`. A plain Session then settles as `not_required` before any recipient key
 material is read, so a keyless Account is never asked for key state it does not have.
 
+When management depends on a restricted Team authentication policy, the envelope
+collection preserves the operation-specific recovery result:
+`session_access_authentication_required` or `session_access_authentication_unavailable`.
+A direct View grant keeps the Session readable but does not satisfy the separate
+`manageAccess` operation. After qualifying Team authentication, refresh the Session and
+explicitly retry preparation; a refused mutation is never replayed. Genuine loss of
+read access remains concealed as `session_not_found`.
+
 `GET` returns one bounded exception page plus a Session-scoped summary over the whole
 current authorized audience — including the Session's owner, whose envelope lives in the
 same tuple. The audience is walked in bounded chunks through the same readiness and
@@ -1593,8 +1911,21 @@ encrypted metadata cannot be read, and list and detail share one owner for the l
 title: a safe cached title is kept, and only its absence falls back to the translated
 `Encrypted session`. Owners remain fail-closed there, because hidden-system facts are
 layout-1 owner-private keys and are genuinely unknown when the owner view is unavailable.
-Plain Sessions and Plain Accounts reach none of this: the collection settles
+Every locked, readable or blocked decision (list row, detail surface, Session info, route
+data) reads the content fact through one UI reader,
+`encryptedContentAvailability.ts#readSessionContentAvailability`: a plain Session defaults
+to readable, while an explicit settled owner-metadata-unavailable shell stays locked even
+when its Session content is plain. An absent E2EE fact is *unsettled* — never readable and
+never a settled block. The list and exact-Session readers apply the same shell when the
+owner envelope cannot open; a later successful open replaces it with readable metadata.
+The device-local warm cache keeps the row's `encryptionMode` and last settled availability
+(enums only, beside the decrypted row metadata it already holds), so a cold reload shows an
+own readable Session as readable; an unsettled row persists nothing, and hydration
+re-derives the fact.
+Plain Sessions and Plain Accounts require no recipient-key collection: it settles
 `not_required` before any recipient key work and the editor renders no encryption row.
+An unavailable Account-owned layout-1 envelope can still lock a plain Session's
+owner view until a later successful open.
 
 The ordinary Account-backed Follow runtime now observes, hydrates, re-admits, injects,
 and acknowledges exact source updates through the canonical Session runtime. In current
@@ -1661,11 +1992,35 @@ re-encrypt Session messages or change a Session's persisted `encryptionMode`.
 Layout-1 owner metadata is different because its owner envelope is Account-scoped and
 must match the Account mode.
 
+The development whole-Account erasure integration checks initial authority and ownership
+before cancelling an active Account-mode transition through the existing transition coordinator.
+Its bounded staging cleanup finishes before the
+Account is retired or any external object is deleted. If cleanup remains, both the
+Home-administration and self-erasure routes return HTTP 409 with
+`account_erasure_transition_cleanup_pending`; this step leaves the
+Account's status and credentials unchanged, and the caller retries the same authenticated
+request. Once cleanup is ready, erasure uses the existing disable/revoke, idempotent object
+deletion, and final row-deletion sequence.
+An administrator erasing their own Account must pass initial administrative admission; only
+that admitted invocation may continue through its own revocation. An independent administrator
+is checked again before final row deletion. This adds no separate erasure state or cleanup owner.
+
 Every active new-Session draft participates in the incumbent atomic Account mode-transition
 request. Existing-Session drafts do not participate: their envelope remains bound to the owning
 Session. A missing or incomplete draft census, a revision mismatch, or a wrong target envelope
 aborts the Account transition without partially changing the mode. The partially adopted staged
 transition is not a second draft owner and has no draft-specific staging table.
+
+Development Account authoring memory participates in that same atomic request through
+`authoringMemory: { items }`. The client reads the complete active reserved-row inventory
+at the initiating Home, opens each row under the persisted source Account mode, and reseals
+it for the target mode with the existing Account blob cipher and its `authoring_memory`
+purpose. The server checks source mode, complete key coverage, target envelopes and exact
+row revisions before applying the existing KV CAS. Tombstones contain no private content
+and are left unchanged. A mismatch aborts the entire switch; row existence alone is not a
+refusal. The success response returns the committed rows, and exact lost-response replay
+checks their revisions and envelopes without writing or publishing changes. Missing E2EE
+material or an invalid row binding fails closed before the client submits the switch.
 
 The development draft V2 contract includes new-Session authoring that released strict V1 cannot
 generally preserve. Such Account transitions select `sessionDrafts: { v: 2, items }` and receive

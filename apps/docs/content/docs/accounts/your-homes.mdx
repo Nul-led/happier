@@ -72,9 +72,22 @@ carries the state of this device's relationship with it:
 One Home can be marked **Preferred** with **Set as preferred**. A sign-in that does
 not name a Home opens the preferred one, or the only one, and otherwise asks.
 
+If your sign-in service is also the Home that holds your Account (as Happier Cloud
+can be), signing in to the service can add that Home to your directory
+automatically, even if the Account has no Home directory entry yet. The service
+adds its own Home on account-service sign-in when the deployment offers `self`
+sign-in, can sign directory assertions, and publishes a Home connection descriptor
+matching its stable service identity.
+With that Home as the only directory entry, **Find your Homes** connects and opens
+it without a Home chooser. If this device already has a local Personal Home, that
+Home stays saved with its data; signing in does not move or remove it. A different
+Home still needs to be linked separately.
+
 If nothing appears, you will see **No linked Homes yet** — link a Home first, then
-refresh. If your service sign-in has lapsed, the section says so and asks you to
-sign in to that service again before it will refresh or connect anything.
+refresh. If you expected the service's own Home, check that you signed in to the
+same service that hosts the Account; the service operator may also need to enable
+same-service Home discovery. If your service sign-in has lapsed, the section asks
+you to sign in again before it will refresh or connect anything.
 
 ## Make a Home available on your other devices
 

@@ -42,6 +42,27 @@ on either summary or awareness output; a passthrough predecessor that silently i
 the query produces the operation-scoped `session_list_query_update_required` failure.
 Filtered lists retain the server's ordinary and attention continuation fields
 separately, and a marked awareness result may carry both paired continuation families.
+
+The development `SessionListQueryV1` accepts optional `folderIds` beside
+`tagIds`. Each selector matches any supplied id in the viewer's own assignments;
+supplying both combines them with AND. Folder selection is exact membership,
+not a descendant walk. An unknown id matches no assignment. Existing access,
+storage, audience, attention and cursor predicates still apply.
+
+**Lane 07 correction in progress (0.3 development):** the server's optional
+nonnegative `metadataUpgradeRequiredCount` must survive the existing summary and
+awareness result contracts through UI, CLI, Actions and SDK consumers. A positive
+value means historical rows were withheld because their metadata needs upgrading;
+readable rows remain usable. Counts accumulated across overlapping page families
+describe omission occurrences, not a deduplicated total of missing Sessions.
+Pagination exhaustion and corpus completeness are separate: when both cursor
+families are drained but rows were withheld, the UI shows the historical-share
+recovery explanation rather than an endless Load more affordance. Neither a mounted
+list nor an off-pane Voice corpus may establish absence or uniqueness within its
+intended corpus from those incomplete candidates. Propagation and completeness
+corrections remain under implementation and validation; this paragraph does not
+assert released availability.
+
 The optional summary-preview path remains separate. The existing
 `session.activity.get` Action adapts the same projector to its compatibility result.
 That adapter derives its operational booleans from awareness and passes host-observed
@@ -68,6 +89,19 @@ Absent availability stays unknown; cached metadata does not establish readiness.
 `preparing` requires actual preparation in progress. Private title, work, lineage,
 and workspace fields remain absent unless content is plain or known ready.
 These development contracts do not establish released availability.
+
+## Session changes (0.3 development source)
+
+`GET /v2/changes?after=...&sessionId=...` filters the existing Account change
+page to `session` and `share` rows whose `entityId` is that exact Session.
+`nextCursor` is computed from the raw Account page, including when the filtered
+page is empty. Consumers must checkpoint that cursor rather than the last
+visible row. The existing retention/future-cursor and post-read retention checks
+still return `410 cursor-gone`, requiring a snapshot rebuild.
+
+`sessionAccessSessionId` remains the separate exact-access probe. Supplying it
+together with `sessionId` returns `400 invalid_params`; filtering does not create
+a second access or token-admission owner.
 
 ## WebSocket connection
 ### Handshake
@@ -134,7 +168,10 @@ Transient presence/usage events. Payload shape:
 Field names below match on-wire payloads.
 
 - `new-session`
-  - `body`: `{ t: "new-session", id, seq, metadata, metadataVersion, agentState, agentStateVersion, dataEncryptionKey, encryptionMode?, active, activeAt, createdAt, updatedAt }`
+  - `body`: `{ t: "new-session", id, seq, metadata, metadataVersion, agentState, agentStateVersion, dataEncryptionKey, encryptionMode?, active, activeAt, createdAt, updatedAt, currentStorageState? }`
+  - `currentStorageState` (additive, optional): the Session's persisted storage state (`hosted`, or `machine_only` for an
+    external-session import). Clients choose the transcript reader from it; a body without it (released servers) keeps the
+    client's existing fallback.
 
 - `update-session`
   - `body`: `{ t: "update-session", id, metadata?, agentState? }`
@@ -251,6 +288,57 @@ Field names below match on-wire payloads.
 - `rpc-call`
   - `{ method, params }` -> callback `{ ok, result? | error? }`
   - Server forwards to the registered socket via `rpc-request` (ack-based).
+
+## Session creation directory intent (planned 0.3 development behavior)
+
+The approved folderless-session contract is being implemented on the unreleased
+0.3 development line. The shapes and lifecycle below await integrated verification;
+they do not assert live or released availability.
+
+`SessionSpawnNewInputV2Schema.directory` and its server-start draft will carry one
+strict `SessionDirectoryIntentV1` union:
+
+```ts
+type SessionDirectoryIntentV1 =
+  | { kind: 'path'; path: string }
+  | { kind: 'managed' };
+```
+
+`path` is a trimmed, nonempty path. `managed` requests a daemon-owned private
+working directory without choosing its path. Missing/empty directory and a bare
+string have no implicit managed meaning. `checkoutCreationDraft` is valid only
+with `kind: 'path'`. This replaces the unreleased string input in place; it is
+not a second directory field. Machine selection remains required.
+
+Creation correspondence compares the intent. Allocation identity comes from the
+existing namespaced `sessionCreationTag`; preparation and existing-session rejoin
+must not materialize or rebind a folder. The target daemon alone resolves,
+protects and materializes it on fresh spawn. See
+[managed directory ownership](./cli-architecture.md#managed-session-directories-planned-03-development-behavior).
+
+Owner metadata retains a real `path` for machine RPC and adds the optional strict
+`sessionDirectoryV1: { v: 1, kind: 'managed' }` marker. The Protocol classifier
+`readSessionDirectoryKind` owns interpretation for presentation and resume routing.
+Absent or malformed markers retain ordinary path-session behavior, including
+released 0.2 session data. The marker never establishes filesystem ownership;
+only the daemon's local owner record can do that.
+
+Session organization adds `{ t: 'managedSessions', serverId, machineId }` to
+`SessionFolderWorkspaceRefV1`. It represents one machine's Chats scope, so private
+per-session paths do not become folder scopes, Projects or recent paths.
+
+A missing or unproven managed directory produces `SESSION_DIRECTORY_MISSING`
+without silent recreation. Explicit user consent reuses the resume request's
+`approvedNewDirectoryCreation` bit to continue in an empty private folder. Queued
+input stays queued until that choice. Durable session deletion drives daemon
+cleanup; archive retains the directory, and offline removal remains pending until
+reconnect. No managed-folder registry or cleanup timer is added on the server.
+
+Managed handoff uses a daemon-private `{kind:'managed'}` target directive: the
+target allocates under its own root rather than interpreting a source path.
+Workspace bytes travel through the existing seed transfer without WorkspaceRef
+enrollment. Managed directories do not establish a sandbox or restrict an
+Agent's OS-user permissions.
 
 ## HTTP endpoints by area
 See `api.md` for the full HTTP endpoint catalog and auth flows.

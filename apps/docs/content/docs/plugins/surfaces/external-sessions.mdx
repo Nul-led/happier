@@ -106,13 +106,37 @@ The contribution has exactly six required methods:
 - `pageTranscript`
 - `readAfterTranscript`
 
+### Optional internal threads
+
+An Agent whose sessions spawn internal threads (approval reviewers,
+sub-agents) can keep them out of the default listing: mark each such
+candidate with `thread: { kind: 'reviewer' | 'subagent', parentRemoteSessionId }`
+and leave threads out of `listCandidates` unless the request carries
+`includeThreads: true`. An Agent that has no internal threads can ignore
+`includeThreads`.
+
+### Candidate index refresh
+
+For a source that opts into the host's bounded candidate index, the host treats
+the source's newest-first precedence key as the mutation boundary. A root browse
+reads fresh head chunks until the first indexed row matches by both identity and
+projected content (the watermark), then publishes a new generation from the
+fresh head plus indexed rows whose identities were not seen ahead of that
+watermark. It re-sorts and re-digests the result; cursors from the replaced
+generation fail with the typed stale-cursor result. A changed projected row must
+advance that same precedence key so it moves into the refreshed head. Deletions
+are detected by typed hydration failure and periodic full validation. While an
+index is building, a changed anchored row is treated as a move-ahead and
+validation starts after the first identity-and-content watermark. A missing
+watermark or validation drift restarts the bounded crawl.
+
 ## Callback invocation services
 
 Each of the six callbacks receives the host's bounded invocation controls
 (`signal`, `deadlineAtMs`, and `maxSerializedBytes`) plus two host-provided
 services: `managedEndpointRead` and the required existing `exec`
 (`ExecService`). `exec` remains governed by the Agent manifest's declared
-process/tool host access and the current plugin generation. Reuse its existing
+process/tool host access and the current plugin occurrence. Reuse its existing
 process and protocol-client facilities; this surface does not add a process
 subsystem, HTTP bridge, callback, registry, or Agent-id host branch. For
 example, the current Codex source reuses its existing app-server JSON-RPC
@@ -224,13 +248,13 @@ never inside it, so `raw` never has to be loosened to carry routing.
 
 A contribution returns its own native cursor. Before that result reaches any
 caller the host reissues it inside an opaque envelope bound to the plugin id,
-the Agent local id, the current generation, the exact source, the method, and —
+the Agent local id, the current occurrence, the exact source, the method, and —
 for transcript reads — the `remoteSessionId`. Callers only ever hold the
 envelope; the contribution always receives its own native cursor back, already
 decoded, so a source never has to parse a host format.
 
 A cursor replayed under a different method, source, session, or a retired
-generation is refused with `invalid_request` before the contribution is called.
+occurrence is refused with `invalid_request` before the contribution is called.
 Native cursors are limited to 2,000 code units, and an over-long one fails the
 result rather than being truncated.
 
@@ -318,7 +342,7 @@ operations:
 - `takeover`
 
 Import its public DTOs from the same final capability path. Plugins pass only
-an opaque `ExternalSessionRef`; they never choose a machine, plugin generation,
+an opaque `ExternalSessionRef`; they never choose a machine, plugin occurrence,
 resolved source, storage path, link record, or runtime lease.
 
 ```ts
@@ -362,8 +386,8 @@ export async function inspectExternalSessions(
 
 `list`, `attach`, transcript reads, public follow, and `takeover` resolve the
 current configured Agent/source authority for each new call. A cursor or
-subscription from a superseded public generation fails stale rather than
-silently invoking replacement callbacks. The private exact-generation follow
+subscription from a superseded public occurrence fails stale rather than
+silently invoking replacement callbacks. The private exact-occurrence follow
 used by an already-running native Agent session is host composition and is not
 part of this public service.
 
@@ -377,7 +401,7 @@ for status and recovery; plugins do not call the private raw Start RPC or read
 complete operation records.
 
 Public candidates, transcript items, operation references, and the strict
-shared operation presentation omit machine/account/generation identity,
+shared operation presentation omit machine/account/occurrence identity,
 qualified sources, link metadata, runtime descriptors, private progress,
 credentials, claims, and staging paths.
 
@@ -385,7 +409,7 @@ An auxiliary-only Agent may register this contribution without a primary
 runtime factory. When an Agent also has a native runtime, both registrations
 use the same manifest-declared local ID. The Agent leaf owns source-native
 discovery, identity translation, and transcript decoding. The host owns
-qualified identity, generation fencing, cancellation, deadlines, result
+qualified identity, occurrence fencing, cancellation, deadlines, result
 bounds, link records, selection, transcript projection, and takeover
 lifecycle.
 
@@ -568,7 +592,7 @@ projection. Passive activation, daemon boot, and reload do not invoke
 readiness or launch an Agent.
 
 `mapHookEvent(request)` remains request-only. It receives one bounded,
-authenticated native JSON payload for the current installation and generation,
+authenticated native JSON payload for the current installation and occurrence,
 then returns `ignored` or source-native identity plus content-free qualified
 facts. It never chooses a Happier session or link target. The host drops the
 raw payload after the call, resolves the source and linked identity through the
@@ -672,7 +696,7 @@ spawnable primary runtime immediately before spawn. The generated binding
 is part of the one `activate` function returned by `definePlugin`.
 
 Immediately before `resolveLaunch`, the host calls the same current
-generation's `resolveLinkedIdentity` and uses that fresh successful result.
+occurrence's `resolveLinkedIdentity` and uses that fresh successful result.
 The callback receives:
 
 - the host-owned `signal`, `deadlineAtMs`, and `maxSerializedBytes` invocation
@@ -683,8 +707,8 @@ The callback receives:
   `linkedDirectory` context, each limited to 10,000 code units.
 
 Persisted session metadata alone is never launch authority. The wrapper binds
-the call to the current Agent generation, combines caller cancellation with
-generation retirement, enforces a 15-second deadline and a 262,144-byte
+the call to the current Agent occurrence, combines caller cancellation with
+occurrence retirement, enforces a 15-second deadline and a 262,144-byte
 settled-result limit, and rejects malformed, oversized, cancelled, retired, or
 late results instead of truncating or admitting them. Cancellation is
 cooperative, so callbacks must honor `request.signal` and
@@ -725,7 +749,7 @@ Pending/admission behavior, runtime services, or spawn/control lifecycle. Do
 not return `SpawnSessionOptions`, `AgentSessionLaunchHintsV1`,
 `resumePlanOptions`, session-state updates, source/session identities, generic
 metadata, or other launch hints. The host privately maps the accepted fields,
-then rechecks both the originating generation and a current spawnable primary
+then rechecks both the originating occurrence and a current spawnable primary
 runtime immediately before the spawn effect. Retirement or replacement fails
 closed with no spawn.
 
@@ -735,7 +759,7 @@ takeover mode: the host retains quiescence, admission, transcript, and lifecycle
 authority for both linked and persisted takeover flows.
 
 The host only advertises takeover when the Agent's current runtime
-generation admitted this facet; a generation without it reports takeover
+occurrence admitted this facet; an occurrence without it reports takeover
 unavailable (`plugin_external_agent_unavailable`) instead of advertising a
 takeover that could only fail at launch. Registering the facet does not by
 itself advertise external-linked takeover. That mode additionally requires the

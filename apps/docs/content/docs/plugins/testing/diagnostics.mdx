@@ -80,7 +80,9 @@ by the same guard; do not depend on an internal transport-error class.
    structural and loadability facts with repair guidance.
 4. Use `hdev plugins dev` or `hdev plugins reload` for the
    daemon-owned candidate result. A rejected candidate leaves the last accepted
-   generation serving.
+   process-local occurrence serving for this daemon lifetime. It does not
+   preserve recoverable historical development source for the next daemon
+   process.
 5. Inspect daemon/plugin logs and exercise the real surface only when the
    claim depends on that loaded runtime.
 
@@ -89,19 +91,14 @@ For a review or mutation that returns a pending change ID, use
 daemon-lifetime operation. Do not create a second request merely to learn its
 state.
 
-## React Native crash recovery
+## React Native failure recovery
 
-Repeated React Native renderer failures may disable one exact destination and
-renderer binding through the daemon-owned crash watchdog. The host's
-unavailable-surface card exposes the current state through
-`crash_threshold_reached`; when reset recovery is available, the card also
-offers **Reset**. Reset requests wait for a newer daemon projection instead of
-reloading a tree from the disabled epoch.
+Executable UI failures are contained by the client that evaluated or rendered
+the affected digest. The unavailable-surface state can retry that local digest,
+and a replacement candidate cannot displace a still-valid incumbent until its
+own preparation succeeds. There is no daemon crash token, threshold, reset RPC,
+or persisted renderer-disabled epoch for authors to inspect.
 
-The same diagnostic channel reports bounded `crash_reset_context:...` facts for
-the binding identity, reset status, projected epoch, and result. Tests and QA
-should assert those structured diagnostics rather than localized messages. To
-validate the live contract, crash the loaded renderer until it is disabled,
-observe the unavailable card, request **Reset**, and verify that the later
-projection permits a fresh mount. A source test or a successful reset request
-alone does not prove that loaded-runtime recovery completed.
+Loaded-runtime QA should exercise the actual surface: fail evaluation or
+rendering, verify that unrelated plugins remain usable, retry locally, and then
+adopt a corrected digest. Source tests alone do not prove that recovery path.

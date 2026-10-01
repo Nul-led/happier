@@ -5,9 +5,9 @@ description: Use the one local create, development, validation, review, and pack
 
 This page is the canonical command reference for plugin authors. Run commands
 from the plugin root unless a command takes an explicit path. `--json` selects
-the structured result for automation; it does not bypass review or trust. The
-one explicit non-interactive trust decision is the `--trust` flag on a local
-development install, documented in
+the structured result for automation; it does not bypass authority or
+credential decisions. An explicit local-path install is itself the code-trust
+decision, documented in
 [Install a development source without a prompt](#install-a-development-source-without-a-prompt).
 
 ## Create and develop
@@ -31,18 +31,20 @@ unavailable reason. See
 [Hosted web UI](/plugins/ui/hosted-web#build-and-runtime-availability).
 
 `hdev plugins dev [path] [--sdk-registry <origin>]` is the normal edit
-loop. The CLI observes the source closure and submits each captured batch to the
-daemon. After submission, the daemon-owned candidate lifecycle materializes
-declared dependencies, builds declared UI artifacts, evaluates the candidate,
-and validates it before adoption. On cold start the CLI also materializes the
-author root itself when nothing has materialized it yet, so the directory you
-edit resolves its declared dependencies; a root whose declared SDK already
-resolves is left alone rather than reinstalled, and an interrupted first run is
-repaired on the next start. Do not run
-`hdev plugins dev install .` before this loop: it is the explicit repair
-command, not a prerequisite. Pass
+loop. The path may be a plugin project folder or an exact `.ts`, `.mts`, `.js`,
+or `.mjs` plugin file. The command registers and trusts that exact source, prints the
+daemon-owned development status, and may stay attached for status output. The
+daemon observes the source, prepares dependencies when dependency inputs
+change, builds declared UI artifacts, validates a candidate, and replaces only
+that plugin's process-local occurrence after every blocking check succeeds.
+The CLI does not watch files, compile candidates, or decide replacement. Do not
+run `hdev plugins dev install .` before this loop: it is the explicit repair
+command for a package tree, not a prerequisite. Pass
 `--sdk-registry <origin>` only when the selected SDK must resolve from an
 approved registry origin.
+
+Use `hdev plugins status [--json]` from another terminal to read the canonical
+roots, phases, current occurrences, UI digests, and bounded diagnostics.
 
 ## Check the author package
 
@@ -97,12 +99,13 @@ archive contents. The output must be outside the plugin package root and must
 not already exist (including its `.sha256` sidecar).
 
 `hdev plugins install <path|archive|package> [--kind path|archive|npm]
-[--selector <version>] [--integrity <sha256-SRI>] [--dev [--trust]] [--dry-run]`
-submits one reviewed install to the active daemon. The daemon, rather than the
-CLI, owns package activation, currentness, and retained last-known-good
-behavior. Use `--dev` only for an intentional watcher-free package-root
-development source, and `--trust` only to carry the trust decision for that
-source on the command line.
+[--selector <version>] [--integrity <sha256-SRI>] [--dev] [--dry-run]`
+submits one reviewed install to the active daemon. The install store owns trust,
+source, enablement, and selected-version intent. The daemon, rather than the
+CLI, owns runtime admission, the current process-local occurrence, and its
+in-process fallback. Use `--dev` only for an intentional watcher-free
+package-root development source. Naming a local path explicitly is its
+code-trust action.
 [Install and trust](/plugins/packaging/install-trust) owns the detailed trust,
 update, rollback, enable/disable, inspection, and uninstall contracts.
 
@@ -116,35 +119,32 @@ hdev plugins reload
 `hdev plugins reload [developmentPluginId]` reruns the daemon-owned cycle
 for the development source registered for the current directory. When more
 than one registered source contains that directory, pass the explicit plugin
-id. A failed replacement leaves the last accepted generation serving; do not
-start a second watcher or invent a source-only reload path.
+id. A failed replacement leaves the last accepted process-local occurrence
+serving for that daemon lifetime; do not start a second watcher or invent a
+source-only reload path.
 
 ## Install a development source without a prompt
 
 ```bash
-hdev plugins install . --dev --trust --json
+hdev plugins install . --dev --json
 hdev plugins reload --json
 ```
 
-`--trust` carries one explicit non-interactive authorization for that exact
-local development source, so the first install of a source root completes
-without a terminal prompt. Use it whenever no present user can answer the
-source-root question: a CI job, a script, or an Agent Session driving the loop.
+The explicit command authorizes code from that exact local development source,
+so the first install completes without a redundant terminal prompt. This works
+for a CI job, script, or Agent Session driving the loop.
 
-The flag is deliberately narrow:
+The decision is deliberately narrow:
 
-- It is valid only with `--dev` on a local path. Any other request fails with
-  `plugin_explicit_trust_requires_development_path`.
 - It decides source-root trust and package trust for that one resolved path. If
   the daemon's prepared review names a different source, the pending change is
   cancelled with `plugin_explicit_trust_target_mismatch` rather than approved.
 - It selects no optional host resources; those remain available only through the
   reviewed prompt.
-- It does not extend to consequential updates or secrets, which stay with a
-  present user.
+- It does not extend to new authority or credential grants, which stay with
+  their canonical host owners.
 
-`hdev plugins dev` has no `--trust` equivalent, so this install route plus
-`hdev plugins reload` is the headless edit loop. Once the source root is
+This install route plus `hdev plugins reload` is the headless edit loop. Once the source root is
 trusted, later requests for that root skip source-root review, so no further
 decision is required until the reviewed source identity changes.
 
@@ -160,13 +160,13 @@ hdev plugins change reject <pendingChangeId> --json
 ```
 
 `status` is read-only. `approve` and `reject` are explicit present-user
-decisions on this pending-change route; apart from the `--trust` flag above, an
-Agent may prepare a request but cannot decide it. A source-root
+decisions on this pending-change route. An Agent may prepare a request but
+cannot decide a separate authority grant. A source-root
 approval can return `reviewRequired` with the same pending ID when package
 review remains. Review the reported package facts, then use `approve` again on
-the same pending ID. `reject` cancels the request. Apart from the `--trust`
-flag above, JSON or noninteractive installation never auto-approves, and a
-direct noninteractive approval selects no optional host resources.
+the same pending ID. `reject` cancels the request. JSON or noninteractive
+installation never auto-approves a separate authority grant, and a direct
+local-path install selects no optional host resources.
 
 The same decision is available in the app. Settings -> Plugins lists every
 change the machine's daemon is still holding, including one an Agent prepared,

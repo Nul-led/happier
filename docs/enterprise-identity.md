@@ -130,6 +130,11 @@ process can be replaced while its own earlier attempt rows are still within thei
 `hasInvalidOAuthSecurityBinding` exists so a **malformed** new binding is never mistaken for a
 legitimately absent one.
 
+Current authenticated CONNECT starts use `credential_adoption_v1`: callback creates a pending
+continuation, and authenticated finalization owns the identity mutation. An older in-TTL
+CONNECT attempt without that marker ends at `invalid_state` and requires a restart instead of
+linking at callback; this does not imply mixed 0.2/0.3 component support.
+
 ## Managed provider instances
 
 An `IdentityProviderInstance` is the durable managed provider: immutable server-generated
@@ -356,6 +361,15 @@ and non-security UI hints. The issuer is immutable after creation
 (`identity_provider_issuer_immutable`) — changing an issuer is a new provider, not an edit,
 because existing identity rows are namespaced by the provider id.
 
+Deployment, managed-provider, and Team-connection allowlists share the same comparison-key
+normalization: trim and lowercase users and Groups, and also remove one leading `@` from
+email-domain entries. The OIDC `sub` remains an exact opaque identifier. An email-domain rule
+requires a verified email that parses through the canonical mailbox owner; a malformed optional
+profile email does not independently reject a subject when no domain rule is configured.
+After a fresh same-subject authentication satisfies the current rules, the existing identity
+link intent records eligibility as eligible and clears a previous offboarding denial. It does
+not transfer or recreate the identity, and failed authentication cannot clear that denial.
+
 OIDC claim Group mapping refreshes only the member who is signing in. It is not directory
 synchronization, and the product labels the two separately.
 
@@ -394,14 +408,34 @@ the native adapters in `memberships/externalFacts.ts`:
   roster, computed as a desired set versus the surviving contributions;
 - `revokeExternalSourceFactsInTx` when the source is removed.
 
+The native-effect transaction rechecks the current WorkOS provider instance. Disabling that
+provider prevents new directory materialization without revoking already committed native
+access. The Team SSO connection's enabled state is independent of directory provisioning.
+
 Group membership is a **union** of an optional native contribution and any number of exact
 external-binding contributions. Removing one contribution preserves the others and preserves
 the existing effective-membership horizon. Membership, by contrast, has one management owner
 per lifetime; transfers are explicit Lane 01 operations through member administration, and a
 reconciler never seizes an independently native membership.
 
+When management moves away from a directory identity, that same transaction withdraws only
+the source's Group contributions that become ineligible because the released identity is
+suspended. Active-identity contributions, native contributions, and other-source contributions
+remain; surviving effective memberships retain their access horizons.
+
 An unmapped external Group grants nothing. Binding is by immutable external id — Happier never
 adopts a native `TeamGroup` because its name happens to match.
+
+Directory Group list projections report `memberCount`, distinct `boundAccountCount`, and
+`unboundPeopleCount` from the external Group roster. All three are `null` until a full
+observation exists and while the source is not active or a reconcile run is incomplete.
+These are roster binding counts, not exact native grant/removal counts: native membership
+eligibility and surviving contributions still determine the effects of a mapping change.
+
+A directory person's `accountBinding.teamMembershipId` links to the bound Account's actual
+same-Team membership, including independently native or differently managed memberships.
+This read projection does not change the provisioned identity's stored management pointer
+or claim ownership of that membership.
 
 ### Freshness, the worker, and Sync now
 

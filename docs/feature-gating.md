@@ -43,6 +43,15 @@ closed (an unmet catalog dependency, an inactive persistence contract, an absent
 - Enforce dependencies through `applyFeatureDependencies(...)`.
 - Do not duplicate dependency logic at call sites.
 
+### Browser automation capability ids
+
+`browser.automation` is the server-owned automation availability decision. The development
+`browser.automation.injectedPage` and `browser.automation.eval` ids retain their catalog
+dependencies and capability vocabulary, but do not introduce separate local environment
+opt-ins. UI and CLI local policy no longer read the former injected-page/eval `__ENABLED`
+variables. This does not add an eval implementation or bypass adapter support, the automation
+decision, or action approval requirements.
+
 ### External Sessions feature id
 
 **External Sessions** is the product and UI name. Its deployed feature id remains exactly `sessions.direct`.
@@ -261,7 +270,7 @@ substitute. The bit controls availability only. Current `readTranscript` and
 `editSessionRecords` capabilities, storage mode, Action policy, installed-plugin currentness, and
 renderer admission remain separate decisions at their existing owners.
 
-Hosted HTML and installed `sessionWidget` content do not add feature bits. They are source/runtime
+Hosted HTML and installed Session-targeted `widget` content do not add feature bits. They are source/runtime
 availability within an enabled Board. Unsupported renderers and unavailable plugins preserve the
 shared item and show a recoverable unavailable state.
 
@@ -373,16 +382,21 @@ They are deployment configuration read once by `readAuthEmailPasswordFeatureEnv`
 `email_password` module of the effective authentication-method decision.
 
 Both **default to `true`**, with each key as the operator opt-out. What actually decides the
-method is the persisted Home governance policy (`enabledMethodIds`, the administrator setting),
+method is the persisted Home governance policy (`enabledMethodIds`, the administrator setting;
+in both directions where the deployment leaves the key unset, while an explicitly set key is a
+lock the policy cannot override — `homeAuthenticationPolicyEnv.ts`, Home owner console plan §3.4),
 and self-service provisioning additionally requires transactional-mail readiness — the effective
 decision owner folds both in and answers `method_not_enabled`, `provisioning_not_enabled` or
 `email_delivery_unavailable` accordingly. A deployment-only default of `false` would be a second
 decision-maker for a fact the policy owner already holds, and a staging device of exactly the kind
 the rule above retires.
 
-The static `/v1/features` auth projection still omits `email_password` for released 0.2 clients,
-which classify an unknown method id as an OAuth provider; the complete contextual list is
-`POST /v1/auth/entry`. That omission is a compatibility contract, not a gate.
+The static `/v1/features` auth projection now publishes `email_password` through
+the same effective-method decision as the contextual `POST /v1/auth/entry`
+projection. The former omission existed only for the superseded released-0.2
+mixed-cohort transition; 0.3 components update together under the approved
+one-way upgrade and classify the native method directly rather than as an OAuth
+provider. This is a projection contract, not an independent feature gate.
 
 ### Provider feature dependencies
 

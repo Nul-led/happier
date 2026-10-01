@@ -101,6 +101,11 @@ HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT=1788000000000
   so a grant signed by an expired key stops verifying. Leave it unset for a key with no
   expiry, or set it when you are staging a rotation.
 
+In the 0.3 development implementation, the relay also refuses an expired signing key and
+reports preview relay readiness as unavailable. Configuring key bytes is not enough: the
+key must still be valid when a preview is admitted. This does not expire an already-open
+TCP tunnel.
+
 ### 3. Allow the ports previews may reach
 
 ```bash
@@ -156,8 +161,8 @@ Two more that look alike and are not:
   ranges.
 - **Previews worked and then stopped everywhere at once.** Check
   `HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT`. Once it passes, machines stop
-  trusting the key, and every grant fails verification even though the relay is happily
-  signing them.
+  trusting the key. The 0.3 development relay also stops advertising that signer and
+  refuses new grants until usable signing configuration is restored.
 
 <Callout type="info">
   `HAPPIER_FEATURE_MACHINES_TUNNEL_DIRECT_PEER__ENABLED` sounds like it would help here and

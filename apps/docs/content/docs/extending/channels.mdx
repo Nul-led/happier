@@ -21,18 +21,45 @@ contract and can add another.
 
 ## The two halves
 
-Channels separates *who you are connected to* from *what that connection drives*,
-and it is worth holding those apart because they are configured separately and
-can change independently.
+Channels separates *the bot you connect* from *the conversations it carries*,
+and it is worth holding those apart because they are configured in different
+places and change independently.
 
-**A connection** is the link to one conversation at a provider. It has its own
-lifecycle: you create it, prepare it, enable or disable it, transfer it to
-another machine, and eventually delete it.
+**A connection is one bot** — a Telegram bot, a Discord application's bot, or a
+GitHub account on one repository. It holds the credential reference, the
+machine it runs on, and its health. You create it once, test it, enable or
+disable it, transfer it to another machine, and eventually delete it. One
+connection serves every conversation linked through it, so a problem with the
+bot (a revoked token, another program reading the same Telegram bot) affects
+all of them at once.
 
-**A binding** points a connection at a target — a session or an automation.
-Bindings are enabled and disabled on their own, and a binding's target can be
-**rotated** without tearing down the connection underneath. That is the move
-when a session ends and you want the same Discord channel driving the next one.
+**A binding is one linked conversation**: one chat, channel, thread, issue or
+pull request, pointed at one target — a session or an automation. It carries
+who may talk in that conversation, which messages count, what is sent back,
+and whether people there may answer the agent's permission requests. A
+binding's target can be **rotated** without touching the bot underneath. That
+is the move when a session ends and you want the same Discord channel driving
+the next one.
+
+### Where you manage them
+
+- **Channels**, in the sidebar, lists every linked conversation grouped by
+  provider. Open one to see the session or automation it talks to, change its
+  settings (you review a change before it is saved), test its bot, **pause** it
+  or **unlink** it. Pausing stops messages in both directions and deletes
+  nothing. Unlinking removes the binding and keeps the bot connected. If you
+  never use channels, hide the Channels entry from the sidebar like any other
+  destination.
+- **Settings → Conversation Channels → Connections** holds the bots: connect
+  one, choose its machine and transport, test or transfer it, and recover it
+  when it needs attention. Linking a new conversation can also start here,
+  right after you connect a bot.
+- A session's **External conversations** tab lists the conversations that talk
+  to that session, read-only, with **Open in Channels** for each.
+
+Messages from a linked conversation appear in the session's transcript, and the
+agent's replies go back to the conversation. Channels does not keep a separate
+copy of the conversation to read.
 
 ## Getting connected
 
@@ -76,14 +103,16 @@ rather than at the first silent failure:
   connection time. Replies post as issue comments, so the credential needs
   write access to that same collection.
 
-Connecting a Discord or Telegram conversation runs a **pairing challenge** that
+Linking a Discord or Telegram conversation runs a **pairing challenge** that
 you then finalize —
 or cancel. You choose the conversation to connect; whoever claims it proves who
 they are by sending the challenge token to the bot in a **private message**, and
 is answered there once the request has been recorded. That keeps the token out
 of a group everyone can read while still connecting the group you picked.
-Pairing exists so that connecting a conversation is something somebody has to
-agree to, rather than something you can do to a channel from the outside.
+Pairing exists so that linking a conversation is something somebody has to
+agree to, rather than something you can do to a channel from the outside. A
+paired conversation is saved **paused**: review who can talk to it and what it
+sends back, then turn it on.
 
 ### Telegram polling conflicts
 

@@ -13,10 +13,9 @@
  * up with three dead links in the first place — the exact history its own
  * docblock records.
  *
- * The Android situation is deliberately not smoothed over. There is no public
- * Play listing; `ANDROID_PLAY_URL` 404s for everyone, and the manifest says in
- * as many words not to ship it. The APK is what Android users actually use, so
- * that is what this page leads with.
+ * The page follows the manifest's current public routes: Google Play is the
+ * primary Android listing, the direct APK remains available, and desktop
+ * downloads use the rolling aliases published under the stable tag.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -34,23 +33,32 @@ export function parseDownloadManifest(source) {
     if (!match) throw new Error(`downloads.ts is missing ${name}`);
     return match[1];
   };
-  const version = read('DESKTOP_VERSION');
   const base = /const DESKTOP_ASSET_BASE\s*=\s*\n?\s*'([^']+)'/.exec(source);
   if (!base) throw new Error('downloads.ts is missing DESKTOP_ASSET_BASE');
   const asset = (file) => `${base[1]}/${file}`;
+  const platforms = /export const DESKTOP_PLATFORMS[^=]*=\s*\[([\s\S]*?)\n\];/u.exec(source);
+  if (!platforms) throw new Error('downloads.ts is missing DESKTOP_PLATFORMS');
+  const desktop = [...platforms[1].matchAll(/\{([\s\S]*?)\}/gu)].map((match) => {
+    const field = (name) => {
+      const value = new RegExp(`${name}:\\s*'([^']+)'`, 'u').exec(match[1]);
+      if (!value) throw new Error(`downloads.ts DESKTOP_PLATFORMS entry is missing ${name}`);
+      return value[1];
+    };
+    const href = /href:\s*desktopAsset\('([^']+)'\)/u.exec(match[1]);
+    if (!href) throw new Error('downloads.ts DESKTOP_PLATFORMS entry has an unsupported href');
+    return {
+      label: `${field('label')} (${field('sublabel')})`,
+      href: asset(href[1]),
+    };
+  });
+  if (desktop.length === 0) throw new Error('downloads.ts DESKTOP_PLATFORMS is empty');
 
   return {
-    desktopVersion: version,
-    desktop: [
-      { label: 'macOS (Apple Silicon)', href: asset(`happier-ui-desktop-darwin-aarch64-v${version}.dmg`) },
-      { label: 'macOS (Intel)', href: asset(`happier-ui-desktop-darwin-x86_64-v${version}.dmg`) },
-      { label: 'Windows (x64)', href: asset(`happier-ui-desktop-windows-x86_64-v${version}.exe`) },
-      { label: 'Linux (x64, AppImage)', href: asset(`happier-ui-desktop-linux-x86_64-v${version}.AppImage`) },
-    ],
+    desktop,
     desktopReleases: read('DESKTOP_RELEASES_PAGE'),
     appStore: read('APP_STORE_URL'),
     androidApk: read('ANDROID_APK_URL'),
-    androidOptIn: read('ANDROID_PLAY_TESTING_OPT_IN_URL'),
+    androidPlay: read('ANDROID_PLAY_URL'),
     webApp: read('WEB_APP_URL'),
     installUnix: read('INSTALL_COMMAND_UNIX'),
     installWindows: read('INSTALL_COMMAND_WINDOWS'),
@@ -77,16 +85,11 @@ terminal prints a code for a browser or phone you are already signed in on.
 
 <Cards>
   <Card title="iPhone and iPad" href="${m.appStore}" description="Happier on the App Store." />
-  <Card title="Android (APK)" href="${m.androidApk}" description="Direct download. There is no public Play listing yet." />
+  <Card title="Android" href="${m.androidPlay}" description="Happier on Google Play." />
 </Cards>
 
-Android is worth a sentence of explanation. There is no public Google Play
-listing today — the Play track is closed testing, so the store page returns
-"not found" unless your Google account is already on the tester list. The APK
-above is a direct download and is how most Android users are running Happier.
-If you would rather go through Play, you can [join the testing
-programme](${m.androidOptIn}) first; the store page starts working for your
-account once you have.
+If you prefer a direct installation without Google Play, download the current
+[Android APK](${m.androidApk}).
 
 ## In a browser
 
@@ -105,10 +108,10 @@ session is running somewhere else.
 | --- | --- |
 ${desktopRows}
 
-Current desktop build: **v${m.desktopVersion}**. Every build is listed on the
-[releases page](${m.desktopReleases}) if you need an older one or a different
-architecture. The desktop app is versioned separately from the CLI, so its
-number will not match \`happier --version\`.
+Every desktop build is listed on the [releases page](${m.desktopReleases}) if
+you need an older one or a different architecture. The desktop app is
+versioned separately from the CLI, so its number will not match
+\`happier --version\`.
 
 ## On the machine that runs your agents
 

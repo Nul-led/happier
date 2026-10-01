@@ -25,11 +25,16 @@ The callback owns only resources the plugin acquired after activation began
 successfully. Happier invokes it at most once when that activation is no longer
 serving or when later validation fails.
 
-Activation belongs to one daemon-owned accepted generation. When a replacement
-is admitted, new work moves to that generation and the retiring generation's
+Activation belongs to one daemon-owned process-local occurrence. When a
+replacement is admitted, new work moves to that occurrence and the retiring occurrence's
 cleanup releases only its plugin-owned resources. Do not use cleanup to
 dispose host-owned Sessions, transcripts, candidates, or the previous
-generation's last-known-good fallback.
+occurrence's in-process fallback.
+
+Managed installation generations, bundled CLI-version custody, and trusted
+development source are separate package-lifetime facts. A daemon restart
+creates fresh occurrences; it does not promise to restore a historical
+development occurrence.
 
 If activation rejects before returning, use local `try`/`finally` for anything
 acquired directly. Happier can release host-tracked registrations and dynamic

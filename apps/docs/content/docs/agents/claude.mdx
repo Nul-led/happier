@@ -17,7 +17,7 @@ Remote mode currently has **three implementations**:
 | Runtime | Default | What it is |
 | --- | --- | --- |
 | **Unified terminal** | Off | Happier hosts **Claude Code’s own TUI** in a terminal session and types prompts into its composer, so the app and the terminal share one Claude Code run. See [Claude unified terminal](/sessions/claude-unified-terminal). |
-| **Agent SDK remote** | On | Uses the official `@anthropic-ai/claude-agent-sdk` to run Claude, publish capabilities, and (optionally) enable file checkpointing. |
+| **Agent SDK remote** | On | Happier runs the Claude Code CLI through its native Agent SDK JSON stream integration, publishes capabilities, and can enable file checkpointing. |
 | **Legacy remote** | Fallback | Our older “SDK-like” shim that spawns `claude` with a streaming output format and uses a hook-forwarding workaround for session info. |
 
 Selection order is: unified terminal when it is enabled, otherwise Agent SDK, otherwise legacy. Happier makes that choice when the provider session starts and keeps it for the life of that session, so changing the setting affects the next Claude session you start rather than the one already running.
@@ -39,7 +39,7 @@ Local control is started from the terminal. Use `happier attach <session-id>` on
 
 If you send a message from the app while Claude is locally controlled, Happier stores it in the pending queue first. When Claude is idle, Happier can switch back to remote control and process the queued message. If Claude is still working in the terminal, Happier waits until the local turn finishes or stops before switching, so the app message does not interrupt the current Claude turn.
 
-On machines with `tmux`, this is usually a tmux-backed attach flow. On Windows, use Happier’s Windows remote session mode (`Windows Terminal`, `Console`, or `Hidden`) instead of expecting tmux.
+On macOS and Linux, the selected terminal host can be tmux or zellij. Development builds also support Herdr: starting `happier claude` inside Herdr reuses the current pane. On Windows, use Happier’s Windows remote session mode (`Windows Terminal`, `Console`, or `Hidden`).
 
 For the full workflow, see [Features → Attach to a running session](/sessions/attach-to-session).
 
@@ -202,17 +202,18 @@ In the app:
 3. **Claude (remote)**
 
 Most settings below affect **Claude remote mode only**.
-The one exception is **Experimental: local permission bridge**, which affects **local mode**.
+**Discover models dynamically** affects the model picker for both Connected Services and the native Claude Code login. **Experimental: local permission bridge** affects **local mode**.
 
 ## Settings reference (Claude remote)
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| **Discover models dynamically** | On | Asks Anthropic which models are available to the selected Connected Service or native Claude Code login. Turn it off to use Happier's built-in Claude catalog without reading those credentials or making the catalog request. |
 | **Use unified terminal runtime** | Off | Runs Claude Code’s own TUI in a terminal session and drives it from the app. Takes precedence over the Agent SDK runner. See [Claude unified terminal](/sessions/claude-unified-terminal). |
-| **Terminal host** | Auto | Unified terminal only. **Auto** uses `tmux` when available, otherwise Happier’s bundled zellij. You can also force **tmux** or **zellij**. |
+| **Terminal host** | Auto | Unified terminal only. **Auto** uses `tmux` when available, otherwise Happier’s bundled zellij. You can also force **tmux**, **zellij**, or **Herdr**. An already-active supported terminal host is reused. |
 | **Large-session resume** | Ask every time | Unified terminal only. How Happier answers Claude’s question about resuming a large session: ask, resume from summary, or resume the full session. |
 | **Workspace trust** | Ask every time | Unified terminal only. How Happier answers Claude’s workspace trust question: ask, always trust Happier workspaces, or always reject them. |
-| **Use Agent SDK fallback** | On | Enables the official Agent SDK remote runner (`@anthropic-ai/claude-agent-sdk`) when the unified terminal runtime is off. When this is off too, Happier uses the legacy remote runner. |
+| **Use Agent SDK fallback** | On | Enables Happier's Agent SDK remote runner when the unified terminal runtime is off. When this is off too, Happier uses the legacy remote runner. |
 | **Setting sources** | User + Project | Controls what Claude settings get loaded: **Project only** loads repo config (for example `CLAUDE.md`); **User + Project** includes user-global config too (including user-defined MCP servers); **None** ignores both for maximum determinism. |
 | **Force-enable Agent Teams (experimental)** | Off | When enabled, Happier force-enables Claude Code experimental Agent Teams for all Claude starts (local + remote). When off, Happier does not force-disable and Claude uses its own defaults. |
 | **Experimental: local permission bridge** | On | In local mode, forwards Claude permission prompts into Happier so you can approve/deny from the app UI instead of only in the terminal. |
@@ -234,6 +235,8 @@ Happier does not have a Claude-specific “env var” CLI flag. To set environme
 - **Remote mode (from the app UI)**: set env vars on the profile/session in the UI (Happier forwards them to the spawned Claude process).
 
 Remote Agent SDK mode uses a filtered environment by default, but **explicit** GUI/profile env vars (and connected-services auth env vars) are forwarded to the Claude subprocess so workflows like GitHub integration can work without leaking the full parent `process.env`.
+
+Set `HAPPIER_CLAUDE_DYNAMIC_MODEL_PROBE_ENABLED=0` in the Happier CLI/daemon environment for a machine-local model-discovery kill switch. The environment variable cannot turn discovery back on when **Discover models dynamically** is off.
 
 ## Agent Teams (Claude swarms) in Happier
 

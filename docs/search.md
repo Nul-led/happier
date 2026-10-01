@@ -68,6 +68,39 @@ other transcript body into immediate matching. Exact title/session/project
 matches precede other metadata, then transcript-provider order, with outside
 matches kept in the contextual `Other matches` group.
 
+## Session-list identity, lifetime and filters
+
+The contextual Session-list consumer shares rows with the existing per-Home
+runtime; it does not give Search ownership of those rows or the pagination
+frontier. The following Lane 07 corrections are required and in progress on the
+0.3 development branch. They are not a completed-validation or release claim.
+
+- An explicit `{ serverId, sessionId }` remains exact through route hydration,
+  activation and workspace display. Only a verified profile alias may normalize
+  its Home. An unavailable Home does not become the focused Home, and a bare-ID
+  project match cannot replace facts belonging to the qualified row.
+- Mounting another consumer with unchanged credentials preserves the existing
+  Home's rows and frontier. Actual credential replacement retires the affected
+  projection through the credential/runtime lifecycle, not a consumer's mount
+  callback. Refresh requested during pagination retains its page-one replacement
+  intent and settles only when that refresh finishes.
+- Each acquisition owns its cancellation. Independent reads may share hydrated
+  rows, but one cannot supersede another merely because both use the same Home,
+  query or `rowOnly` membership. Deletion or revocation during asynchronous
+  hydration must still exclude the address when membership is published.
+- In a fixed Team view, pruning the last authoritatively deleted Group restores
+  that Team audience rather than broadening the list to every accessible Session.
+  An incomplete roster cannot prove deletion. The compact tag selector exposes
+  each applied tag as an independent multi-selection state, separate from the
+  keyboard-highlighted option.
+
+These corrections belong to `useHydrateSessionForRoute` and the existing display
+target owner; the credential and `concurrentSessionCache` lifecycles;
+`sessionSnapshot` and `sessionListQueryController`; and the shared
+`sessionListViewFilters` / `SessionListSearchChrome` controls. Their consumers must
+also preserve [list incompleteness](protocol.md#session-awareness-development):
+exhausted cursors do not prove that all authorized rows were returned.
+
 ## Target scoping
 
 Scope is Search-local, contextual, and exclusive, never a fanout. Opening the

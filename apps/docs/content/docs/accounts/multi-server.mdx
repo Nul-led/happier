@@ -58,14 +58,32 @@ background service per Home.
 - If a connect/notification link targets a different **saved** Home, Happier switches to that Home before continuing.
 - If a notification targets a Home that is **not saved yet**, Happier does not blindly replace your existing setup.
 
+Choose **Add a Home** to find Homes through a sign-in service or connect directly
+by address. A direct connection checks the address before saving it, asks before
+using remote HTTP, and asks whether to use a different canonical address advertised
+by the Home. Keeping the entered address does not cancel the connection. If this
+Home already has a saved connection descriptor, Happier reuses that saved
+connection unchanged rather than replacing it with the entered address. An
+unreachable address stays in the form for correction or retry; a Tailscale address
+can offer connection guidance and, in the desktop app, a remediation action.
+
+After connecting directly and signing in, the first usable Home can become the focused
+Home. If the device already had usable Homes, adding another keeps the existing
+focus and offers **Open Home** or **Show All Homes**.
+Choosing a sign-in service as a Home follows the same focus rule: signing in
+adds that Home without moving away from an already usable Home.
+
 #### Notifications from a server that is not saved yet
 
 Happier handles this differently depending on what is already on the device:
 
-- **No saved Homes yet**: Happier can bootstrap the server so the notification link still opens the intended session
-- **One or more saved Homes already exist**: Happier opens **Settings → System → Homes** with the incoming URL prefilled and asks you to add it explicitly
+- **No saved Homes yet**: Happier checks the supplied address before saving and selecting that Home.
+- **One or more saved Homes already exist**: Happier opens the **Add a Home** draft with the incoming address prefilled and asks you to connect it explicitly.
 
-After you choose **Add & Use**, Happier continues to the pending session/request automatically.
+Adding a Home does not itself approve a pending request. In the 0.3 development
+line, the draft retains the notification intent at its original address and does
+not automatically replay it after connecting, including when the Home advertises
+a different canonical address. Open the Home and its Session to continue.
 
 ### Configure-server links
 
@@ -75,7 +93,9 @@ Installers and setup commands can print one-click links:
 - `<WEBAPP_URL>/?server=<ENCODED_SERVER_URL>` (preferred)
 - `<WEBAPP_URL>/server?url=<ENCODED_SERVER_URL>&auto=1` (legacy)
 
-These prefill server settings so users do not have to paste URLs manually.
+These retain the supplied address so users do not have to paste it manually.
+Unknown addresses go through the same connection checks before being saved;
+already-saved targets use the existing Home selection.
 
 ## CLI Home targeting
 
@@ -113,19 +133,21 @@ Prefer the saved Home form for routine use. URL flags remain useful for HTTPS co
 
 ## One background service per Home
 
-Install one background service per saved Home:
+Install one background service per saved Home. `--instance <id>` pins each service to that Home; without it, `service install` installs the single default service, which follows whichever Home `happier server use` selected:
 
 ```bash
-happier --server personal service install
-happier --server company service install
+happier --server personal service install --instance personal
+happier --server company service install --instance company
 ```
+
+Always pass the same id to `--server` and `--instance`: `--instance` on its own names the service but bakes in the currently selected Home.
 
 Check status:
 
 ```bash
 happier service list
-happier --server personal service status
-happier --server company service status
+happier --server personal service status --instance personal
+happier --server company service status --instance company
 happier daemon status --all
 ```
 
@@ -157,7 +179,10 @@ That is expected when the previous sessions belong to another server. Switch bac
 
 That usually means the notification came from a server URL that is not saved on this device yet, while you already had other saved Homes.
 
-Happier does this on purpose so it does not silently add or trust a new server in the background. Add the Home from the prefilled form, then Happier will continue to the intended session.
+Happier does this on purpose so it does not silently add or trust a new server in
+the background. Connect from the prefilled form and sign in to that Home. In the
+0.3 development line, the draft does not automatically continue the notification;
+open the Home and its Session after signing in.
 
 ## Related
 

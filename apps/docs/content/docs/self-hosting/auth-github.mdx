@@ -247,6 +247,12 @@ administers the exact organization. Happier also checks the installation identit
 permissions, suspension state, and host before making it eligible for a managed identity
 connection. The App needs **Organization permissions → Members: Read**.
 
+The installation detail separates **Current access**, needed by enabled consumers,
+from **Setup and repair access**, which also includes configured providers that are
+disabled and directory sources that are paused. An empty current list does not mean
+a draft can be enabled without the setup permissions. These lists describe required
+grants; they do not themselves enable a sign-in connection or directory source.
+
 After creating the managed identity-provider instance, add its exact user OAuth callback to
 the GitHub App:
 

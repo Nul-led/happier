@@ -66,11 +66,21 @@ This matters because the available list can depend on:
 
 Use the refresh button after changing Agent login state, Provider connection settings, CLI config, Custom ACP settings, or working directory.
 
+In development builds with session model refresh, you can also refresh native model choices from
+an existing session's picker, including an inactive session. Its machine must be reachable, but
+refreshing does not resume the session. Happier keeps previously discovered choices visible while
+checking for updates and retains them if the check fails. Retry after restoring the machine
+connection or Agent login. Update both the app and daemon to use forced refresh; an older daemon
+may still return cached choices.
+
+Refreshing available choices does not change the model already running. Select a model separately;
+the Agent's normal apply timing still applies.
+
 ## Static model lists
 
 Not every Agent or Provider has a dynamic model API.
 
-For static-only sources, Happier uses verified plugin catalog metadata. Claude's native list is a common example.
+For static-only sources, Happier uses verified plugin catalog metadata. Claude instead starts from that static catalog and, by default, asks Anthropic for the models available to the selected Connected Service or native Claude Code login.
 
 Static model lists can still change when Happier updates its provider catalog.
 
@@ -145,7 +155,8 @@ For dynamically probed sources:
 For static-only sources:
 
 - favorites are checked against verified plugin catalog metadata;
-- native Claude models can be favorited without a live Provider probe.
+
+Claude keeps its verified static catalog when dynamic discovery is disabled or no usable Claude credential is available, so native Claude models remain selectable without a successful live probe.
 
 If a saved favorite no longer appears in the current catalog, Happier keeps it visible as a stale reference with a setup hint. It is not silently redirected to another connection or model.
 

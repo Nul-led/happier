@@ -25,6 +25,8 @@ This file must not be used to locate current owners or plan new changes. Re-deri
 
 ## Session lifecycle surfaces
 
+In development source, the Claude terminal provider operations retain the exact host handle immediately after the host service persists and returns its attachment. The existing session-close disposal operation can destroy that owned host while initial readiness is still pending; it does not depend on a provider-ready callback. The host service enforces attachment identity before destruction.
+
 | Feature | Status | Current owner / source areas | Current behavior / special cases | Unified architecture migration notes |
 | --- | --- | --- | --- | --- |
 | Direct session browse/list | `supported` | `packages/plugins/claude/src/agent/**`, `apps/ui/sources/agents/providers/claude/directSessions/resolveClaudeBrowseSourceOptions.ts`, `apps/ui/sources/agents/providers/claude/uiBehavior.tsx` | UI exposes only one Claude direct source today: `{ kind: 'claudeConfig' }`; discovery walks `~/.claude/projects/**.jsonl` and lazily reads session titles. | Promote direct-source selection into the same provider runtime record used by resume/takeover instead of a Claude-only browse option. |

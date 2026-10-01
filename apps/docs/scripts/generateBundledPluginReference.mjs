@@ -4,7 +4,7 @@
  *
  * This page exists because "source control is a plugin now" is the single
  * hardest thing to believe about this line of the codebase, and the only
- * convincing answer is the list. Forty-three plugins ship bundled: every coding
+ * convincing answer is the list. Dozens of plugins ship bundled: every coding
  * agent, every model provider, every voice engine, both version-control
  * backends and all four hosting forges.
  *
@@ -182,15 +182,16 @@ description: Every plugin Happier bundles — agents, model providers, voice eng
 ---
 
 Happier bundles ${plugins.length} plugins. That number is the clearest statement
-of how this version is built: the coding agents, the model providers, the voice
-engines, both version-control backends and all four hosting forges are plugins,
-loaded through the same manifest, trust and activation path your own plugin
-would use.
+of how this version is built: coding agents, model providers, voice engines,
+version-control backends and hosting forges all use the plugin platform.
 
-They are not a privileged tier. A bundled plugin declares its contributions in a
-manifest, gets projected into catalogs without its code being executed, and
-activates the same way. Reading one is the most useful thing you can do before
-writing your own.
+A bundled plugin declares contributions in the same cold manifest, projects
+into catalogs without executing code, and enters the same daemon slot and
+contribution owners as another admitted plugin. Its package custody is
+different: first-party bundled code loads from the exact CLI version root or a
+pinned runner snapshot, never from a managed third-party installation
+generation. Reading one is the most useful thing you can do before writing your
+own.
 
 ## The plugins
 

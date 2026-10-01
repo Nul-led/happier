@@ -15,8 +15,18 @@ This page focuses on **local / internal installs** for your own devices or team.
 ## How notifications work (architecture)
 
 - The app registers an **Expo push token** and saves it to the server (`/v1/push-tokens`).
-- The CLI fetches saved tokens from the server and sends notifications via Expo’s push API.
-- The server stores tokens, but does **not** send push payloads in the current design.
+- The CLI/daemon continues to own ordinary rich runtime notifications and can submit them through
+  Expo's push API.
+- For opted-in closed-app collaboration alerts, the server/Home submits the existing generic
+  `activity_alert` payload using the stored token. The capable, enrolled mobile build rechecks
+  access and recipient privacy locally and enriches it when possible, otherwise showing the safe
+  generic fallback. The separate `session_changed` background wake is best-effort reconciliation,
+  not a user-visible alert, and cannot replace the native alert consumer.
+- Quiet hours are evaluated from the recipient's canonical policy (Home-side for the remotely
+  published delivery projection, then device/OS-side for local display). This does not promise
+  exactly-once delivery or bypass platform notification settings. They are a per-channel/event
+  delivery decision, not a blanket shutdown of in-app attention or independently configured
+  channels such as webhooks.
 
 ## Requirements for a custom build
 

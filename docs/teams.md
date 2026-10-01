@@ -102,6 +102,15 @@ network-policy fingerprint, installation id, and organization id. A changed fact
 attempt fail closed. Successful verification records the observed organization identity,
 permissions, repository selection, suspension state, and events.
 
+Installation administration separates current access requirements from prospective setup and
+repair requirements. `requirements` includes enabled Home identity providers, enabled Team
+providers with an enabled connection, and directory sources that are not paused.
+`prospectiveRequirements` also includes disabled provider drafts and paused directory sources,
+so administrators can see the grants needed before enabling or resuming them. Both use the same
+consumer requirement union as readiness checks; neither projection grants access. The optional
+prospective field is absent on older development servers, where clients retain the older
+undifferentiated display.
+
 Managed identity and directory consumers require a verified, unsuspended installation, a
 verified registration, current credentials, the required organization-member permission,
 and an eligible Home/Team owner. The identity-provider instance is then the public selection
@@ -157,6 +166,21 @@ owner rolls the whole transaction back, so an ownerless Team cannot exist.
 
 - Home policy decides who may create: `self_service`, `managed_only` (owner/admin), or
   `disabled`. The database and Personal Home default is `managed_only`.
+- `home.governance.eligibility.get` is the member-facing answer. Besides `teamsEnabled`,
+  `createTeam` and `createTeamForChosenAccount`, it gives an **active** Account the creation
+  policy class (`teamCreationPolicy`), the active owners' then administrators' display labels
+  (`administratorNames`: names only, never ids or emails) and `showTeams`, whether this viewer
+  is offered the Teams destination. An Account that is not active gets none of the three. They
+  are optional on the wire: a client treats their absence (an older Home) as "Teams shown" and
+  names the refusing Home instead of its administrators. This relaxation of the minimum
+  eligibility contract is a 2026-09-26 user ruling (`apps/server/sources/app/home/governance/homeGovernanceService.ts`).
+- `teamsVisibleToMembers` ("Show Teams to members", Home administration → Policies) is part of
+  the same revision-guarded Home policy document and authorized like the creation policy
+  (owners and admins). It defaults to on, and a Home that never stored it shows Teams. When it
+  is off, a member who belongs to no Team is not shown Teams. Members of a Team always are,
+  and administrators are unless creation is `disabled`: with creation off, only Accounts that
+  belong to a Team see the destination. Changing it wakes every active Account, and Team
+  membership changes wake the eligibility answer too.
 - Under managed creation an authorized Home administrator **must** name the
   `initialOwnerAccountId` — omitting it is `invalid_team_input`, because a Team created for
   somebody else must not silently make the administrator its owner. Naming themselves stays

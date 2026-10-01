@@ -39,6 +39,26 @@ out-of-process producer that cannot participate in the server transaction needs 
 approved integration contract; the deployment-local `--claim-home-owner` command remains an
 operator setup/recovery tool and is not a substitute for atomic managed provisioning.
 
+Operators and owners reach the same transition through three adapters, all ending in
+`claimHomeOwnerInTx` with its zero-active-owner precondition (Teams Lane 01.02 AM-1, Home owner
+console plan §3.5):
+
+- `happier-server --claim-home-owner=<accountId>` (deployment command; audit actor
+  `deployment_command`);
+- the hosting desktop's hsetup task `relay.runtime.personal_home.claim_owner.v1`, which runs that
+  command against the local Personal Home runtime (installed server binary, `server.env`) while the
+  runtime keeps running (SQLite WAL), under the Personal Home data-operation lease so it never
+  interleaves with a backup, restore, erase, relocation or update. Only hsetup registers it; the
+  daemon does not advertise it;
+- `POST /v1/home/governance/claim` (`home.governance.claim`), redeeming a one-time code minted on
+  demand by `happier-server --print-home-claim-code`. The code is 32 random bytes, stored only as
+  a SHA-256 in `SimpleCache` key `home.owner-claim-code.v1` (a new print replaces it), expires
+  after 15 minutes, is spent in the claiming transaction (a refused claim rolls the spend back),
+  and is rate-limited per address (`home.governance.claim`). Every refusal is the same
+  `home_claim_refused` 403. The audit actor is the claiming Account with `via: 'claim_code'`.
+  Holding a code proves the same deployment-level access as the command, so this is not a public
+  bootstrap route: nothing is claimable until an operator prints a code.
+
 ## Required services
 1. **Postgres**
    - Required for all persisted data.

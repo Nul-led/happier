@@ -187,11 +187,14 @@ second credential store. Resource access has two intentionally different privacy
   can configure that Machine directly or choose a personal Machine Pool. For a genuinely new
   Pool-backed open, the source-owning daemons return only current eligibility status, the Home
   applies the canonical Pool selector once, and the ordinary exact-Machine broker path continues.
-  An external API key has one operation per key, established on its first admitted inference:
-  the admission UsageEvent names that broker Machine, and the key's later requests go back to it
-  while it is present, an eligible broker and able to run the source. Pool tier reordering,
-  disabling and removal therefore affect only future opens; a gone or source-invalid Machine
-  ends the operation and the next request is a fresh selection, never a replay. The Home admits the current Account, Team resource, Session or execution run, policy, limits,
+  An external API key's retained operation must stay on its selected exact Machine. Pool tier
+  reordering, disabling and removal affect future opens only. Lost presence, unavailable source
+  readiness or a failed RPC is not proof of retirement and must not trigger reselection.
+  **Development completion gap:** the current admission UsageEvent anchor cannot establish
+  operation lifetime or arbitrate requests before first admission. The approved correction
+  extends the existing external-key/admission aggregate with a private current-operation binding
+  and compare-and-clear retirement from actual daemon custody cleanup. That integrated path is
+  not yet complete; read-only model listing must not establish an operation. The Home admits the current Account, Team resource, Session or execution run, policy, limits,
   and placement for each request; the broker then performs the Provider request. Recipients do
   not receive credential bytes, the private Pool roster, or Pool-management authority.
 - **Direct** access deliberately discloses usable current material to an authorized recipient for
@@ -227,6 +230,15 @@ accountable Account independently of message authorship. Background work must no
 authority from Machine ownership, the last human message, or Session storage ownership. External
 API keys identify one resource and accountable API client; they do not let a caller select a
 Machine, source member, Pool member, internal bearer, or loopback endpoint.
+
+The assigned member is also the external key's authentication principal. A self-assigned key
+captures that Account's current authentication evidence at creation. A key created for another
+member carries no manager proof: the assignee authorizes the exact resource/key through
+`teams.credentials.externalKeys.authorize`. The existing key row stores the canonical Lane 03
+evidence snapshot; bearer verification and broker admission recheck it against current identity,
+Team policy, membership, and resource entitlement. Authorization never returns or replaces the
+bearer. Qualified managers list all safe key summaries; entitled assignees can list their own
+summaries to repair authentication, without source or audience internals.
 
 Recipient catalogs expose only selection and recovery facts. Source identity, broker placement,
 grant internals, revisions, limits, and encrypted material remain manager/source-owner data.
@@ -309,6 +321,8 @@ Dependencies are declared in `packages/protocol/src/features/catalog.ts` and app
 ## Migration and retained compatibility
 
 The migration from overloaded launch profiles is versioned and atomic through account-settings compare-and-swap updates.
+
+In development 0.3, remembered profile evidence comes from the Account authoring-memory row, not the Settings document. After a successful Settings migration, its removal disposition conditionally clears that row only if the remembered profile still matches the captured choice. A repeat run repairs an interrupted clear without overwriting a newer choice. The three shipped 0.2 authoring-memory keys are imported destination-first and retired with exact Settings CAS; unrelated Settings roots are preserved.
 
 - legacy DeepSeek, Z.AI, and OpenAI routing profiles migrate to provider connections;
 - Anthropic, Codex, and Gemini machine-login placeholders collapse to **Default Environment**;

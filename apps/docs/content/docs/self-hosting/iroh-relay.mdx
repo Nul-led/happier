@@ -131,6 +131,36 @@ These variables configure the Happier side, not the relay image above. The serve
 additionally requires a stable `HAPPIER_CANONICAL_SERVER_URL` — see
 [Environment variables](/self-hosting/env).
 
+### Persist the Home and Machine settings
+
+Home and Machine runtimes persist these values through different owners:
+
+- For a Personal Home, set the variables in the environment used for `happier home create` (local
+  or `--ssh`). The Personal Home installer writes the normalized values into that Home's managed
+  runtime configuration, and later reconciliation keeps them there.
+- For this computer's Machine daemon, set the variables while running `happier service install`.
+  The installer validates and normalizes the two supported values, writes only those canonical
+  keys into the launchd, systemd, or Windows Scheduled Task definition, and restarts the service.
+  Re-running `happier service install` without a relay override retains the values already in that
+  service definition; `happier service repair` also retains them when replacing the selected
+  service owned by the same Happier Home. Run the install command with new values to update them.
+
+For direct-only operation, set `HAPPIER_IROH_RELAY_POLICY=disabled` and make sure
+`HAPPIER_IROH_RELAY_URLS` is unset. Do not put relay credentials or unrelated shell variables into
+either setting.
+
+In the current 0.3 development clients, **Standard only** in the device's server settings is a
+different choice: new Home connections and Machine transfers on that device do not acquire an
+Iroh carrier. Existing finite transfers finish on their selected route. CLI authentication and
+the Machine daemon can select the same mode with
+`HAPPIER_HOME_CARRIER_POLICY=standard_only` in their process environment; the default is
+`automatic`. An invalid explicit value stops that client operation. Standard only needs an
+independently reachable HTTPS Home or eligible Standard Machine route; an Iroh-only target is
+unavailable. Unlike the relay policy above, Standard only also prevents direct Iroh contact from
+that client. It does not change the Home server's advertised endpoint for other clients. For a
+managed Machine daemon, set the variable while running `happier service install`; the selected
+mode is retained by later service updates and repair unless explicitly overridden.
+
 ## Trust and path selection
 
 The managed profile accepts every EndpointId authenticated by Iroh and forwards

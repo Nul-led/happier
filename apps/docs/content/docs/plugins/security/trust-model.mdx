@@ -1,33 +1,40 @@
 ---
 title: Trust model
-description: Understand Happier's whole-package Install & Trust boundary.
+description: Understand Happier's package-level trusted-code boundary.
 ---
 
 Plugins are trusted code packages, not sandboxed extensions. A plugin can contain daemon code and React Native client code with the privileges of the Happier process or client realm in which it runs.
 
-## Install & Trust
+## Trusted-code decision
 
-Happier validates and projects the cold manifest before importing executable code. Installing executable code requires an explicit **Install & Trust** decision for the whole package:
+Happier validates and projects the cold manifest before importing executable
+code. A first install from Settings or a catalog presents one concise decision
+for the whole package, selected machine, and new authority or credential
+access. An explicit CLI install command is the code-trust action for its exact
+source:
 
 ```bash
 hdev plugins install <archive-path> --kind archive
 ```
 
-The interactive flow presents the exact package facts and records the approving
-user's decision. A headless installation that still needs trust stops for
-review. A manifest contribution, action, command, or runtime registration
-cannot approve or widen package trust.
+The CLI does not add a second trust ceremony. When a change needs a separate
+authority or credential decision, interactive mode presents it and JSON mode
+returns a typed pending decision. A manifest contribution, action, command, or
+runtime registration cannot approve or widen that authority.
 
-Trust the package only after reviewing its source, build inputs, dependencies, declared host access, executable entrypoints, and UI artifacts. Updating the package can change any of those surfaces and deserves the same scrutiny.
+Trust the package only after reviewing its source, build inputs, dependencies,
+declared host access, executable entrypoints, and UI artifacts. An
+authority-neutral update does not prompt merely because bytes changed. New or
+widened declared authority is shown as a delta and requires a decision.
 
 ## Development sources
 
 `hdev plugins dev` starts the supported local development loop from the
-plugin directory. The CLI inspects the project, observes source changes, and
-submits each captured batch to the running daemon. The daemon-owned candidate
-lifecycle prepares author dependencies before it validates and adopts a
-development generation. Development convenience does not turn untrusted code
-into a sandbox.
+plugin directory. The thin CLI selects the source; the daemon observes that
+source, prepares author dependencies, validates each atomic candidate, and
+adopts a process-local occurrence. An invalid candidate leaves the previous
+occurrence serving only for that daemon lifetime. Development convenience does
+not turn untrusted code into a sandbox or create immutable installed custody.
 
 ## Static projection
 

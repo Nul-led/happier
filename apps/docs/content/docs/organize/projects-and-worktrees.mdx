@@ -137,6 +137,42 @@ That means:
 - if you are on the main checkout, the terminal starts from the project root
 - if you were looking at the worktrees overview, opening the terminal exits overview and opens the details tab
 
+## Make a workspace available on another machine
+
+<Callout type="info">
+Linked workspace creation is development-only on the 0.3 line. It requires matching workspace
+operation support and the managed sync component on the participating machines; it is not a
+stable or preview availability claim. An unavailable component or unsupported operation asks
+for an update instead of falling back to another file-transfer system.
+</Callout>
+
+Open the selected workspace's details and choose **Add machine** under **Available on**.
+Choose the destination machine and folder, then decide how that copy will be used:
+
+- **Replica** carries source changes to the destination while preserving destination-only files.
+- **Exact replica** can remove destination-only files and requires explicit approval for that
+  continuing behavior.
+- **Editable copy** accepts changes from either endpoint and surfaces differences it cannot
+  reconcile for review.
+
+Using an existing folder and creating one from the source are separate choices. Attaching an
+existing editable checkout does not silently replace it with the source: its differences are
+reconciled through the link. Creating from the source can replace existing destination content,
+so Happier first asks for approval when replacement is required. Advanced options control each
+link's file selection; different copies can intentionally exclude different files.
+
+You can add several copies around one main workspace. If you start from an already linked
+copy, the form identifies that set's main workspace as the source. It does not create a second
+link between the two copies. Several editable copies share live work in progress, not an
+immutable revision or a file-history archive. Separate Git worktrees remain useful when agents
+need to work independently.
+
+Linking does not start a session. Return to **Available on** to inspect status, compare conflicts,
+pause a link, or stop syncing while leaving its folders in place. If cancellation or a lost
+connection leaves the result uncertain, inspect the relationship before trying again; canceling
+does not mean that committed linking or file changes were rolled back. See
+[workspace status and conflict resolution](/sessions/session-handoff#living-with-a-synced-workspace).
+
 ## Review comments in projects
 
 Projects support the same review-comment drafting model as session repository surfaces.

@@ -1,6 +1,6 @@
 ---
 title: Home owner setup & recovery
-description: Give a self-hosted Home its first owner, or recover ownership after losing it, using the deployment-local server command.
+description: Give a self-hosted Home its first owner from the app with a one-time code, or with the deployment-local server command, and recover ownership after losing it.
 ---
 
 Every Home has roles: `owner`, `admin`, and `member`. Owners administer Accounts and Home
@@ -13,11 +13,48 @@ safe way to get its first one.
   and release notes for the server binary you are running.
 </Callout>
 
-Signing up never makes anyone an owner. There is no "first account wins" rule, no public
-claim endpoint, and no bootstrap token or setup password to leak or forget. Instead, the
-first owner is named by somebody who already has shell access to the deployment.
+Signing up never makes anyone an owner. There is no "first account wins" rule and no
+standing bootstrap token or setup password to leak or forget. Instead, the first owner is
+chosen by somebody who already has shell access to the deployment, in one of three ways:
 
-## Establish the first owner
+- **From the app, with a one-time code** the server prints on request (below).
+- **From the computer that hosts a Personal Home**: Home Administration shows **Make me the
+  owner**, which runs the command below on that computer for you.
+- **From the shell**, naming the Account with `--claim-home-owner`.
+
+## Claim from the app with a one-time code
+
+On the machine that runs the server, as the same user and with the same environment:
+
+```bash
+happier-server --print-home-claim-code
+```
+
+It prints one JSON line with the code and when it expires, then exits:
+
+```json
+{
+  "v": 1,
+  "command": "print-home-claim-code",
+  "result": { "status": "minted", "code": "ABCD-EFGH-…", "expiresAt": "2026-09-27T10:15:00.000Z" }
+}
+```
+
+Then sign in to the Home in Happier, open **Settings → Homes → your Home → Home
+Administration**, paste the code, and choose **Claim**. The Account you are signed in with
+becomes the owner.
+
+- The code works **once** and expires after **15 minutes**. Printing a new code replaces
+  the previous one.
+- It is printed only when you ask for it — never at startup — so it does not end up in
+  your server logs.
+- A Home that already has an owner prints no code (`"status": "already_owned"`, exit `1`).
+- Every failed attempt shows the same message — a mistyped, used or expired code, or a Home
+  that already has an owner, all read alike — so guessing learns nothing. Attempts are
+  rate-limited per address.
+- The claim is recorded in the Home's Activity with your name.
+
+## Establish the first owner from the shell
 
 Run the server binary with the Account you want to promote:
 
@@ -83,12 +120,14 @@ server does not hold.
 ## Personal Home
 
 A managed Personal Home assigns its owner during setup, so you should not need this command.
-If a Personal Home somehow has no owner, the command works there too.
+If a Personal Home somehow has no owner — for example several people joined before anyone
+was made owner — open Home Administration in the desktop app on the computer that hosts it
+and choose **Make me the owner**, or use either command above.
 
 ## Related
 
 - [Home administration](/self-hosting/home-administration) — what an owner does once the Home has one.
-- [Authentication](/self-hosting/auth) — the deployment-level sign-in methods this Home can narrow.
+- [Authentication](/self-hosting/auth) — the deployment-level sign-in settings; an owner can turn them on or off from Home Administration unless the deployment sets them explicitly.
 
 <Callout type="info">
   Both server flavors accept these arguments. Run the command as the same user, with the

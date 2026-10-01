@@ -48,7 +48,7 @@ way these are — see the [SCM guide](/plugins/guides/scm) in the Plugin SDK.
 | Provider | Creating a request | Credential |
 | --- | --- | --- |
 | GitHub | Connected-account REST first, then authenticated `gh`, then a no-auth compare URL | Connected GitHub account |
-| GitLab | Authenticated `glab`, then a no-auth compare URL | — see below |
+| GitLab | Development source: connected-account REST, then a no-auth compare URL | Connected GitLab account; see the version note below |
 | Bitbucket | Bitbucket REST API | Connected account: email or username, plus an API token |
 | Azure DevOps | Azure DevOps REST API | Connected account: an explicitly configured organization (Services) or collection path (Server), plus a PAT |
 | Unknown remotes | Safe unsupported state, no write actions | — |
@@ -58,14 +58,19 @@ Two provider-specific details are worth knowing before you plan around them:
 - **GitHub Enterprise** remotes are detected, but the connected-account REST
   path is built for github.com. Enterprise and self-hosted remotes generally
   fall through to `gh` or to the compare URL.
-- **GitLab's connected account is not a merge-request credential.** It exists —
-  a personal access token with a configurable `baseUrl`, so self-managed
-  instances work — but it powers issue triage. Creating a merge request still
-  goes through an authenticated `glab`, and Happier checks that `glab` is
-  authenticated for the detected host where it can.
+- **GitLab development change:** the provider now uses the selected Connected
+  Account's REST API binding for merge-request reads and creation, including
+  draft requests. The Account's deployment must match the repository host.
+  Older daemon/plugin versions use authenticated `glab` instead. This is a
+  development-source contract, not a claim that the change has been released;
+  availability depends on the installed daemon and plugin version.
 
 If Happier cannot create a request directly, it opens the provider's compare
 page so you can finish in the browser.
+
+In development builds, that fallback is reported as input still needed, not as
+a created request. An uncertain response after a write requires checking for
+the existing request before trying again.
 
 ### Default branch guard
 

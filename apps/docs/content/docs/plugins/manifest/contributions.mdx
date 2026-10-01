@@ -18,7 +18,7 @@ description: Contribution families that a plugin can declare for projection and 
 | `agents` | AI agent declarations and runtime metadata | custom Agents: `agents.<id>.factory`; declarative ACP: host-owned |
 | `providers` | Model-provider declarations, catalogs, connection facts, and an optional cold managed-runtime facet | ordinary Providers are descriptor-only; a managed Provider uses `providers.<id>.runtime` |
 | `connectedAccountDescriptors` | A plugin-produced account service and authentication modes | `connectedAccountDescriptors.<id>.runtime` |
-| `backgroundServices` | Daemon-generation background work | `backgroundServices[].runner` |
+| `backgroundServices` | Daemon-occurrence background work | `backgroundServices[].runner` |
 | `scmHostingProviders` | Remote forge and hosting-service integration | `scmHostingProviders.<id>.runtime` |
 | `scmBackends` | Local repository and working-tree integration | `scmBackends.<id>.runtime` |
 | `settings` | Typed settings descriptors | `context.services.settings` in invoked handlers |
@@ -58,7 +58,7 @@ An operation's immutable `.declaration` supplies the required input mode,
 result schema, Action surfaces, and danger level for its ordinary Action
 declaration. Do not duplicate those facts in a feature-owned table or infer
 them from a raw manifest. Required roles must be bound; optional roles may be
-absent. The host admits compatible current target and contributor generations,
+absent. The host admits compatible current target and contributor occurrences,
 so a contributor remains otherwise usable when its target is absent.
 
 Descriptor, operation, and embedded-surface roles are public authoring
@@ -166,7 +166,7 @@ Agent-native commands, model lists, active account state, transcript lines, runt
 - [Voice](/plugins/guides/voice) splits client conversation from daemon STT
   and TTS.
 - [Background services](/plugins/guides/background-services) covers
-  daemon-generation work.
+  daemon-occurrence work.
 - [Account Collections](/plugins/guides/account-collections) covers the
   static declaration and candidate-local migration callback boundary.
 - [Webhooks](/plugins/guides/webhooks) covers verified ingress declarations,

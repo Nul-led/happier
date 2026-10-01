@@ -2,6 +2,8 @@
 
 This doc explains how the **Agents catalog** works end-to-end in Happier and how to add a new executable Agent. Model sources such as OpenRouter, Ollama, and DeepSeek are **Providers** and are documented separately in [Providers](./providers.md).
 
+For the host-owned Session/turn lifecycle and the public native Agent seam, see [runtime core](runtime-core.md). Manifest admission, activation and projection belong to the [plugin platform](plugin-platform.md).
+
 The goal is that both surfaces:
 - stay **catalog-driven** (no screen-level `if (agentId === ...)`),
 - stay **capability-driven** (runtime checks come from daemon/CLI capability results),
@@ -20,8 +22,8 @@ The goal is that both surfaces:
   - An **installed** Agent is routed by its qualified key `"<pluginId>/<localId>"`, so its catalog entry, engine resolution, runtime lease, CLI subcommand and execution target are all plugin-scoped. Two plugins declaring `assistant` therefore both project and activate; neither displaces the other.
   - Consumers that need the author's local id read `contribution.identity.localId`. Never re-derive a local id from a routing id.
   - The inverse direction has one owner too: a consumer holding a durable identity resolves the routing id through the registry index `agentRoutingIdentity.ts#indexAgentRoutingIdsByContributionIdentity` / `#readAgentRoutingIdForContributionIdentity` (External Sessions durable records use `apps/cli/src/api/session/external/linking/qualifiedLinkIdentityRegistry.ts#resolveCurrentExternalSessionAgentRoutingId`). Never compare a routing id against a bare `localId`: that comparison only ever matches bundled Agents and silently rejects every installed one.
-- **detectKey**: CLI executable name used for detection UX and `command -v <detectKey>`-style probes.
-  - Source of truth: `@happier-dev/agents` (`AGENTS_CORE[agentId].detectKey`).
+- **CLI executable**: the Agent's manifest `cli.executable.binaryName` and declared alternatives feed the canonical CLI resolver used by detection and launch. `detectKey` is a legacy bundled-Agent projection, not a separate executable-resolution authority.
+  - Source of truth: the admitted Agent contribution's `cli.executable`, projected by `agentCliMetadata.ts` into the CLI runtime descriptor.
 - **cliSubcommand**: the primary CLI subcommand for this agent (usually the same as `AgentId`).
   - Source of truth: `@happier-dev/agents` (`AGENTS_CORE[agentId].cliSubcommand`).
 - **flavorAliases**: extra strings we accept for parsing/migration (e.g. `codex-acp`).
@@ -107,7 +109,14 @@ Agent's declared level; without it the host infers `supported`/`unsupported` fro
 `capabilities.sessions.open`, which cannot express `experimental`. An Agent whose
 level resolves to `experimental` without a catalog-owned resume hook fails closed at
 `apps/cli/src/session/runtime/catalogHooks.ts#getVendorResumeSupport` and therefore at
-the daemon spawn resume gate.
+the daemon spawn resume gate. In the current development runtime, asynchronous
+Session resume and runtime-preference lookups use
+`apps/cli/src/agent/catalog/runtimeEntry.ts#readCurrentCatalogHook`, shared with
+Connected Account catalog lookups. It acquires the current runtime lease and
+its demanded Agent entry before reading executable hooks; the initial declaration
+snapshot alone cannot establish whether a lazy hook is available.
+Connected Account launch projections qualify declaration-local state-sharing service IDs
+with their owning plugin ID before host continuity decisions compare account selections.
 
 The current plugin-preview source contract also keeps two narrowly data-only
 facts in that same `catalog` declaration without routing them through a runtime
@@ -141,12 +150,111 @@ owner for Agent-native `happy <agent>` argument projection: its optional
 builder receives parsed Agent arguments plus host-resolved settings,
 environment, and start origin, and returns bounded JSON Session options.
 
+In the current development source, terminal presentation is projected from the
+admitted runtime's terminal or provider-attach surfaces. A Session factory may
+provide the pure `supportsTerminalPresentation` selector to narrow those surfaces
+for its selected runtime mode. Daemon pane routing and Session mode binding consume
+that same projection; descriptors remain opaque to the host and provider-owned
+mode codecs interpret them. ACP-only runtimes without either surface stay headless
+even when the launch request omits a descriptor.
+
 Session-control preflight uses one host-owned environment boundary. The capability RPC resolves
 the selected launch profile through the same profile and Saved Secret owners as Session launch,
 then layers selected Connected Account materialization on top. The cold-probe sanitizer still
 removes unrelated ambient credentials; only explicitly selected profile/account material is added
 back before the Agent contribution runs. Model, mode, config-option, and passive-setup probes all
 consume that same environment and include the selected profile identity in their cache scope.
+
+In the current development source, daemon model, mode and config probes demand the exact Agent
+registration from the authoritative plugin runtime and retain its lease for the operation.
+`withAgentPreflightCatalog` serves both capability RPCs and in-process Action inventories. The
+acquired catalog entry owns the settings, native/selected authentication context, probe variant and
+executable adapter together; reading
+only the cold manifest projection cannot discover a lazily registered adapter. Cache scope includes
+the existing plugin occurrence, so replacing that occurrence cannot reuse the predecessor's probe
+result. Standalone CLI probing without an authoritative runtime retains its declaration-only
+behavior. Capability ingress normalizes current V2 and predecessor V1 backend targets through the
+canonical target normalizer before resolving probe context.
+
+Native model discovery in the app shares `sync/ops/modelDiscovery.ts` between the existing preflight
+hook and voice catalog requests. The same hook serves new-session details and the current session's
+deferred model picker, including inactive sessions. Opening the detail demands discovery; refreshing
+uses the existing machine capability RPC and does not resume the conversation. The native results
+remain integrated with the session picker's existing Provider groups and exact model-selection
+action. Display and native selection admission consume the same resolved catalog context.
+
+In the current development source, a custom native Session publishes its live model and mode
+facts through `context.session.services.models.bind(source)` and
+`context.session.services.modes.bind(source)`. The Session publication scope owns one binding
+per catalog and retires subscriptions with that scope. The host projects modes through the
+existing current-publisher metadata writer into `sessionModesV2`; plugins do not write owner
+metadata. Mode inventory is distinct from model Provider membership and selection policy.
+`null` inventory means unknown or unbound, while a successful `[]` is an authoritative withdrawal.
+Current mode facts come from native observation or accepted application, never a desired override.
+The canonical V2 catalog permits an unknown current mode while preserving known selectable
+options. Readers prefer it over retained V1/ACP aliases; the same writer projects strict
+`sessionModesV1` compatibility only when the accepted current mode is known.
+
+OpenCode server Sessions observe their location-scoped native inventories at startup and on
+connection/catalog events. Failed reads retain the previous inventory and emit a default-on
+diagnostic; successful empty reads clear it. V2 zero-turn model, agent and reasoning selections
+use the exact native Session writers before reporting application. V1 selections remain deferred
+until the next prompt. A fresh V1 Session seeds only its initial native default from the ordered,
+visible-primary Agent inventory; a resumed Session does not guess that default or treat staged
+intent as accepted current state. V1's local TUI selection is not an ongoing server observation.
+
+The existing dynamic-model cache owns stale-while-revalidate, in-flight sharing and exact-key
+subscriptions. Scope includes the machine, server, target, working directory, selected profile,
+connected-service selection and probe context. A successful observation retains its `observedAt`;
+failed attempts expose failure while retaining that data and timestamp. Successful empty lists are
+authoritative. Noncacheable results stay in memory, and disabled/closed detail consumers do not
+start probes or retry timers. Manual refresh forwards `bypassCache` to the owning daemon/Provider
+probe rather than only clearing UI state. An older daemon can ignore the optional force input,
+so forced freshness requires compatible app and daemon implementations.
+
+For existing sessions, the UI forwards the canonical opaque `runtimeDescriptorV1` through the same
+probe context. The host validates its Agent identity and passes it to the Agent's existing probe
+variant and adapter callbacks. Agent-owned readers interpret runtime settings; generic UI/host
+code does not parse Agent-specific descriptor fields. This lets Codex probe the session's actual
+runtime even when the current account default selects another runtime.
+
+A successful capability response acknowledges a supplied descriptor with
+`runtimeDescriptorV1Accepted: true` after validating and using that context. The shared app
+discovery operation requires this acknowledgement for descriptor-scoped requests. A predecessor
+daemon that ignores the descriptor therefore follows the existing refresh-failure path, retaining
+last-known choices rather than promoting an account-default result into the session's cache.
+Requests without a descriptor keep their existing compatibility behavior.
+
+The supported 0.2 predecessor also sends the scalar `runtimeKindOverride`. The host forwards it
+unchanged through the existing preflight input and cache scope. Agent-owned mode readers interpret
+it without rewriting generic account settings. Codex gives the current descriptor precedence,
+then a valid predecessor scalar, then the account default; its variant and actual probe use that
+same decision. OpenCode's existing CLI catalog is mode-independent and needs no extra mode branch.
+
+The shared runtime model publisher treats a complete Agent snapshot, including an empty list, as
+replacement membership. Canonical and legacy ACP metadata are observations of that same catalog;
+the newer observation wins instead of unioning historical rows. Current-model or context-only
+facts preserve the catalog timestamp; `observedAt: 0` denotes facts without a catalog observation.
+Failed discovery retains the last successful observation at its producer. Static descriptors may
+enrich names and descriptions of an authoritative Provider probe, but cannot restore omitted
+capabilities or controls. Native requested/applied model facts remain separate from catalog
+membership, so catalog refresh does not silently change a saved selection.
+
+
+Pi model discovery (development source) uses one plugin-owned extension to read structured model
+names and reasoning support from Pi's registry. Preflight runs a no-input, no-session print command;
+the host materializes its declared temporary extension and selected request-auth extension arguments
+through the existing scoped execution lifecycle. Runtime discovery runs in the background on Pi's
+session-start event. Both use Pi's registry refresh and cache; explicit refresh forwards `force`,
+and only configured providers are selected. Current-model and thinking-value updates preserve the
+catalog observation time rather than reporting new membership.
+
+Older Pi APIs without a completion receipt expose their structured local choices as a static/error
+fallback. That fallback cannot replace a previous successful dynamic observation. Offline, failed,
+or malformed discovery retains the last good list. Pi 0.84.4 can incorrectly report a successful
+receipt when another internal refresh supersedes it; this upstream limitation prevents a complete
+freshness guarantee in that case. Happier does not inspect private registry state or add retries to
+hide the missing receipt semantics.
 
 Installed external Agent plugins and bundled Agent plugins are peers at the public Plugin SDK
 boundary. A manifest declaration is admitted by the same host policy and receives the same public
@@ -172,12 +280,76 @@ arguments, credential environment keys or JSON credential paths, and whether a
 status command is noninteractive. These fields never select an Agent parser or
 transfer process, environment, filesystem, or credential custody to plugin code.
 
+In the development daemon inventory, `installed` means the Agent's own resolved
+CLI executed successfully; a version string alone or an installed server dependency
+does not establish that fact. Required setup dependencies come from the selected
+runtime transport, not the list of executables a plugin is permitted to invoke.
+
 When static credential presence is insufficient, the same Agent entry may provide
 the focused `cliAuth.detectAuthStatus` callback. The host gives it only
 `runDeclaredSystemToolCommand`, restricted to the plugin's manifest-declared system
 tools, and continues to own command resolution, process lifetime, cancellation,
 environment, and bounds. Claude, Codex, Kiro, and OpenCode are current positive
 consumers; no host table or private aggregate selects this behavior.
+
+Background consumers run only probes explicitly declared safe for noninteractive
+checks. Spawn admission supplies the final child environment to the host-owned
+credential and command probes, after profile, Connected Service and Provider
+overlays and unsets. Neither that environment nor credential contents are passed
+to the plugin callback. A successfully authorized and materialized Provider
+binding uses its own credential transport rather than requiring native CLI login.
+
+#### Claude plugin runtime contracts (development)
+
+The Claude plugin owns the native JSON-stream Agent SDK protocol integration with
+the Claude Code CLI. It does not depend on the `@anthropic-ai/claude-agent-sdk`
+npm package; the SDK changelog below documents the upstream message contract.
+
+##### Internal transcript event classification (development)
+
+`packages/plugins/claude/src/agent/transcripts/internalEventTypes.ts` owns the closed
+classification used by native transcript projection. The Claude Agent definition declares
+its released `output`-record exclusions through `releasedOutputTranscriptRecordReader`,
+using that same private constant. The bundled-plugin generator publishes the declaration
+into `@happier-dev/agents`; its `readReleasedOutputNonTranscriptRecordTypes()` reader
+supplies the union of declared types to agent-neutral session-core normalization.
+The classifier file remains plugin-private; it has no public package subpath.
+Command lifecycle frames are known non-transcript records:
+current projection emits no message, and the legacy reader hides rows stored by older
+0.2 writers. Unknown native record types still report unsupported content rather than
+being declared safe to skip. Progress and system records retain their separate native
+lifecycle handling; the UI omits their informational rows. Raw observers remain available
+to task and queue lifecycle consumers.
+
+This is a read-forward seam for retained 0.2 `output` rows, including the envelope
+written by `cli-v0.2.11` (`98ea8fb76733b1dd785d38c31360179cafa84824`). Remove the
+declaration and reader when those writers and their retained data leave support.
+The union is intentionally un-attributed: an unrelated Agent's legacy `output` row
+with an exactly matching declared native type would also be omitted. If observed,
+attribute the row at this reader rather than adding consumer-specific classifiers.
+
+##### Queued SDK result boundaries (development)
+
+The SDK runtime in `packages/plugins/claude/src/agent/runtime/remote/sdk/session.ts`
+retains the submitted turn when a result reports a positive integer
+`queued_turn_count`. Both successful and failed results can precede queued user
+work; their transcript and usage evidence remain visible, and earlier failures are
+logged without completing the submitted turn. The final result keeps its normal
+success or failure behavior, while explicit cancellation still ends the turn. This
+follows the optional result field introduced in the
+[Claude Agent SDK 0.3.243 contract](https://github.com/anthropics/claude-agent-sdk-typescript/blob/v0.3.243/CHANGELOG.md);
+results without the field retain the existing completion behavior.
+
+##### Permission hook input changes (development)
+
+The shared permission hook handler in
+`packages/plugins/claude/src/agent/runtime/shared/permissionHookHandler.ts` serves
+both SDK and unified terminal runtimes. A `PermissionRequest` approval includes
+`updatedInput` only when the approved JSON input differs from the original tool
+input. This preserves real tool interception changes and permission updates while
+avoiding Claude's rewrite-specific rule recheck for an unchanged approval.
+`PreToolUse` continues to carry interaction answers in its input. See the
+[Claude hook decision contract](https://code.claude.com/docs/en/hooks#permissionrequest-decision-control).
 
 ### 4) App agents catalog: `apps/ui/sources/agents/catalog/catalog.ts`
 
@@ -201,9 +373,9 @@ Agent-catalog tools). It seeds from three sources:
   This owns bundled-Agent selection policy and is applied exactly once.
 - **The machine's agents projection** — every non-bundled Agent id in
   `mergedProviderProjectionById`, which the daemon builds from `agentsById`. This is the
-  only place a standalone installed Session Agent appears: the daemon's V2 projection
-  emits an empty `backendsById`, so an installed Agent that contributes no configured
-  backend has no other route into the client.
+  only place a standalone installed Session Agent appears: the daemon's projection
+  carries no backend map, so an installed Agent that contributes no configured backend
+  has no other route into the client.
 - **Configured ACP backends** in `acpCatalogSettingsV1`, plus targets named by
   `backendEnabledByTargetKey`.
 
@@ -222,6 +394,15 @@ Behavior facts — including New Session transcript storage modes — are read t
 installed Agent's projected `plugin.ui.v1` descriptor through the same interpreter, with a
 fail-closed neutral floor for an Agent that declares nothing. Do not gate a behavior fact
 on `isBundledAgentId(...)`.
+
+In development, machine UI projections are locale-qualified by the shared
+`loadDaemonMergedProjectionInputs.ts` cache/request owner. Both
+`useDaemonMergedProjectionInputs` and `usePluginUiProjectionCurrentness` subscribe
+to the existing `preferredLanguage` Settings value. A local or remote language
+change refreshes the projection without remounting its consumers, including when
+the daemon registry generation is unchanged; an unrelated Settings update does
+not invalidate the projection. An old-language response cannot replace the
+current-language cache or retained admission snapshot.
 
 ---
 
@@ -335,6 +516,81 @@ Defined/used in the CLI capability system:
 - `tool.<name>`: tool capability (e.g. `tool.tmux`)
 - `dep.<name>`: dependency capability (e.g. `dep.codex-acp`)
 
+### Agent CLI install and update jobs (0.3 development)
+
+Agent software acquisition has one owner:
+`packages/cli-common/src/agents/install.ts#installAgentCliForRuntime`. The daemon's
+`apps/cli/src/capabilities/installJobs/agentInstallJobOwner.ts` adds a job lifecycle around
+that installer and the existing update owner, rather than implementing another installer.
+It resolves the Agent's `runtimeSpec` from the contribution registry, so declared install
+paths apply to installed plugin Agents as well as bundled Agents.
+
+A job installs the Agent CLI, its declared executable managed dependencies, and then checks
+that the CLI runs and reports a version. Progress includes step transitions and transferred
+bytes where the source supplies them; an unknown total stays `null`. Antigravity's CLI and
+managed ACP server are steps of the same job. Vendor-recipe execution requires explicit
+consent, enforced by the canonical install/update path.
+
+The process singleton admits one active job per Agent; another start returns that job id.
+Machine RPCs use `daemon.agents.install.start/read/cancel/list`:
+
+- `start({agentId, intent: 'install' | 'update', consent: {vendorRecipe: boolean}, force?})`
+  returns `{ok: true, jobId}`. `force` requests reinstall rather than skip-if-installed.
+- `read({jobId, cursor})` returns `{ok: true, steps, progress, events, nextCursor, done, outcome}`. Events are
+  `step`, `progress`, or `log`; the cursor advances through that job's event stream.
+  The step/progress snapshots also serve Action status callers without replaying events.
+- `cancel({jobId})` requests cancellation and waits for the running operation to settle.
+- `list({})` returns active jobs and the latest completed attempt for each registered Agent.
+
+The authenticated local daemon control transport exposes the same operations at
+`/agents/install/{start,read,cancel,list}`. Actions `machines.agents.install`,
+`machines.agents.install.status`, and `machines.agents.install.cancel` consume this same
+owner. Terminal outcomes are `succeeded {version}` or `failed {code, stepId, message,
+guideUrl?}`; unavailable automatic installs can carry the Agent's installation guide.
+
+Jobs and their recent history live in daemon memory. Closing an app surface or disconnecting
+its caller does not own the running operation. The module-scope app store in
+`apps/ui/sources/agents/machineAgents/installJobs/` keeps per-Agent subscriptions and cursor
+reads, and discovers jobs with `list` when reconnecting or reloading. A daemon restart loses
+job state; re-detect installed software to recover rather than treating the missing job as
+proof of success or failure. Cancellation stops the active operation and cleans its partial
+staging; software installed by a completed step and vendor-script side effects may remain.
+If process cleanup cannot be verified, cancellation reports failure and the daemon refuses
+another install for that Agent. Stop the installer process manually before restarting the daemon.
+Completion invalidates CLI detection snapshots so inventory can re-detect current software.
+
+#### Update source and verification
+
+Update facts are manifest facts. An Agent plugin declares them in `cli.install`:
+- `npmPackageName`: the vendor's npm package, when it is not already the managed package. It
+  attributes npm/pnpm/bun installs and names the latest-version source.
+- `nativeUpdate: { args, installPaths }`: the vendor's own updater, verified from vendor sources
+  (Claude `update`, Codex `update`, OpenCode `upgrade`, Cursor `update`). The host runs it against
+  the executable it resolved, and only when that executable or its real path sits under one of the
+  home-relative `installPaths`.
+
+`packages/cli-common/src/agents/update.ts#classifyAgentCliInstall` is the one classifier. The
+detect of every `cli.<agentId>` capability (wrapped by
+`apps/cli/src/capabilities/cliUpdate/agentCliUpdates.ts`) adds `installSource`
+(`managed|native|npm|pnpm|bun|brew|other`), `updateSupported` (true only for managed and for a
+native install with a declared updater) and `updateCommand` (the copyable command, or null).
+With `includeLatestVersion: true` it also adds `latestVersion` (null = unknown), read from the
+managed GitHub release or npm `latest` over HTTP and cached for the installables update-check
+interval; failures are not cached and `bypassCache: true` refetches.
+
+The job's `intent: 'update'` targets the executable detect reported:
+managed → managed reinstall; native → the vendor updater, which needs
+`allowVendorRecipeExecution: true` after the app's confirmation (else
+`install-confirmation-required`); any other owner → `update-not-available` whose message carries
+the command. Verification uses a fresh detect: a changed reported version succeeds, and an
+unchanged version also succeeds when it is at least the freshly observed latest version
+(`alreadyCurrent: true`). Otherwise the updater returns `update-not-verified`; the job retains
+the updater's explanation when the managed package's release-age policy holds an update.
+Vendor commands run asynchronously through `execFileWithDeadline`, so the daemon keeps serving
+while an updater downloads. Update availability and latest-version knowledge are separate:
+an Agent without an npm or managed GitHub release source has an unknown latest version, even
+when its vendor updater can run. A vendor recipe alone does not establish a latest-version source.
+
 ### Checklist id conventions
 
 Checklist ids are treated as stable API between daemon and app:
@@ -444,6 +700,23 @@ callback, registry, or Agent-id host branch. Codex uses this seam to reuse its
 existing app-server JSON-RPC `thread/list` client for native candidate
 discovery.
 
+For an active native runtime, `session.services.transcripts.followSource` binds
+that same ordered source-follow owner to one provider Session. The runtime names
+whether this is fresh-session catch-up or historical resume; the host binds the
+Agent identity and owns durable publication, generation lifetime, and failure.
+Runtime and local terminal consumers share the same provider binding. Providers
+that use native consumption evidence receive it through their runtime's
+`observeSourceTranscript` method after preceding output has acknowledged delivery.
+
+This development-only terminal path requests `projection: 'terminal'` on
+`readAfterTranscript`, and on forward `pageTranscript` calls for fresh catch-up.
+Its closed `source_observation` envelope carries an item identity, timestamp, and
+strict JSON native row. It is not a visual transcript record or user
+`source_fact`, and it is admitted only for that explicit projection. Ordinary
+browsing and author-facing transcript operations keep the user/agent transcript
+schema. Provider code retains interpretation and matching authority; the host
+only preserves source order and rejects observations without a live observer.
+
 `resolveSource`, `resolveLinkIdentity`, and `resolveLinkedIdentity` may return
 bounded `transcriptMediaReadRoots` as transient producer evidence. The host
 normalizes and validates these absolute roots, then uses them only to authorize
@@ -463,7 +736,25 @@ Three optional same-Agent siblings add narrower capabilities without creating an
 
 - `externalSessionObservation` supplies resource-scoped status evidence and content-free transcript-change signals. `watch_file_changes` and `observe_resource` can support live follow through the host owner; `reconcile_only` cannot.
 - `externalSessionHooks` supplies installation variants plus bounded installation resolution and event mapping. The host owns consent, configuration mutation, durable cleanup custody, target resolution, and linking policy.
-- `externalSessionTakeover` supplies only bounded launch data after current linked-identity resolution. Its optional `runtimeDescriptorV1` is the sole Agent-owned runtime selection and identity carrier to the target Session opener; the generic host validates and copies it without interpreting or mutating its Agent-specific payload. The closed launch-plan/result DTOs accept only own enumerable data properties on plain or null-prototype objects. The descriptor is not a private resume carrier or generic metadata bag. The host retains target selection, authority transfer, admission, environment authorization, and spawn.
+- `externalSessionTakeover` supplies only bounded launch data after current linked-identity resolution. Its resolver receives the host-selected `direct` or `persisted` transcript authority so the Agent can select a compatible runtime without a second host-side Agent policy. A launch plan may set `applyConnectedAccountDefaults: true` when takeover creates a new runtime that should use the Account’s configured authentication default; the host still resolves that default through the canonical Session spawn owner, after preserving any binding already recorded for the linked Session. Its optional `runtimeDescriptorV1` is the sole Agent-owned runtime selection and identity carrier to the target Session opener; the generic host validates and copies it without interpreting or mutating its Agent-specific payload. The closed launch-plan/result DTOs accept only own enumerable data properties on plain or null-prototype objects. The descriptor is not a private resume carrier or generic metadata bag. The host retains target selection, authority transfer, admission, environment authorization, and spawn.
+
+In the current development takeover flow, the server's existing admission transaction owns
+live publisher and Pending state. It fences the exact publisher before reading that state,
+retains queued messages, and checks the operation claim, metadata version, transcript
+sequence, and storage/publication identity before admitting the new runtime. The daemon
+uses the publication-filtered Session response for source and publication identity only;
+that viewer response deliberately omits live facts for external and snapshot storage.
+
+Persisted takeover retains its verified stopped-process identity in the operation's private
+canonical owner evidence before importing. After daemon restart, the existing quiescence
+inspector rechecks that identity against current OS process state when its marker is absent.
+Every current matching marker takes precedence over retained evidence. All matching
+processes must be verified stopped; a newer stopped marker cannot hide another live
+owner. Running, reused, unknown, or mismatched process/source identity cannot be
+admitted using an earlier observation. This
+evidence is omitted from owner progress and shared presentation; marker cleanup remains
+owned by the daemon lifecycle. An unreadable or malformed marker inventory fails
+this destructive admission check closed rather than being treated as an absent marker.
 
 `services.sessions.external` is the opposite direction: an authorized plugin-to-host mapping to the canonical product operations. It is not an Agent capability declaration or a second source registry.
 
@@ -474,7 +765,7 @@ These rows describe registered source capabilities, not a promise that the Agent
 | Agent | Six source operations | Observation mode | Takeover launch hints | Session hooks |
 | --- | --- | --- | --- | --- |
 | Claude | Supported | `watch_file_changes` | Supported | Supported |
-| Codex | Supported | `watch_file_changes` | Supported | Supported |
+| Codex | Supported | `watch_file_changes` | Persisted takeover is supported. Linked takeover is supported only when the session is loaded in Codex's shared app-server daemon; Happier attaches through the official daemon proxy. | Supported |
 | OpenCode | Supported | `observe_resource` | Supported | Not registered |
 | Oh My Pi | Supported | `reconcile_only`; no live follow | Supported | Not registered |
 | Pi | Supported | `reconcile_only`; no live follow | Supported for persisted takeover; linked takeover remains unavailable because writer safety is `unsupported` | Not registered |

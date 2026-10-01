@@ -49,6 +49,27 @@ const pluginSdkSourcePath = fileURLToPath(
 const examplesIndexDocPath = fileURLToPath(
   new URL('../content/docs/plugins/examples/index.mdx', import.meta.url),
 );
+const quickstartDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/quickstart.mdx', import.meta.url),
+);
+const authoringCliDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/packaging/authoring-cli.mdx', import.meta.url),
+);
+const diagnosticsDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/testing/diagnostics.mdx', import.meta.url),
+);
+const hostRuntimeExternalsSourcePath = fileURLToPath(
+  new URL('../../../packages/protocol/src/plugins/ui/hostRuntimeExternals.ts', import.meta.url),
+);
+const packagingIndexDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/packaging/index.mdx', import.meta.url),
+);
+const installTrustDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/packaging/install-trust.mdx', import.meta.url),
+);
+const externalSessionsDocPath = fileURLToPath(
+  new URL('../content/docs/plugins/surfaces/external-sessions.mdx', import.meta.url),
+);
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
 function normalizedSource(path) {
@@ -78,7 +99,7 @@ test('states the public UI testkit fidelity limit', () => {
   for (const requiredSource of [
     '`createPluginUiTestkit`',
     'does not prove layout, styling, native reconciliation, CSP/origin',
-    'installed discovery, on-demand activation, generation replacement',
+    'installed discovery, on-demand activation, occurrence replacement',
     '`PluginUiTestkitMountAvailability`',
     "`{ kind: 'refused', availability }`",
     'does not calculate destination, platform, policy, renderer, or hosted-web admission',
@@ -159,15 +180,76 @@ test('keeps final UI author contracts scoped to the one public owner', () => {
       : hostedWeb;
     assert.match(source, new RegExp(requiredSource.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
   }
-  assert.match(localDevelopment, /daemon-owned candidate path creates an operation-local copy/u);
+  assert.match(localDevelopment, /daemon observes the trusted author source/u);
+  assert.match(localDevelopment, /does not restore a copied historical source tree/u);
+  assert.doesNotMatch(localDevelopment, /operation-local copy/u);
 
-  assert.match(reactNative, /entry: 'src\/ui\/PluginPanel\.tsx'/u);
-  assert.match(reactNative, /`pluginUiBuild\.ts`/u);
-  assert.match(reactNative, /buildUiSurfaceTargets/u);
+  assert.match(reactNative, /artifact id `main-renderer`/u);
+  assert.match(reactNative, /\.\/happier-plugin-ui\/main-renderer/u);
+  assert.doesNotMatch(reactNative, /pluginUiBuild\.ts/u);
   assert.doesNotMatch(reactNative, /from '\.\/plugin\.js'/u);
-  assert.match(uiArtifacts, /entry: 'src\/ui\/renderSurface\.tsx'/u);
-  assert.match(uiArtifacts, /entry: 'src\/ui\/index\.ts'/u);
-  assert.doesNotMatch(uiArtifacts, /entry: 'ui\/index\.ts'/u);
+  assert.match(uiArtifacts, /\.\/happier-plugin-ui\/main-native/u);
+  assert.match(uiArtifacts, /\.happier-plugin\/ui\/hosted-web\/<artifactId>/u);
+  assert.match(uiArtifacts, /entry\.cjs\.bundle/u);
+});
+
+test('documents the canonical same-realm host map exactly', () => {
+  const canonicalSource = readFileSync(hostRuntimeExternalsSourcePath, 'utf8');
+  const canonicalBlock = canonicalSource.match(
+    /PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS = Object\.freeze\(\[([\s\S]*?)\] as const\)/u,
+  );
+  assert.ok(canonicalBlock, 'canonical host-runtime external list must remain parseable');
+  const canonicalSpecifiers = [...canonicalBlock[1].matchAll(/'([^']+)'/gu)]
+    .map((match) => match[1]);
+
+  const documentationSource = readFileSync(uiArtifactsDocPath, 'utf8');
+  const documentationBlock = documentationSource.match(
+    /The same-realm host map supplies only these exact specifiers:\s*```text\n([\s\S]*?)\n```/u,
+  );
+  assert.ok(documentationBlock, 'UI artifact docs must publish the exact host map');
+  const documentedSpecifiers = documentationBlock[1].split('\n').map((line) => line.trim());
+
+  assert.deepEqual(documentedSpecifiers, canonicalSpecifiers);
+});
+
+test('keeps development observation and renderer failure recovery with their current owners', () => {
+  for (const path of [quickstartDocPath, authoringCliDocPath, localDevelopmentDocPath]) {
+    const source = normalizedSource(path);
+    assert.match(source, /daemon owns|daemon-owned|daemon observes/u);
+    assert.doesNotMatch(source, /CLI observes the source/u);
+  }
+
+  const localDevelopment = normalizedSource(localDevelopmentDocPath);
+  for (const phase of [
+    'observing',
+    'preparing_dependencies',
+    'compiling',
+    'validating',
+    'active',
+    'retained_incumbent',
+    'unavailable',
+  ]) {
+    assert.match(localDevelopment, new RegExp(`\\b${phase}\\b`, 'u'));
+  }
+  assert.doesNotMatch(localDevelopment, /`source_validated`|`projected`/u);
+
+  const diagnostics = normalizedSource(diagnosticsDocPath);
+  assert.match(diagnostics, /contained by the client/u);
+  assert.doesNotMatch(diagnostics, /crash_threshold_reached|crash_reset_context|daemon-owned crash watchdog/u);
+});
+
+test('keeps live runtime currentness and install decisions on their simplified contracts', () => {
+  const pluginUiIndex = normalizedSource(pluginUiIndexDocPath);
+  assert.match(pluginUiIndex, /host owns process-local occurrence currentness/u);
+  assert.doesNotMatch(pluginUiIndex, /generation replacement|revalidates generation/u);
+
+  const externalSessions = normalizedSource(externalSessionsDocPath);
+  assert.match(externalSessions, /current plugin occurrence/u);
+  assert.doesNotMatch(externalSessions, /current plugin generation|generation fencing|exact-generation/u);
+
+  for (const path of [packagingIndexDocPath, installTrustDocPath]) {
+    assert.doesNotMatch(normalizedSource(path), /Install & Trust/u);
+  }
 });
 
 test('keeps the default scaffold manifest projection aligned with the action declaration', () => {

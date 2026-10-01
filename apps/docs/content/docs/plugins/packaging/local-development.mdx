@@ -1,6 +1,6 @@
 ---
 title: Local development
-description: Use the managed TypeScript development loop and daemon-owned activation.
+description: Use the daemon-owned source development loop and activation.
 ---
 
 ```bash
@@ -28,37 +28,69 @@ The development entry is source input, not an installable production artifact.
 Keep both entrypoint values relative to the plugin root and use portable `/`
 separators. Absolute paths, paths that escape the root, unsupported extensions,
 and missing development files are rejected before dependency materialization.
-`plugins dev` is the automatic flow: the CLI observes the trusted author source
-and submits each captured batch, while the daemon-owned candidate path creates
-an operation-local copy, materializes dependencies, builds declared UI
-artifacts, evaluates the candidate, and validates its canonical manifest
-projection before adoption. The daemon owns runtime module import, named
-activation, registration validation, and replacement of the serving plugin.
+`plugins dev` is the automatic flow: the daemon observes the trusted author
+source, prepares each affected candidate, materializes dependencies, builds
+declared UI artifacts, evaluates the candidate, and validates its canonical
+manifest projection before adoption. The CLI is a command and status client;
+it does not own a second watcher or replacement decision. The daemon owns
+runtime module import, named activation, registration validation, and
+replacement of the serving plugin.
+
+## Single-file plugins and host SDK resolution
+
+A trusted literal `.ts`, `.mts`, `.js`, or `.mjs` file is a valid development
+source without a `package.json`. Choose the file itself in Settings or pass its
+exact path to `plugins dev`; Happier watches and reloads that file through the
+same daemon-owned source lifecycle as a project folder. Folder lookup is
+unchanged and selects exactly one of `src/index.ts` or `index.ts`.
+
+Such a dependency-free file may import the public
+`@happier-dev/plugin-sdk` package and its public subpaths (for example
+`@happier-dev/plugin-sdk/protocol`) even without a local install: the running
+Happier CLI serves those imports from its own public SDK build. A locally
+resolvable copy always wins over the host. Host-private SDK modules
+(`@happier-dev/plugin-sdk/host/*`, first-party, and testing subpaths) and any
+non-SDK package stay inaccessible; when a file needs another package, create a
+package root and declare its dependencies there.
+
+Package-root development never uses host resolution: declared dependencies
+resolve through normal package semantics, and an uninstalled dependency is an
+error, not a host substitution.
+
+## Packing requires the SDK runtime dependency
+
+`plugins pack` requires every code-defined plugin package to declare
+`@happier-dev/plugin-sdk` in its `package.json` `dependencies` using the exact
+specifier the scaffold emits (derived from the public toolchain compatibility
+packet). Pack rejects a missing declaration, a forbidden `file:`/`link:`/
+`workspace:` form, an unsupported version, or a declaration that cannot resolve
+from the isolated pack operation. Host resolution is never used to make pack
+pass; packed plugins must resolve the SDK through normal package semantics.
 
 ## Plugin UI in the development loop
 
-When the package declares a plugin UI build config (`pluginUiBuild.ts`, written
-by `hdev plugins create --ui …`), the daemon runs the same
-`happier-plugin-build-ui` builder that `hdev plugins dev build .` runs
-after the CLI submits the captured batch and before candidate adoption. The
-development generation carries the resulting `dist/happier-plugin-ui` tree, so
-each accepted edit produces a generation whose UI artifacts match the source
-you just saved.
+When the manifest references executable or hosted Plugin UI artifacts, the
+daemon runs the same `happier-plugin-build-ui` builder that
+`hdev plugins dev build .` runs. It does this after observing the changed
+source and before candidate adoption. The ephemeral candidate contains the
+resulting `dist/happier-plugin-ui` tree, so each
+accepted edit publishes UI artifacts that match the source you just saved.
 
 A failing UI build rejects the submitted candidate before adoption, so the
-previously admitted generation stays current. Fix the source and save again.
+previously admitted occurrence stays current for this daemon lifetime. Fix the
+source and save again.
 
 This is a managed candidate replacement cycle, not a user-visible
 hot-module-reload guarantee. A saved UI source edit can rebuild and replace the
-admitted generation; authors must not rely on in-place component state
+admitted occurrence; authors must not rely on in-place component state
 preservation, a separate UI watcher, or a manual browser/native reload path.
 
-`plugins dev` reports the stage it actually reached — `source_validated`,
-`built`, `admitted` or `projected` — in both its human output and `--json`.
-`projected` means the daemon made the generation current and no surface
-reconciliation is outstanding. The CLI stops there; whether a client actually
-loaded and rendered the surface is not something it can observe, and it does not
-claim to.
+`plugins dev` and `plugins status` project the daemon-owned phases in human and
+JSON output: `observing`, `preparing_dependencies`, `compiling`, `validating`,
+`active`, `retained_incumbent`, or `unavailable`. `active` means the slot has a
+current process-local occurrence; it does not claim that a client mounted and
+rendered a surface. `retained_incumbent` means the newest candidate failed or
+became stale while the prior in-process occurrence remains usable.
 
 For an intentional watcher-free update, install the same package root as a
 development source and reload from that package root:
@@ -70,27 +102,32 @@ hdev plugins reload
 
 If the current directory maps to more than one development plugin, or if you
 run the command elsewhere, select one explicitly: `hdev plugins reload
-com.example.my-plugin`. Both paths preserve the last accepted generation when
+com.example.my-plugin`. Both paths preserve the last accepted occurrence when
 evaluation or validation fails.
 
-The watcher-free path uses the same author-cycle coordinator: it prepares
-declared dependencies when needed, rebuilds declared UI artifacts, and only
-then submits the candidate. Do not run a separate manual UI reload or assume a
-source-only replacement; a failed preparation or build preserves the last
-accepted generation.
+The watcher-free path enters the same daemon-owned candidate lifecycle: it
+prepares declared dependencies when needed, rebuilds declared UI artifacts,
+and only then publishes the candidate. Do not run a separate manual UI reload
+or assume a source-only replacement; a failed preparation or build preserves
+the last accepted occurrence.
+
+Development last-known-good state is process-local. If the daemon restarts,
+Happier rebuilds and activates the current trusted source. If that source no
+longer builds or validates, the plugin is unavailable until you correct it;
+Happier does not restore a copied historical source tree.
 
 ## Trust
 
-The first use presents **Install & Trust** for the canonical local source.
-Daemon and React Native plugin code is trusted arbitrary code, not sandboxed
-code. Approval covers the displayed package identity, executable realms,
-source identity, and current access disclosures. Ordinary edits under the same
-approved development identity take effect without another prompt; relevant
-identity, realm, root, or required-access changes are reviewed again.
+The explicit install or development command is the code-trust action for its
+exact canonical local source; it does not add a second prompt. Daemon and React
+Native plugin code is trusted arbitrary code, not sandboxed code. Ordinary
+edits under the same approved development identity take effect without another
+prompt. New declared authority or credential access remains a separate user
+decision.
 
 ## Edit loop
 
-1. Edit `src/index.ts` or another selected source file in its dependency closure.
+1. Edit the selected `.ts`, `.mts`, `.js`, or `.mjs` file, or a source file in the selected project folder's dependency closure.
 2. Read static or daemon activation diagnostics printed by `plugins dev`.
 3. Exercise the contribution through its real UI, CLI, Agent, or MCP surface.
 4. Fix a rejected edit and save again.

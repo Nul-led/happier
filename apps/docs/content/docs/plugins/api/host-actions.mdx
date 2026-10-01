@@ -19,7 +19,7 @@ The Action service validates the exact input and result contract for each id. Us
 
 Every row carries its canonical **Caller authority** from the ActionSpec registry. Being listed here proves the Action is discoverable on the Plugin surface; it does not imply a plugin caller can satisfy it. A row marked `present_user` is admitted only when the host stamps present-user caller authority — a plugin or API-token caller carries automation authority and receives the typed `present_user_required` failure instead of a result. Caller authority is host-stamped: Action input can never supply, widen, or narrow it.
 
-Authority comes from the admitted invocation, never from Session content. A plugin running on someone's Session runtime keeps its own host-stamped principal no matter who wrote the latest message: the newest input author is correlation, and neither a `requestedBy`-style field nor input authorship delegates that person's Account. Host operations a plugin performs on a Session are recorded with the actual admitted execution Account plus Agent producer provenance, so an Agent post is visibly Agent-produced rather than attributed to the person who asked for it. Confirmation is a separate decision from authorization: an approval or an explicit user waiver can satisfy the Action's confirmation requirement, but it never grants missing Session access, surface enablement, or endpoint consent.
+Authority comes from the admitted invocation, never from Session content. A plugin running on someone's Session runtime keeps its own host-stamped principal no matter who wrote the latest message: the newest input author is correlation, and neither a `requestedBy`-style field nor input authorship delegates that person's Account. Host operations a plugin performs on a Session are recorded with the actual admitted execution Account plus Agent producer provenance, so an Agent post is visibly Agent-produced rather than attributed to the person who asked for it. Confirmation is a separate decision from authorization: an approval, or an explicit user waiver where the Action policy permits one, can satisfy the Action's confirmation requirement, but it never grants missing Session access, surface enablement, or endpoint consent.
 
 Bundled and externally installed plugins reach these Actions through the same `activate(api)` ABI, the same public SDK services seam, and the same Account Action settings. Trust is a user decision, not a packaging one: there is no smaller allowlist for an external plugin and no host-internal import that makes a first-party example work. Two surface distinctions are worth knowing before you pick a call site:
 
@@ -46,7 +46,7 @@ Bundled and externally installed plugins reach these Actions through the same `a
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `cli`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
 
 ### Input guidance
 
@@ -87,7 +87,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -125,6 +125,36 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `query` (text): Query — Natural-language search text.
 - `limit` (text): Limit — Maximum number of action specs to return.
+
+## `agents.acp.backends.delete`
+
+**Delete custom ACP agent** — Remove one custom ACP agent from the Account agent catalog.
+
+- Safety: `danger`; side effect: not classified.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `backendId` (text, required): Id
+
+## `agents.acp.backends.upsert`
+
+**Save custom ACP agent** — Add or replace one custom ACP agent (a command that speaks the Agent Client Protocol) in the Account agent catalog. Names must be unique; an existing id is replaced.
+
+- Safety: `danger`; side effect: not classified.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `backend.id` (text, required): Id
+- `backend.name` (text, required): Name
+- `backend.title` (text, required): Title
+- `backend.command` (text, required): Command
+- `backend.args` (text_list): Arguments
 
 ## `agents.backends.list`
 
@@ -215,7 +245,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `none` result; `deferred` flow.
 - Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
-- Also surfaced on: `ui`, `mcp`, `cli`, `rpc`.
+- Also surfaced on: `ui`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -248,6 +278,45 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `status` (select): Status
 - `limit` (text): Limit
+
+## `artifact.access.grants.list`
+
+**List document sharing** — Manage sharing through the document kind owner and authenticated Artifact grants.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `artifact.access.grants.remove`
+
+**Remove document sharing** — Manage sharing through the document kind owner and authenticated Artifact grants.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `artifact.access.grants.set`
+
+**Share document** — Manage sharing through the document kind owner and authenticated Artifact grants.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `automation.conversation.admit`
 
@@ -322,6 +391,33 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Approval: `none` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
 - Also surfaced on: none.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `boards.apply`
+
+**Edit Board** — Replay a Board intent through Account settings. Supports create, delete, update, add_items, remove_item and set_positions; agent moves do not prune positions.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `boardId` (text): Board id — Optional; must match the intent target when supplied.
+- `intent` (json, required): Board intent — Use kind create, delete, update, add_items, remove_item or set_positions. References include kind and qualifiedId &#123;serverId, id&#125;.
+
+## `boards.list`
+
+**List Boards** — Read this Home Account’s Boards.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -808,6 +904,32 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `browser.control.handBack`
+
+**Return browser control to the Session** — Return browser control to the Session after accepted input settles. The agent must observe again before its next mutation.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `browser.control.takeControl`
+
+**Yield browser control to the human** — Interrupt browser automation and yield control to the human through the existing controller owner.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `browser.diagnostics.clear`
 
 **Clear browser diagnostics** — Clear browser diagnostics
@@ -1185,6 +1307,241 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `computer.capture`
+
+**Capture computer target** — Capture the selected native target as a Session image reference with its exact image and native input geometry.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.control.handBack`
+
+**Return computer control to the Session** — Return the native target to its owning Session, including after a stop that could not be confirmed; the agent must observe it again before its next input, and canceled input is never replayed.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.control.interrupt`
+
+**Interrupt computer input** — Stop agent input and drain accepted input before returning control to the present user.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.control.status`
+
+**Get computer control status** — Read the host controller, stopping state, and in-flight agent activity with redacted target presentation for the selected native target.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.input`
+
+**Send computer input** — Send native input against a current capture of a Use-enabled target, returning its accessible target name when known. See-only access refuses input. Delivery alone does not prove the requested effect.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.permissions.openSettings`
+
+**Open computer privacy settings** — Ask the selected Mac’s daemon to open Screen Recording or Accessibility privacy settings.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
+- Also surfaced on: `ui`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.query`
+
+**Read computer accessibility** — Read available native accessibility information for the selected target, reporting partial or unavailable information truthfully.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.target.close`
+
+**Close computer target control** — Stop input and release the owning Session’s native capture and control resources.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
+- Also surfaced on: `ui`, `agent`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.target.get`
+
+**Get the Session’s selected computer target** — Read the Session’s selected target, See/Use access, and host-resolved consent display facts.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.target.select`
+
+**Choose the Session’s computer target** — Propose a native target or window-title/app hint and See/Use access for the human picker. Approval uses the human’s final selection; waivers use an exact target or a uniquely matching title or app. Replace the Session’s previous target only after draining its input.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `computer.targets.list`
+
+**List computer targets** — List native windows and display availability, with owning app names and present-user thumbnails when available. Agent calls require approval by default and never return preview pixels.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `connectedServices.accounts.rename`
+
+**Rename connected account** — Set or clear the Account-owned display label of a connected account.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `account` (json, required): Qualified account
+- `label` (text): Label
+
+## `connectedServices.identityPrivacy.set`
+
+**Hide connected-account identities** — Change identity masking on this app device. It never writes Account settings or changes another device.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `api`.
+
+### Input guidance
+
+- `hidden` (boolean, required): Hide emails and ids
+
+## `connectedServices.pools.default.set`
+
+**Set connected-service pool default** — Set or clear this pool as the default for one Agent using its declared connected-account purposes.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `group` (json, required): Qualified pool
+- `agentId` (text, required): Agent id
+- `makeDefault` (boolean, required): Use this pool
+- `machineId` (text): Catalog machine (app client)
+
+## `connectedServices.pools.reorder`
+
+**Reorder connected-service pool** — Replace the complete member priority order, preserving pool revision checks for every mutation.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `group` (json, required): Qualified pool
+- `accountIds` (json, required): Ordered member ids
+
+## `connectedServices.pools.switchNow`
+
+**Switch connected-service pool account** — Select an account through the pool revision and runtime cooldown owner. A cooldown override must be explicit.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `group` (json, required): Qualified pool
+- `connectedAccountId` (text, required): Account id
+- `expectedGeneration` (text, required): Expected generation
+- `expectedIncarnation` (text): Expected incarnation
+- `expectedRuntimeStateRevision` (text): Expected runtime revision
+- `overrideRuntimeCooldown` (boolean): Override cooldown
+
+## `connectedServices.quota.reset`
+
+**Use connected-service quota reset** — Spend one usage reset through the existing machine recovery-credit operation.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text, required): Machine id
+- `serviceId` (text, required): Legacy service id
+- `profileId` (text, required): Account id
+- `providerCreditId` (text): Reset credit id
+- `sourceSnapshotFetchedAtMs` (text): Usage snapshot timestamp
+
 ## `daemon.filesystem.browseDirectory`
 
 **Browse filesystem directory** — List a machine file-browser directory constrained to a configured browse root.
@@ -1552,6 +1909,22 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `actionId` (text, required): Action id
 - `input` (textarea): Input (JSON)
 
+## `execution.run.cancel_turn`
+
+**Cancel this response** — Cancel the addressed active response without stopping its execution run. A nonempty sessionId selects that exact authorized Session. Omitting sessionId inherits the current Action Session, or selects detached scope when none exists. sessionId:null selects detached scope even inside a current Session.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id — Use a nonempty value for an exact authorized Session. Omit it to inherit the current Action Session, or to select detached scope when no current Session exists. Set null to select detached scope even inside a current Session.
+- `runId` (text, required): Run id
+- `occurrenceId` (text, required): Occurrence id
+- `turnId` (text, required): Turn id
+
 ## `execution.run.ensure`
 
 **Ensure execution run** — Ensure an existing execution run is active or resumable. A nonempty sessionId selects that exact authorized Session. Omitting sessionId inherits the current Action Session, or selects detached scope when none exists. sessionId:null selects detached scope even inside a current Session.
@@ -1774,6 +2147,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `accountId` (text, required): Account ID
 
+## `home.accounts.get`
+
+**Get Home Account** — Read one person as Home administration sees them: role, status, sign-in facts, Teams, counts and recent administration events.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `accountId` (text, required): Account ID
+
 ## `home.accounts.list`
 
 **List Home Accounts** — Page through the Home People list as a Home administrator.
@@ -1816,6 +2202,58 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `scope.kind` (text, required): Scope
 - `scope.teamId` (text): Team ID
 
+## `home.accounts.signOutEverywhere`
+
+**Sign a Home Account out everywhere** — End every signed-in session of one Account. API tokens stay valid until the Account is disabled.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `accountId` (text, required): Account ID
+
+## `home.audit.list`
+
+**List Home administration activity** — Page through this Home's administration events, newest first, optionally about one target.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.emptiness.get`
+
+**Check whether this Home is empty** — Read whether this Home has any sessions, other people, Teams or invitations.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.governance.claim`
+
+**Claim this Home** — Become the first owner of an ownerless Home with the one-time code printed by \`happier-server --print-home-claim-code\`. Every refusal reads the same.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `code` (text, required): Claim code
+
 ## `home.governance.eligibility.get`
 
 **Get Home eligibility** — Read only Teams availability and this Account's effective Team-creation eligibility.
@@ -1842,6 +2280,58 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `home.hub.layout.get`
+
+**Read Home customization** — Read the current client’s Home section order, visibility and available plugin widgets.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.hub.layout.update`
+
+**Customize Home** — Reorder, move, show or hide Home sections and widgets, set or clear a frame style override, restore dismissed setup steps or reset the layout. Start and attention stay visible.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `intent` (json, required): Customization intent — Use move, reorder, visibility, frameStyle (card/plain/null), restore_setup or reset. Read the current layout first; reorder lists all sections returned by that read.
+
+## `home.mailDelivery.get`
+
+**Get Home mail readiness** — Read whether this Home can send mail: a configured transport and a buildable link.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.mailDelivery.test`
+
+**Send a test email** — Send a fixed test message through this Home's mail settings. A failure reports its class only.
+
+- Safety: `danger`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `to` (text, required): Send to
+
 ## `home.policy.set`
 
 **Set Home policy** — Update this Home's governance policy against the revision the caller last read.
@@ -1855,6 +2345,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `expectedRevision` (integer, required): Expected revision
 - `teamCreationPolicy` (text): Team creation policy
+- `teamsVisibleToMembers` (boolean): Show Teams to members
 - `authenticationPolicy.enabledMethodIds` (text_list): Enabled sign-in methods
 - `authenticationPolicy.permittedAccountModes` (text_list): Permitted Account modes
 - `authenticationPolicy.recommendedProvisioningMode` (text): Recommended Account mode
@@ -1867,6 +2358,90 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `identityNetworkPolicy.hostnames` (text_list): Allowed hostnames
 - `identityNetworkPolicy.cidrs` (text_list): Allowed CIDRs
 - `identityNetworkPolicy.ports` (text_list): Allowed ports
+- `authenticationPolicy.anonymousSignup` (boolean): Anonymous sign-up
+- `authenticationPolicy.storagePolicy` (text): Storage policy
+- `confirmWidening` (boolean): Widening confirmed
+
+## `home.reachability.get`
+
+**Get how this Home is reached** — Read the effective public and web-app addresses with their sources, the hosting computer's access method when known, and the direct-connection state.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.reachability.iroh.set`
+
+**Turn direct connections on or off** — Turning direct (Iroh) connections off retires the current direct-connection identity for good; turning them on creates a new one. Addresses and sign-ins stay the same.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `mode` (text, required): Direct connections
+
+## `home.retention.dryRun`
+
+**Run a retention dry run** — Run one retention sweep of this Home's current rules without deleting anything, and report what each domain would delete.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.settings.get`
+
+**Get Home settings** — Read the effective server configuration of this Home with each value's source. Secrets report presence only.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `home.settings.set`
+
+**Set Home settings** — Store Home setting values against the revision the caller last read. A deployment env value still wins; restart settings apply at the next server start.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+- `expectedRevision` (integer, required): Expected revision
+
+## `homes.connect`
+
+**Connect a Home by address** — Check and save a Home address, returning the canonical connection outcome. Device focus stays with the current Home.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `address` (text, required): Home address
+- `displayName` (text): Home name
+- `acceptInsecureHttp` (boolean): Accept insecure HTTP
+- `acceptCanonicalUrl` (boolean): Use the advertised canonical address
 
 ## `identity.githubApps.create`
 
@@ -2088,6 +2663,32 @@ No field hints are published. Use the typed input accepted by `execute`.
 ### Input guidance
 
 No field hints are published. Use the typed input accepted by `execute`.
+
+## `inbox.mark_all_read`
+
+**Mark Inbox as read** — Mark an exact Home-scoped Inbox snapshot read. Does not resolve approvals, mentions or human attention.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `targets` (json, required): Inbox snapshot
+
+## `launch_profiles.publish`
+
+**Publish launch profile** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `profileId` (text, required): Launch profile id
 
 ## `localServices.actions.copyUrl`
 
@@ -2349,6 +2950,176 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `machines.add.command`
+
+**Prepare machine setup command** — Get the existing SSH or another-computer setup command for a saved Home. This does not install or connect the machine.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `serverId` (text, required): Home ID
+- `method` (select, required): Setup method
+- `os` (select, required): Operating system
+- `host` (text): SSH host
+- `username` (text): SSH user
+- `port` (text): SSH port
+- `authMode` (text): SSH authentication
+- `identityFilePath` (text): Identity file
+
+## `machines.add.ssh.cancel`
+
+**Cancel SSH machine setup** — Cancel the retained SSH task through its existing system-task owner.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `taskId` (text, required): Task ID
+
+## `machines.add.ssh.respond`
+
+**Answer SSH setup prompt** — Answer the exact current SSH setup prompt; trust and service changes are never accepted implicitly.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `taskId` (text, required): Task ID
+- `answer` (json, required): Prompt answer
+
+## `machines.add.ssh.start`
+
+**Add machine over SSH** — Start the existing client SSH setup task on the focused signed-in Home. Read status and answer non-secret prompts. Password and private-key entry stays with the present-user UI.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `serverId` (text, required): Home ID
+- `host` (text, required): SSH host
+- `username` (text): SSH user
+- `port` (text): SSH port
+- `authMode` (text): Authentication
+- `identityFilePath` (text): Identity file
+
+## `machines.add.ssh.status`
+
+**Read SSH machine setup** — Read the retained SSH setup task and its current prompt. Task success is not proof of Home feed arrival.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `taskId` (text, required): Task ID
+
+## `machines.agents.install`
+
+**Install or update an agent** — Start a daemon-owned agent install or update job.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `agentId` (text): Agent id
+- `intent` (text): Intent
+- `consent.vendorRecipe` (boolean): Allow the vendor install recipe
+- `force` (boolean): Reinstall an installed agent
+
+## `machines.agents.install.cancel`
+
+**Cancel an agent install job** — No additional description is published.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `jobId` (text): Job id
+
+## `machines.agents.install.status`
+
+**Read an agent install job** — Read the daemon-owned current steps, byte progress, and outcome alongside events after the cursor. Omitting the cursor reads events from the start.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `jobId` (text): Job id
+- `cursor` (text): Event cursor
+
+## `machines.agents.list`
+
+**List agents on a machine** — Read daemon-owned Agent installation, sign-in, platform and update facts for a machine.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `serverId` (text): Home id (optional)
+- `agentId` (text): Agent id (optional)
+- `refresh` (boolean): Refresh inventory
+
+## `machines.agents.signIn.start`
+
+**Sign in to an agent** — Connect an accepted account, or open the agent native login on the selected machine.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `agentId` (text): Agent id
+- `method` (text): Method (connected or native)
+- `serviceId` (text): Connected service id
+
+## `machines.agents.signIn.status`
+
+**Check agent sign-in** — No additional description is published.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text): Machine id
+- `agentId` (text): Agent id
+
 ## `machines.list`
 
 **List machines** — List machines available on the active server scope.
@@ -2361,6 +3132,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 ### Input guidance
 
 - `limit` (text): Limit
+
+## `machines.pairing.create`
+
+**Create another-computer pairing link** — Issue a short-lived Home pairing link through the trusted device enrollment lifecycle. Keep this client running until the computer joins.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `serverId` (text, required): Home ID
 
 ## `machines.pools.create`
 
@@ -2440,6 +3224,41 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `machines.terminal.list`
+
+**List machine terminals** — Read existing machine terminals and their Session attribution without opening or changing a process. Null means this daemon does not support listing.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text, required): Machine ID
+- `serverId` (text): Home ID
+
+## `machines.terminal.open`
+
+**Open machine terminal** — Create or reuse a machine PTY shell through the daemon terminal owner.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `machineId` (text, required): Machine ID
+- `serverId` (text): Home ID
+- `terminalKey` (text, required): Terminal key
+- `cwd` (text): Working directory
+- `cols` (text): Columns
+- `rows` (text): Rows
+- `initialCommand` (text): Initial command
+- `launch` (json): Launch intent
+- `sessionId` (text): Owning Session ID
+
 ## `memory.ensure_up_to_date`
 
 **Ensure memory up to date** — Trigger the daemon to sync memory hints for a session (or all active sessions).
@@ -2484,6 +3303,22 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `machineId` (text, required): Machine id — Machine running the daemon memory index.
 - `query.query` (text, required): Query — What to search for.
 - `query.mode` (select, required): Mode — Which index to search.
+
+## `notifications.notify_me`
+
+**Notify me** — Send a notification to your Account's configured channels, following your delivery policy.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `message` (textarea, required): Message
+- `title` (text): Title
+- `open` (json): Open — Optional Session or Workflow run link.
+- `channels` (multiselect): Send to
 
 ## `paths.list_recent`
 
@@ -3065,7 +3900,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
 
 ### Input guidance
 
@@ -3108,6 +3943,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `skillMarkdown` (textarea, required): SKILL.md markdown
 - `folderId` (text): Folder id
 - `tags` (text_list): Tags
+
+## `prompt_doc.get`
+
+**Read prompt document** — Read the current Account-private prompt document, including workstream memory, by its Artifact reference.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `artifactId` (text, required): Prompt artifact id
 
 ## `prompt_doc.update`
 
@@ -3187,6 +4035,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `sessionId` (text): Session id
 - `includeDisabled` (boolean): Include disabled
+- `scope` (text): Scope
 
 ## `review.start`
 
@@ -3293,7 +4142,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `none` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3332,7 +4181,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `none` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3345,11 +4194,376 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `none` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
 No field hints are published. Use the typed input accepted by `execute`.
+
+## `roles.create`
+
+**roles create** — No additional description is published.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text): Role id
+- `role` (json, required): Role
+
+## `roles.delete`
+
+**roles delete** — No additional description is published.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text, required): Role id
+- `expectedRevision` (json, required): Expected role revision
+
+## `roles.get`
+
+**roles get** — No additional description is published.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text, required): Role id
+
+## `roles.list`
+
+**roles list** — No additional description is published.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `roles.override.reset`
+
+**roles override reset** — No additional description is published.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text, required): Role id
+
+## `roles.override.set`
+
+**roles override set** — No additional description is published.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text, required): Role id
+- `engine` (json): Engine
+- `runsAs` (json): Runs as
+- `profileId` (text): Launch profile id
+- `workspaceWrites` (select): Workspace writes
+- `secondOpinion` (select): Second opinion
+- `instructionsOverride` (textarea): Instructions override
+
+## `roles.update`
+
+**roles update** — No additional description is published.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `roleId` (text, required): Role id
+- `role` (json, required): Role
+- `expectedRevision` (json, required): Expected role revision
+
+## `scm.backend.describe`
+
+**Backend describe** — Backend describe in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+
+## `scm.branch.checkout`
+
+**Branch checkout** — Branch checkout in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `name` (text): name
+- `strategy` (text): strategy
+- `overwriteCurrentBranchStash` (boolean): overwrite Current Branch Stash
+
+## `scm.branch.create`
+
+**Branch create** — Branch create in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `name` (text): name
+- `checkout` (boolean): checkout
+- `startPoint` (text): start Point
+
+## `scm.branch.list`
+
+**Branch list** — Branch list in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `includeRemotes` (boolean): include Remotes
+
+## `scm.branch.merge`
+
+**Branch merge** — Branch merge in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `sourceRef` (text): source Ref
+
+## `scm.branch.operation.abort`
+
+**Branch operation abort** — Branch operation abort in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `operation` (text): operation
+
+## `scm.branch.operation.continue`
+
+**Branch operation continue** — Branch operation continue in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `operation` (text): operation
+
+## `scm.branch.operation.skip`
+
+**Branch operation skip** — Branch operation skip in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `operation` (text): operation
+
+## `scm.branch.rebase`
+
+**Branch rebase** — Branch rebase in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `sourceRef` (text): source Ref
+
+## `scm.change.discard`
+
+**Change discard** — Change discard in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `entries` (json): entries
+
+## `scm.change.exclude`
+
+**Change exclude** — Change exclude in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `paths` (text_list): paths
+- `patch` (textarea): patch
+
+## `scm.change.include`
+
+**Change include** — Change include in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `paths` (text_list): paths
+- `patch` (textarea): patch
+
+## `scm.commit.backout`
+
+**Commit backout** — Commit backout in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `commit` (text): commit
+
+## `scm.commit.create`
+
+**Commit create** — Commit create in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `message` (textarea): message
+- `mode` (select): Commit mode
+- `signOff` (boolean): Add sign-off
+- `allowPublishedAmend` (boolean): Acknowledge published HEAD rewrite
+- `scope` (json): scope
+- `patches` (json): patches
+
+## `scm.conflict.acceptSide`
+
+**Conflict accept Side** — Conflict accept Side in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `path` (text): path
+- `side` (text): side
+
+## `scm.conflict.markResolved`
+
+**Conflict mark Resolved** — Conflict mark Resolved in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `paths` (text_list): paths
+
+## `scm.diff.commit`
+
+**Diff commit** — Diff commit in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `commit` (text): commit
+
+## `scm.diff.file`
+
+**Diff file** — Diff file in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `path` (text): path
+- `area` (text): area
 
 ## `scm.diffSummary.generate`
 
@@ -3358,7 +4572,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `external`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3377,7 +4591,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3391,7 +4605,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `external`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3407,6 +4621,23 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `remoteConflictStrategy` (select): Remote conflict strategy
 - `pushCurrentBranch` (boolean): Push current branch
 
+## `scm.log.list`
+
+**Log list** — Log list in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `limit` (text): limit
+- `skip` (text): skip
+- `query` (text): query
+- `range` (text): range
+
 ## `scm.pullRequest.checkout`
 
 **Check out pull request** — Check out a pull request reference in the current repository.
@@ -3414,7 +4645,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3430,7 +4661,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3446,7 +4677,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3463,7 +4694,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3479,7 +4710,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `external`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3489,6 +4720,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `head` (text): Head branch
 - `title` (text): Title
 - `body` (textarea): Body
+- `draft` (boolean): Draft
 
 ## `scm.pullRequest.prepareWorktree`
 
@@ -3497,7 +4729,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3515,7 +4747,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `danger`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3530,6 +4762,115 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `body` (textarea): Pull request body
 - `defaultBranchPushPolicy` (select): Default-branch push policy
 
+## `scm.remote.add`
+
+**Remote add** — Remote add in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `name` (text): name
+- `fetchUrl` (text): fetch Url
+- `pushUrl` (text): push Url
+
+## `scm.remote.fetch`
+
+**Remote fetch** — Remote fetch in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `remote` (text): remote
+- `branch` (text): branch
+
+## `scm.remote.publish`
+
+**Remote publish** — Remote publish in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `remote` (text): remote
+
+## `scm.remote.pull`
+
+**Remote pull** — Remote pull in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `remote` (text): remote
+- `branch` (text): branch
+- `dirtyPolicy` (text): dirty Policy
+- `reconcile` (text): reconcile
+
+## `scm.remote.push`
+
+**Remote push** — Remote push in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `remote` (text): remote
+- `branch` (text): branch
+- `pushMode` (text): push Mode
+- `expectedRemoteOid` (text): expected Remote Oid
+
+## `scm.remote.remove`
+
+**Remote remove** — Remote remove in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `name` (text): name
+
+## `scm.remote.setUrl`
+
+**Remote set Url** — Remote set Url in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `name` (text): name
+- `fetchUrl` (text): fetch Url
+- `pushUrl` (text): push Url
+
 ## `scm.repository.clone`
 
 **Clone source-control repository** — Clone a hosting-provider repository into an explicitly selected local destination.
@@ -3537,7 +4878,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `external`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3556,7 +4897,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3570,7 +4911,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `danger`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -3593,6 +4934,164 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `displayName` (text, required): Workspace label
 - `sourceTip` (json, required): Provider-authorized source tip
 - `verification` (json): Already-prepared path verification
+
+## `scm.stash.apply`
+
+**Stash apply** — Stash apply in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `stashRef` (text): stash Ref
+
+## `scm.stash.create`
+
+**Stash create** — Stash create in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `message` (textarea): message
+
+## `scm.stash.drop`
+
+**Stash drop** — Stash drop in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `stashRef` (text): stash Ref
+
+## `scm.stash.list`
+
+**Stash list** — Stash list in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `includeAll` (boolean): include All
+
+## `scm.stash.pop`
+
+**Stash pop** — Stash pop in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `stashRef` (text): stash Ref
+
+## `scm.stash.show`
+
+**Stash show** — Stash show in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `stashRef` (text): stash Ref
+- `maxBytes` (text): max Bytes
+
+## `scm.status.snapshot`
+
+**Status snapshot** — Status snapshot in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `includeWorktreeStatus` (boolean): include Worktree Status
+
+## `scm.worktree.create`
+
+**Worktree create** — Worktree create in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `displayName` (text): display Name
+- `baseRef` (text): base Ref
+- `branchMode` (text): branch Mode
+
+## `scm.worktree.prune`
+
+**Worktree prune** — Worktree prune in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+
+## `scm.worktree.remove`
+
+**Worktree remove** — Worktree remove in the explicitly selected source-control repository.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `worktreePath` (text): worktree Path
+- `confirmed` (boolean): confirmed
+- `authorizationToken` (text): authorization Token
+
+## `scm.worktrees.enrichment`
+
+**Worktrees enrichment** — Worktrees enrichment in the explicitly selected source-control repository.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `cwd` (text): cwd
+- `worktreePaths` (text_list): worktree Paths
 
 ## `secrets.shared.create`
 
@@ -3816,7 +5315,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 ## `session.board.layout.update`
 
-**Organize the Session Board** — Apply exactly one semantic Board organization change: create, rename, move or remove a view, or place, move, unpin or resize an item. Moves use stable sibling anchors, never indices.
+**Organize the Session Board** — Apply exactly one semantic Board organization change: create, rename, move or remove a view, or place, move, unpin, resize or set a shared frame style on an item placement. Frame styles are card or plain; null clears the override. Moves use stable sibling anchors, never indices.
 
 - Safety: `safe`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
@@ -3872,6 +5371,48 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `directory` (text, required): Directory
 - `backendTarget` (text, required): Backend target
 - `replay` (textarea, required): Replay seed
+
+## `session.delete`
+
+**Delete session** — Permanently delete a session. Its daemon removes managed folders through the durable deletion lifecycle.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+
+## `session.discussion.archive`
+
+**Archive a discussion** — Archive one human discussion. It stays readable and restorable; new posts and title changes stop.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id
+- `discussionId` (text, required): Discussion id
+
+## `session.discussion.create`
+
+**Start a Session discussion** — Start one human discussion with its title and first message in a single atomic write. Agent and MCP management surfaces remain disabled.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id
+- `title` (text, required): Title
+- `firstMessage` (json, required): First message
 
 ## `session.discussion.get`
 
@@ -3936,6 +5477,77 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `afterSeq` (integer): After sequence
 - `limit` (integer): Page size
 
+## `session.discussion.read_state.set`
+
+**Mark a discussion read** — Advance the caller’s own private read position in a discussion. Agent and MCP callers cannot acknowledge a person’s read position.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id
+- `discussionId` (text, required): Discussion id
+- `lastReadSeq` (integer, required): Last read sequence
+
+## `session.discussion.rename`
+
+**Rename a discussion** — Change one human discussion’s title. It does not reorder the discussion or touch its messages.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id
+- `discussionId` (text, required): Discussion id
+- `title` (text, required): Title
+
+## `session.discussion.restore`
+
+**Restore a discussion** — Restore one archived human discussion so it accepts posts again.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session id
+- `discussionId` (text, required): Discussion id
+
+## `session.draft.delete`
+
+**Delete a New Session draft** — Delete an exact New Session draft on the answering client through draft tombstone and attachment cleanup. Refuses launches already in custody.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `draftId` (text, required): Draft id
+
+## `session.draft.directory.set`
+
+**Set New Session draft directory** — Set folder or no-folder intent on one exact mounted editable New Session composer. Does not launch a Session or create a directory.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `ref` (json, required): Exact New Session composer
+- `directory` (json, required): Directory intent
+
 ## `session.events.get`
 
 **Get session events** — Inspect raw session events (tool calls, tool results, token counts, lifecycle, permission, stream, session events) for diagnostics. Use session_transcript_get for normal transcript reading.
@@ -3950,6 +5562,72 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `sessionId` (text, required): Session id
 - `limit` (text): Limit
 - `cursor` (text): Cursor
+
+## `session.folder.set`
+
+**Assign session folder** — Assign a session to an existing organization folder, or clear its assignment with null.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `folderId` (text, required): Folder id, or null to clear
+
+## `session.folders.create`
+
+**Create Session folder** — Create an organization folder through the existing folder upsert owner.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.folders.delete`
+
+**Delete Session folder** — Delete an organization folder using the existing assignment disposition contract.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.folders.list`
+
+**List Session folders** — Read the existing organization snapshot, including folder and tag identities and display envelopes.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.folders.rename`
+
+**Rename Session folder** — Update an existing folder display through the same upsert owner. Retain its current key, parent and order fields in the request.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `session.follow.get`
 
@@ -4168,9 +5846,49 @@ No field hints are published. Use the typed input accepted by `execute`.
 ### Input guidance
 
 - `view` (select): View — Summary rows, or the marked operational awareness projection.
+- `underSessionId` (text): Session led subtree
 - `limit` (text): Limit
 - `cursor` (text): Cursor
 - `includeLastMessagePreview` (boolean): Include last message preview
+
+## `session.list.view.get`
+
+**Read Sessions view** — Read the mounted My work panel filters and available Homes on this client.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.list.view.reset`
+
+**Reset Sessions view** — Restore the mounted Sessions view defaults through the same Reset control.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.list.view.set`
+
+**Change Sessions view** — Change scope, attention, Homes, audiences, tags, source, search or inactive visibility through the mounted Sessions controller.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `session.log.tail`
 
@@ -4253,19 +5971,35 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `modelId` (text, required): Model id
 - `providerConnectionId` (text): Provider connection id
 
+## `session.notes.set`
+
+**session notes set** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `notes` (textarea, required): Orchestration notes
+
 ## `session.open`
 
-**Open session** — No additional description is published.
+**Open session** — Open or resume a session. Explicit fresh-folder consent lets the daemon recover a missing managed folder.
 
 - Safety: `safe`; side effect: `external`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `voice`, `api`.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
 
 ### Input guidance
 
+- `tabId` (text): Workspace tab id (optional)
 - `sessionId` (text): Session id
 - `sessionTitle` (text): Session title
+- `approvedNewDirectoryCreation` (boolean): Continue in a fresh folder if the private folder is missing
 
 ## `session.pendingInput.interruptAndRun`
 
@@ -4390,6 +6124,35 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `session.read_state.set`
+
+**Mark a session read** — Set the caller’s own private read position in a session. Does not resolve approvals, mentions or human attention.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `state` (text, required): Read state
+
+## `session.reports_to.set`
+
+**Set Session lead** — No additional description is published.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text): Session
+- `leadSessionId` (text): Lead Session (null to detach)
+- `expectedLeadSessionId` (text): Expected current lead
+
 ## `session.responsibility.candidates.list`
 
 **Find Session responsibility candidates** — No additional description is published.
@@ -4431,6 +6194,95 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `scopes` (multiselect, required): Scopes
 - `candidate.source` (select, required): Source
 
+## `session.role.set`
+
+**session role set** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `roleId` (text, required): Role id
+
+## `session.roles.add`
+
+**session roles add** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `roleId` (text, required): Role id
+- `role` (json, required): Role
+
+## `session.roles.apply_to_reports`
+
+**session roles apply_to_reports** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+
+## `session.roles.override.clear`
+
+**session roles override clear** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `roleId` (text, required): Role id
+
+## `session.roles.override.set`
+
+**session roles override set** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `roleId` (text, required): Role id
+- `engine` (json): Engine
+- `runsAs` (json): Runs as
+- `profileId` (text): Launch profile id
+- `workspaceWrites` (select): Workspace writes
+- `secondOpinion` (select): Second opinion
+
+## `session.roles.remove`
+
+**session roles remove** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `agent`, `mcp`, `voice`, `rpc`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `roleId` (text, required): Role id
+
 ## `session.rollback`
 
 **Rollback conversation** — Roll back conversation state in the selected session.
@@ -4460,7 +6312,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 ## `session.spawn_new`
 
-**Create session** — Create a new coding session in a directory on the requested machine, using the selected Agent.
+**Create session** — Create a new session on the requested machine using the selected Agent. Pass directory &#123;kind:"path",path&#125; for a folder or &#123;kind:"managed"&#125; for no folder: Happier creates a private folder for this session.
 
 - Safety: `safe`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
@@ -4472,7 +6324,8 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `creationKey` (text): Creation key
 - `executionTarget.serverId` (text, required): Server id
 - `executionTarget.machineId` (text, required): Machine id
-- `directory` (text, required): Directory
+- `directory` (json, required): Directory intent
+- `directory.path` (text): Directory
 - `organizationPlacement` (json): Organization placement
 - `agentTarget` (json, required): Agent target
 - `modelSelection` (json): Model selection
@@ -4517,6 +6370,72 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `sessionId` (text, required): Session id
 
+## `session.tags.create`
+
+**Create Session tag** — Create an organization tag through the existing tag upsert owner.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.tags.delete`
+
+**Delete Session tag** — Delete an organization tag using the existing assignment disposition contract.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.tags.list`
+
+**List Session tags** — Read the existing organization snapshot, including tag and folder identities and display envelopes.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.tags.rename`
+
+**Rename Session tag** — Update an existing tag display through the same upsert owner. Retain its current key and order fields in the request.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.tags.set`
+
+**Assign session tags** — Replace a session’s tag assignments with existing organization tag ids; an empty list clears them.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `none` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `sessionId` (text, required): Session id
+- `tagIds` (textarea, required): Tag ids
+
 ## `session.target.primary.set`
 
 **Set primary action session** — Set which session the voice assistant should target by default.
@@ -4558,6 +6477,175 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `sessionId` (text, required): Session id
 - `expectedStateAtMs` (text): Expected state timestamp
 
+## `session.terminals.close`
+
+**Close session terminal** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.close_others`
+
+**Close other terminal tabs** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.close_tab`
+
+**Close terminal tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.detach`
+
+**Move split terminal to its own tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.focus`
+
+**Focus session terminal** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.list`
+
+**List session terminal tabs** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.list_view`
+
+**Show terminal list** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.open`
+
+**Open session terminal tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.rename`
+
+**Rename session terminal** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.reorder`
+
+**Reorder terminal tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.resize`
+
+**Resize terminal split** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.run_script`
+
+**Run package script in a new terminal tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.terminals.split`
+
+**Split session terminal tab** — Operate on the invoking mounted client session terminal pane. Scope IDs are Home-qualified; a headless host returns unsupported_action. Closing stops owned shell terminals; attached agent terminals and borrowed views are only removed from the pane.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `session.title.set`
 
 **Set session title** — Set the title (summary text) shown for a session.
@@ -4588,6 +6676,58 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `cursor` (text): Cursor
 - `direction` (select): Direction — Page away from the cursor: before reads older items (the default), after reads newer ones.
 - `maxCharsPerMessage` (text): Message truncation chars — Optional per-message truncation budget. Omit or pass null for full message text.
+
+## `session.trigger.add`
+
+**Add session trigger** — Add session trigger through the canonical workflow Action owner.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `target.ref` (select): Workflow
+
+## `session.trigger.list`
+
+**List session triggers** — List session triggers through the canonical workflow Action owner.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.trigger.remove`
+
+**Remove session trigger** — Remove session trigger through the canonical workflow Action owner.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `session.trigger.update`
+
+**Update session trigger** — Update session trigger through the canonical workflow Action owner.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `session.unarchive`
 
@@ -4672,7 +6812,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
-- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4741,6 +6881,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `sessionId` (text, required): Session id
 
+## `session.worker.publish`
+
+**Publish a worker report** — No additional description is published.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `summary` (text, required): Report
+
 ## `sessions.external.backgroundFollow.set`
 
 **Set external session follow policy** — Enable or disable background following for an external session.
@@ -4762,7 +6915,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`.
 
 ### Input guidance
 
@@ -4775,7 +6928,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4790,7 +6943,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `danger`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4805,7 +6958,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4820,7 +6973,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `danger`; side effect: `write`.
 - Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4835,7 +6988,7 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `rpc`, `api`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -4949,6 +7102,72 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - `parentSessionId` (text): Parent session id
 - `id` (text): Subagent id
+
+## `settings.get`
+
+**Read a declared setting** — Discover declared settings and read or change explicitly bound scalar preferences through their canonical owner. Local preferences belong to the answering client.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `anchor` (text, required): Setting anchor
+
+## `settings.list`
+
+**List declared settings** — Discover declared settings and read or change explicitly bound scalar preferences through their canonical owner. Local preferences belong to the answering client.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `pageId` (text): Settings page
+
+## `settings.set`
+
+**Change a declared setting** — Discover declared settings and read or change explicitly bound scalar preferences through their canonical owner. Local preferences belong to the answering client.
+
+- Safety: `danger`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `cli`, `rpc`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `anchor` (text, required): Setting anchor
+- `value` (json, required): Setting value
+
+## `shell.column.get`
+
+**Read navigation column** — Read whether this client has a navigation column and whether it is visible.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `shell.column.set`
+
+**Show or hide navigation column** — Show or hide the current destination column on this client through the shell visibility owner.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
 
 ## `subagents.delegate.start`
 
@@ -5076,6 +7295,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 **List entitled Team credentials** — List recipient-safe Team credential resources available to the authenticated Team member.
 
 - Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `teams.credentials.externalKeys.authorize`
+
+**Authorize external API key** — Authorize your assigned external API key using your current Team authentication.
+
+- Safety: `danger`; side effect: `danger`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
 - Also surfaced on: `ui`, `agent`, `cli`, `api`.
@@ -6183,6 +8415,32 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `sessionId` (text): Session id
 - `leaseId` (text, required): Lease id
 
+## `ui.command_palette.invoke`
+
+**Invoke a command palette entry** — Invoke an available command by its catalog id on the current client. Commands keep their existing navigation and Action policy.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `commandId` (text, required): Command id
+
+## `ui.command_palette.list`
+
+**List command palette entries** — List the current client’s available commands. Requires a mounted app shell.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `ui.current_context.command.invoke`
 
 **Invoke current UI command** — Invoke one currently available opaque command from the local current UI context. If the result is \`denied\`, the person declined the confirmation: report that and do not invoke it again unless they ask.
@@ -6290,6 +8548,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `workflow.definition.edit`
+
+**Edit workflow definition** — Prefer this typed operation batch for partial workflow changes; workflow.definition.update replaces the whole definition.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `workflow.definition.get`
 
 **Get workflow definition** — Get workflow definition through the canonical workflow Action owner.
@@ -6368,6 +8639,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `workflow.run.invocations.complete_review`
+
+**Complete workflow review** — Present-user only: use the stored or supplied validated result, or request generation on the held invocation, using its exact content revision. Automated callers cannot resolve review.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `present_user` — only a host-stamped present-user caller is admitted; plugin and API-token callers receive `present_user_required`.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
 ## `workflow.run.invocations.get`
 
 **Get workflow invocation** — Get workflow invocation through the canonical workflow Action owner.
@@ -6387,6 +8671,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 - Safety: `safe`; side effect: `read`.
 - Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workflow.run.invocations.publish_draft`
+
+**Publish workflow draft result** — Publish a private draft value validated against the invocation's exact frozen result contract. Prose does not publish a result. Publication does not complete or advance the invocation. If publication fails, request a present-user follow-up; an agent must not complete the review.
+
+- Safety: `safe`; side effect: `write`.
+- Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
 - Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
 
@@ -6457,6 +8754,19 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 ### Input guidance
 
+- `source.workflow` (select): Workflow
+
+## `workflow.run.summaries`
+
+**Summarize workflow Runs** — Summarize workflow Runs through the canonical workflow Action owner.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
 No field hints are published. Use the typed input accepted by `execute`.
 
 ## `workflow.run.wait`
@@ -6467,6 +8777,58 @@ No field hints are published. Use the typed input accepted by `execute`.
 - Approval: `required` result; `blocking` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
 - Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workflow.trigger.add`
+
+**Add workflow trigger** — Add workflow trigger through the canonical workflow Action owner.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+- `workflow` (select): Workflow
+
+## `workflow.trigger.list`
+
+**List workflow triggers** — List workflow triggers through the canonical workflow Action owner.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workflow.trigger.remove`
+
+**Remove workflow trigger** — Remove workflow trigger through the canonical workflow Action owner.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workflow.trigger.update`
+
+**Update workflow trigger** — Update workflow trigger through the canonical workflow Action owner.
+
+- Safety: `danger`; side effect: `danger`.
+- Approval: `optional` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `rpc`, `api`.
 
 ### Input guidance
 
@@ -6485,18 +8847,239 @@ No field hints are published. Use the typed input accepted by `execute`.
 
 No field hints are published. Use the typed input accepted by `execute`.
 
+## `workspace.groups.focus`
+
+**Focus workspace group** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.groups.maximize`
+
+**Maximize workspace group** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.groups.restore`
+
+**Restore workspace groups** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.resize`
+
+**Resize workspace split** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.split`
+
+**Split workspace** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.sync.conflict.inspect`
+
+**Inspect workspace sync conflict** — Inspect the current endpoint versions of a linked workspace path. Reads current bytes, not history; coverage can be partial.
+
+- Safety: `safe`; side effect: not classified.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `controllerMachineId` (text): Controller machine id
+- `workspaceRefId` (text, required): Workspace ref id
+- `path` (text, required): Conflict path
+
 ## `workspace.sync.conflict.resolve`
 
-**Resolve workspace conflict** — Keep the selected workspace version by deleting the unchanged losing side and flushing synchronization.
+**Resolve workspace conflict** — Apply the exact reviewed workspace entry to the explicitly approved current destinations.
 
 - Safety: `danger`; side effect: not classified.
 - Approval: `required` result; `deferred` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `api`.
+
+### Input guidance
+
+- `controllerMachineId` (text, required): Controller machine id
+- `hubWorkspaceRefId` (text, required): Hub workspace ref id
+- `path` (text, required): Conflict path
+- `source` (json, required): Reviewed source
+- `targets` (json, required): Approved destinations
+- `relationshipIds` (json, required): Relationship ids
+- `strategy` (select, required): Resolution strategy
+
+## `workspace.sync.conflicts.list`
+
+**List workspace sync conflicts** — Read one bounded conflict page for a linked workspace relationship. Pages keep their cursor; coverage can be partial.
+
+- Safety: `safe`; side effect: not classified.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `controllerMachineId` (text, required): Controller machine id
+- `relationshipId` (text, required): Relationship id
+- `limit` (text): Limit
+
+## `workspace.sync.relationship.create`
+
+**Add machine to workspace** — Link a selected Workspace to a folder on another machine. Attaching an existing folder preserves its contents; creating from this Workspace replaces them.
+
+- Safety: `safe`; side effect: not classified.
+- Approval: `optional` result; `deferred` flow.
 - Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
 - Also surfaced on: `ui`, `api`.
 
 ### Input guidance
 
-- `controllerMachineId` (text, required): Controller machine id
-- `request.relationshipId` (text, required): Relationship id
-- `request.path` (text, required): Conflict path
-- `request.keep` (select, required): Version to keep
+- `sourceWorkspaceRefId` (text, required): Source workspace ref id
+- `targetMachineId` (text, required): Target machine id
+- `targetPath` (text, required): Target folder
+- `mode` (select, required): Sync mode
+- `destinationIntent` (select, required): Destination
+- `contentPolicy` (json, required): Content policy
+
+## `workspace.sync.relationships.list`
+
+**List linked workspace relationships** — List linked workspace relationships and their current sync status on the exact controller. Missing status stays unknown, never zero.
+
+- Safety: `safe`; side effect: not classified.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+- `controllerMachineId` (text): Controller machine id
+- `workspaceRefId` (text): Workspace ref id
+
+## `workspace.tabs.activate`
+
+**Activate workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.close`
+
+**Close workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.list`
+
+**List workspace tabs** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `read`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.move`
+
+**Move workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.open`
+
+**Open workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.pin`
+
+**Pin or unpin workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.
+
+## `workspace.tabs.reorder`
+
+**Reorder workspace tab** — Operate on the mounted client workspace in its current Home, Account and window. A headless host without that workspace returns unsupported_action.
+
+- Safety: `safe`; side effect: `external`.
+- Approval: `required` result; `blocking` flow.
+- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
+- Also surfaced on: `ui`, `voice`, `agent`, `mcp`, `cli`, `api`.
+
+### Input guidance
+
+No field hints are published. Use the typed input accepted by `execute`.

@@ -1,0 +1,245 @@
+---
+title: Settings and detail pages
+description: Compose plugin settings and detail pages with the same anatomy as Happier's own settings.
+---
+
+A plugin page that configures something — a plugin's settings, an account it
+connects, a list of things it manages — should look and behave like Happier's
+own settings pages. `@happier-dev/plugin-ui` exposes the same page anatomy
+Happier uses: the page header, sentence-case sections with their explanation
+above the rows, one hairline sheet per section, rows divided by full-width
+hairlines, the same controls and the same empty states. These components render
+through the presentation owners Happier's own pages use, so geometry, type,
+colour and the phone recomposition match without any local styling.
+
+<Callout type="info">
+  Developer Preview. These components are part of the private, unpublished
+  `@happier-dev/plugin-ui` source contract; check the shipped
+  `node_modules/@happier-dev/plugin-ui/API.md` for the exact exports.
+</Callout>
+
+## A complete page
+
+```tsx
+import * as React from 'react';
+import {
+  BrandMark,
+  defineUiSurface,
+  EmptyState,
+  Item,
+  ItemGroup,
+  PageHeader,
+  ScrollArea,
+  Select,
+  SelectionTiles,
+  Toggle,
+} from '@happier-dev/plugin-ui';
+
+function ReviewBotSettings() {
+  const [reviewNew, setReviewNew] = React.useState(true);
+  const [channel, setChannel] = React.useState<string>('session');
+  const [depth, setDepth] = React.useState<string>('thorough');
+  const [layout, setLayout] = React.useState<'compact' | 'detailed'>('detailed');
+
+  return (
+    <ScrollArea>
+      <PageHeader
+        title="Review bot"
+        description="Reviews pull requests and posts its findings to your sessions."
+        leading={<BrandMark size="medium" externallyLabelled />}
+        meta={[{ key: 'version', text: 'v1.4.0' }]}
+      />
+
+      <ItemGroup title="Reviews" description="When the bot reviews, and how much it reads.">
+        <Item
+          title="Review new pull requests"
+          subtitle="Start a review when a pull request opens."
+          accessory={<Toggle label="Review new pull requests" value={reviewNew} onChange={setReviewNew} />}
+          accessoryOutsidePressable
+        />
+        <Item
+          title="Post findings to"
+          accessory={(
+            <Select
+              presentation="field"
+              label="Post findings to"
+              value={channel}
+              onChange={(next) => setChannel(next as string)}
+              options={[
+                { value: 'session', label: 'The linked session' },
+                { value: 'comment', label: 'A pull request comment' },
+              ]}
+            />
+          )}
+          accessoryOutsidePressable
+          accessoryWraps
+        />
+        <Item
+          title="Depth"
+          accessory={(
+            <Select
+              presentation="segmented"
+              label="Depth"
+              value={depth}
+              onChange={(next) => setDepth(next as string)}
+              options={[
+                { value: 'quick', label: 'Quick' },
+                { value: 'thorough', label: 'Thorough' },
+              ]}
+            />
+          )}
+          accessoryOutsidePressable
+          accessoryWraps
+        />
+      </ItemGroup>
+
+      <ItemGroup title="Findings layout" description="How findings look in the session.">
+        <SelectionTiles
+          variant="visual"
+          accessibilityLabel="Findings layout"
+          value={layout}
+          onChange={(next) => { if (next) setLayout(next); }}
+          options={[
+            { id: 'compact', title: 'Compact', preview: <CompactFindingPreview /> },
+            { id: 'detailed', title: 'Detailed', preview: <DetailedFindingPreview /> },
+          ]}
+        />
+      </ItemGroup>
+
+      <ItemGroup title="History" description="The reviews the bot has posted.">
+        <EmptyState layout="line" title="No reviews yet" />
+      </ItemGroup>
+    </ScrollArea>
+  );
+}
+
+export const renderSurface = defineUiSurface(ReviewBotSettings);
+```
+
+`CompactFindingPreview` and `DetailedFindingPreview` stand for your own
+components rendered at static props — show the real thing the option changes,
+not a drawing of it.
+
+## Page header
+
+`PageHeader` takes the page's `title`, a one-sentence `description` of what the
+page is for, an optional `leading` identity mark (a `BrandMark` or `Image`), a
+`meta` line of distinguishing facts, and `actions` (at most one primary action
+plus context controls).
+
+The host owns the navigation around your page, and the header follows it:
+
+- when the host's navigation already shows the title (a phone's native header),
+  only the purpose line is drawn, so the title never appears twice;
+- when the page was opened from another page, the host's back arrow is placed
+  in the gutter beside the title, or on the title line when the pane is narrow;
+- the header, and every section below it, sit in the host's content column.
+
+Do not draw your own back control or page title.
+
+## Sections and rows
+
+Give an `ItemGroup` a sentence-case `title` and it becomes a page section: the
+title and optional `description` sit above one hairline sheet, an optional
+`action` (one compact button such as "Add") sits beside the title, and the rows
+inside are divided by full-width hairlines. Explain the section in its
+`description`; there are no footers under sections. `surface="none"` lays a
+section's content on the page with the same insets and no sheet. An
+`ItemGroup` without a title keeps its plain semantic role and draws nothing.
+
+Inside a section, `Item` takes the page row anatomy: title, one description line
+(`subtitle`) and one control per row in `accessory`. Put an interactive control
+beside, not inside, the row's own press target with `accessoryOutsidePressable`,
+and mark a wide control (a field, a select, a segmented choice) with
+`accessoryWraps`: the row measures itself and moves it beneath the label when
+the row is too narrow for both, exactly like Happier's own rows. A switch stays
+beside its label. Rows carry no decorative icons; identity marks are fine.
+
+## Controls
+
+In the Developer Preview source contract, use `Button variant="destructive"`
+for a consequential operation after the surface's existing confirmation.
+Menus can mark the same operation with `destructive: true`. Both use the
+host's danger tone; the tone does not add confirmation or change the action.
+An icon-only menu trigger keeps the same focus treatment as an `IconButton`.
+Menu items may carry an `icon` and a separate `subtitle` to distinguish an
+identity without packing its supporting text into the action label.
+
+Choose the control from the decision, as Happier's own pages do:
+
+| Decision | Control |
+| --- | --- |
+| On or off | `Toggle` |
+| Two to four short options | `Select presentation="segmented"` |
+| A longer or larger set | `Select presentation="field"` (a bordered field that opens a menu) |
+| An option that changes what you see | `SelectionTiles variant="visual"` with a real preview per option |
+| A name, number or address typed in place | `TextField presentation="field"` (with `onCommit` to save when focus leaves) |
+| Several described choices to compare | `Select` (inline) or `SelectionTiles variant="card"` |
+
+A setting typed in place keeps a local draft and saves once when focus leaves
+the field or on submit — never on every keystroke:
+
+```tsx
+<Item
+  title="Files per review"
+  subtitle="Larger pull requests are reviewed in parts."
+  accessory={(
+    <TextField
+      presentation="field"
+      kind="integer"
+      label="Files per review"
+      value={String(limit)}
+      onChange={() => undefined}
+      onCommit={(draft) => saveLimit(Number(draft))}
+      error={limitError}
+    />
+  )}
+  accessoryOutsidePressable
+  accessoryWraps
+/>
+```
+
+`kind="integer"` or `"decimal"` keeps the draft to digits and opens a number
+keyboard; an emptied number returns to the saved value unless `allowEmpty` is
+set. Return a string from `onCommit` to show a corrected value (a clamped
+number), and pass `error` to show a refusal beneath the field.
+
+The switch, the field box and the segmented control are drawn by the same
+visual owners as Happier's own controls. `presentation="menu"` remains the
+compact toolbar pill that names the field and its choice.
+
+## Empty states
+
+`EmptyState` has three layouts:
+
+- `layout="page"` for a whole page with nothing in it: an optional calm glyph
+  (`icon`), a short title, one line of purpose, and one action. If the viewer
+  cannot take that action, pass `actionUnavailableReason` to say why and who can.
+- `layout="line"` for one quiet line inside a list, rail or section — including
+  a search with no results.
+- the default centred layout for a pane or card.
+
+`LoadingState`, `EmptyState` (centred) and `ErrorState` take a `size` naming the
+container they sit in — `"pane"` (a side pane), `"details"` (a details drawer),
+`"page"` (an app page's content column) or `"phone"` — which sets the measure,
+glyph and type exactly like Happier's own pane states. You rarely need to pass
+it: a state with no `size` takes the size of the container Happier mounted your
+surface in (a Session sidebar tab is a `"pane"`, a phone surface a `"phone"`).
+An explicit `size` still wins.
+
+`EmptyState` takes one `action` (the primary) and an optional `secondaryAction`:
+a quiet second way forward under it, such as a plain `Button` that opens another
+page. Never pass two primaries.
+
+`variant="add"` frames the state with a dashed outline; use it only for an
+invitation to add the first item.
+
+## Stale content
+
+When a surface still shows rows it read earlier but can no longer confirm them,
+keep the rows at full strength and put one `FreshnessLine` above them. It says
+when the rows were read (`asOf`), why they may be behind (`reason`), and offers
+one recovery (`action`, for example Retry). Pass `busy` while a reconnect or
+refresh is in flight and `tone="warning"` when a refresh failed. It is the same
+line Happier's own panes draw. Never show it over an empty body: a surface with
+nothing retained shows `LoadingState` or `ErrorState` instead.

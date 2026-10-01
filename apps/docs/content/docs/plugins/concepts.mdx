@@ -20,17 +20,24 @@ The manifest declares stable projected facts:
 
 Manifest data is validated before executable code runs.
 
-## Catalog, admission, and generations
+## Catalog, admission, and custody
 
 The host can project cold manifest facts into a catalog without loading daemon
 code. A catalog entry makes a contribution discoverable; it does not prove the
 contribution is executable or currently serving.
 
-The daemon owns admission. It validates a candidate, requests the required
-present-user review, and adopts one immutable accepted generation only after
-those checks succeed. New invocations use the accepted generation. A failed
-development edit or update keeps the retained last-known-good generation
-serving, rather than leaving two author-selected implementations active.
+The daemon owns admission. It validates a candidate, requests any required
+authority decision, and publishes one process-local occurrence only after those
+checks succeed. New invocations use that occurrence. A failed development edit
+keeps the previous occurrence serving while the daemon remains alive, rather
+than leaving two author-selected implementations active.
+
+Managed npm, archive, and non-development local installs retain immutable
+installation generations so an exact installed package remains available.
+Bundled first-party code instead belongs to the exact CLI version root or a
+pinned runner snapshot. Trusted development and drop-in code stays owned by its
+selected source; a daemon restart rebuilds current source and does not promise
+historical last-known-good recovery.
 
 ## Realms and surfaces
 
@@ -64,7 +71,7 @@ receive only their client-safe identity, cancellation, invocation-surface,
 current-UI, and bounded UI context. That UI context can open a surface or
 invoke another eligible Action through the host's existing dispatcher. A
 nullable, host-owned ephemeral scope can also share one plugin-local value
-with mounted UI from the same Account and immutable plugin generation; authors
+with mounted UI from the same Account and current plugin occurrence; authors
 lease values with a versioned local key and release the lease when the
 operation ends. Agent session factories receive their own runtime context.
 

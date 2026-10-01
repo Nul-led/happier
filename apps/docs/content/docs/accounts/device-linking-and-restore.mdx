@@ -106,7 +106,7 @@ request, wait, and completion call goes to that Home; Happier does not temporari
 reuse whichever Home happens to be focused. The new credential is saved under the invited Home, and
 adding it leaves your current Home, sidebar groups, and other saved credentials unchanged.
 
-From the Home host, `happier home pair-device` starts the same kind of new short-lived, Home-bound pairing session. Each retry creates fresh invitation material; do not reuse an expired or exposed QR/link. `happier home link-account` separately links the Home to your selected Account Service for discovery without transferring Home authority to that service.
+From the Home host, `happier home pair-device` starts the same kind of new short-lived, Home-bound pairing session. Each retry creates fresh invitation material; do not reuse an expired or exposed QR/link. `happier home link-account` separately links the Home to your selected sign-in service for discovery without transferring Home authority to that service.
 
 To undo that link, use **Settings → Account → Homes → Stop delegated sign-in to this Home**, or run `happier home unlink-account [--home PROFILE]` on the Home host. Unlinking makes the Home refuse future delegated sign-ins from that service. It does **not** revoke Home credentials the service already issued: devices that are already signed in keep their access until you sign them out on the Home, and the Home stays listed in that service's Homes list.
 
@@ -163,13 +163,13 @@ For direct QR linking:
 - let an exposed or unexpected invite expire, then create a new QR
 - check the Home name shown by Happier before continuing
 
-Existing-device approval is a separate, optional Home policy for enrollment that starts through an
-Account Service. When that policy is enabled, a fully signed-in device on the same Home receives one
-explicit **Approve** or **Reject** decision. A directory/Account Service login, API token, terminal
+Existing-device approval is a separate, optional Home policy for enrollment that starts through a
+sign-in service. When that policy is enabled, a fully signed-in device on the same Home receives one
+explicit **Approve** or **Reject** decision. A directory or sign-in service login, API token, terminal
 credential, or assertion cannot make that decision or mint the Home credential.
 
-Direct Home QR linking continues to work without an Account Service. If you discover a Home through
-an Account Service instead, that service supplies only a short-lived assertion; the selected Home
+Direct Home QR linking continues to work without a sign-in service. If you discover a Home through
+a sign-in service instead, that service supplies only a short-lived assertion; the selected Home
 still owns redemption, any required existing-device approval, and the final Home credential.
 
 ## Personal Homes, Iroh, and localhost

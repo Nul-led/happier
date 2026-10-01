@@ -150,8 +150,15 @@ the explicit lifecycle controls; failing a valid link because the inviter change
 would be an undocumented dependency on an unrelated organizational change.
 
 Email-bound invitations ask the Account/email lane, inside the same transaction, whether
-the accepting Account owns the exact normalized address. Lane 01 never normalizes,
-verifies, or stores email.
+the accepting Account owns the exact normalized address. Explicit acceptance may attach
+that exact invited mailbox through the Account/email owner in the same transaction.
+Fresh native provisioning instead rejects a different normalized submitted mailbox with
+`email_mismatch`, without consuming the invitation or writing Account facts.
+
+Structural admission and protected Team authentication are separate. A valid invitation
+may admit an Account through a Home-allowed method even when that credential cannot
+satisfy the Team's authentication policy. Protected Team operations still enforce that
+policy; admission never manufactures qualification evidence.
 
 ### Typed outcomes
 
@@ -174,6 +181,12 @@ request.
 It discloses only the Home identity, the Team identity and branding, the offered role and
 history scope, expiry and current state, and a masked recipient. It omits the roster,
 provider bindings, the raw and digested token, and internal actor identity.
+
+An authenticated `auth/entry` request can resolve the same bounded preview from an opaque
+post-authentication continuation. The existing continuation owner checks the exact Account,
+Team and expiry before the invitation owner rechecks the offer. Reading it consumes
+nothing; another Account receives only an unavailable result. The continuation remains
+Account-bound and is not an Account-switch or transferable invitation capability.
 
 Team accent is derived from the opaque Team id, never persisted, so a rename cannot change
 a Team's colour. The Home storage disclosure is `null` when the Home publishes no storage
@@ -284,6 +297,12 @@ see Team invitations. A new client on an old server hides Team administration th
 Home. A missing feature bit alone is not proof of an old binary. No dual reader, dual
 writer, legacy shim, or public-share conversion exists.
 
+The join surface uses the exact Home's canonical `teams` feature decision to explain
+an unreadable contextual entry. Only explicit unsupported-endpoint evidence produces
+the update explanation; malformed entry/preview data is not an old-binary signal.
+The contextual entry remains the authority for authentication choices and admission:
+a capable cached feature projection cannot override its refusal.
+
 ## Remaining integration boundary
 
 - **Bounded explicit-Home carrier.** `resolveTeamJoinLinkTarget` now reads the authenticated
@@ -308,9 +327,12 @@ writer, legacy shim, or public-share conversion exists.
   discloses nothing rather than presenting its current default as a guarantee.
 - **Invitation-qualified Account provisioning.** `resolveEffectiveHomeAuthMethodsInTx`
   accepts the bounded `{ kind: 'team_invitation' }` admission evidence, and invitation auth
-  entry projects only methods permitted by both Home and Team policy. Native provisioning
+  entry projects Home-allowed methods independently of protected Team qualification. Native provisioning
   re-resolves the invitation, verifies any recipient mailbox constraint, creates the Account,
-  and accepts the invitation in the same transaction. External Team authorization stores a
+  and accepts the invitation in the same transaction. Fresh invitation key-challenge
+  finalization also consumes the challenge and creates the ordinary token inside that
+  transaction; refusal leaves the one-time proof and invitation usable for retry.
+  External Team authorization stores a
   server-held invitation reference and the Team OAuth admission owner consumes it. Ordinary
   closed-Home provisioning remains unavailable; the bearer changes only this exact admission.
 - **Resend abuse controls.** Owned by the central authentication rate-limit catalog. The

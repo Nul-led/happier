@@ -34,6 +34,22 @@ const sendDocumentReviewReady: NotificationSender = async (request) => ({
 });
 ```
 
+### Channel sender source migration (development)
+
+In the current development source API, `NotificationSender` receives an optional
+`categoryId`. Plugin-originated sends still carry the qualified plugin category;
+host Activity notifications, including **Notify me** and Workflow Run updates,
+have no plugin category and omit it. The `channelId`, title and delivery identity
+remain present in both cases.
+
+Channel authors upgrading from the required-category signature must update and
+rebuild their sender. Check `request.categoryId !== undefined` before using it
+for category-specific formatting or routing; handle a category-less notification
+using its supplied title, body and data. Do not invent a plugin category for host
+Activity. This is a development source-contract change, not a claim that an older
+sender expecting a required category can safely accept the new requests.
+`context.services.notifications.send` still requires a declared `categoryId`.
+
 Declare both families in the same `definePlugin` input:
 
 ```ts

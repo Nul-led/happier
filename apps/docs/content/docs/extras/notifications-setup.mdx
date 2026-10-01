@@ -6,8 +6,17 @@ description: Push notifications (Expo + FCM/APNs) for CLI events and self-hostin
 Happier uses **Expo Push Notifications** as a delivery mechanism. In the current architecture:
 
 - The **mobile app** registers an **Expo push token** and saves it to the server.
-- The **server** stores push tokens per account (it does *not* send push payloads).
-- The **CLI** fetches the user’s saved tokens from the server and sends notifications via Expo’s push API (for example: *“It’s ready!”* or *Permission Request*).
+- The **server** stores push tokens per account and, for opted-in closed-app collaboration alerts,
+  submits the existing OS-visible `activity_alert` payload through the Home's push transport.
+  That payload is generic and contains no Session content or keys; it is distinct from the
+  best-effort `session_changed` background wake used for silent reconciliation.
+- The **CLI/daemon** still owns the ordinary rich runtime notification path and can fetch the
+  authenticated account's saved tokens to submit notifications via Expo's push API (for example:
+  *“It’s ready!”* or *Permission Request*).
+- On a capable mobile build enrolled for remote alerts, the app rechecks access and recipient
+  privacy locally and enriches the safe generic alert when possible; otherwise the already-safe
+  generic fallback is shown. A build without the native alert consumer cannot receive this
+  closed-app alert path; ordinary daemon/CLI notifications remain independent.
 
 This page is about **push notifications**.
 
@@ -66,19 +75,32 @@ Current settings include:
 - bundled **Soft** and **Urgent** notification sounds, native system sounds, or silent mode
 - Live Activity remote update preferences when the selected server advertises support
 
+Quiet hours are evaluated by the shared delivery policy for each notification channel and event.
+They suppress or make interruptive channels silent when that event's policy says so; they do not
+disable every attention surface or override an explicitly independent channel such as a webhook.
+The device's OS notification permission, Focus/Do Not Disturb and local device override remain
+separate last-mile controls.
+
 When you are already looking at a given session, Happier suppresses notifications for that same session to avoid duplicate noise while you are actively reading it.
 
-### Closed-app session alerts (in development)
+### Closed-app session alerts
 
-Sessions you collaborate on can also alert you while the Happier app is closed, without a daemon of your own running. Because your notification settings are end-to-end encrypted, this leg only works when you explicitly turn it on:
+Sessions you collaborate on can also alert you while the Happier app is closed, without a daemon of your own running. Because your notification settings are end-to-end encrypted, this leg only works when you explicitly turn it on and enroll a device build that includes the native alert consumer:
 
 - **Allow remote session alerts** (per account) publishes a limited, derived copy of your alert policy — event categories, quiet hours and time zone, preview limits, and sound choices — to that Home. Session content, titles, and encryption keys are never shared.
 - **Receive on this device** (per device) enrolls this device's push registration. It is stored on the exact registration row this device already uses, and it publishes only the quiet-hours, in-app behavior, preview ceiling, and volume semantics from your device overrides. Local-only switches, badges, widgets, and Live Activity settings stay on this device.
-- The device switch appears only on app builds that ship the native alert consumer, and enrollment is only offered by Homes that support it. Older Homes keep ordinary notifications and show remote alerts as unavailable.
-- The Home applies mute and quiet hours **before** sending, and it can only alert you while its stored copy matches your current settings version. Changing settings from a client that cannot publish the copy leaves the status as **Policy needs syncing** until a capable client republishes it.
+- The device switch appears only on app builds that ship the native alert consumer, and enrollment is only offered by Homes that support it. Older Homes keep ordinary notifications and show remote alerts as unavailable. Physical iOS/Android build and terminated-process behavior remains platform/release dependent.
+- The Home applies the remotely published mute and quiet-hours policy **before** sending, and the
+  mobile device applies its local privacy and OS-notification policy before display. It can only
+  alert you while the stored copy matches your current settings version. Changing settings from a
+  client that cannot publish the copy leaves the status as **Policy needs syncing** until a capable
+  client republishes it.
 - Turning either switch off clears the enrollment at your next reconciliation. Alerts already sent cannot be recalled.
 
-This is development behavior: alert enrichment on the device is still being built, so a permitted alert can currently arrive with generic Happier copy.
+If the enrolled native consumer cannot enrich a permitted alert, it shows the safe generic Happier
+copy. Device-specific enrichment and terminated-process behavior remain subject to the installed
+iOS/Android build and its platform delivery rules; a build without that native consumer is not
+eligible for this closed-app alert path.
 
 ## What you need to configure
 

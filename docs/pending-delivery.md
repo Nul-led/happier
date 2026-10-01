@@ -1,5 +1,75 @@
 # Pending delivery architecture
 
+## UI settlement convergence (development)
+
+Pending provider acceptance carries the exact `localId` through `SessionClient`
+to server settlement. The server transaction
+commits or updates the transcript message and removes that Pending row.
+Transcript and Pending state are then published through separate events.
+
+The UI applies transcript-authority filtering before matching committed user
+`localId`s against displayed `server_pending` rows. Each matching queue requests
+its canonical Pending snapshot even when the transcript reducer already holds
+the identical message: transcript equality does not establish Pending freshness.
+The existing Pending `recipient` selects either the main snapshot or the exact
+execution-run snapshot. One message batch refreshes each matched target once;
+overlapping GETs retain the transport owner's existing coalescing. Each snapshot
+reconciles only its own recipient and preserves sibling targets.
+
+The committed twin alone does not authorize removal: a current server snapshot
+may legitimately retain the row. Canonical snapshot reconciliation, local-outbox
+custody, and repeated-message side effects keep their existing owners. This
+recovery adds no polling or retry policy.
+
+To distinguish settlement from display failures, inspect the canonical Pending
+read for the exact Session, target, and `localId`. A retained server row points
+to acceptance or settlement; an absent server row with a stale mounted Pending
+row points to client convergence. Host contention can delay either path and is
+not itself evidence of a projection defect.
+
+When an accepted row remains unresolved after its bounded settlement attempt,
+the session runner records a file-only info diagnostic with the Session and
+exact `localId`. This includes terminal transport failures, server no-ops
+without exact committed proof, and unexpected resolution crashes. The
+diagnostic is present at the default session file log level and does not write
+to the Agent's interactive terminal.
+
+## Claude acceptance evidence (development)
+
+Claude Unified's input arbiter requires a unique matching input before native
+prompt evidence can settle Pending custody. Hook `prompt_id` and ordinary JSONL
+`promptId` share one acceptance identity, normalized by Claude's lifecycle event
+adapter. A transcript UUID supplies identity when no prompt ID exists; native
+queued-command consumption uses its own transcript UUID. Turn IDs remain
+lifecycle metadata because one turn can contain several inputs.
+
+`UserPromptSubmit` can run when Claude enqueues an in-flight steer. It does not
+prove that Claude has consumed that steer, including while injection is still
+pending or after native terminal custody is established. Idle/new-turn prompt
+acceptance keeps its existing hook behavior. In-flight acceptance instead uses
+the exact native enqueue/remove/queued-command evidence, or the ordinary native
+user row that consumes an interrupted queued prompt.
+
+Claude binds the host's ordered External Session source importer before treating
+its transcript as live acceptance evidence. That importer waits for the canonical durable outbox to receive delivery
+acknowledgments for preceding visible rows before forwarding native observations to
+Claude's existing matcher and input arbiter. A native `user` row carrying a tool
+result remains visible output and therefore participates in that ordering. The
+independent raw file follower supplies activity and usage evidence. Native
+lifecycle observations, including compact and turn-ending boundaries, use the
+same ordered importer so they cannot release Pending custody ahead of output. Fresh session discovery imports from the source's
+beginning; authenticated resume replays history without accepting Pending inputs.
+The committed transcript baseline loads before source follow admission. Known
+resumes hold prompt injection until their authenticated identity and ordered source
+binding are ready; fresh sessions replay forward from the source beginning.
+
+The arbiter closes an evidence identity when it accepts an input or finds multiple
+matching inputs. Replaying that proof cannot accept a newer same-text input,
+even after an older candidate is retired. Closed evidence remains until runtime
+disposal because durable ambiguous attempts have no time-based expiry. Evidence
+seen before any matching input is registered remains replayable. Native events
+without an evidence identity retain their existing unique-text matching behavior.
+
 ## Live runner wake-up recovery (development)
 
 The session client owns pending-input wake subscriptions. A transient socket
@@ -7,6 +77,17 @@ disconnect does not end those subscriptions: idle and active-turn consumers must
 still observe later eligibility updates. Caller cancellation and client close
 release the client's listeners. The runtime separately aborts its consumer when
 the turn or session ends.
+
+Ordinary Pending updates and explicit queue reconciliation also refresh every
+locally claimed main-conversation input, including blocked and archived uncertain
+claims. The API client retires exact absent or definitively discarded custody;
+a still-present archived uncertain row remains eligible for delayed acceptance.
+An acceptance write already in flight retains its custody until that write ends.
+The native host passes retirement through its existing active-input binding,
+removes the exact unaccepted correlation, and releases an unstarted turn wait.
+Claude clears the corresponding terminal queue entry and delivery record without
+publishing acceptance or cancelling active provider work. Runtime disposal
+unsubscribes the retirement listener.
 
 Idle and active consumers share the same wake handling. The existing backoff for
 unavailable adapters does not periodically materialize the queue. Reconnect does

@@ -222,7 +222,7 @@ to your row as soon as a second plugin contributes.
 
 Inside a mounted UI surface the same selection is a pure lookup over the
 host-stamped `SurfaceContext` snapshot — no observation lifecycle is involved,
-because the host already filtered it to your target and its current generation:
+because the host already filtered it to your target and its current occurrence:
 
 ```ts
 import {
@@ -295,10 +295,10 @@ handle as a fallback.
 
 ## Trust and ownership
 
-Cross-plugin protocol schemas, bounds, role typing, and exact-generation
+Cross-plugin protocol schemas, bounds, role typing, and exact-occurrence
 currentness make interoperability deterministic. They do not sandbox a plugin
 or make a child semantically read-only. Daemon and React Native code remain
-trusted package code under the one whole-package **Install & Trust** decision;
+trusted package code under the one concise install and authority decision;
 review the package and its dependencies before enabling it. See the
 [trust model](/plugins/security/trust-model) for the security boundary.
 

@@ -61,8 +61,8 @@ hdev plugins change approve <pendingChangeId> --json
 ```
 
 The archive install is an explicit lifecycle canary and requires present-user
-trust approval. Review the prepared change before substituting its pending id;
-do not add `--trust` to the archive flow. The example README continues through
+trust approval. Review the prepared change before substituting its pending id.
+The example README continues through
 source install, reload, Session-runner restart, archive update, disable/enable,
 hard revocation, reinstall, uninstall, and the shared UI selectors.
 
@@ -71,6 +71,19 @@ Accounts, Resources, or background work, use the composite
 [`advanced-package-root`](https://github.com/happier-dev/happier/tree/v0.3/packages/plugin-sdk/examples/advanced-package-root)
 reference. Neither source reference claims a mounted client surface or a real
 third-party Agent service.
+
+### Publish live mode options
+
+In the development SDK, a custom Session binds its native mode source through
+`context.session.services.modes.bind(source)`. Supply `read()` and `subscribe()`
+with native facts; a known inventory remains selectable even when its current mode
+is unknown. The host publishes the canonical `sessionModesV2` projection and writes
+strict V1 compatibility only when the current mode is known.
+Supply an accepted `currentModeId` when known; the host projects the source into
+the active Session's mode picker and retires the binding with the Session.
+Use `modes: null` for unknown inventory and `modes: []` for a successful empty
+observation. A requested or staged mode is not an accepted current mode. Keep
+this source separate from the model catalog and Provider selection policy.
 
 ## 4. Composite capability sets, one runtime factory
 

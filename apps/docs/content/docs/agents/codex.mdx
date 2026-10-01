@@ -112,6 +112,8 @@ If you manually switch Codex to plain `mcp` in settings, new sessions can still 
 
 With the App Server backend, Codex uses shared local control with Codex CLI 0.131.0 or newer on macOS and Linux. Happier and the Codex TUI connect to the same running app-server thread, so the app remains writable and can continue handling approvals while the TUI is attached. If a turn is already active, the normal Happier input flow waits before starting the next app turn.
 
+This shared-control flow starts with a Happier session. If you started a thread directly in Codex CLI, Happier cannot join its running app-server by resuming that thread in a separate process: Codex keeps one active writer for the thread. To use both interfaces for a new session, start it in Happier and run `happier attach` on the same machine.
+
 Earlier Codex CLI versions and Windows can still run App Server sessions remotely, but shared terminal attachment is unavailable. ACP sessions do not expose local attachment.
 
 Codex model availability depends on the active Codex backend, installed runtime, and account state. The new-session engine picker can show the currently available Codex models, model-specific options such as reasoning effort, and favorite Codex model shortcuts when those models are available for the selected backend.
@@ -177,7 +179,7 @@ Local control starts from the terminal. Use `happier attach <session-id>` on the
 
 App messages and approvals stay available while the Codex TUI is attached. Both clients use the same running App Server thread.
 
-The shared App Server path uses Codex’s native local socket attach on macOS and Linux. It does not depend on `tmux`.
+The shared App Server path uses Codex’s native local socket attach on macOS and Linux. It does not require a terminal host. In development builds, selecting Herdr (or another supported host) for a new session starts the Codex TUI there automatically against that same App Server thread; selecting no host leaves the server-backed session headless until you attach.
 
 For the end-to-end workflow, see [Features → Attach to a running session](/sessions/attach-to-session).
 

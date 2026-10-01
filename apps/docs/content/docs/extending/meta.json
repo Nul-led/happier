@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "sdk",
+    "embed",
     "mcp-servers",
     "happier-as-mcp-server",
     "mcp-hosts",

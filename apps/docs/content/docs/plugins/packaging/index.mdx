@@ -11,10 +11,11 @@ cd my-plugin
 hdev plugins dev
 ```
 
-`plugins dev` observes the source closure and submits each captured batch to
-the daemon. The daemon-owned candidate lifecycle materializes declared
-development dependencies and validates the candidate before adoption. It is the
-normal author loop; authors do not manage daemon replacement or recovery state.
+`plugins dev` asks the daemon to observe the trusted source closure. The
+daemon-owned candidate lifecycle materializes declared development dependencies
+and validates each affected candidate before adoption. It is the normal author
+loop; authors and the CLI do not manage a second watcher, replacement, or
+recovery state.
 
 For a watcher-free development refresh, install the package root in
 development mode and reload from that root:
@@ -26,7 +27,9 @@ hdev plugins reload
 
 When the package root maps to multiple development plugins, or you reload from
 another directory, use `hdev plugins reload com.example.my-plugin` to select
-one. Invalid candidate source preserves the last accepted generation.
+one. Invalid candidate source preserves the last accepted occurrence while the
+daemon remains alive. After restart, current source must build and activate
+again; development has no historical copied-source fallback.
 
 ## Validation and artifact flow
 
@@ -48,9 +51,10 @@ selected-file archive, installs and trusts it in an authenticated disposable
 daemon home, verifies currentness across daemon restart, and invokes a safe
 empty-input CLI action when available. It never reads or mutates the user's
 installed plugin state. `plugins pack` creates an npm-compatible selected-file
-archive and digest sidecar. `plugins install`
-starts or reaches the active daemon, prepares the candidate without executing
-it, and requests **Install & Trust** when the source policy requires approval.
+archive and digest sidecar. `plugins install` starts or reaches the active
+daemon, prepares the candidate without executing it, and presents one concise
+trusted-code and authority decision when approval is required. An
+authority-neutral update does not repeat that decision.
 
 The SDK remains on a prepublication hold in this checkout. Use the exact SDK
 version selected by the scaffold or the release artifact supplied for a
@@ -59,7 +63,7 @@ preview; do not replace it with a workspace-internal import.
 ## In this section
 
 - [Plugin authoring CLI](/plugins/packaging/authoring-cli) — the one local create, develop, validate, review and package lifecycle.
-- [Local development](/plugins/packaging/local-development) — the managed TypeScript loop and daemon-owned activation.
+- [Local development](/plugins/packaging/local-development) — the daemon-owned source loop for a project folder or a `.ts`, `.mts`, `.js`, or `.mjs` file.
 - [Pack plugins](/plugins/packaging/pack) — creating the selected-file, npm-compatible archive.
 - [Install and trust](/plugins/packaging/install-trust) — reviewing code before it executes, and what the daemon owns afterwards.
 - [Versioning and compatibility](/plugins/packaging/versioning-compat) — what Developer Preview does and does not promise.

@@ -63,15 +63,6 @@ const ticketComposer = defineUiSurfaceDefinition({
       'releaseComposerContent',
     ],
   },
-  build: {
-    entry: 'src/ui/TicketComposer.tsx',
-    platforms: ['web', 'ios', 'android'],
-    module: {
-      containerName: 'happier_plugin_com_example_tickets_ticket_composer_renderer',
-      modulePath: './TicketComposer',
-      exportName: 'renderSurface',
-    },
-  },
 });
 
 export const { manifest, activate } = definePlugin({
@@ -154,6 +145,11 @@ async function findTickets(
   return [{ id: 'T-1', title: `Ticket matching ${query}` }];
 }
 ```
+
+The surface id derives the executable artifact id
+`ticket-composer-renderer`. Export its `renderSurface` module from
+`./happier-plugin-ui/ticket-composer-renderer`; there is no platform matrix or
+author-owned bundler configuration.
 
 `search` and `resolve` receive the host's `AbortSignal`. Honour it: the person
 keeps typing and the host retires the previous query.

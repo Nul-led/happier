@@ -10,7 +10,7 @@
  *
  * The derivation is reimplemented here rather than imported because the catalog
  * is server-internal and not exported from a built package. `toUpperSnakeCase`
- * mirrors `apps/server/sources/app/api/utils/apiRateLimitCatalog.ts`, and the
+ * mirrors `apps/server/sources/app/api/utils/apiRateLimitDefaults.ts`, and the
  * test pins the two together on real cases.
  */
 import { readFileSync } from 'node:fs';
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..', '..');
-const CATALOG = join(REPO, 'apps', 'server', 'sources', 'app', 'api', 'utils', 'apiRateLimitCatalog.ts');
+const CATALOG = join(REPO, 'apps', 'server', 'sources', 'app', 'api', 'utils', 'apiRateLimitDefaults.ts');
 export const OUTPUT_PATH = join(HERE, '..', 'content', 'docs', 'self-hosting', 'rate-limits.mdx');
 
 /** Mirrors `toUpperSnakeCase` in the server's rate-limit catalog. */

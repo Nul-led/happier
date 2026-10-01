@@ -299,10 +299,23 @@ Relevant keys:
 
 ### Fallback normalization for rendering (legacy + Claude local-control)
 
+In development source, `@happier-dev/session-core` owns raw normalization,
+reduction, ordered transcript updates, pending-request decisions and live segment
+assembly. It is headless; app storage, decryption and transport stay in app adapters.
+Each transcript consumer owns its normalization/reducer/assembler state.
+
+Transcript and tool presentation require a `SessionTranscriptSourceProvider`.
+The app source binds reads, history and actions to its Session and Home; share and
+demo sources hold local materialized datasets without borrowing the viewer's
+store or authorship. Chain transcripts retain their parent source's authority
+while projecting their supplied rows. Navigation and sidechain loading are allowed
+only when their source callbacks are non-null. Permission responses still use
+the existing `sessionPermissionAnswers` policy beneath the app action source.
+
 When `_happier.canonicalToolName` is missing (or when only legacy `_happy` metadata exists), the app normalizes tool calls for rendering via:
 
-- `apps/ui/sources/components/tools/utils/normalizeToolCallForRendering.ts`
-- helpers in `apps/ui/sources/components/tools/utils/normalize/*`
+- `packages/session-core/src/tools/normalization/core/normalizeToolCallForRendering.ts`
+- helpers in `packages/session-core/src/tools/normalization/normalize/*`
 
 This normalization:
 
@@ -323,10 +336,15 @@ Claude local-control sessions reconstruct tool events from the transcript and no
 
 Key files:
 
-- `apps/ui/sources/sync/typesRaw/schemas.ts` (accepts/transforms tool formats)
-- `apps/ui/sources/sync/typesRaw/normalize.ts` (canonicalizes tool_use/tool_result blocks)
+- `packages/session-core/src/raw/schemas.ts` (accepts/transforms tool formats)
+- `packages/session-core/src/raw/normalize.ts` (canonicalizes tool_use/tool_result blocks)
 
 These reconstructed tools then flow into the same UI pipeline and render via the same registry + views.
+
+In development source, session-core and CLI history readers share protocol's
+`sessions/messages/emptyCanonicalTurnDiffSuppression.ts` for empty canonical Diff
+call/result suppression. The existing 256-call window refreshes a repeated id to
+the newest position; results consume the id after the containing row is inspected.
 
 ---
 

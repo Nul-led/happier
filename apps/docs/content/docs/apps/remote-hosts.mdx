@@ -85,13 +85,15 @@ Noninteractive creation keeps existing Happier services and the host's default m
 happier home create --ssh user@host --replace-services --switch-channel --yes
 ```
 
-`--replace-services` may remove conflicting Happier service registrations before installing the Home service. `--switch-channel` changes the default managed channel and refreshes its installed shims. Plain `--yes` grants neither authority.
+`--replace-services` may remove conflicting Happier service registrations before installing the Home service. `--switch-channel` changes the default managed channel and refreshes its installed shims. For `home create`, plain `--yes` grants neither authority.
 
 Bootstrap a remote machine:
 
 ```bash
 happier machine setup --ssh user@host
 ```
+
+Machine setup works differently: in a non-interactive run, `machine setup --yes` also accepts replacing conflicting Happier background services on the remote host. Pass `--service-mode none` if you want its existing services left untouched.
 
 Machine setup uses the current selected Home. To target another saved Home without changing the default, put the global selector before the command:
 

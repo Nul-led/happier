@@ -83,7 +83,7 @@ Unknown does **not** automatically mean “logged out”.
 | --- | --- | --- |
 | Claude | Yes | Yes |
 | Codex | Yes | Yes |
-| Gemini | Yes | Yes |
+| Gemini | No native login flow in Happier; uses a Gemini account or API key | Yes |
 | OpenCode | Yes | Yes |
 | Copilot | Yes | Yes |
 | Augment (Auggie) | Yes | Limited / conservative |
@@ -95,6 +95,8 @@ Unknown does **not** automatically mean “logged out”.
 | Pi | No native login flow in Happier | Yes, env-based |
 
 “Limited / conservative” means Happier can launch the login flow, but only reports a positive auth state when the Agent exposes a safe local signal.
+
+In development builds, Gemini setup uses a Gemini connected account or API key instead of opening a native login terminal. See [Connected services](/accounts/connected-services#gemini) for the supported connection methods.
 
 ## How this works with Custom ACP
 

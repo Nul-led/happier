@@ -16,6 +16,11 @@ The declaration names a host-supported verifier and the exact plugin-local
 not bind an HTTP listener, store a signing secret, mint an endpoint URL, or
 create another delivery queue.
 
+A bundled, development, or drop-in plugin needs no published release for its
+webhooks to be current: the daemon running it claims the plugin's declaration
+for the Account, as described in
+[Account Collections](/docs/plugins/guides/account-collections#where-the-current-writer-comes-from).
+
 ```ts
 import { definePlugin } from '@happier-dev/plugin-sdk';
 import {
@@ -140,3 +145,12 @@ const fixture = definePluginWebhookTestFixture({
 Pass the fixture's `input` to the Action's public boundary and assert its
 settled, retry, or dead-letter result. That proves the plugin's parser without
 manufacturing endpoint, secret, queue, or host admission authority in a test.
+
+## Shared-installation routing
+
+The generic `providerInstallation` routing seam stays supported: verified
+GitHub bodies are parsed for their installation id only after signature
+verification, and the route resolves the exact installation-bound endpoint
+with durable handoff and idempotency. Production setup of a shared GitHub App
+remains deferred in Preview, so there is no current shared-App setup workflow
+to configure here.

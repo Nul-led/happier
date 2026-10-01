@@ -49,7 +49,7 @@ happier setup
 
 The app-first setup is the recommended control-panel flow. The CLI is the
 terminal equivalent. With no usable active Home, `happier setup` first offers
-to find linked Homes through the selected Account Service (recommended),
+to find linked Homes through the selected sign-in service (recommended),
 connect to an existing Home, create a Personal Home on this computer, or exit.
 The existing-Home path then accepts a saved Home, HTTPS address, or Home
 descriptor file. Passing `--home`, `--home-url`, or
@@ -75,6 +75,22 @@ Notes:
 - The desktop app and the installer-installed CLI are self-contained; you do not need system Node/Yarn installed.
 - If you prefer an npm workflow, see [CLI install](/apps/cli) (requires Node).
 
+### Add another computer with a link
+
+In the unreleased 0.3 app, open **Add a machine → Another computer** on Home
+to generate a temporary Home-pairing link. Install the desktop app on the other
+computer and open the link there. Share this link only with your own device.
+
+After sign-in, the desktop app continues with **Set up this computer** for that
+exact Home and Account. It registers the machine and installs, starts and checks
+its service. Follow any CLI or service consent prompts. The sending app notices
+the machine when it comes online; redeeming the link alone is not completion.
+
+If service setup fails or you cancel it, the Home stays saved. **Retry** repeats
+setup without redeeming another link. The same pane offers a terminal-command
+alternative if you do not want to install the desktop app. Opening the link in a
+browser or phone signs in that client without starting a local daemon.
+
 ### Option B — Personal Home on your own computer or VPS
 
 Create a Personal Home locally or over SSH, while keeping agent machines separate if you prefer:
@@ -89,7 +105,7 @@ Create a Personal Home locally or over SSH, while keeping agent machines separat
 
 2. Follow the printed pairing guidance. Use `happier home pair-device` later to start a new short-lived QR/link session.
 
-3. Optionally run `happier home link-account` so your selected Account Service can discover the Home later. The Account Service never carries normal Home traffic.
+3. Optionally run `happier home link-account` so your selected sign-in service can discover the Home later. The sign-in service never carries normal Home traffic.
 
 4. In the desktop app, decide which machine should run the background service:
    - **This computer**: use the **Setup wizard** → **Set up this computer**.
@@ -143,7 +159,7 @@ Recommended for first setup:
 - Credentials/state are **scoped per Home**, so switching does not overwrite other accounts.
 - Switching Homes selects the Account stored on that Home; it does not migrate an Account, sessions, or settings between Homes.
 - Stable Home identity, not a mutable URL, keeps routing changes attached to the same saved Home.
-- Web: you can switch the Relay **for this tab** or **make it the device default**.
+- Web: you can switch the Home **for this tab** or **make it the device default**.
 
 ### CLI: target a server per invocation
 
@@ -155,16 +171,16 @@ happier --server company service start
 ### CLI: run multiple background services on one machine (one per Home)
 
 ```bash
-happier --server personal service install
-happier --server company service install
+happier --server personal service install --instance personal
+happier --server company service install --instance company
 ```
 
 Then verify (cross-platform):
 
 ```bash
 happier service list
-happier --server personal service status
-happier --server company service status
+happier --server personal service status --instance personal
+happier --server company service status --instance company
 ```
 
 ## Related
