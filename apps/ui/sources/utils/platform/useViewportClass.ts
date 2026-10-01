@@ -3,7 +3,8 @@ import { Dimensions } from 'react-native';
 
 import { resolveViewportClass, type ViewportClass } from './viewportClass';
 
-function readViewportClass(): ViewportClass {
+/** The window's viewport class right now, for decisions taken outside render (opening a surface). */
+export function readViewportClass(): ViewportClass {
     const window = Dimensions?.get?.('window');
     if (!window) return 'medium';
     return resolveViewportClass({ width: window.width, height: window.height });
