@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { RPC_METHODS } from '../../rpc/index.js';
+import { zodSchemaToJsonSchemaObject } from '../../actions/actionInputJsonSchema.js';
+import { compilePluginJsonSchema } from '../../plugins/actions/jsonSchemaValidation.js';
 
 import {
   WorkspaceAnchorV1Schema,
   WorkspaceAnchorsResolveRequestV1Schema,
   WorkspaceAnchorsResolveResponseV1Schema,
   computeLineContentHashV1,
+  isLineContentHashV1,
 } from './v1.js';
 
 describe('workspace anchor protocol v1', () => {
@@ -40,6 +43,23 @@ describe('workspace anchor protocol v1', () => {
       startLine: 14,
       endLine: 12,
     })).toThrow(/endLine/);
+  });
+
+  it('exports the existing line-hash grammar for Action discovery without admitting malformed hashes', () => {
+    const validate = compilePluginJsonSchema(zodSchemaToJsonSchemaObject(
+      WorkspaceAnchorV1Schema, { target: 'draft-7' },
+    ));
+    const anchor = { kind: 'fileLine', startLine: 1 };
+    for (const lineHash of ['lh1:1234567890abcdef', computeLineContentHashV1('line')]) {
+      expect(validate({ ...anchor, lineHash })).toBe(true);
+      expect(WorkspaceAnchorV1Schema.safeParse({ ...anchor, lineHash }).success).toBe(true);
+      expect(isLineContentHashV1(lineHash)).toBe(true);
+    }
+    for (const lineHash of ['lh1:1234567890abcde', 'lh1:1234567890abcdef0', 'lh1:1234567890abcdeF', 'lh2:1234567890abcdef', 1]) {
+      expect(validate({ ...anchor, lineHash })).toBe(false);
+      expect(WorkspaceAnchorV1Schema.safeParse({ ...anchor, lineHash }).success).toBe(false);
+      expect(isLineContentHashV1(lineHash)).toBe(false);
+    }
   });
 
   it('parses batched resolve requests and partial-success responses', () => {

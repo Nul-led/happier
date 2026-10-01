@@ -1,14 +1,17 @@
 import { z } from 'zod';
 
 const LINE_CONTENT_HASH_PREFIX = 'lh1:';
-const LINE_CONTENT_HASH_PATTERN = /^lh1:[0-9a-f]{16}$/;
+const LineContentHashV1Schema = z.templateLiteral([
+  LINE_CONTENT_HASH_PREFIX,
+  z.string().regex(/^[0-9a-f]{16}$/),
+]);
 const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
 export type LineContentHashV1 = `lh1:${string}`;
 
 export function isLineContentHashV1(value: unknown): value is LineContentHashV1 {
-  return typeof value === 'string' && LINE_CONTENT_HASH_PATTERN.test(value);
+  return LineContentHashV1Schema.safeParse(value).success;
 }
 
 function toHex32(value: number): string {
@@ -32,8 +35,6 @@ export function computeLineContentHashV1(line: string): LineContentHashV1 {
 
   return `${LINE_CONTENT_HASH_PREFIX}${toHex32(first)}${toHex32(second)}`;
 }
-
-const LineContentHashV1Schema = z.custom<LineContentHashV1>(isLineContentHashV1);
 
 export const WorkspaceAnchorV1Schema = z.union([
   z.object({
