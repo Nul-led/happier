@@ -5,6 +5,7 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { resolveCodexApiKeyAuthMethodId } from '../cli/auth/environment.js';
+import { buildCodexExecutionRunBaseEnv } from '../executionRuns/environment.js';
 import { buildCodexAcpEnvOverrides } from './env.js';
 import { resolveCodexAcpSpawnWithOptions } from './command.js';
 import {
@@ -15,7 +16,10 @@ import {
 export function buildCodexNativeAcpRuntimeOptions(
   request: AgentSessionOpenRequest | AgentExecutionRunOpenRequest,
 ): AgentAcpRuntimeOptions {
-  const env = request.launchEnvironment?.values ?? {};
+  const env = buildCodexExecutionRunBaseEnv({
+    processEnv: process.env,
+    isolationEnv: request.launchEnvironment?.values,
+  }) ?? {};
   const permissionMode = request.configuration?.permissionIntent.value ?? undefined;
   const spawn = resolveCodexAcpSpawnWithOptions({
     env,

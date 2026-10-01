@@ -13,6 +13,10 @@ export function buildCodexExecutionRunBaseEnv(args: Readonly<{
   processEnv: Environment;
   isolationEnv?: Environment;
 }>): Record<string, string | undefined> | undefined {
+  if (args.isolationEnv === undefined) {
+    return { ...args.processEnv };
+  }
+
   const inheritedEnv: Record<string, string> = {};
   for (const key of CODEX_EXECUTION_RUN_PROCESS_ENV_KEYS) {
     const value = args.processEnv[key];

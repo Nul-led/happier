@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { buildCodexExecutionRunBaseEnv } from './environment.js';
 
 describe('buildCodexExecutionRunBaseEnv', () => {
+  it('inherits the parent process environment when execution-run isolation is absent', () => {
+    const processEnv = {
+      PATH: 'C:\\Users\\alice\\AppData\\Roaming\\npm;C:\\Windows\\System32',
+      PATHEXT: '.COM;.EXE;.CMD',
+      HAPPIER_CODEX_PARENT_SENTINEL: 'inherited',
+    };
+
+    expect(buildCodexExecutionRunBaseEnv({ processEnv })).toEqual(processEnv);
+  });
+
   it('inherits only Codex execution-run process override keys before isolated env values', () => {
     expect(buildCodexExecutionRunBaseEnv({
       processEnv: {
