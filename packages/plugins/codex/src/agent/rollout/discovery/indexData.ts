@@ -196,61 +196,51 @@ async function collectRolloutFiles(opts: ScanOptions): Promise<RolloutFileEntry[
     return withTime.map((x) => ({ filePath: x.filePath, mtimeMs: x.mtimeMs }));
 }
 
-async function readFirstLine(
-    filePath: string,
+type FileHandle = Awaited<ReturnType<typeof open>>;
+
+async function readFirstLineFromHandle(
+    fh: FileHandle,
     bounds: CodexExternalSessionInvocationBounds,
 ): Promise<string | null> {
     const maxProbeBytes = 64 * 1024;
     const chunkBytes = 4 * 1024;
-    throwIfCodexExternalSessionInvocationStopped(bounds);
-    try {
-        const fh = await open(filePath, 'r');
-        try {
-            throwIfCodexExternalSessionInvocationStopped(bounds);
-            const decoder = new StringDecoder('utf8');
-            const chunk = Buffer.allocUnsafe(chunkBytes);
-            let readOffset = 0;
-            let text = '';
-            let sawEof = false;
+    const decoder = new StringDecoder('utf8');
+    const chunk = Buffer.allocUnsafe(chunkBytes);
+    let readOffset = 0;
+    let text = '';
+    let sawEof = false;
 
-            while (readOffset < maxProbeBytes) {
-                throwIfCodexExternalSessionInvocationStopped(bounds);
-                const bytesToRead = Math.min(chunk.byteLength, maxProbeBytes - readOffset);
-                const res = await fh.read(chunk, 0, bytesToRead, readOffset);
-                throwIfCodexExternalSessionInvocationStopped(bounds);
-                if (res.bytesRead <= 0) {
-                    sawEof = true;
-                    break;
-                }
-                readOffset += res.bytesRead;
-                text += decoder.write(chunk.subarray(0, res.bytesRead));
-                const idx = text.indexOf('\n');
-                if (idx !== -1) {
-                    const line = text.slice(0, idx).trim();
-                    return line.length > 0 ? line : null;
-                }
-                if (res.bytesRead < bytesToRead) {
-                    sawEof = true;
-                    break;
-                }
-            }
-
-            text += decoder.end();
-            const idx = text.indexOf('\n');
-            if (idx !== -1) {
-                const line = text.slice(0, idx).trim();
-                return line.length > 0 ? line : null;
-            }
-            if (!sawEof && readOffset >= maxProbeBytes) return null;
-            const line = text.trim();
-            return line.length > 0 ? line : null;
-        } finally {
-            await fh.close();
-        }
-    } catch {
+    while (readOffset < maxProbeBytes) {
         throwIfCodexExternalSessionInvocationStopped(bounds);
-        return null;
+        const bytesToRead = Math.min(chunk.byteLength, maxProbeBytes - readOffset);
+        const res = await fh.read(chunk, 0, bytesToRead, readOffset);
+        throwIfCodexExternalSessionInvocationStopped(bounds);
+        if (res.bytesRead <= 0) {
+            sawEof = true;
+            break;
+        }
+        readOffset += res.bytesRead;
+        text += decoder.write(chunk.subarray(0, res.bytesRead));
+        const idx = text.indexOf('\n');
+        if (idx !== -1) {
+            const line = text.slice(0, idx).trim();
+            return line.length > 0 ? line : null;
+        }
+        if (res.bytesRead < bytesToRead) {
+            sawEof = true;
+            break;
+        }
     }
+
+    text += decoder.end();
+    const idx = text.indexOf('\n');
+    if (idx !== -1) {
+        const line = text.slice(0, idx).trim();
+        return line.length > 0 ? line : null;
+    }
+    if (!sawEof && readOffset >= maxProbeBytes) return null;
+    const line = text.trim();
+    return line.length > 0 ? line : null;
 }
 
 function readFirstLineSync(filePath: string): string | null {
@@ -332,13 +322,67 @@ export function parseCodexSessionMetaLine(
     }
 }
 
+/**
+ * Keeps only the `session_meta` fields this plugin reads. Line 1 also carries the
+ * full base instructions (~20 KB), which nothing here uses and which must not be
+ * retained.
+ */
+function retainSessionMetaFields(payload: CodexSessionMetaPayload | null): CodexSessionMetaPayload | null {
+    if (!payload) return null;
+    return Object.freeze({
+        ...(payload.id !== undefined ? { id: payload.id } : {}),
+        ...(payload.session_id !== undefined ? { session_id: payload.session_id } : {}),
+        ...(payload.timestamp !== undefined ? { timestamp: payload.timestamp } : {}),
+        ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
+        ...(payload.source !== undefined ? { source: payload.source } : {}),
+        ...(payload.history_mode !== undefined ? { history_mode: payload.history_mode } : {}),
+        ...(payload.history_base !== undefined ? { history_base: payload.history_base } : {}),
+    });
+}
+
+/**
+ * Codex writes `session_meta` once, as line 1, when it creates a rollout; later
+ * turns only append. Re-reading and parsing that line for every rollout on every
+ * inventory was the dominant per-call cost of paging a long-lived Codex session
+ * (thousands of files), so a parsed line is remembered per path and trusted only
+ * while the path still names the same physical file. A line that does not parse
+ * yet — a rollout still being created — is never remembered.
+ */
+const sessionMetaByRolloutPath = new Map<string, Readonly<{
+    physicalFile: string;
+    sessionMeta: CodexSessionMetaPayload;
+}>>();
+
 export async function readCodexSessionMetaFromRollout(
     filePath: string,
     bounds: CodexExternalSessionInvocationBounds = {},
 ): Promise<CodexSessionMetaPayload | null> {
-    const line = await readFirstLine(filePath, bounds);
     throwIfCodexExternalSessionInvocationStopped(bounds);
-    return line ? parseCodexSessionMetaLine(line) : null;
+    try {
+        const fh = await open(filePath, 'r');
+        try {
+            throwIfCodexExternalSessionInvocationStopped(bounds);
+            const metadata = await fh.stat();
+            const physicalFile = `${metadata.dev}:${metadata.ino}:${Math.trunc(metadata.birthtimeMs)}`;
+            const remembered = sessionMetaByRolloutPath.get(filePath);
+            if (remembered?.physicalFile === physicalFile) return remembered.sessionMeta;
+            const line = await readFirstLineFromHandle(fh, bounds);
+            throwIfCodexExternalSessionInvocationStopped(bounds);
+            const sessionMeta = line ? retainSessionMetaFields(parseCodexSessionMetaLine(line)) : null;
+            if (sessionMeta) {
+                sessionMetaByRolloutPath.set(filePath, { physicalFile, sessionMeta });
+            } else {
+                sessionMetaByRolloutPath.delete(filePath);
+            }
+            return sessionMeta;
+        } finally {
+            await fh.close();
+        }
+    } catch {
+        throwIfCodexExternalSessionInvocationStopped(bounds);
+        sessionMetaByRolloutPath.delete(filePath);
+        return null;
+    }
 }
 
 export function readCodexSessionMetaFromRolloutSync(

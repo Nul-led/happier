@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, utimes, mkdir, rm, truncate } from 'node:fs/promises';
+import { appendFile, mkdtemp, writeFile, utimes, mkdir, rename, rm, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverCodexRolloutFileOnce, scoreCodexRolloutCandidate } from './indexData.js';
+import {
+    discoverCodexRolloutFileOnce,
+    readCodexSessionMetaFromRollout,
+    scoreCodexRolloutCandidate,
+} from './indexData.js';
 
 const rolloutDiscoveryStatPaths = vi.hoisted(() => [] as string[]);
 
@@ -405,5 +409,54 @@ describe('codex terminal-mode rollout discovery', () => {
         } finally {
             await rm(root, { recursive: true, force: true });
         }
+    });
+
+    describe('session_meta reads', () => {
+        it('parses a rollout session_meta once per physical file, since Codex writes it once as line 1', async () => {
+            const root = await mkdtemp(join(tmpdir(), 'codex-session-meta-once-'));
+            try {
+                const filePath = join(root, 'rollout-2026-02-04T00-00-00-once.jsonl');
+                await writeFile(filePath, `${sessionMetaLine({ id: 'first', cwd: '/x' })}\n`);
+                expect((await readCodexSessionMetaFromRollout(filePath))?.id).toBe('first');
+
+                // Same inode: a second read must not re-parse line 1. Codex never
+                // rewrites it, so a changed in-place line 1 is not re-read.
+                await writeFile(filePath, `${sessionMetaLine({ id: 'rewritten-in-place', cwd: '/x' })}\n`);
+                expect((await readCodexSessionMetaFromRollout(filePath))?.id).toBe('first');
+            } finally {
+                await rm(root, { recursive: true, force: true });
+            }
+        });
+
+        it('re-reads a rollout replaced by a different file at the same path', async () => {
+            const root = await mkdtemp(join(tmpdir(), 'codex-session-meta-replaced-'));
+            try {
+                const filePath = join(root, 'rollout-2026-02-04T00-00-00-replaced.jsonl');
+                await writeFile(filePath, `${sessionMetaLine({ id: 'original', cwd: '/x' })}\n`);
+                expect((await readCodexSessionMetaFromRollout(filePath))?.id).toBe('original');
+
+                const replacement = join(root, 'replacement.jsonl');
+                await writeFile(replacement, `${sessionMetaLine({ id: 'replacement', cwd: '/x' })}\n`);
+                await rename(replacement, filePath);
+                expect((await readCodexSessionMetaFromRollout(filePath))?.id).toBe('replacement');
+            } finally {
+                await rm(root, { recursive: true, force: true });
+            }
+        });
+
+        it('does not remember a session_meta line that is still being written', async () => {
+            const root = await mkdtemp(join(tmpdir(), 'codex-session-meta-partial-'));
+            try {
+                const filePath = join(root, 'rollout-2026-02-04T00-00-00-partial.jsonl');
+                const line = sessionMetaLine({ id: 'partial', cwd: '/x' });
+                await writeFile(filePath, line.slice(0, 20));
+                expect(await readCodexSessionMetaFromRollout(filePath)).toBeNull();
+
+                await appendFile(filePath, `${line.slice(20)}\n`);
+                expect((await readCodexSessionMetaFromRollout(filePath))?.id).toBe('partial');
+            } finally {
+                await rm(root, { recursive: true, force: true });
+            }
+        });
     });
 });

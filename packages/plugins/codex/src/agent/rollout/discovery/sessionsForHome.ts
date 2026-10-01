@@ -161,6 +161,8 @@ async function collectRolloutMatchesFromFlatDir(params: Readonly<{
   dir: string;
   remoteSessionIds: ReadonlySet<string>;
   membership: CodexRolloutMembership;
+  /** Receives every rollout whose membership this scan decided. */
+  examinedFilePaths?: Set<string>;
 }> & CodexExternalSessionInvocationBounds): Promise<Map<string, CodexRolloutFile[]>> {
   throwIfCodexExternalSessionInvocationStopped(params);
   let entries: any[];
@@ -182,6 +184,7 @@ async function collectRolloutMatchesFromFlatDir(params: Readonly<{
     const filePath = join(params.dir, name);
     const sessionMeta = await readCodexSessionMetaFromRollout(filePath, params);
     throwIfCodexExternalSessionInvocationStopped(params);
+    params.examinedFilePaths?.add(filePath);
     const sessionId = readNonEmptySessionId(sessionMeta?.id);
     const rootSessionId = readNonEmptySessionId(sessionMeta?.session_id);
     const matchingSessionIds = new Set<string>();
@@ -266,6 +269,7 @@ async function collectTargetedRootSessionRolloutMatches(params: Readonly<{
   codexHome: string;
   remoteSessionIds: ReadonlySet<string>;
   signal: AbortSignal;
+  examinedFilePaths: Set<string>;
 }> & CodexExternalSessionInvocationBounds): Promise<Map<string, CodexRolloutFile[]>> {
   const requestedIdsByDayDir = new Map<string, Set<string>>();
   for (const remoteSessionId of params.remoteSessionIds) {
@@ -292,6 +296,7 @@ async function collectTargetedRootSessionRolloutMatches(params: Readonly<{
           dir,
           remoteSessionIds,
           membership: 'root_session_family',
+          examinedFilePaths: params.examinedFilePaths,
           signal: params.signal,
           deadlineAtMs: params.deadlineAtMs,
         }),
@@ -478,12 +483,17 @@ export async function inventoryCodexRootSessionRolloutFiles(params: Readonly<{
   );
   throwIfCodexExternalSessionInvocationStopped(params);
 
+  // The targeted day-directory scan admits every file the walk below would
+  // (it also matches `id` and the filename, not only the root id), so the walk
+  // skips each file whose membership that scan already decided instead of
+  // re-reading it.
   const knownFilePaths = new Set<string>();
   const targetedMatchesBySessionId =
     await collectTargetedRootSessionRolloutMatches({
       codexHome: params.codexHome,
       remoteSessionIds: requestedIds,
       signal: params.signal,
+      examinedFilePaths: knownFilePaths,
       deadlineAtMs: params.deadlineAtMs,
     });
   for (const [remoteSessionId, targetedMatches] of targetedMatchesBySessionId) {
