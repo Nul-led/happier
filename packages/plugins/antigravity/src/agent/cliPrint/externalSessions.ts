@@ -890,7 +890,7 @@ export function createAntigravityExternalSessionsContribution(params: Readonly<{
           return boundedResult(request, failed('source_invalid', error.message, true));
         }
         return boundedResult(request, failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Antigravity candidate listing failed.',
           true,
         ));

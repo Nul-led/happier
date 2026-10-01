@@ -1,4 +1,4 @@
-import { appendFile, mkdir, opendir, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, opendir, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -83,6 +83,31 @@ describe('Antigravity external-session pure leaf', () => {
     expect(identity).toMatchObject({ ok: false, code: 'candidate_not_found' });
     expect(page).toMatchObject({ ok: false, code: 'candidate_not_found' });
   });
+
+  // POSIX permissions only: Windows and root ignore the mode bits this uses.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'reports an unreadable conversation as an Agent fault rather than an unavailable Agent',
+    async () => {
+      const home = await mkdir(join(tmpdir(), `antigravity-external-unreadable-${Date.now()}-`), { recursive: true });
+      if (!home) throw new Error('expected a fresh Antigravity home');
+      const brainDir = join(home, '.gemini', 'antigravity-cli', 'brain');
+      const transcriptPath = await createConversation(brainDir, 'conversation-unreadable', [
+        JSON.stringify({ id: 'entry-1', type: 'USER_INPUT', text: 'unreadable' }),
+      ]);
+      const contribution = createAntigravityExternalSessionsContribution({ env: { HOME: home } });
+      await chmod(transcriptPath, 0o000);
+      try {
+        await expect(contribution.listCandidates({
+          ...invocation(),
+          source: { kind: 'antigravityCliPrint' },
+          maxItems: 3,
+        })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
+      } finally {
+        await chmod(transcriptPath, 0o600);
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('bounds the first candidate scan chunk and rejects continuation across a brain generation change', async () => {
     const home = await mkdir(join(tmpdir(), `antigravity-external-large-candidates-${Date.now()}-`), { recursive: true });

@@ -1,5 +1,6 @@
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   opendir,
@@ -1353,6 +1354,44 @@ describe('Oh My Pi public External Sessions contribution', () => {
       },
     });
   });
+
+  // POSIX permissions only: Windows and root ignore the mode bits this uses.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'reports an unreadable transcript as an Agent fault rather than an unavailable Agent',
+    async () => {
+      const agentDir = await createAgentDir();
+      const remoteSessionId = 'unreadable-session';
+      const transcriptPath = await writeTranscript({
+        agentDir,
+        remoteSessionId,
+        records: [
+          { type: 'session', id: remoteSessionId, timestamp: '2026-07-23T10:00:00.000Z' },
+          {
+            type: 'message',
+            id: 'root',
+            parentId: null,
+            timestamp: '2026-07-23T10:00:01.000Z',
+            message: { role: 'user', content: 'root' },
+          },
+        ],
+      });
+      const contribution = createOhMyPiExternalSessionsContribution({
+        env: { PI_CODING_AGENT_DIR: agentDir },
+      });
+      await chmod(transcriptPath, 0o000);
+      try {
+        await expect(contribution.pageTranscript({
+          ...invocation(),
+          source: { kind: 'ohMyPiAgentDir', agentDir },
+          remoteSessionId,
+          direction: 'older',
+          maxItems: 10,
+        })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
+      } finally {
+        await chmod(transcriptPath, 0o600);
+      }
+    },
+  );
 
   it('reports malformed source UTF-8 by byte offset without admitting replacement text', async () => {
     const agentDir = await createAgentDir();

@@ -276,8 +276,10 @@ function transcriptFailure(error: unknown): AgentExternalSessionsResult<never> {
   if (error instanceof OhMyPiExternalSessionUnsupportedRecordError) {
     return failed('agent_error', error.message, false);
   }
+  // A readable-source fault the leaf did not classify (for example an
+  // unreadable file) is an Agent fault, never evidence that the Agent is missing.
   return failed(
-    'agent_unavailable',
+    'agent_error',
     error instanceof Error ? error.message : 'Oh My Pi external-session transcript operation failed.',
     true,
   );
@@ -477,7 +479,7 @@ export function createOhMyPiExternalSessionsContribution(params: Readonly<{
           return failed('agent_error', error.message, false);
         }
         return failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Oh My Pi external-session listing failed.',
           true,
         );
