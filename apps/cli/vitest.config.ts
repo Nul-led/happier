@@ -1,8 +1,9 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 import type { Alias } from 'vite'
 import { realpathSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { join, resolve as resolvePath, sep } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 import dotenv from 'dotenv'
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating'
@@ -11,8 +12,11 @@ import {
     workspacePackageSourcesPlugin,
 } from './scripts/vitestWorkspacePackageResolution'
 
+const packageRoot = fileURLToPath(new URL('.', import.meta.url))
+const resolve = (...paths: string[]) => resolvePath(packageRoot, ...paths)
+
 const testEnv = dotenv.config({
-    path: '.env.integration-test'
+    path: resolve('.env.integration-test')
 }).parsed
 
 const mergedTestEnv: NodeJS.ProcessEnv = {

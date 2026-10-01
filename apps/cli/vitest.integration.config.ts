@@ -1,5 +1,5 @@
 import { configDefaults, defineConfig } from 'vitest/config'
-import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import dotenv from 'dotenv'
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating'
@@ -104,7 +104,7 @@ export default defineConfig({
         alias: [
             {
                 find: '@',
-                replacement: resolve('./src'),
+                replacement: fileURLToPath(new URL('./src', import.meta.url)),
             },
         ],
     },
