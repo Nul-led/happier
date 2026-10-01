@@ -1,10 +1,15 @@
 import {
   createPlainSessionOwnerMetadataEnvelopeV1,
+  FeaturesResponseSchema,
+  projectSessionAccessCapabilitiesV1,
   SessionOwnerMetadataV1Schema,
+  type SessionAccessSourceV1,
+  type SessionListQueryV1,
 } from '@happier-dev/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
+import { createCurrentSessionProjectionRecordFixture, createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 
 const { mockAxiosGet, mockAxiosPost } = vi.hoisted(() => ({
   mockAxiosGet: vi.fn(),
@@ -32,6 +37,127 @@ describe('resolveSessionIdOrPrefix', () => {
         message: 'Route POST:/v2/sessions/lookup-by-tags not found',
       },
       headers: {},
+    });
+  });
+
+  describe('current Home access scope', () => {
+    const credentials = {
+      token: 'token_test',
+      encryption: { type: 'legacy' as const, secret: new Uint8Array(32).fill(1) },
+    };
+    const serverFeaturesSnapshot = {
+      status: 'ready' as const,
+      features: FeaturesResponseSchema.parse({
+        features: { sessions: { enabled: true }, sharing: { session: { enabled: true } } },
+        capabilities: {},
+      }),
+    };
+    const teamSessionId = 'cteam00000000000000000000';
+
+    function currentRow(id: string, source: SessionAccessSourceV1) {
+      return createCurrentSessionProjectionRecordFixture({
+        id,
+        effectiveAccess: {
+          v: 1,
+          level: source.kind === 'owner' ? 'owner' : 'edit',
+          sources: [source],
+          capabilities: projectSessionAccessCapabilitiesV1({
+            owner: source.kind === 'owner',
+            grants: [{ accessLevel: 'edit', canApprovePermissions: false }],
+          }),
+        },
+        viewer: {
+          readState: { state: 'not_started' },
+          relevance: { relevant: false, reasons: [] },
+          attention: { needsAttention: false, reasons: [], primary: null, presentation: 'full' },
+          follow: { follows: false, notificationLevel: null },
+          notification: { level: 'none', source: 'none' },
+        },
+      });
+    }
+
+    function serveCurrentHome(rows: ReturnType<typeof currentRow>[], storage: 'active' | 'archived' = 'active') {
+      // Axios is the network boundary: keep selector, feature decision and strict parsers real.
+      // Bare released listing sees only owner/direct grants, never Team-only access.
+      const legacyRows = rows.filter((row) => row.effectiveAccess.sources.some((source) =>
+        source.kind === 'owner' || source.kind === 'direct'));
+      mockAxiosGet.mockImplementation(async (url: string) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === '/v2/sessions' || parsed.pathname === '/v2/sessions/archived') {
+          return { status: 200, data: { sessions: legacyRows, nextCursor: null, hasNext: false } };
+        }
+        const row = parsed.searchParams.get('accessProjectionVersion') === '1'
+          ? rows.find((entry) => parsed.pathname === `/v2/sessions/${entry.id}`)
+          : undefined;
+        return row ? { status: 200, data: { session: row } } : { status: 404, data: {} };
+      });
+      mockAxiosPost.mockImplementation(async (url: string, query: SessionListQueryV1) => {
+        if (new URL(url).pathname === '/v2/sessions/lookup-by-tags') {
+          return { status: 200, data: { sessions: [] } };
+        }
+        expect(new URL(url).pathname).toBe('/v2/sessions/query');
+        return {
+          status: 200,
+          data: {
+            sessions: query.storage === storage ? rows : [],
+            nextCursor: null,
+            hasNext: false,
+            attentionNextCursor: null,
+            attentionHasNext: false,
+          },
+        };
+      });
+    }
+
+    it.each(['active', 'archived'] as const)('resolves a Team-only %s recipient by full ID and unique prefix in the same Home', async (storage) => {
+      const row = currentRow(teamSessionId, { kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false });
+      serveCurrentHome([row], storage);
+      const { resolveSessionIdOrPrefix } = await import('./resolveSessionId');
+      const signal = new AbortController().signal;
+      const resolveAuthorizationHeaders = () => ({ Authorization: 'Bearer scoped-action-token' });
+
+      await runWithServerHttpBaseUrl('https://selected-home.example.test', async () => {
+        await expect(resolveSessionIdOrPrefix({
+          credentials, idOrPrefix: teamSessionId, serverFeaturesSnapshot, signal, resolveAuthorizationHeaders,
+        })).resolves.toMatchObject({ ok: true, sessionId: teamSessionId, rawSession: row });
+        await expect(resolveSessionIdOrPrefix({
+          credentials, idOrPrefix: 'cteam', serverFeaturesSnapshot, signal, resolveAuthorizationHeaders,
+        })).resolves.toEqual({ ok: true, sessionId: teamSessionId });
+      });
+      expect(mockAxiosPost).toHaveBeenCalledWith(
+        'https://selected-home.example.test/v2/sessions/query',
+        { v: 1, storage, includeInactive: true, scope: 'all_accessible', attention: 'any', audiences: [], tagIds: [], limit: 200 },
+        expect.objectContaining({ signal, headers: expect.objectContaining({ Authorization: 'Bearer scoped-action-token' }) }),
+      );
+      expect(mockAxiosGet.mock.calls.every(([url]) => new URL(url).searchParams.get('accessProjectionVersion') === '1')).toBe(true);
+    });
+
+    it.each([
+      { kind: 'owner' } as const,
+      { kind: 'direct', shareId: 'share-1' } as const,
+    ])('reports ambiguity between Team-only and $kind prefix matches', async (source) => {
+      serveCurrentHome([
+        currentRow(teamSessionId, { kind: 'team', teamId: 'team-1', requiredByTeamPolicy: false }),
+        currentRow('cteam-neighbor', source),
+      ]);
+      const { resolveSessionIdOrPrefix } = await import('./resolveSessionId');
+      await expect(runWithServerHttpBaseUrl('https://selected-home.example.test', () => resolveSessionIdOrPrefix({
+        credentials, idOrPrefix: 'cteam', serverFeaturesSnapshot,
+      }))).resolves.toEqual({
+        ok: false, code: 'session_id_ambiguous', candidates: [teamSessionId, 'cteam-neighbor'],
+      });
+    });
+
+    it('does not fall back to an owner/direct list when the negotiated query fails', async () => {
+      serveCurrentHome([currentRow('cteam-owner', { kind: 'owner' })]);
+      mockAxiosPost.mockImplementation(async (url: string) => new URL(url).pathname === '/v2/sessions/lookup-by-tags'
+        ? { status: 200, data: { sessions: [] } }
+        : { status: 403, data: { privateDiagnostic: 'secret-sentinel' } });
+      const { resolveSessionIdOrPrefix } = await import('./resolveSessionId');
+      await expect(runWithServerHttpBaseUrl('https://selected-home.example.test', () => resolveSessionIdOrPrefix({
+        credentials, idOrPrefix: 'cteam', serverFeaturesSnapshot,
+      }))).rejects.toMatchObject({ response: { status: 403 } });
+      expect(mockAxiosGet).not.toHaveBeenCalled();
     });
   });
 

@@ -8,8 +8,10 @@ import {
 } from '@/session/transport/encryption/sessionEncryptionContext';
 import {
   fetchSessionById,
+  fetchSessionsQueryPage,
   fetchSessionsPage,
   lookupSessionsByTags,
+  resolveSessionDetailAccessProjectionVersion,
   type RawSessionRecord,
 } from '@/session/transport/http/sessionsHttp';
 
@@ -168,6 +170,9 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
   const prefixMatches = new Set<string>();
   const fallbackTagMatches = new Set<string>();
   const useOldServerTagFallback = indexedTagLookup?.state === 'unavailable';
+  const useCurrentAccessQuery = resolveSessionDetailAccessProjectionVersion({
+    serverFeaturesSnapshot: params.serverFeaturesSnapshot,
+  }) === 1;
 
   const recordPrefixMatch = (id: string): ResolveSessionIdResult | null => {
     if (prefixMatches.has(id)) return null;
@@ -186,16 +191,36 @@ async function resolveSessionIdOrPrefixWithSignal(params: Readonly<{
     cursor = undefined;
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
       params.signal?.throwIfAborted();
-      const page = await fetchSessionsPage({
-        token: params.credentials.token,
-        cursor,
-        limit: 200,
-        archivedOnly,
-        ...(params.resolveAuthorizationHeaders
-          ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
-          : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
-      });
+      const page: Awaited<ReturnType<typeof fetchSessionsQueryPage>>
+        | Awaited<ReturnType<typeof fetchSessionsPage>> = useCurrentAccessQuery
+        ? await fetchSessionsQueryPage({
+            token: params.credentials.token,
+            query: {
+              v: 1,
+              storage: archivedOnly ? 'archived' : 'active',
+              includeInactive: true,
+              scope: 'all_accessible',
+              attention: 'any',
+              audiences: [],
+              tagIds: [],
+              limit: 200,
+              ...(cursor ? { cursor } : {}),
+            },
+            ...(params.resolveAuthorizationHeaders
+              ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+              : {}),
+            ...(params.signal ? { signal: params.signal } : {}),
+          })
+        : await fetchSessionsPage({
+            token: params.credentials.token,
+            cursor,
+            limit: 200,
+            archivedOnly,
+            ...(params.resolveAuthorizationHeaders
+              ? { resolveAuthorizationHeaders: params.resolveAuthorizationHeaders }
+              : {}),
+            ...(params.signal ? { signal: params.signal } : {}),
+          });
       params.signal?.throwIfAborted();
       for (const row of page.sessions) {
         const id = row.id;
