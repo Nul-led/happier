@@ -239,6 +239,10 @@ describe('buildTiptapWebViewHtml theming + config', () => {
         expect(html).toContain('font-size: 14.08px;');
         // The shared builder removes the contenteditable focus ring.
         expect(html).toContain('outline: none;');
+        // The raw contenteditable bypasses the shared TextInput host, so it keeps
+        // a cue only when the browser declares forced-colors mode.
+        expect(html).toContain('@media (forced-colors: active) {');
+        expect(html).toContain('.ProseMirror:focus-visible { outline: 2px solid CanvasText !important; outline-offset: 2px !important; }');
     });
 
     it('passes the change debounce + readOnly flags into the boot script', async () => {

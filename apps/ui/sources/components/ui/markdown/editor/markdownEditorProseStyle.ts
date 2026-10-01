@@ -90,6 +90,9 @@ export function buildMarkdownProseCss(scopeSelector: string, input: MarkdownPros
         `${s} { font-family: ${fonts.body}; font-size: ${base}px; line-height: ${baseLh}px; color: ${colors.text}; }`,
         // Kill the browser's default focus ring on the contenteditable (web).
         `${s}:focus, ${s}:focus-visible { outline: none; }`,
+        // This raw contenteditable bypasses the shared TextInput host. Preserve a
+        // focus cue only when the browser explicitly enters forced-colors mode.
+        `@media (forced-colors: active) { ${s}:focus-visible { outline: 2px solid CanvasText !important; outline-offset: 2px !important; } }`,
         `${s} p { margin: 0 0 8px; }`,
         `${s} h1, ${s} h2, ${s} h3, ${s} h4, ${s} h5, ${s} h6 { font-family: ${fonts.heading}; font-weight: ${SEMIBOLD_WEIGHT}; color: ${colors.text}; }`,
         `${s} h1 { font-size: ${h1}px; line-height: ${h1Lh}px; margin: 18px 0 10px; }`,
