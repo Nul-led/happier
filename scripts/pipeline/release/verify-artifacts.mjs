@@ -3,9 +3,9 @@
 // @ts-check
 
 import { createReadStream, existsSync } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { resolveReleaseAssetBundle } from '@happier-dev/release-runtime/assets';
@@ -15,7 +15,9 @@ import { verifyMinisign } from '@happier-dev/release-runtime/minisign';
 import { fileSha256, parseArtifactChecksums } from './lib/artifact-checksums.mjs';
 import { parseArtifactFilename } from './lib/manifests.mjs';
 import { parseArgs } from './lib/release-script-arguments.mjs';
-import { isRunnerTargetEligibleForPublication, resolveRunnerPackageLayout } from './lib/runner-packaging.mjs';
+import { isRunnerTargetEligibleForPublication, resolveRunnerPackageLayout, verifyWindowsRunnerPayload } from './lib/runner-packaging.mjs';
+import { readDarwinAppBundleNotarizationEvidence, verifyDarwinAppBundleNotarizationEvidence } from './notarize-standalone-binary.mjs';
+import { resolveArchiveSymlinkTargets } from '@happier-dev/release-runtime/archiveSymlinkContainment';
 import { shouldSmokeTestReleaseArtifact } from './publishing/artifact-smoke-compatibility.mjs';
 import { CLI_OPTIONAL_COMPONENT_PRODUCTS } from './publishing/product-specs.mjs';
 import { terminateProcessTreeByPid } from '../../testing/process/processTree.mjs';
@@ -187,7 +189,7 @@ function assertCanonicalArchiveLayout({ archiveName, identity, entries }) {
   }
 }
 
-async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, signal }) {
+async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, signal, macOSNotarizationOutput }) {
   const {
     inspectClosedZipArchiveEntries,
   } = await import('@happier-dev/release-runtime/archiveExtraction');
@@ -196,6 +198,34 @@ async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, sig
     throw new ReleaseArchiveAdmissionError(
       `[release] Runner archive source is invalid: ${archiveName}`,
     );
+  }
+  if (layout.payloadKind === 'app-bundle') {
+    // Reuse the notarization owner's census of the exact post-staple tree;
+    // the ZIP also carries its enclosing app directory. No archive-size or
+    // entry-count estimate stands in for that existing evidence.
+    const evidence = readDarwinAppBundleNotarizationEvidence({
+      payloadName: layout.payloadRootName, evidencePath: macOSNotarizationOutput,
+    });
+    const entries = await inspectClosedZipArchiveEntries({
+      archivePath, archiveSizeBytes: archive.size, expectedEntryCount: evidence.entryCount + 1,
+      allowedEntryRoots: [layout.payloadRootName], signal,
+    });
+    const requiredFiles = [
+      layout.executablePath,
+      `${layout.payloadRootName}/Contents/MacOS/happier-runner-core`,
+      `${layout.payloadRootName}/Contents/Info.plist`,
+      `${layout.payloadRootName}/Contents/_CodeSignature/CodeResources`,
+    ];
+    if (!entries.some(entry => entry.path === layout.payloadRootName && entry.kind === 'directory')
+      || !requiredFiles.every(path => entries.some(entry => entry.path === path && entry.kind === 'file'))
+      || entries.some(entry => entry.kind === 'directory' ? entry.mode !== 0o755
+        : entry.kind === 'symlink' ? entry.mode !== 0o777
+          : !CANONICAL_NATIVE_FILE_MODES.has(entry.mode))
+      || !entries.some(entry => entry.path === layout.executablePath && entry.mode === 0o755)
+      || !entries.some(entry => entry.path === requiredFiles[1] && entry.mode === 0o755)) {
+      throw new ReleaseArchiveAdmissionError(`[release] Runner app bundle layout or metadata is invalid: ${archiveName}`);
+    }
+    return { archiveSizeBytes: archive.size, entries };
   }
   // The payload's own closed entry set: one executable file, or the portable
   // directory root with exactly the shell executable and the core sidecar the
@@ -230,80 +260,72 @@ async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, sig
   return { archiveSizeBytes: archive.size, entries };
 }
 
-/** @param {{ archivePath: string; archiveName: string; signal?: AbortSignal }} params */
-export async function verifyReleaseArchiveAdmission({ archivePath, archiveName, signal }) {
-  const {
-    extractArchivePayloadToDirectory,
-    inspectTarArchiveEntries,
-  } = await import('@happier-dev/release-runtime/archiveExtraction');
+/** Validate a built Runner candidate; publication separately requires target eligibility. */
+export async function verifyRunnerArchiveAdmission({ archivePath, archiveName, signal, ...nativeTrust }) {
+  const { extractArchivePayloadToDirectory } = await import('@happier-dev/release-runtime/archiveExtraction');
   const identity = parseReleaseArchiveIdentity(archiveName);
-  if (!identity) {
-    throw new ReleaseArchiveAdmissionError(
-      `[release] unsupported release archive family: ${archiveName}`,
-    );
+  if (identity?.product !== 'happier-runner' || !archiveName.endsWith('.zip')) {
+    throw new ReleaseArchiveAdmissionError(`[release] unsupported Runner archive: ${archiveName}`);
   }
-
-  // Runner is the one native ZIP product. Its archive is intentionally the
-  // immutable payload consumed by creator-side package assembly, not the
-  // directory-rooted CLI install payload. Publication eligibility and the
-  // per-target layout both come from the canonical Runner packaging owner, so a
-  // build flag cannot publish a target whose native release admission is absent.
-  // This is not the Home availability decision: that additionally requires an
-  // exact verified immutable release record and the default-off product gate.
-  if (identity.product === 'happier-runner') {
-    const targetId = `${identity.platform}-${identity.arch}`;
-    if (!archiveName.endsWith('.zip') || !isRunnerTargetEligibleForPublication(targetId)) {
+  const targetId = `${identity.platform}-${identity.arch}`;
+  const layout = resolveRunnerPackageLayout(targetId);
+  const scratch = await mkdtemp(join(tmpdir(), 'happier-runner-release-admission-'));
+  try {
+    const closedZipLayout = await readRunnerClosedZipLayout({
+      archivePath, archiveName, layout, signal, macOSNotarizationOutput: nativeTrust.macOSNotarizationOutput,
+    });
+    await extractArchivePayloadToDirectory({ archivePath, archiveName, closedZipLayout, extractDir: scratch, signal });
+    const names = await readdir(scratch);
+    if (names.length !== 1 || names[0] !== layout.payloadRootName) {
       throw new ReleaseArchiveAdmissionError(
-        `[release] Runner target is not eligible for publication: ${archiveName}`,
+        `[release] Runner archive must contain exactly one ${layout.payloadRootName} payload: ${archiveName}`,
       );
     }
-    const layout = resolveRunnerPackageLayout(targetId);
-    if (layout.payloadKind !== 'appimage' && layout.payloadKind !== 'portable-dir') {
-      // Making the macOS app bundle publication eligible requires its own
-      // admission evidence (stapled ticket, bundle layout). Adding a branch
-      // before that evidence exists would let an unproven payload shape through.
-      throw new ReleaseArchiveAdmissionError(
-        `[release] Runner ${layout.payloadKind} admission is not implemented for ${archiveName}`,
-      );
-    }
-    const scratch = await mkdtemp(join(tmpdir(), 'happier-runner-release-admission-'));
-    try {
-      const closedZipLayout = await readRunnerClosedZipLayout({
-        archivePath,
-        archiveName,
-        layout,
-        signal,
+    const entries = await Promise.all(closedZipLayout.entries.map(async ({ path, kind, sizeBytes, mode }) => {
+      assertPrivacySafe(Buffer.from(path, 'utf8'));
+      if (kind === 'file') await scanFileForPrivateMaterial(join(scratch, path));
+      return { path, kind, sizeBytes, mode, ...(kind === 'symlink' ? { linkTarget: await readlink(join(scratch, path)) } : {}) };
+    }));
+    if (layout.payloadKind === 'app-bundle') {
+      const targets = new Map(entries.filter(entry => entry.kind === 'symlink').map(entry => [entry.path, entry.linkTarget]));
+      for (const target of resolveArchiveSymlinkTargets(targets).values()) {
+        if (target !== layout.payloadRootName && !target.startsWith(`${layout.payloadRootName}/`)) {
+          throw new ReleaseArchiveAdmissionError(`[release] Runner app bundle symlink leaves the bundle: ${archiveName}`);
+        }
+      }
+      verifyDarwinAppBundleNotarizationEvidence({
+        bundlePath: join(scratch, layout.payloadRootName), evidencePath: nativeTrust.macOSNotarizationOutput,
+        runCommand: nativeTrust.runCommand,
       });
-      await extractArchivePayloadToDirectory({
-        archivePath,
-        archiveName,
-        closedZipLayout,
-        extractDir: scratch,
-        signal,
+    } else if (layout.sidecarPath) {
+      await verifyWindowsRunnerPayload({
+        payloadPath: join(scratch, layout.payloadRootName), windowsSigningIdentity: nativeTrust.windowsSigningIdentity,
+        platform: nativeTrust.platform, runCommand: nativeTrust.runCommand,
       });
-      const names = await readdir(scratch);
-      if (names.length !== 1 || names[0] !== layout.payloadRootName) {
+    } else {
+      const executable = await lstat(join(scratch, layout.executablePath));
+      if (!executable.isFile() || (executable.mode & 0o7777) !== 0o755) {
         throw new ReleaseArchiveAdmissionError(
-          `[release] Runner archive must contain exactly one ${layout.payloadRootName} payload: ${archiveName}`,
+          `[release] Runner archive executable metadata is invalid: ${archiveName}`,
         );
       }
-      // The portable payload's sidecar is part of the executable surface: it is
-      // the process the shell actually spawns, so it carries the same metadata
-      // and private-material admission as the shell itself.
-      for (const relativePath of [layout.executablePath, ...(layout.sidecarPath ? [layout.sidecarPath] : [])]) {
-        const executablePath = join(scratch, relativePath);
-        const executable = await lstat(executablePath);
-        if (!executable.isFile() || (executable.mode & 0o7777) !== 0o755) {
-          throw new ReleaseArchiveAdmissionError(
-            `[release] Runner archive executable metadata is invalid: ${archiveName}`,
-          );
-        }
-        await scanFileForPrivateMaterial(executablePath);
-      }
-      return closedZipLayout.entries.map(({ path, kind, sizeBytes, mode }) => ({ path, kind, sizeBytes, mode }));
-    } finally {
-      await rm(scratch, { recursive: true, force: true });
     }
+    return entries;
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** @param {{ archivePath: string; archiveName: string; signal?: AbortSignal }} params */
+export async function verifyReleaseArchiveAdmission({ archivePath, archiveName, signal, ...nativeTrust }) {
+  const { extractArchivePayloadToDirectory, inspectTarArchiveEntries } = await import('@happier-dev/release-runtime/archiveExtraction');
+  const identity = parseReleaseArchiveIdentity(archiveName);
+  if (!identity) throw new ReleaseArchiveAdmissionError(`[release] unsupported release archive family: ${archiveName}`);
+  if (identity.product === 'happier-runner') {
+    if (!archiveName.endsWith('.zip') || !isRunnerTargetEligibleForPublication(`${identity.platform}-${identity.arch}`)) {
+      throw new ReleaseArchiveAdmissionError(`[release] Runner target is not eligible for publication: ${archiveName}`);
+    }
+    return verifyRunnerArchiveAdmission({ archivePath, archiveName, signal, ...nativeTrust });
   }
 
   let entries;
@@ -726,7 +748,7 @@ async function runBaseCliRuntimeSmoke({ root, scratch, artifact, archivePath, en
   }
 }
 
-export async function smokeTestArchive({ archivePath, signal, execute = true }) {
+export async function smokeTestArchive({ archivePath, signal, execute = true, macOSNotarizationOutput }) {
   const artifact = parseArtifactFilename(basename(archivePath));
   const {
     extractArchivePayloadToDirectory,
@@ -738,7 +760,7 @@ export async function smokeTestArchive({ archivePath, signal, execute = true }) 
       ? resolveRunnerPackageLayout(`${artifact.os}-${artifact.arch}`)
       : undefined;
     const closedZipLayout = runnerLayout
-      ? await readRunnerClosedZipLayout({ archivePath, archiveName, layout: runnerLayout, signal })
+      ? await readRunnerClosedZipLayout({ archivePath, archiveName, layout: runnerLayout, signal, macOSNotarizationOutput })
       : undefined;
     const firstPartyRuntime = !runnerLayout ? await import('@happier-dev/cli-common/firstPartyRuntime') : null;
     const component = firstPartyRuntime?.getFirstPartyComponentCatalogEntry(artifact.product === 'happier' ? 'happier-cli' : artifact.product);
@@ -755,7 +777,7 @@ export async function smokeTestArchive({ archivePath, signal, execute = true }) 
       });
       // Runner's closed layout declares whether the executable is at the root
       // or in its portable product directory.
-      root = runnerLayout.sidecarPath ? join(scratch, runnerLayout.payloadRootName) : scratch;
+      root = dirname(join(scratch, runnerLayout.executablePath));
     }
     // The Runner's entry point comes from its canonical package layout, never
     // from a name heuristic: a portable payload holds two executables and only
@@ -909,6 +931,8 @@ export async function smokeTestArchive({ archivePath, signal, execute = true }) 
 
 async function main() {
   const { kv, flags } = parseArgs(process.argv.slice(2));
+  const macOSNotarizationOutput = String(kv.get('--macos-notarization-output') ?? '').trim();
+  const windowsSigningIdentity = String(kv.get('--windows-signing-identity') ?? '').trim();
   const artifactsDir = resolve(String(kv.get('--artifacts-dir') ?? '').trim() || join(process.cwd(), 'dist', 'release-assets'));
   const checksumsPathInput = String(kv.get('--checksums') ?? '').trim();
   const checksumCandidates = checksumsPathInput ? [] : (await readdir(artifactsDir, { withFileTypes: true }).catch((error) => {
@@ -991,6 +1015,8 @@ async function main() {
       await verifyReleaseArchiveAdmission({
         archivePath: join(artifactsDir, entry.name),
         archiveName: entry.name,
+        macOSNotarizationOutput,
+        windowsSigningIdentity,
       });
     }
   }
@@ -1029,7 +1055,7 @@ async function main() {
     const execute = compatible && (!skipOptionalSmoke || requiresCliVersionAttestation);
     // Preserve Runner's separate closed-ZIP admission and startup contract.
     if (execute || optionalComponent || artifact.product === 'happier') {
-      await smokeTestArchive({ archivePath: join(artifactsDir, entry.name), execute });
+      await smokeTestArchive({ archivePath: join(artifactsDir, entry.name), execute, macOSNotarizationOutput });
     }
     if (requiresCliVersionAttestation) {
       cliVersionAttestations.push(entry.name);

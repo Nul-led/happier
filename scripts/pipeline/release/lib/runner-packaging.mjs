@@ -20,8 +20,10 @@
  * Protocol source so divergence is a loud failure rather than a second decision.
  */
 
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { chmod, lstat, readdir } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { notarizeDarwinAppBundle, verifyDarwinAppBundleNotarizationEvidence } from '../notarize-standalone-binary.mjs';
 
 export const RUNNER_NATIVE_SHELL_DIR = 'apps/cli/runner-native-shell';
 export const RUNNER_CORE_SIDECAR_STEM = 'happier-runner-core';
@@ -229,4 +231,91 @@ export function resolveRunnerCoreSidecarPath({ shellDir, target }) {
   const rustTarget = resolveRunnerShellRustTarget(target);
   const extension = rustTarget.includes('-windows-') ? '.exe' : '';
   return join(shellDir, 'binaries', `${RUNNER_CORE_SIDECAR_STEM}-${rustTarget}${extension}`);
+}
+
+function runNativeCommand([command, args]) {
+  return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+function requireWindowsSigningIdentity(value) {
+  const identity = String(value ?? '').trim();
+  if (!/^[a-f0-9]{40}$/iu.test(identity)) {
+    throw new Error('[release] --windows-signing-identity requires the signing certificate SHA-1 thumbprint');
+  }
+  return identity.toUpperCase();
+}
+
+/** Verify the exact publisher and timestamp as well as native Authenticode trust. */
+export async function verifyWindowsRunnerPayload({
+  payloadPath, windowsSigningIdentity, platform = process.platform, runCommand = runNativeCommand,
+}) {
+  const identity = requireWindowsSigningIdentity(windowsSigningIdentity);
+  if (platform !== 'win32') throw new Error('[release] Windows Runner Authenticode verification must run on Windows');
+  const layout = resolveRunnerPackageLayout('windows-x64');
+  for (const entryPath of [layout.executablePath, layout.sidecarPath]) {
+    const file = join(payloadPath, basename(entryPath));
+    if (!(await lstat(file)).isFile()) throw new Error(`[release] Runner payload file is missing: ${entryPath}`);
+    // SignTool warnings (including a missing timestamp with /tw) are nonzero
+    // exits, so the command boundary rejects them just like trust failures.
+    runCommand(['signtool.exe', ['verify', '/pa', '/all', '/tw', file]]);
+    const literalPath = `'${file.replaceAll("'", "''")}'`;
+    const script = `$ErrorActionPreference = 'Stop'; $signature = Get-AuthenticodeSignature -LiteralPath ${literalPath}; `
+      + '[pscustomobject]@{ status = $signature.Status.ToString(); thumbprint = $signature.SignerCertificate.Thumbprint; '
+      + 'timestamped = $null -ne $signature.TimeStamperCertificate } | ConvertTo-Json -Compress';
+    let facts;
+    try {
+      facts = JSON.parse(runCommand(['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]]));
+    } catch (cause) {
+      throw new Error(`[release] Runner Authenticode publisher verification failed: ${entryPath}`, { cause });
+    }
+    if (facts?.status !== 'Valid' || String(facts?.thumbprint ?? '').toUpperCase() !== identity || facts?.timestamped !== true) {
+      throw new Error(`[release] Runner Authenticode publisher or timestamp is invalid: ${entryPath}`);
+    }
+  }
+}
+
+/** Apply native trust before the immutable payload is archived. */
+export async function finalizeRunnerPayload({
+  payloadPath, target, macOSSigningIdentity, macOSNotarizationOutput,
+  windowsSigningIdentity, windowsTimestampUrl, platform = process.platform, runCommand = runNativeCommand,
+}) {
+  const layout = resolveRunnerPackageLayout(runnerTargetId(target));
+  if (layout.payloadKind === 'app-bundle') {
+    if (!macOSSigningIdentity || !macOSNotarizationOutput) {
+      throw new Error('[release] macOS Runner artifacts require --macos-signing-identity and --macos-notarization-output');
+    }
+    notarizeDarwinAppBundle({
+      bundlePath: payloadPath,
+      mainExecutableName: 'happier-runner',
+      identity: macOSSigningIdentity,
+      outPath: macOSNotarizationOutput,
+    });
+    verifyDarwinAppBundleNotarizationEvidence({ bundlePath: payloadPath, evidencePath: macOSNotarizationOutput });
+    for (const relativePath of ['Contents/Info.plist', 'Contents/MacOS/happier-runner', 'Contents/MacOS/happier-runner-core', 'Contents/_CodeSignature/CodeResources']) {
+      if (!(await lstat(join(payloadPath, relativePath))).isFile()) throw new Error(`[release] Runner payload file is missing: ${relativePath}`);
+    }
+    return payloadPath;
+  }
+  if (layout.sidecarPath) {
+    const identity = requireWindowsSigningIdentity(windowsSigningIdentity);
+    let timestampUrl;
+    try { timestampUrl = new URL(String(windowsTimestampUrl ?? '')); } catch {}
+    if (!timestampUrl || !['https:', 'http:'].includes(timestampUrl.protocol)) {
+      throw new Error('[release] --windows-timestamp-url requires an explicit RFC 3161 HTTP(S) endpoint');
+    }
+    if (platform !== 'win32') throw new Error('[release] Windows Runner Authenticode signing must run on Windows');
+    for (const entryPath of [layout.executablePath, layout.sidecarPath]) {
+      const file = join(payloadPath, basename(entryPath));
+      if (!(await lstat(file)).isFile()) throw new Error(`[release] Runner payload file is missing: ${entryPath}`);
+      runCommand(['signtool.exe', [
+        'sign', '/sha1', identity, '/fd', 'SHA256', '/tr', String(windowsTimestampUrl), '/td', 'SHA256', '/d', 'Happier Runner', file,
+      ]]);
+    }
+    await verifyWindowsRunnerPayload({ payloadPath, windowsSigningIdentity: identity, platform, runCommand });
+    return payloadPath;
+  }
+  const payload = await lstat(payloadPath);
+  if (!payload.isFile()) throw new Error(`[release] Runner AppImage payload is not a file: ${payloadPath}`);
+  await chmod(payloadPath, 0o755);
+  return payloadPath;
 }

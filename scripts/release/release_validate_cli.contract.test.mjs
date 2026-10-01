@@ -944,8 +944,9 @@ test('binary smoke uses shared minisign and runs exact-candidate Voice/notarizat
   assert.deepEqual(calls.slice(-2), ['cleanup', 'capture-cleanup']);
 });
 
-test('candidate host payload smoke loads deferred Voice and verifies exact Darwin evidence', async () => {
+test('candidate host payload smoke verifies exact Darwin evidence without requiring base-bundled Voice', async () => {
   const calls = [];
+  let extractedPayloadRoot = null;
   await runCandidateHostPayloadSmoke({
     archivePath: '/candidate/native/happier-v1.2.3-darwin-x64.tar.gz',
     archiveName: 'happier-v1.2.3-darwin-x64.tar.gz',
@@ -957,28 +958,18 @@ test('candidate host payload smoke loads deferred Voice and verifies exact Darwi
   }, {
     extractArchivePayloadToDirectoryImpl: async ({ extractDir }) => {
       const payloadRoot = resolve(extractDir, 'happier-v1.2.3-darwin-x64');
-      const loaderPath = resolve(
-        payloadRoot,
-        'scripts',
-        'runtime',
-        'loadVoiceInferenceRuntime.mjs',
-      );
-      mkdirSync(dirname(loaderPath), { recursive: true });
-      writeFileSync(loaderPath, 'export {};\n');
+      mkdirSync(payloadRoot, { recursive: true });
+      extractedPayloadRoot = payloadRoot;
     },
     execFileSyncImpl: (command, args, options) => {
       calls.push({ command, args, options });
     },
   });
-  assert.equal(calls.length, 2);
-  assert.equal(
-    calls[0].args[0].endsWith('/scripts/runtime/loadVoiceInferenceRuntime.mjs'),
-    true,
-  );
-  assert.deepEqual(calls[1].args.slice(-5), [
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(-5), [
     '--verify-evidence',
     '--payload',
-    calls[0].options.cwd,
+    extractedPayloadRoot,
     '--evidence',
     '/candidate/native/darwin-x64.cli.json',
   ]);

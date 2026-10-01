@@ -999,18 +999,11 @@ export function notarizeDarwinAppBundle({
  * the same payload snapshot and Gatekeeper assessment as the standalone owner
  * and adds the bundle-aware staple check.
  */
-export function verifyDarwinAppBundleNotarizationEvidence({
-  bundlePath: rawBundlePath,
+export function readDarwinAppBundleNotarizationEvidence({
+  payloadName,
   evidencePath: rawEvidencePath,
-  verifyCode = (entryPath) => run(['codesign', ['--verify', '--strict=all', '--verbose=2', entryPath]]),
-  validateStaple = (entryPath) => run(['xcrun', ['stapler', 'validate', entryPath]]),
-  assessCode = (entryPath) => runGatekeeperAssessment(resolveGatekeeperAssessmentCommand(entryPath)),
 }) {
-  const bundlePath = path.resolve(requireValue(rawBundlePath, 'app bundle path'));
   const evidencePath = path.resolve(requireValue(rawEvidencePath, 'notarization evidence path'));
-  if (!fs.statSync(bundlePath, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Error(`[release] macOS app bundle does not exist: ${bundlePath}`);
-  }
   let evidence;
   try {
     evidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8'));
@@ -1020,7 +1013,12 @@ export function verifyDarwinAppBundleNotarizationEvidence({
   if (
     evidence?.schemaVersion !== 3
     || evidence?.payloadKind !== 'app-bundle'
-    || evidence?.payload !== path.basename(bundlePath)
+    || evidence?.payload !== payloadName
+    || !/^[a-f0-9]{64}$/u.test(String(evidence?.payloadSha256 ?? ''))
+    || !Number.isSafeInteger(evidence?.entryCount)
+    || evidence.entryCount < 1
+    || !Array.isArray(evidence?.machO)
+    || evidence.machO.length < 1
     || !isDeveloperIdApplicationSigningSelector(evidence?.signingIdentity)
     || !String(evidence?.notarization?.submissionId ?? '').trim()
     || evidence?.notarization?.status !== 'Accepted'
@@ -1029,7 +1027,27 @@ export function verifyDarwinAppBundleNotarizationEvidence({
   ) {
     throw new Error('[release] macOS app bundle notarization evidence is invalid');
   }
+  return evidence;
+}
+
+export function verifyDarwinAppBundleNotarizationEvidence({
+  bundlePath: rawBundlePath,
+  evidencePath,
+  mainExecutableName = 'happier-runner',
+  runCommand = run,
+  verifyCode = (entryPath, entry = {}) => runCommand(['codesign', resolveCodesignVerificationArgs({ ...entry, path: entryPath })]),
+  validateStaple = (entryPath) => runCommand(['xcrun', ['stapler', 'validate', entryPath]]),
+  assessCode = (entryPath) => runGatekeeperAssessment(resolveGatekeeperAssessmentCommand(entryPath), { runCommand }),
+}) {
+  const bundlePath = path.resolve(requireValue(rawBundlePath, 'app bundle path'));
+  if (!fs.lstatSync(bundlePath, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`[release] macOS app bundle does not exist: ${bundlePath}`);
+  }
+  const evidence = readDarwinAppBundleNotarizationEvidence({ payloadName: path.basename(bundlePath), evidencePath });
   assertMatchingPayloadSnapshot(evidence, snapshotDarwinPayload(bundlePath));
+  for (const entryPath of listDarwinAppBundleNestedCode(bundlePath, { mainExecutableName })) {
+    verifyCode(entryPath, { requiresJitEntitlement: true });
+  }
   verifyCode(bundlePath);
   validateStaple(bundlePath);
   assessCode(bundlePath);

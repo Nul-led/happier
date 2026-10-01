@@ -16,6 +16,7 @@ import {
 import {
   RUNNER_PUBLICATION_ELIGIBLE_TARGET_IDS,
   RUNNER_NATIVE_SHELL_DIR,
+  finalizeRunnerPayload,
   resolveRunnerBundleArchiveCommand,
   resolveRunnerCoreSidecarPath,
   resolveRunnerPackageLayout,
@@ -23,7 +24,6 @@ import {
   resolveRunnerShellPayload,
   runnerTargetId,
 } from './lib/runner-packaging.mjs';
-import { notarizeDarwinAppBundle, verifyDarwinAppBundleNotarizationEvidence } from './notarize-standalone-binary.mjs';
 
 /**
  * Targets whose native shell the release owner knows how to compose — every
@@ -161,49 +161,6 @@ async function buildRunnerPayload({ repoRoot, shellDir, entrypoint, target, vers
   return payloadRoot;
 }
 
-/**
- * Apply the platform trust the target requires, then assert the exact archive
- * layout the creator-side assembler and release admission expect.
- */
-async function finalizeRunnerPayload({ payloadPath, target, macOSSigningIdentity, macOSNotarizationOutput }) {
-  const layout = resolveRunnerPackageLayout(runnerTargetId(target));
-  if (layout.payloadKind === 'app-bundle') {
-    if (!macOSSigningIdentity || !macOSNotarizationOutput) {
-      throw new Error(
-        '[release] macOS Runner artifacts require --macos-signing-identity and --macos-notarization-output; '
-        + 'an unsigned or ad-hoc signed Runner is a trust-critical executable and is never published',
-      );
-    }
-    notarizeDarwinAppBundle({
-      bundlePath: payloadPath,
-      mainExecutableName: 'happier-runner',
-      identity: macOSSigningIdentity,
-      outPath: macOSNotarizationOutput,
-    });
-    verifyDarwinAppBundleNotarizationEvidence({
-      bundlePath: payloadPath,
-      evidencePath: macOSNotarizationOutput,
-    });
-    await ensureFileExists(join(payloadPath, 'Contents', 'Info.plist'));
-    await ensureFileExists(join(payloadPath, 'Contents', 'MacOS', 'happier-runner'));
-    await ensureFileExists(join(payloadPath, 'Contents', 'MacOS', 'happier-runner-core'));
-    await ensureFileExists(join(payloadPath, 'Contents', '_CodeSignature', 'CodeResources'));
-    return payloadPath;
-  }
-  if (layout.sidecarPath) {
-    // Authenticode signing and timestamping of both executables happen on the
-    // Windows signing host before the payload is archived; publication
-    // admission stays closed until that evidence exists.
-    await ensureFileExists(join(payloadPath, basename(layout.executablePath)));
-    await ensureFileExists(join(payloadPath, basename(layout.sidecarPath)));
-    return payloadPath;
-  }
-  const payload = await lstat(payloadPath);
-  if (!payload.isFile()) throw new Error(`[release] Runner AppImage payload is not a file: ${payloadPath}`);
-  await chmod(payloadPath, 0o755);
-  return payloadPath;
-}
-
 async function main() {
   const repoRoot = resolveRepoRoot();
   const { kv } = parseArgs(process.argv.slice(2));
@@ -217,6 +174,8 @@ async function main() {
   await ensureFileExists(join(shellDir, 'tauri.conf.json'));
   const macOSSigningIdentity = String(kv.get('--macos-signing-identity') ?? '').trim();
   const macOSNotarizationOutput = String(kv.get('--macos-notarization-output') ?? '').trim();
+  const windowsSigningIdentity = String(kv.get('--windows-signing-identity') ?? '').trim();
+  const windowsTimestampUrl = String(kv.get('--windows-timestamp-url') ?? '').trim();
   // Publication-eligible targets are the default matrix. A Darwin build is an
   // explicit signing-bearing request whose artifact remains unavailable to Homes
   // until release admission and the product activation gates are satisfied.
@@ -251,6 +210,8 @@ async function main() {
         target,
         macOSSigningIdentity,
         macOSNotarizationOutput,
+        windowsSigningIdentity,
+        windowsTimestampUrl,
       });
       const hostOs = process.platform === 'win32' ? 'windows' : process.platform;
       const hostArch = process.arch === 'x64' ? 'x64' : process.arch === 'arm64' ? 'arm64' : process.arch;
@@ -270,8 +231,10 @@ async function main() {
         });
       }
       const artifact = await packageRunnerBinary({ version, target, payloadPath, outDir });
-      const { verifyReleaseArchiveAdmission } = await import('./verify-artifacts.mjs');
-      const entries = await verifyReleaseArchiveAdmission({ archivePath: artifact.path, archiveName: artifact.name });
+      const { verifyRunnerArchiveAdmission } = await import('./verify-artifacts.mjs');
+      const entries = await verifyRunnerArchiveAdmission({
+        archivePath: artifact.path, archiveName: artifact.name, macOSNotarizationOutput, windowsSigningIdentity,
+      });
       const archive = await lstat(artifact.path);
       artifacts.push({ ...artifact, archiveMetadata: { sizeBytes: archive.size, entries } });
     }

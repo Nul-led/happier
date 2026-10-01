@@ -8,8 +8,8 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream, existsSync, readFileSync } from 'node:fs';
+import { chmod, mkdtemp, mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ import {
   RUNNER_NATIVE_SHELL_DIR,
   RUNNER_PACKAGE_TARGET_IDS,
   RUNNER_SHELL_BINARY_STEM,
+  finalizeRunnerPayload,
   isRunnerTargetEligibleForPublication,
   resolveRunnerPublicationEligibleBinaryTargets,
   resolveRunnerBundleArchiveCommand,
@@ -32,7 +33,8 @@ import {
   resolveRunnerShellPayload,
   runnerTargetId,
 } from './lib/runner-packaging.mjs';
-import { resolveDarwinAppBundleNotarizationCommands } from './notarize-standalone-binary.mjs';
+import { resolveDarwinAppBundleNotarizationCommands, snapshotDarwinPayload } from './notarize-standalone-binary.mjs';
+import { smokeTestArchive, verifyRunnerArchiveAdmission, verifyReleaseArchiveAdmission } from './verify-artifacts.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const shellDir = join(repoRoot, RUNNER_NATIVE_SHELL_DIR);
@@ -43,6 +45,112 @@ const protocolLayoutSource = readFileSync(
 );
 
 const ALL_TARGET_IDS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'windows-x64'];
+
+test('macOS candidate admission verifies the complete unchanged stapled bundle and contained links without enabling publication', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-runner-macos-trust-'));
+  const bundlePath = join(root, 'Happier Runner.app');
+  const archiveName = 'happier-runner-v0.3.0-dev.1-darwin-arm64.zip';
+  const archivePath = join(root, archiveName);
+  const evidencePath = join(root, 'notarization.json');
+  try {
+    // Archive admission checks canonical modes; the fixture must not inherit
+    // the execution host's group-writable umask.
+    for (const directory of ['Contents/MacOS', 'Contents/_CodeSignature', 'Contents/Resources']) await mkdir(join(bundlePath, directory), { recursive: true, mode: 0o755 });
+    for (const name of ['happier-runner', 'happier-runner-core']) {
+      const file = join(bundlePath, 'Contents/MacOS', name);
+      await writeFile(file, Buffer.concat([Buffer.from('cffaedfe', 'hex'), Buffer.from(name)]));
+      await chmod(file, 0o755);
+    }
+    await writeFile(join(bundlePath, 'Contents/Info.plist'), '<plist/>', { mode: 0o644 });
+    await writeFile(join(bundlePath, 'Contents/_CodeSignature/CodeResources'), 'sealed resources fixture', { mode: 0o644 });
+    await writeFile(join(bundlePath, 'Contents/CodeResources'), 'stapled ticket fixture', { mode: 0o644 });
+    await symlink('../Info.plist', join(bundlePath, 'Contents/Resources/info'));
+    const evidence = {
+      schemaVersion: 3, payloadKind: 'app-bundle', payload: 'Happier Runner.app',
+      ...snapshotDarwinPayload(bundlePath), signingIdentity: 'Developer ID Application: Fixture (TEAMID)',
+      notarization: { submissionId: 'fixture-submission', status: 'Accepted', archiveSha256: 'a'.repeat(64), ticketDelivery: 'stapled', stapled: true },
+    };
+    await writeFile(evidencePath, JSON.stringify(evidence));
+    const archive = (await import('archiver')).default('zip');
+    await new Promise((resolvePromise, reject) => {
+      const output = createWriteStream(archivePath);
+      output.on('close', resolvePromise); output.on('error', reject); archive.on('error', reject);
+      archive.pipe(output);
+      archive.append(null, { name: 'Happier Runner.app/', mode: 0o755 });
+      archive.directory(bundlePath, 'Happier Runner.app');
+      void archive.finalize();
+    });
+    const commands = [];
+    const options = { archivePath, archiveName, macOSNotarizationOutput: evidencePath, runCommand: command => { commands.push(command); return ''; } };
+    const entries = await verifyRunnerArchiveAdmission(options);
+    assert.equal(entries.find(entry => entry.path.endsWith('/Resources/info')).linkTarget, '../Info.plist');
+    assert.equal(commands.some(([command, args]) => command === 'codesign' && args.at(-1).endsWith('/happier-runner-core')), true);
+    assert.equal(commands.some(([command, args]) => command === 'xcrun' && args.slice(0, 2).join(' ') === 'stapler validate'), true);
+    assert.equal(commands.some(([command]) => command === 'spctl'), true);
+    await smokeTestArchive({ archivePath, execute: false, macOSNotarizationOutput: evidencePath });
+    await assert.rejects(verifyRunnerArchiveAdmission({ ...options, runCommand: () => { throw new Error('native trust rejected'); } }), /native trust rejected/u);
+    await writeFile(evidencePath, JSON.stringify({ ...evidence, payloadSha256: '0'.repeat(64) }));
+    await assert.rejects(verifyRunnerArchiveAdmission(options), /evidence does not match/u);
+    await assert.rejects(verifyReleaseArchiveAdmission(options), /not eligible for publication/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows finalization signs and verifies both exact portable executables with an explicit publisher and timestamp', async () => {
+  const payloadPath = await mkdtemp(join(tmpdir(), 'happier-runner-windows-trust-'));
+  const thumbprint = '0123456789ABCDEF0123456789ABCDEF01234567';
+  const paths = ['Happier Runner.exe', 'happier-runner-core.exe'].map(name => join(payloadPath, name));
+  try {
+    await Promise.all(paths.map(file => writeFile(file, 'PE fixture')));
+    const commands = [];
+    const options = {
+      payloadPath, target: { os: 'windows', arch: 'x64' }, platform: 'win32',
+      windowsSigningIdentity: thumbprint, windowsTimestampUrl: 'https://timestamp.example.test',
+      runCommand: (command) => {
+        commands.push(command);
+        if (command[0] === 'powershell.exe') return JSON.stringify({ status: 'Valid', thumbprint, timestamped: true });
+        return '';
+      },
+    };
+    await finalizeRunnerPayload(options);
+    assert.deepEqual(commands.filter(([command, args]) => command === 'signtool.exe' && args[0] === 'sign'), paths.map(file => [
+      'signtool.exe', ['sign', '/sha1', thumbprint, '/fd', 'SHA256', '/tr', options.windowsTimestampUrl, '/td', 'SHA256', '/d', 'Happier Runner', file],
+    ]));
+    assert.deepEqual(commands.filter(([command, args]) => command === 'signtool.exe' && args[0] === 'verify'), paths.map(file => [
+      'signtool.exe', ['verify', '/pa', '/all', '/tw', file],
+    ]));
+    await assert.rejects(finalizeRunnerPayload({ ...options, windowsSigningIdentity: '' }), /windows-signing-identity/u);
+    await assert.rejects(finalizeRunnerPayload({ ...options, windowsTimestampUrl: '' }), /windows-timestamp-url/u);
+    for (const facts of [
+      { status: 'NotSigned', thumbprint, timestamped: true },
+      { status: 'Valid', thumbprint, timestamped: false },
+      { status: 'Valid', thumbprint: 'F'.repeat(40), timestamped: true },
+    ]) {
+      await assert.rejects(finalizeRunnerPayload({ ...options, runCommand: ([command]) => command === 'powershell.exe' ? JSON.stringify(facts) : '' }), /Authenticode/u);
+    }
+    const archiveName = 'happier-runner-v0.3.0-dev.1-windows-x64.zip';
+    const archivePath = join(payloadPath, archiveName);
+    const layout = resolveRunnerPackageLayout('windows-x64');
+    const archive = (await import('archiver')).default('zip');
+    await new Promise((resolvePromise, reject) => {
+      const output = createWriteStream(archivePath);
+      output.on('close', resolvePromise); output.on('error', reject); archive.on('error', reject);
+      archive.pipe(output);
+      archive.append(null, { name: `${layout.payloadRootName}/`, mode: 0o755 });
+      for (const entryPath of [layout.executablePath, layout.sidecarPath]) {
+        archive.file(join(payloadPath, entryPath.split('/').at(-1)), { name: entryPath, mode: 0o755 });
+      }
+      void archive.finalize();
+    });
+    const admission = { archivePath, archiveName, windowsSigningIdentity: thumbprint, platform: 'win32', runCommand: options.runCommand };
+    assert.equal((await verifyRunnerArchiveAdmission(admission)).length, 3);
+    await assert.rejects(verifyRunnerArchiveAdmission({ ...admission, runCommand: () => { throw new Error('native trust rejected'); } }), /native trust rejected/u);
+    await assert.rejects(verifyReleaseArchiveAdmission(admission), /not eligible for publication/u);
+  } finally {
+    await rm(payloadPath, { recursive: true, force: true });
+  }
+});
 
 test('the release packaging owner mirrors the canonical Protocol package layout exactly', () => {
   // The release pipeline must not import a built Protocol dist — the publisher
