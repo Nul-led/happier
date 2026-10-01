@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { writePersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
+
 const serviceEvents = vi.hoisted(() => [] as string[]);
 const serviceSpecs = vi.hoisted(() => [] as Array<{ env: Record<string, string> }>);
 const applyServicePlanMock = vi.hoisted(() => vi.fn(async (plan: { action?: string }) => {
@@ -78,6 +80,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -123,6 +126,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho retry-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -214,6 +218,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho retry-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -276,6 +281,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho retry-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -372,6 +378,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
       const events: string[] = [];
@@ -445,6 +452,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -489,6 +497,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -535,6 +544,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho selected-candidate\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -598,6 +608,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho selected-candidate\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -657,6 +668,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -727,6 +739,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -804,6 +817,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -856,6 +870,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');
@@ -912,6 +927,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
     try {
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
       const { resolveRelayRuntimeDefaults } = await import('./relayRuntime.js');

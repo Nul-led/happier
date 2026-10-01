@@ -10,6 +10,7 @@ import { readSqliteMigrationCatalog, type SqliteMigrationCatalogEntry } from '..
 import { resolvePersonalHomeRuntimeLayout, type PersonalHomeRuntimeLayout } from './layout.js';
 import {
   createPersonalHomeOperations,
+  PersonalHomeOperationsError,
   type PersonalHomeIdentityFacts,
   type PersonalHomeOperations,
   type PersonalHomeOperationsDeps,
@@ -39,7 +40,13 @@ import {
   createPersonalHomeRelocationDestinationOwner,
   type PersonalHomeRelocationDestinationOwner,
 } from './relocationDestination.js';
-import { HomeConnectionDescriptorV1Schema, type HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import {
+  HOME_OWNER_CLAIM_COMMAND_ARGUMENT_V1,
+  HomeConnectionDescriptorV1Schema,
+  HomeOwnerClaimCommandOutputV1Schema,
+  type HomeConnectionDescriptorV1,
+  type HomeOwnerClaimCommandOutputV1,
+} from '@happier-dev/protocol';
 import { execFileWithDeadline } from '../../process/index.js';
 import {
   parsePersonalHomeAuthenticatedReadiness,
@@ -56,6 +63,14 @@ import { openPersonalHomeSqliteDatabase } from './sqlite.js';
 function pathApi(platform: NodeJS.Platform) {
   return platform === 'win32' ? win32 : posix;
 }
+
+/** The installed runtime's server executable, the same program the Home service runs. */
+export function resolvePersonalHomeServerBinaryPath(installRoot: string, platform: NodeJS.Platform = process.platform): string {
+  return pathApi(platform).join(installRoot, 'bin', platform === 'win32' ? 'happier-server.exe' : 'happier-server');
+}
+
+/** One wall-clock budget for every deployment-local Personal Home server one-shot. */
+const PERSONAL_HOME_SERVER_COMMAND_TIMEOUT_MS = 120_000;
 
 function canonicalPath(platform: NodeJS.Platform, value: string): string {
   return pathApi(platform).normalize(pathApi(platform).resolve(value));
@@ -373,6 +388,7 @@ export async function createCanonicalPersonalHomeOperations(params: Readonly<{
   return createPersonalHomeOperations({
     readPurpose: params.readPurpose,
     readIdentity: (layout) => readCanonicalPersonalHomeIdentity(layout),
+    readIdentityForErase: (layout) => readPersonalHomeIdentityValueFromSqlite(layout.databasePath),
     resolveLayout: () => resolveCanonicalPersonalHomeRuntimeLayout(params),
     validateLayout: (candidate) => validateCanonicalPersonalHomeLayout(candidate, { ...defaults, homeDir: params.homeDir }),
     lifecycle: params.lifecycle,
@@ -395,6 +411,11 @@ export async function createCanonicalPersonalHomeOperations(params: Readonly<{
     ...(params.attestActivatedHome ? { attestActivatedHome: params.attestActivatedHome } : {}),
     readHappierVersion: params.readHappierVersion,
     isSchemaSupported: async (layout, schemaVersion) => (await readInstalledMigrationCatalog(layout)).some((entry) => entry.name === schemaVersion),
+    runOwnerClaimCommand: (layout, targetAccountId) => claimPersonalHomeOwnerWithServerCommand({
+      layout,
+      serverBinary: resolvePersonalHomeServerBinaryPath(defaults.installRoot, params.platform ?? process.platform),
+      targetAccountId,
+    }),
   });
 }
 
@@ -628,7 +649,7 @@ export async function attestPersonalHomeRelocationDestinationWithServerCommand(p
       HAPPIER_PERSONAL_HOME_RELOCATION_OPERATION_ID: params.operationId,
     },
     encoding: 'utf8',
-    timeout: 120_000,
+    timeout: PERSONAL_HOME_SERVER_COMMAND_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
   });
   const lastLine = String(stdout).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1) ?? '';
@@ -668,7 +689,7 @@ export async function materializePersonalHomeRelocationEndpointWithServerCommand
       HAPPIER_PERSONAL_HOME_RELOCATION_OPERATION_ID: params.operationId,
     },
     encoding: 'utf8',
-    timeout: 120_000,
+    timeout: PERSONAL_HOME_SERVER_COMMAND_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
   });
   const value = JSON.parse(String(stdout).trim()) as unknown;
@@ -685,4 +706,67 @@ export async function materializePersonalHomeRelocationEndpointWithServerCommand
   return {
     connectionDescriptor: descriptor.data,
   };
+}
+
+function lastNonEmptyLine(value: unknown): string {
+  return String(value ?? '').split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1) ?? '';
+}
+
+/**
+ * Runs `happier-server --claim-home-owner=<accountId>` against this Home's persisted runtime
+ * environment and returns its structured result. Every refusal exits 1 while still printing its
+ * exact reason, so a refusal is returned as data; only a missing or inconsistent result fails.
+ */
+export async function claimPersonalHomeOwnerWithServerCommand(params: Readonly<{
+  layout: PersonalHomeRuntimeLayout;
+  serverBinary: string;
+  targetAccountId: string;
+  processEnv?: NodeJS.ProcessEnv;
+}>): Promise<HomeOwnerClaimCommandOutputV1> {
+  const envText = await readFile(join(params.layout.configDir, 'server.env'), 'utf8');
+  let stdout: unknown;
+  let stderr: unknown;
+  let exitCode: unknown = 0;
+  try {
+    ({ stdout, stderr } = await execFileWithDeadline(params.serverBinary, [
+      `${HOME_OWNER_CLAIM_COMMAND_ARGUMENT_V1}=${params.targetAccountId}`,
+    ], {
+      env: {
+        ...(params.processEnv ?? process.env),
+        ...parseEnvText(envText),
+        HAPPIER_SERVER_LOG_LEVEL: 'silent',
+      },
+      encoding: 'utf8',
+      timeout: PERSONAL_HOME_SERVER_COMMAND_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    }));
+  } catch (error) {
+    const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    exitCode = failure.code;
+    stdout = failure.stdout;
+    stderr = failure.stderr;
+  }
+  const failed = (reason: string): PersonalHomeOperationsError => {
+    const detail = lastNonEmptyLine(stderr);
+    return new PersonalHomeOperationsError(
+      'claim_owner_failed',
+      `The Personal Home owner claim did not complete: ${detail || reason}`,
+    );
+  };
+  if (exitCode !== 0 && exitCode !== 1) throw failed(`the server command exited with ${String(exitCode)}.`);
+  let value: unknown;
+  try {
+    value = JSON.parse(lastNonEmptyLine(stdout)) as unknown;
+  } catch {
+    throw failed('the server command printed no result.');
+  }
+  const output = HomeOwnerClaimCommandOutputV1Schema.safeParse(value);
+  if (!output.success || output.data.targetAccountId !== params.targetAccountId) {
+    throw failed('the server command returned an inconsistent result.');
+  }
+  // Exit 0 means claimed and nothing else; any disagreement is not a trustworthy result.
+  if ((exitCode === 0) !== (output.data.result.status === 'claimed')) {
+    throw failed('the server command exit status disagrees with its result.');
+  }
+  return output.data;
 }

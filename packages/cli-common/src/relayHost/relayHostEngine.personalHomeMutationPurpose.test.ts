@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveRelayRuntimeDefaults } from '../firstPartyRuntime/relayRuntime.js';
+import { writePersonalHomeServerArtifactCapability } from '../firstPartyRuntime/personalHome/artifactContract.js';
 
 const mockedLocalHost = vi.hoisted(() => ({ homeDir: null as string | null }));
 const mockedLocalListener = vi.hoisted(() => ({ state: 'actual' as 'actual' | 'healthy' | 'stopped' }));
@@ -104,6 +105,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     await mkdir(payloadRoot, { recursive: true });
     const serverBinaryPath = join(payloadRoot, 'happier-server');
     await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
+    await writePersonalHomeServerArtifactCapability(payloadRoot);
     return serverBinaryPath;
   }
 

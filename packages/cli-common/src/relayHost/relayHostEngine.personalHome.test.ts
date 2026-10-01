@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveRelayRuntimeDefaults } from '../firstPartyRuntime/relayRuntime.js';
 import type { PersonalHomeRestoreHooks } from '../firstPartyRuntime/personalHome/restore.js';
 import { normalizePersonalHomeRestorableConfigurationV1 } from '../firstPartyRuntime/personalHome/configuration.js';
+import { writePersonalHomeServerArtifactCapability } from '../firstPartyRuntime/personalHome/artifactContract.js';
 
 describe('RelayHostEngine (Personal Home purpose)', () => {
   it.each([
@@ -68,6 +69,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       }
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
 
@@ -145,6 +147,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       });
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
 
@@ -197,6 +200,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       });
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
@@ -261,6 +265,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       });
       const payloadRoot = join(homeDir, 'payload');
       await mkdir(payloadRoot, { recursive: true });
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });

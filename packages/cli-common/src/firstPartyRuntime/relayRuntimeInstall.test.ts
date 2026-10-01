@@ -3,12 +3,50 @@ import { constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { resolveRelayRuntimeDefaults } from './relayRuntime.js';
 import { installOrUpdateRelayRuntimeLocal } from './relayRuntimeInstall.js';
+import { writePersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
 
 describe('installOrUpdateRelayRuntimeLocal', () => {
+  it('rejects a capability-less Personal Home artifact before any durable runtime mutation', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-artifact-admission-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho incompatible\n', 'utf8');
+      const cleanupLegacyServiceBeforeInstall = vi.fn(async () => undefined);
+      const assertPersonalHomeStopped = vi.fn(async () => undefined);
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped,
+        cleanupLegacyServiceBeforeInstall,
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      })).rejects.toMatchObject({ code: 'personal_home_artifact_update_required' });
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      expect(cleanupLegacyServiceBeforeInstall).not.toHaveBeenCalled();
+      expect(assertPersonalHomeStopped).not.toHaveBeenCalled();
+      expect(existsSync(join(defaults.installRoot, 'self-host-state.json'))).toBe(false);
+      expect(existsSync(join(defaults.installRoot, 'bin', 'happier-server'))).toBe(false);
+      expect(existsSync(defaults.configDir)).toBe(false);
+      expect(existsSync(join(defaults.dataDir, 'pglite'))).toBe(false);
+      expect(existsSync(join(defaults.dataDir, 'migrations'))).toBe(false);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('returns the env-overridden baseUrl instead of the default relay port', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-'));
     try {
@@ -55,6 +93,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       await installOrUpdateRelayRuntimeLocal({
         serverBinaryPath,
@@ -117,6 +156,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const personalHomeEnv = {
         HAPPIER_SERVER_HOST: '127.0.0.1',
         PORT: '43123',
@@ -193,6 +233,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await mkdir(payloadRoot, { recursive: true });
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
       await mkdir(defaults.configDir, { recursive: true });
       await writeFile(join(defaults.configDir, 'server.env'), [
@@ -231,6 +272,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       await installOrUpdateRelayRuntimeLocal({
         serverBinaryPath,
@@ -784,6 +826,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await mkdir(payloadRoot, { recursive: true });
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
       const ownedInstallRoot = join(homeDir, '.happier', 'custom-personal-home-preview-root');

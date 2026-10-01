@@ -12,6 +12,7 @@ import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { normalizePersonalHomeRestorableConfigurationV1 } from './configuration.js';
 import {
   applyPersonalHomeSanitizedConfiguration,
+  claimPersonalHomeOwnerWithServerCommand,
   createCanonicalPersonalHomeOperations,
   createCanonicalPersonalHomeRelocationDestinationOwner,
   finalizePersonalHomeSanitizedConfiguration,
@@ -82,6 +83,56 @@ describe('Personal Home production adapters', () => {
       await expect(materializePersonalHomeRelocationEndpointWithServerCommand(input)).rejects.toThrow();
       await respond({ status: 'ready', connectionDescriptor: { ...connectionDescriptor, homeServerIdentityId: 'srv_other' } });
       await expect(materializePersonalHomeRelocationEndpointWithServerCommand(input)).rejects.toThrow();
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('runs the owner claim one-shot against the Home database and returns its structured result, including refusals', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-claim-command-'));
+    try {
+      const { layout } = await seedPersonalHome({ homeDir, homeServerIdentityId: 'srv_home_claim', marker: 'claim' });
+      // A real child process is the server boundary; argument, environment, exit-code and
+      // output parsing below it stay real. The fake echoes what it received so the test can
+      // prove the one-shot targets this Home's persisted runtime environment.
+      const serverBinary = join(homeDir, 'claim-server');
+      const respond = async (status: string, exitCode: number, extraResult = '') => await writeFile(serverBinary, [
+        '#!/bin/sh',
+        `[ "$#" = 1 ] && [ "$HAPPIER_SERVER_LIGHT_DATA_DIR" = '${layout.dataDir}' ] || { echo 'wrong one-shot invocation' >&2; exit 3; }`,
+        'account="${1#--claim-home-owner=}"',
+        `printf 'log line\\n'`,
+        `printf '{"v":1,"command":"claim-home-owner","intent":"initial_claim","homeServerIdentityId":"srv_home_claim","targetAccountId":"%s","result":{"status":"${status}"${extraResult}}}\\n' "$account"`,
+        `exit ${exitCode}`,
+        '',
+      ].join('\n'), { mode: 0o700 });
+
+      await respond('claimed', 0, ',"ownerAccountId":"acct_1"');
+      await expect(claimPersonalHomeOwnerWithServerCommand({ layout, serverBinary, targetAccountId: 'acct_1' })).resolves.toEqual({
+        v: 1,
+        command: 'claim-home-owner',
+        intent: 'initial_claim',
+        homeServerIdentityId: 'srv_home_claim',
+        targetAccountId: 'acct_1',
+        result: { status: 'claimed', ownerAccountId: 'acct_1' },
+      });
+
+      // The claim exits nonzero for every refusal while still printing the exact reason.
+      await respond('already_owned', 1, ',"activeOwnerCount":1');
+      await expect(claimPersonalHomeOwnerWithServerCommand({ layout, serverBinary, targetAccountId: 'acct_1' }))
+        .resolves.toMatchObject({ result: { status: 'already_owned', activeOwnerCount: 1 } });
+
+      // The output must answer the Account the caller asked about.
+      await writeFile(serverBinary, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify({
+        v: 1, command: 'claim-home-owner', intent: 'initial_claim', homeServerIdentityId: 'srv_home_claim',
+        targetAccountId: 'acct_other', result: { status: 'claimed', ownerAccountId: 'acct_other' },
+      })}'\n`, { mode: 0o700 });
+      await expect(claimPersonalHomeOwnerWithServerCommand({ layout, serverBinary, targetAccountId: 'acct_1' }))
+        .rejects.toMatchObject({ code: 'claim_owner_failed' });
+
+      // A crashed or blocked one-shot (for example boot admission refusing) is a typed failure.
+      await writeFile(serverBinary, "#!/bin/sh\necho 'Personal Home restore requires recovery' >&2\nexit 1\n", { mode: 0o700 });
+      await expect(claimPersonalHomeOwnerWithServerCommand({ layout, serverBinary, targetAccountId: 'acct_1' }))
+        .rejects.toMatchObject({ code: 'claim_owner_failed', message: expect.stringContaining('Personal Home restore requires recovery') });
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }

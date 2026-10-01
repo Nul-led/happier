@@ -14,6 +14,7 @@ export {
   createPersonalHomeRelocationDestinationStatusTaskKind,
   createPersonalHomeRelocationDestinationCommitTaskKind,
   createPersonalHomeRelocationDestinationAbortTaskKind,
+  createPersonalHomeClaimOwnerTaskKind,
   createPersonalHomeSystemTaskOperations,
   createDeferredPersonalHomeSystemTaskOperations,
   createPersonalHomeRestoreContactReconciler,
@@ -33,6 +34,7 @@ export {
   type PersonalHomeRelocationDestinationStatusTaskInput,
   type PersonalHomeRelocationDestinationCommitTaskInput,
   type PersonalHomeRelocationDestinationAbortTaskInput,
+  type PersonalHomeClaimOwnerTaskInput,
   type PersonalHomeSystemTaskOperations,
   type PersonalHomeTaskKindDeps,
   type PersonalHomeTaskOperationContext,
@@ -46,6 +48,7 @@ export {
   type PersonalHomeRelocationDestinationStatusTaskParams,
   type PersonalHomeRelocationDestinationCommitTaskParams,
   type PersonalHomeRelocationDestinationAbortTaskParams,
+  type PersonalHomeClaimOwnerTaskParams,
   type PersonalHomeSystemTaskParamsByKind,
 } from './relayRuntimeKinds.js';
 export {

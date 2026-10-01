@@ -1,5 +1,6 @@
 import {
   HomeConnectionDescriptorV1Schema,
+  HomeOwnerClaimAccountIdV1Schema,
   SystemTaskJsonValueSchema,
   type HomeConnectionDescriptorV1,
   type SystemTaskJsonValue,
@@ -115,9 +116,17 @@ export const PERSONAL_HOME_SYSTEM_TASK_KINDS = Object.freeze({
   relocationDestinationStatus: 'relay.runtime.personal_home.relocation_destination.status.v1',
   relocationDestinationCommit: 'relay.runtime.personal_home.relocation_destination.commit.v1',
   relocationDestinationAbort: 'relay.runtime.personal_home.relocation_destination.abort.v1',
+  claimOwner: 'relay.runtime.personal_home.claim_owner.v1',
 } as const);
 
-export const PERSONAL_HOME_SYSTEM_TASK_KIND_IDS = Object.freeze(Object.values(PERSONAL_HOME_SYSTEM_TASK_KINDS));
+/**
+ * The Personal Home kinds every local host serves, and the list the daemon advertises. The owner
+ * claim is excluded: decision A(a) allows the in-app claim only from the desktop hosting the Home,
+ * so only hsetup registers it.
+ */
+export const PERSONAL_HOME_SYSTEM_TASK_KIND_IDS = Object.freeze(
+  Object.values(PERSONAL_HOME_SYSTEM_TASK_KINDS).filter((kind) => kind !== PERSONAL_HOME_SYSTEM_TASK_KINDS.claimOwner),
+);
 
 export type PersonalHomeBackupTaskInput = Readonly<{ outputPath?: string }>;
 export type PersonalHomeVerifyBackupTaskInput = Readonly<{ archivePath: string }>;
@@ -129,6 +138,7 @@ export type PersonalHomeRelocationDestinationStageTaskInput = PersonalHomeReloca
 export type PersonalHomeRelocationDestinationStatusTaskInput = Readonly<{ operationId: string }>;
 export type PersonalHomeRelocationDestinationCommitTaskInput = Readonly<{ operationId: string; publishedDescriptor: HomeConnectionDescriptorV1 }>;
 export type PersonalHomeRelocationDestinationAbortTaskInput = Readonly<{ operationId: string }>;
+export type PersonalHomeClaimOwnerTaskInput = Readonly<{ accountId: string }>;
 
 export type PersonalHomeInspectTaskParams = PersonalHomeTaskBaseParams;
 export type PersonalHomeBackupTaskParams = PersonalHomeTaskBaseParams & PersonalHomeBackupTaskInput;
@@ -139,6 +149,7 @@ export type PersonalHomeRelocationDestinationStageTaskParams = PersonalHomeTaskB
 export type PersonalHomeRelocationDestinationStatusTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationStatusTaskInput;
 export type PersonalHomeRelocationDestinationCommitTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationCommitTaskInput;
 export type PersonalHomeRelocationDestinationAbortTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationAbortTaskInput;
+export type PersonalHomeClaimOwnerTaskParams = PersonalHomeTaskBaseParams & PersonalHomeClaimOwnerTaskInput;
 
 export type PersonalHomeSystemTaskParamsByKind = Readonly<{
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect]: PersonalHomeInspectTaskParams;
@@ -150,6 +161,7 @@ export type PersonalHomeSystemTaskParamsByKind = Readonly<{
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus]: PersonalHomeRelocationDestinationStatusTaskParams;
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit]: PersonalHomeRelocationDestinationCommitTaskParams;
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort]: PersonalHomeRelocationDestinationAbortTaskParams;
+  [PERSONAL_HOME_SYSTEM_TASK_KINDS.claimOwner]: PersonalHomeClaimOwnerTaskParams;
 }>;
 
 /**
@@ -165,6 +177,8 @@ export type PersonalHomeSystemTaskOperations = Readonly<{
   restore(input: Exclude<PersonalHomeRestoreTaskInput, Readonly<{ action: 'recover' }>> & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   recoverRestore(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   erase(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
+  /** Hosting-desktop owner claim; absent where the host composition does not offer it. */
+  claimOwner?(input: PersonalHomeClaimOwnerTaskInput & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
 }>;
 
 export type PersonalHomeTaskOperationContext = Readonly<{
@@ -213,6 +227,8 @@ const PERSONAL_HOME_DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
   'unsupported_archive',
   'personal_home_update_candidate_selection_required',
   'personal_home_update_retry_required',
+  'personal_home_artifact_update_required',
+  'claim_owner_failed',
 ]);
 
 function translatePersonalHomeDomainError(error: unknown): never {
@@ -285,6 +301,7 @@ export function createPersonalHomeSystemTaskOperations(params: Readonly<{
       if (!context.confirm) throw new SystemTaskExecutionError('confirmation_required', 'Personal Home erase confirmation is unavailable.');
       return await result(params.operations.erase({ confirm: context.confirm, ...ownerContext(context) }));
     },
+    claimOwner: async (input) => await result(params.operations.claimOwner({ accountId: input.accountId, ...ownerContext(input) })),
   });
 }
 
@@ -311,7 +328,12 @@ export function createDeferredPersonalHomeSystemTaskOperations(
     restore: async (input) => await (await operations(input.runtimeTarget)).restore(input),
     recoverRestore: async (input) => await (await operations(input.runtimeTarget)).recoverRestore(input),
     erase: async (input) => await (await operations(input.runtimeTarget)).erase(input),
-});
+    claimOwner: async (input) => {
+      const loaded = await operations(input.runtimeTarget);
+      if (!loaded.claimOwner) throw new SystemTaskExecutionError('unsupported', 'Personal Home owner claim is unavailable.');
+      return await loaded.claimOwner(input);
+    },
+  });
 }
 
 export function createPersonalHomeRestoreContactReconciler(params: Readonly<{
@@ -404,6 +426,20 @@ export function createPersonalHomeRestoreTaskKind(deps: PersonalHomeTaskKindDeps
 export function createPersonalHomeEraseTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
   return createPersonalHomeTaskKind(deps, PERSONAL_HOME_BASE_KEYS, async (operations, _value, context) =>
     await operations.erase(context));
+}
+
+/**
+ * Decision A(a): make an explicit Account the owner of the ownerless Personal Home this desktop
+ * hosts. The server's zero-owner claim decides; a refusal (`already_owned`, `target_inactive`,
+ * `target_not_found`) is returned as the task result, not a task failure.
+ */
+export function createPersonalHomeClaimOwnerTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return createPersonalHomeTaskKind(deps, [...PERSONAL_HOME_BASE_KEYS, 'accountId'], async (operations, value, context) => {
+    const accountId = HomeOwnerClaimAccountIdV1Schema.safeParse(value.accountId);
+    if (!accountId.success) throw new SystemTaskExecutionError('invalid_params', 'Invalid accountId.');
+    if (!operations.claimOwner) throw new SystemTaskExecutionError('unsupported', 'Personal Home owner claim is unavailable.');
+    return await operations.claimOwner({ accountId: accountId.data, ...context });
+  });
 }
 
 function createPersonalHomeRelocationDestinationTaskKind(

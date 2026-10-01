@@ -156,6 +156,10 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
   const personalHomeRelocationDestinationAbortHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createPersonalHomeRelocationDestinationAbortTaskKind(personalHomeTaskDeps),
   );
+  // Decision A(a): only the desktop hosting the Home (hsetup) offers the in-app owner claim.
+  const personalHomeClaimOwnerHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeClaimOwnerTaskKind(personalHomeTaskDeps),
+  );
   const relayAccessStatusHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRelayAccessStatusTaskKind({
       readConfig: relayAccessDeps.readConfig,
@@ -291,6 +295,7 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus, handler: personalHomeRelocationDestinationStatusHandler },
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit, handler: personalHomeRelocationDestinationCommitHandler },
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort, handler: personalHomeRelocationDestinationAbortHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.claimOwner, handler: personalHomeClaimOwnerHandler },
     {
       kind: 'relay.access.status.v1',
       handler: relayAccessStatusHandler,

@@ -1,6 +1,5 @@
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
@@ -15,6 +14,7 @@ import {
   createCanonicalPersonalHomeRelocationDestinationOwner,
   materializePersonalHomeRelocationEndpointWithServerCommand,
   resolveCanonicalPersonalHomeRuntimeLayout,
+  resolvePersonalHomeServerBinaryPath,
 } from '../firstPartyRuntime/personalHome/productionAdapters.js';
 import { resolvePersonalHomeRuntimeArtifactPaths } from '../firstPartyRuntime/personalHome/layout.js';
 import {
@@ -125,11 +125,7 @@ export function createLocalPersonalHomeHost(target: LocalPersonalHomeHostTarget)
   const releaseRing = normalizePublicReleaseRingId(target.channel) || 'stable';
   const runtimeParams = { target: { kind: 'local' as const }, channel: target.channel, mode };
   const defaults = resolveRelayRuntimeDefaults({ homeDir, mode, channel: releaseRing });
-  const serverBinary = join(
-    defaults.installRoot,
-    'bin',
-    process.platform === 'win32' ? 'happier-server.exe' : 'happier-server',
-  );
+  const serverBinary = resolvePersonalHomeServerBinaryPath(defaults.installRoot);
 
   const readPurpose = async () => {
     const purpose = (await engine.readStatus(runtimeParams)).purpose;

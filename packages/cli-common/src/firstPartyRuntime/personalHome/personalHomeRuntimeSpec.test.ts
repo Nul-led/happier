@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_PERSONAL_HOME_ORIGIN,
   DEFAULT_PERSONAL_HOME_PORT,
   DEFAULT_PERSONAL_HOME_TEAM_NAME,
   createPersonalHomeRuntimeSpec,
@@ -13,9 +12,8 @@ import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { parseRelayRuntimeTaskParams } from '../../systemTasks/kinds/relayRuntimeKinds.js';
 
 describe('Personal Home runtime purpose', () => {
-  it('owns the browser-safe default loopback origin and port', () => {
+  it('owns the default managed-runtime port and Team name', () => {
     expect(DEFAULT_PERSONAL_HOME_PORT).toBe(3005);
-    expect(DEFAULT_PERSONAL_HOME_ORIGIN).toBe('http://127.0.0.1:3005');
     expect(DEFAULT_PERSONAL_HOME_TEAM_NAME).toBe('Personal Home');
   });
   it('renders the fixed loopback/plaintext bootstrap environment', () => {

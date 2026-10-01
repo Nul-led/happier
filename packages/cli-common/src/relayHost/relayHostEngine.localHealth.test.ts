@@ -172,7 +172,7 @@ describe('RelayHostEngine (local health)', () => {
     });
   });
 
-  it('resolves a non-colliding desired local relay URL before lane conflict checks', async () => {
+  it('rejects a persisted relay URL that collides with another installed lane before service mutation', async () => {
     await withTemporaryHome(async (homeDir) => {
       const stableDefaults = resolveRelayRuntimeDefaults({
         platform: 'linux',
@@ -226,21 +226,20 @@ describe('RelayHostEngine (local health)', () => {
         installRemoteComponent: async () => ({ binaryPath: '$HOME/.happier/happier-server/current/happier-server', versionId: 'publicdev-1' }),
       });
 
-      const result = await engine.installOrUpdate({
+      await expect(engine.installOrUpdate({
         target: { kind: 'local' },
         channel: 'preview',
         mode: 'user',
         selfHostRelayBinaryOverride: serverBinaryPath,
-      });
-
-      expect(result.relayUrl).not.toBe('http://127.0.0.1:3005');
+      })).rejects.toThrow(/Persisted relay PORT=3005 collides/i);
 
       const status = await engine.readStatus({
         target: { kind: 'local' },
         channel: 'preview',
         mode: 'user',
       });
-      expect(status.baseUrl).toBe(result.relayUrl);
+      expect(status.installed).toBe(false);
+      expect(status.baseUrl).toBe('http://127.0.0.1:3005');
     });
   });
 

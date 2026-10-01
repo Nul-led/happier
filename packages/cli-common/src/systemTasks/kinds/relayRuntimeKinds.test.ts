@@ -19,6 +19,7 @@ import { resolveInstalledPersonalHomeSqliteMigrationPaths } from '../../firstPar
 import { createCanonicalPersonalHomeOperations } from '../../firstPartyRuntime/personalHome/productionAdapters.js';
 import {
   createPersonalHomeBackupTaskKind,
+  createPersonalHomeClaimOwnerTaskKind,
   createDeferredPersonalHomeSystemTaskOperations,
   createPersonalHomeEraseTaskKind,
   createPersonalHomeInspectTaskKind,
@@ -1283,5 +1284,118 @@ describe('relay runtime shared system task kinds', () => {
     expect(result).toEqual({
       uninstalled: true,
     });
+  });
+});
+
+describe('Personal Home owner claim task kind', () => {
+  const base = {
+    target: { kind: 'local' as const },
+    channel: 'stable' as const,
+    mode: 'user' as const,
+    purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
+  };
+  const claimed = {
+    v: 1,
+    command: 'claim-home-owner',
+    intent: 'initial_claim',
+    homeServerIdentityId: 'home-1',
+    targetAccountId: 'acct_1',
+    result: { status: 'claimed', ownerAccountId: 'acct_1' },
+  };
+  const operationsWith = (claimOwner: NonNullable<PersonalHomeSystemTaskOperations['claimOwner']>): PersonalHomeSystemTaskOperations => ({
+    inspect: async () => ({}),
+    backup: async () => ({}),
+    verifyBackup: async () => ({}),
+    restore: async () => ({}),
+    reconcileRestore: async () => undefined,
+    recoverRestore: async () => ({}),
+    erase: async () => ({}),
+    claimOwner,
+  });
+
+  it('is a hosting-desktop-only kind the daemon never advertises', () => {
+    expect(PERSONAL_HOME_SYSTEM_TASK_KINDS.claimOwner).toBe('relay.runtime.personal_home.claim_owner.v1');
+    expect(PERSONAL_HOME_SYSTEM_TASK_KIND_IDS).not.toContain(PERSONAL_HOME_SYSTEM_TASK_KINDS.claimOwner);
+  });
+
+  it('passes the trimmed Account id and the requested Home binding to the operations owner and returns its structured result', async () => {
+    const claimOwner = vi.fn(async () => claimed);
+    const result = await createPersonalHomeClaimOwnerTaskKind({ operations: operationsWith(claimOwner) }).run({
+      params: { ...base, accountId: '  acct_1  ' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    });
+    expect(result).toEqual(claimed);
+    expect(claimOwner).toHaveBeenCalledOnce();
+    expect(claimOwner).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'acct_1',
+      requestedPurpose: base.purpose,
+      runtimeTarget: { channel: 'stable', mode: 'user' },
+    }));
+  });
+
+  it('returns a refused claim as data rather than a task failure', async () => {
+    const alreadyOwned = { ...claimed, result: { status: 'already_owned', activeOwnerCount: 1 } };
+    await expect(createPersonalHomeClaimOwnerTaskKind({ operations: operationsWith(async () => alreadyOwned) }).run({
+      params: { ...base, accountId: 'acct_1' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    })).resolves.toEqual(alreadyOwned);
+  });
+
+  it.each([
+    ['a missing Account id', {}],
+    ['a blank Account id', { accountId: '   ' }],
+    ['a non-string Account id', { accountId: 42 }],
+    ['an unbounded Account id', { accountId: 'a'.repeat(257) }],
+    ['an unknown field', { accountId: 'acct_1', intent: 'lost_owner_recovery' }],
+  ])('rejects %s before invoking the owner', async (_label, extra) => {
+    const claimOwner = vi.fn(async () => claimed);
+    await expect(createPersonalHomeClaimOwnerTaskKind({ operations: operationsWith(claimOwner) }).run({
+      params: { ...base, ...extra },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(claimOwner).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-Personal Home or remote target exactly like its siblings', async () => {
+    const claimOwner = vi.fn(async () => claimed);
+    const kind = createPersonalHomeClaimOwnerTaskKind({ operations: operationsWith(claimOwner) });
+    await expect(kind.run({
+      params: { ...base, purpose: { kind: 'generic' }, accountId: 'acct_1' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    })).rejects.toMatchObject({ code: 'invalid_params' });
+    await expect(kind.run({
+      params: { ...base, target: { kind: 'ssh', ssh: { target: 'host' } }, accountId: 'acct_1' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    })).rejects.toMatchObject({ code: 'unsupported' });
+    expect(claimOwner).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed one-shot and a concurrent operation as typed task errors', async () => {
+    const createOperations = (error: unknown) => createPersonalHomeSystemTaskOperations({
+      operations: { claimOwner: async () => { throw error; } } as unknown as Parameters<typeof createPersonalHomeSystemTaskOperations>[0]['operations'],
+    });
+    const run = async (error: unknown) => await createPersonalHomeClaimOwnerTaskKind({ operations: createOperations(error) }).run({
+      params: { ...base, accountId: 'acct_1' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    });
+    await expect(run(Object.assign(new Error('The owner claim command failed.'), { code: 'claim_owner_failed' })))
+      .rejects.toMatchObject({ code: 'claim_owner_failed' });
+    await expect(run(Object.assign(new Error('busy'), { code: 'operation_in_progress' })))
+      .rejects.toMatchObject({ code: 'operation_in_progress' });
+  });
+
+  it('is unsupported when the host composition has no claim boundary', async () => {
+    const { claimOwner: _omitted, ...withoutClaim } = operationsWith(async () => claimed);
+    await expect(createPersonalHomeClaimOwnerTaskKind({ operations: withoutClaim }).run({
+      params: { ...base, accountId: 'acct_1' },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    })).rejects.toMatchObject({ code: 'unsupported' });
   });
 });

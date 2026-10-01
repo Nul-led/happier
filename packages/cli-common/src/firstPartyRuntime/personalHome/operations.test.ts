@@ -723,20 +723,24 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
-  it('refuses erase before stop when the confirmed Home identity becomes unreadable', async () => {
+  it('uses the catalog-free erase identity reader and refuses before stop when its re-read becomes unavailable', async () => {
     const { root, layout } = await fixture('erase-identity-unreadable-after-confirmation');
     try {
       let confirmed = false;
       const { deps, events, setRunning } = makeDeps(layout, {
-        readIdentity: async () => {
-          if (confirmed) throw new Error('identity database became unavailable');
-          return { homeServerIdentityId: 'home-identity', schemaVersion: '1' };
-        },
+        readIdentity: async () => { throw new Error('installed migration catalog is unavailable'); },
       });
+      const depsWithEraseIdentity = {
+        ...deps,
+        readIdentityForErase: async () => {
+          if (confirmed) throw new Error('identity database became unavailable');
+          return { homeServerIdentityId: 'home-identity' };
+        },
+      } as PersonalHomeOperationsDeps;
       setRunning(true);
       const confirm = vi.fn(async () => { confirmed = true; return true; });
 
-      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toMatchObject({
+      await expect(createPersonalHomeOperations(depsWithEraseIdentity).erase({ confirm })).rejects.toMatchObject({
         code: 'identity_unavailable',
       });
       expect(confirm).toHaveBeenCalledTimes(1);
@@ -1124,6 +1128,70 @@ describe('PersonalHomeOperations facade', () => {
         await release();
       }
       await expect(stat(join(layout.dataDir, '.operations', 'lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('claims the Home owner through the server one-shot under the data-operation lease without stopping the running Home', async () => {
+    const { root, layout } = await fixture('claim-owner');
+    try {
+      const output = {
+        v: 1,
+        command: 'claim-home-owner',
+        intent: 'initial_claim',
+        homeServerIdentityId: 'home-identity',
+        targetAccountId: 'acct_1',
+        result: { status: 'claimed', ownerAccountId: 'acct_1' },
+      } as const;
+      const invocations: unknown[] = [];
+      const { deps, events, setRunning } = makeDeps(layout, {
+        runOwnerClaimCommand: async (commandLayout, targetAccountId) => {
+          const lock = JSON.parse(await readFile(join(layout.dataDir, '.operations', 'lock'), 'utf8')) as { operation: string };
+          invocations.push({ dataDir: commandLayout.dataDir, targetAccountId, leaseOperation: lock.operation });
+          return output;
+        },
+      });
+      setRunning(true);
+      const progress: string[] = [];
+      const ops = createPersonalHomeOperations(deps);
+
+      await expect(ops.claimOwner({ accountId: 'acct_1', progress: (step) => progress.push(step) })).resolves.toEqual(output);
+
+      expect(invocations).toEqual([{ dataDir: layout.dataDir, targetAccountId: 'acct_1', leaseOperation: 'claim_owner' }]);
+      // SQLite WAL admits the one-shot's single transaction beside the running server; the
+      // claim never stops, restarts, or quarantines the Home.
+      expect(events).toEqual([]);
+      expect(progress).toContain('claiming_owner');
+      await expect(stat(join(layout.dataDir, '.operations', 'lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses the owner claim without running the one-shot while another operation owns the Home or it is not a Personal Home', async () => {
+    const { root, layout } = await fixture('claim-owner-refused');
+    try {
+      let invoked = 0;
+      const runOwnerClaimCommand = async (): Promise<never> => {
+        invoked += 1;
+        throw new Error('the claim one-shot must not run');
+      };
+      const busy = makeDeps(layout, { runOwnerClaimCommand });
+      const release = await acquirePersonalHomeOperationLock(layout.dataDir, 'backup');
+      try {
+        await expect(createPersonalHomeOperations(busy.deps).claimOwner({ accountId: 'acct_1' }))
+          .rejects.toMatchObject({ code: 'operation_in_progress' });
+      } finally {
+        await release();
+      }
+      const generic = makeDeps(layout, {
+        runOwnerClaimCommand,
+        readPurpose: async (): Promise<ManagedRelayPurpose> => ({ kind: 'generic' }),
+      });
+      await expect(createPersonalHomeOperations(generic.deps).claimOwner({ accountId: 'acct_1' }))
+        .rejects.toMatchObject({ code: 'purpose_not_personal_home' });
+      expect(invoked).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

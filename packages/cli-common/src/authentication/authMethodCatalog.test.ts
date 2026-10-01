@@ -143,6 +143,7 @@ describe('projectAuthenticationMethodCatalogFromAuthEntry', () => {
         serverId: 'home-1',
         displayName: 'Example Home',
         storageMode: 'encrypted',
+        hosting: 'shared',
       },
       team: { teamId: 'team-1', name: 'Example Team', logo: null },
       actions: [

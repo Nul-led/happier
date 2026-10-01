@@ -210,7 +210,6 @@ export {
 } from './personalHome/bootAdmission.js';
 export type { PersonalHomeBootAdmissionBlockReason } from './personalHome/bootAdmission.js';
 export {
-  DEFAULT_PERSONAL_HOME_ORIGIN,
   DEFAULT_PERSONAL_HOME_PORT,
   DEFAULT_PERSONAL_HOME_TEAM_NAME,
   assertPersonalHomeEnvironmentKeys,

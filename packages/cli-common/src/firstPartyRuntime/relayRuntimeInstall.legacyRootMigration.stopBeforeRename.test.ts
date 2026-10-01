@@ -5,6 +5,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { writePersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
+
 const events = vi.hoisted(() => [] as string[]);
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -122,6 +124,7 @@ describe('installOrUpdateRelayRuntimeLocal legacy root migration', () => {
             await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- init\n', 'utf8');
             const serverBinaryPath = join(payloadRoot, 'happier-server');
             await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+            await writePersonalHomeServerArtifactCapability(payloadRoot);
 
             const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
             await installOrUpdateRelayRuntimeLocal({

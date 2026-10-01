@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { resolveRelayRuntimeDefaults } from '@happier-dev/cli-common/firstPartyRuntime';
+import {
+  resolveRelayRuntimeDefaults,
+  writePersonalHomeServerArtifactCapability,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import { executeSystemTask } from '@happier-dev/cli-common/systemTasks';
 import type { SystemTaskResult } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
@@ -22,6 +25,73 @@ function expectTaskOk(result: SystemTaskResult, label: string): void {
 }
 
 describe('bootstrap relay-runtime registry composition', () => {
+  it('rejects a capability-less Personal Home artifact before the Desktop task mutates runtime state', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'hsetup-registry-personal-home-admission-'));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    try {
+      process.env.HOME = homeDir;
+      process.env.USERPROFILE = homeDir;
+      const payloadRoot = join(homeDir, 'payload');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      mkdirSync(payloadRoot, { recursive: true });
+      writeFileSync(serverBinaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const canonicalServerUrl = 'http://127.0.0.1:43123';
+      const registry = createHsetupSystemTaskRegistry({
+        relayRuntime: {
+          installOrUpdate: async (params) => await installOrUpdateRelayRuntimeDefault(params, {
+            runLocalServiceCommands: false,
+            skipLocalHealthCheck: true,
+          }),
+          checkHealth: async () => false,
+        },
+      });
+
+      const result = await executeSystemTask({
+        spec: {
+          protocolVersion: 1,
+          kind: 'relay.runtime.installOrUpdate.v1',
+          params: {
+            target: { kind: 'local' },
+            channel: 'stable',
+            mode: 'user',
+            selfHostRelayBinaryOverride: serverBinaryPath,
+            purpose: { kind: 'personal-home', canonicalServerUrl },
+            env: {
+              HAPPIER_SERVER_HOST: '127.0.0.1',
+              PORT: '43123',
+              HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
+              HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+              HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+              AUTH_ANONYMOUS_SIGNUP_ENABLED: '1',
+            },
+          },
+        },
+        taskId: 'task_registry_personal_home_admission',
+        registry,
+        now: () => 1700000000000,
+        emitEvent: () => undefined,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'personal_home_artifact_update_required' },
+      });
+      const defaults = resolveRelayRuntimeDefaults({ platform: process.platform, mode: 'user', channel: 'stable', homeDir });
+      expect(existsSync(join(defaults.installRoot, 'self-host-state.json'))).toBe(false);
+      expect(existsSync(join(defaults.installRoot, 'bin', 'happier-server'))).toBe(false);
+      expect(existsSync(defaults.configDir)).toBe(false);
+      expect(existsSync(join(defaults.dataDir, 'pglite'))).toBe(false);
+      expect(existsSync(join(defaults.dataDir, 'migrations'))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a closed Personal Home signup policy through install/update and restart when the caller requests re-enabling it', { timeout: 120_000 }, async () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'hsetup-registry-personal-home-install-'));
     const previousHome = process.env.HOME;
@@ -113,6 +183,7 @@ describe('bootstrap relay-runtime registry composition', () => {
       writeFileSync(serverBinaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
       writeFileSync(join(migrationDir, 'migration.sql'), '-- fixture migration\n');
       chmodSync(serverBinaryPath, 0o755);
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       const registry = createHsetupSystemTaskRegistry({
         relayRuntime: {

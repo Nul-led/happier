@@ -2,9 +2,8 @@ import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
 import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '../../happierCloud.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 
-/** Stable bootstrap origin shared by the browser-safe UI seam and the managed runtime defaults. */
+/** Default managed-runtime port for a Personal Home. */
 export const DEFAULT_PERSONAL_HOME_PORT = 3005;
-export const DEFAULT_PERSONAL_HOME_ORIGIN = `http://127.0.0.1:${DEFAULT_PERSONAL_HOME_PORT}`;
 /** Initial display name for the one canonical Team created during Personal Home bootstrap. */
 export const DEFAULT_PERSONAL_HOME_TEAM_NAME = 'Personal Home';
 

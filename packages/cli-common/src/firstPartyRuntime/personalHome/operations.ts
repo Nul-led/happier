@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { HomeOwnerClaimCommandOutputV1 } from '@happier-dev/protocol';
 import { lstat, opendir, readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
@@ -63,7 +64,8 @@ export class PersonalHomeOperationsError extends Error {
       | 'restore_unavailable'
       | 'restore_recovery_required'
       | 'operation_recovery_required'
-      | 'relocation_unavailable',
+      | 'relocation_unavailable'
+      | 'claim_owner_failed',
     message: string,
     cause?: unknown,
   ) {
@@ -84,6 +86,9 @@ export type PersonalHomeOperationsDeps = Readonly<{
   readPurpose(): Promise<ManagedRelayPurpose>;
   /** Home identity/config reader; may fail while the Home is uninitialized. */
   readIdentity(layout: PersonalHomeRuntimeLayout): Promise<PersonalHomeIdentityFacts>;
+  /** Stable identity-only reader for erase. Safe uninstall removes the installed migration
+   * catalog, so erase must not require schema metadata that it neither consumes nor validates. */
+  readIdentityForErase?(layout: PersonalHomeRuntimeLayout): Promise<Pick<PersonalHomeIdentityFacts, 'homeServerIdentityId'>>;
   /** Lane 03 canonical `PersonalHomeRuntimeLayout` resolver — the only path authority. */
   resolveLayout(): Promise<PersonalHomeRuntimeLayout>;
   /** Runtime owner attestation; ambient environment values alone never authorize deletion. */
@@ -123,6 +128,10 @@ export type PersonalHomeOperationsDeps = Readonly<{
   happierVersion?: string;
   /** Installed migration metadata owner; callers cannot guess ordering from migration names. */
   isSchemaSupported?(layout: PersonalHomeRuntimeLayout, schemaVersion: string): Promise<boolean>;
+  /** The installed server's deployment-local owner claim one-shot against this Home's database.
+   * It needs no stop: the Home's SQLite runs in WAL mode with a busy timeout, and the one-shot is a
+   * single serializable transaction beside the running server. */
+  runOwnerClaimCommand?(layout: PersonalHomeRuntimeLayout, targetAccountId: string): Promise<HomeOwnerClaimCommandOutputV1>;
 }>;
 
 export type PersonalHomeInspection = Readonly<{
@@ -176,6 +185,11 @@ export type PersonalHomeRestoreOperationInput = Readonly<{
   expectedHomeServerIdentityId?: string;
 } & PersonalHomeOperationContext>;
 
+export type PersonalHomeClaimOwnerOperationInput = Readonly<{
+  /** The explicit, already existing, active Account to make the Home's owner. */
+  accountId: string;
+} & PersonalHomeOperationContext>;
+
 export type PersonalHomeEraseConfirmationFacts = Readonly<{
   canonicalServerUrl: string;
   homeServerIdentityId: string | null;
@@ -219,6 +233,7 @@ export type PersonalHomeOperations = Readonly<{
   reconcileRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreFinalizationResult>;
   recoverRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreRecoveryResult>;
   relocate(input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocateOperationResult>;
+  claimOwner(input: PersonalHomeClaimOwnerOperationInput): Promise<HomeOwnerClaimCommandOutputV1>;
 }>;
 
 type PersonalHomePurpose = Extract<ManagedRelayPurpose, { kind: 'personal-home' }>;
@@ -322,7 +337,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         : Promise.reject(new Error('Canonical Personal Home configuration finalizer is unavailable.')),
     });
   };
-  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>, reconcileRestore = true): Promise<T> => {
+  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate' | 'claim_owner', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>, reconcileRestore = true): Promise<T> => {
     return withPersonalHomeOperationAdmission({
       request: kind === 'relocate'
         ? { kind, role: 'source', operationId: 'operationId' in context && typeof context.operationId === 'string' ? context.operationId : '' }
@@ -331,7 +346,10 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         checkCancelled(context);
         const purpose = await deps.readPurpose(); assertPersonalHomePurpose(purpose); assertExpectedPurpose(purpose, context);
         const layout = await deps.resolveLayout(); await deps.validateLayout(layout);
-        return { layout, canonicalServerUrl: purpose.canonicalServerUrl, homeServerIdentityId: (await readIdentityOrNull(layout))?.homeServerIdentityId ?? null };
+        const identity = kind === 'erase'
+          ? await readEraseIdentityOrNull(layout)
+          : await readIdentityOrNull(layout);
+        return { layout, canonicalServerUrl: purpose.canonicalServerUrl, homeServerIdentityId: identity?.homeServerIdentityId ?? null };
       },
       isHomeRunning: deps.lifecycle.isRunning,
     }, async ({ layout, canonicalServerUrl }) => {
@@ -359,9 +377,28 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     }
   };
 
+  const requireEraseIdentity = async (layout: PersonalHomeRuntimeLayout): Promise<Pick<PersonalHomeIdentityFacts, 'homeServerIdentityId'>> => {
+    try {
+      return await (deps.readIdentityForErase ?? deps.readIdentity)(layout);
+    } catch (error) {
+      throw new PersonalHomeOperationsError(
+        'identity_unavailable',
+        `Personal Home identity is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   const readIdentityOrNull = async (layout: PersonalHomeRuntimeLayout): Promise<PersonalHomeIdentityFacts | null> => {
     try {
       return await deps.readIdentity(layout);
+    } catch {
+      return null;
+    }
+  };
+
+  const readEraseIdentityOrNull = async (layout: PersonalHomeRuntimeLayout): Promise<Pick<PersonalHomeIdentityFacts, 'homeServerIdentityId'> | null> => {
+    try {
+      return await (deps.readIdentityForErase ?? deps.readIdentity)(layout);
     } catch {
       return null;
     }
@@ -680,7 +717,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           `Personal Home erase preview could not be completed; no confirmation or deletion was attempted: ${preview.reason ?? 'unknown filesystem inspection error'}.`,
         );
       }
-      const identity = await requireIdentity(layout);
+      const identity = await requireEraseIdentity(layout);
       const previewRunning = await deps.lifecycle.isRunning();
       checkCancelled(input);
       input.progress?.('awaiting_confirmation');
@@ -704,7 +741,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       assertExpectedPurpose(currentPurpose, input);
       const currentLayout = await deps.resolveLayout();
       await deps.validateLayout(currentLayout);
-      const currentIdentity = await requireIdentity(currentLayout);
+      const currentIdentity = await requireEraseIdentity(currentLayout);
       const currentPaths = resolvePersonalHomeEraseTargets(currentLayout);
       const currentPreview = await estimateOwnedBytes(currentPaths, () => checkCancelled(input));
       const currentRunning = await deps.lifecycle.isRunning();
@@ -840,6 +877,24 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     });
   };
 
+  /**
+   * Decision A(a): the hosting desktop makes an explicit Account the owner of its ownerless
+   * Personal Home. The canonical zero-owner transition stays in the server; this only admits the
+   * one-shot. The data-operation lease keeps it out of a backup snapshot, restore swap, erase or
+   * relocation (Lane 07 §7), and the admission refuses unresolved update, restore or relocation
+   * state exactly as ordinary boot admission would. The Home keeps running throughout.
+   */
+  const claimOwner = async (input: PersonalHomeClaimOwnerOperationInput): Promise<HomeOwnerClaimCommandOutputV1> => {
+    return withStableLayoutLease('claim_owner', input, async (layout) => {
+      if (!deps.runOwnerClaimCommand) {
+        throw new PersonalHomeOperationsError('claim_owner_failed', 'The Personal Home owner claim command is unavailable.');
+      }
+      checkCancelled(input);
+      input.progress?.('claiming_owner');
+      return await deps.runOwnerClaimCommand(layout, input.accountId);
+    });
+  };
+
   return Object.freeze({
     inspect,
     backup,
@@ -849,5 +904,6 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     reconcileRestore,
     recoverRestore,
     relocate,
+    claimOwner,
   } satisfies PersonalHomeOperations);
 }

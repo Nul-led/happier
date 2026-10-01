@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveRelayRuntimeDefaults } from './relayRuntime.js';
 import { installOrUpdateRelayRuntimeLocal } from './relayRuntimeInstall.js';
+import { writePersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
 
 const serviceActions = vi.hoisted(() => [] as string[]);
 const serviceEvents = vi.hoisted(() => [] as string[]);
@@ -348,6 +349,7 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
       await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- init\n', 'utf8');
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       checkRelayRuntimeHealthMock.mockImplementationOnce(async () => {
         const activationSpec = [...serviceSpecs].reverse().find((spec) => (

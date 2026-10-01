@@ -4,7 +4,7 @@ import { link, lstat, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
-export type PersonalHomeOperationKind = 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate' | 'uninstall' | 'upgrade' | 'lifecycle';
+export type PersonalHomeOperationKind = 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate' | 'uninstall' | 'upgrade' | 'lifecycle' | 'claim_owner';
 export type PersonalHomeOperationRole = 'source' | 'destination';
 
 export class PersonalHomeOperationError extends Error {
