@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { FeaturesResponseSchema } from '../features.js';
 import type { FeatureDecision } from './decision.js';
-import { applyFeatureDependencies, evaluateFeatureDecisionBase } from './featureDecisionEngine.js';
+import {
+  applyFeatureDependencies,
+  evaluateFeatureDecisionBase,
+  evaluateServerFeatureDecisions,
+  listFeatureDependents,
+} from './featureDecisionEngine.js';
 import { readServerEnabledBit } from './serverEnabledBit.js';
 
 function enabled(featureId: any): FeatureDecision {
@@ -40,6 +45,7 @@ describe('feature decision engine', () => {
     expect(out.state).toBe('disabled');
     expect(out.blockedBy).toBe('dependency');
     expect(out.blockerCode).toBe('dependency_disabled');
+    expect(out.blockingDependencyId).toBe('execution.runs');
   });
 
   it('prefers disabled when any dependency is disabled even if another dependency is unknown', () => {
@@ -71,6 +77,8 @@ describe('feature decision engine', () => {
     expect(out.state).toBe('disabled');
     expect(out.blockedBy).toBe('dependency');
     expect(out.blockerCode).toBe('dependency_disabled');
+    // The typed blocker names the dependency that decided the state, not the first unknown one.
+    expect(out.blockingDependencyId).toBe('execution.runs');
   });
 
   it('returns unknown when a dependency is unknown', () => {
@@ -95,6 +103,7 @@ describe('feature decision engine', () => {
     expect(out.state).toBe('unknown');
     expect(out.blockedBy).toBe('dependency');
     expect(out.blockerCode).toBe('dependency_unknown');
+    expect(out.blockingDependencyId).toBe('execution.runs');
   });
 
   it('disables voice.daemonInference when voice.agent is disabled', () => {
@@ -140,6 +149,7 @@ describe('feature decision engine', () => {
 
     expect(out.state).toBe('disabled');
     expect(out.blockedBy).toBe('local_policy');
+    expect(out.blockingDependencyId).toBeUndefined();
   });
 
   it('applies server enabled-bit dependency pruning to a fixed point', () => {
@@ -166,5 +176,71 @@ describe('feature decision engine', () => {
     expect(readServerEnabledBit(response, 'browser.viewTargets')).toBe(false);
     expect(readServerEnabledBit(response, 'localServices.launcher')).toBe(false);
     expect(readServerEnabledBit(response, 'localServices.inventory')).toBe(true);
+  });
+
+  it('explains every server bit with a typed blocker: Home switch off, dependency, build policy', () => {
+    const response = FeaturesResponseSchema.parse({
+      features: {
+        automations: { enabled: false },
+        workflows: { enabled: true },
+        localServices: {
+          enabled: true,
+          inventory: { enabled: true },
+          launcher: { enabled: true },
+        },
+      },
+      capabilities: {},
+    });
+
+    const decisions = evaluateServerFeatureDecisions({
+      serverPayload: response,
+      buildPolicy: (featureId) => (featureId === 'localServices.inventory' ? 'deny' : 'neutral'),
+    });
+
+    expect(decisions.get('automations')).toMatchObject({ state: 'disabled', blockedBy: 'server' });
+    expect(decisions.get('automations')?.blockingDependencyId).toBeUndefined();
+    expect(decisions.get('workflows')).toMatchObject({
+      state: 'disabled',
+      blockedBy: 'dependency',
+      blockerCode: 'dependency_disabled',
+      blockingDependencyId: 'automations',
+    });
+    expect(decisions.get('localServices.inventory')).toMatchObject({ state: 'disabled', blockedBy: 'build_policy' });
+    expect(decisions.get('localServices')).toMatchObject({ state: 'enabled', blockedBy: null });
+    // Evaluation never mutates the payload it explains.
+    expect(readServerEnabledBit(response, 'workflows')).toBe(true);
+    // Client-represented ids are not server decisions.
+    expect(decisions.has('execution.runs')).toBe(false);
+  });
+
+  it('closes the payload exactly as the decisions explain it', () => {
+    const payload = () => FeaturesResponseSchema.parse({
+      features: {
+        automations: { enabled: false },
+        workflows: { enabled: true },
+        teams: {
+          enabled: false,
+          credentialResources: { enabled: true, externalApi: { enabled: true } },
+        },
+      },
+      capabilities: {},
+    });
+    const explained = evaluateServerFeatureDecisions({ serverPayload: payload() });
+    const closed = payload();
+    applyFeatureDependencies({ serverPayload: closed });
+
+    for (const [featureId, decision] of explained) {
+      expect({ featureId, enabled: readServerEnabledBit(closed, featureId) === true })
+        .toEqual({ featureId, enabled: decision.state === 'enabled' });
+    }
+    // The transitive dependent names its immediate blocker.
+    expect(explained.get('teams.credentialResources.externalApi')?.blockingDependencyId).toBe('teams.credentialResources');
+  });
+
+  it('lists the transitive dependents a parent takes with it', () => {
+    expect(listFeatureDependents('automations')).toContain('workflows');
+    const teamsDependents = listFeatureDependents('teams');
+    expect(teamsDependents).toEqual(expect.arrayContaining(['teams.credentialResources', 'teams.credentialResources.externalApi']));
+    expect(teamsDependents).not.toContain('teams');
   });
 });

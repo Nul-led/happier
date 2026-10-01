@@ -7,8 +7,14 @@
  */
 export * from './roles.js';
 export type { HomeGovernanceActionIdV1 } from './actionsV1.js';
+export { HomeEmptinessGetInputV1Schema } from './actionsV1.js';
 export * from './capabilities.js';
 export * from './policy.js';
 export * from './accounts.js';
 export * from './projection.js';
 export * from './errors.js';
+export * from './settings.js';
+export * from './audit.js';
+export * from './retention.js';
+export * from './claim.js';
+export * from './reachability.js';

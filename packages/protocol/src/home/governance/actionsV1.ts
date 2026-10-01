@@ -14,13 +14,25 @@ import { z } from 'zod';
 export const HOME_GOVERNANCE_ACTION_IDS_V1 = [
   'home.governance.get',
   'home.governance.eligibility.get',
+  'home.emptiness.get',
+  'home.governance.claim',
   'home.accounts.list',
   'home.accounts.search',
+  'home.accounts.get',
   'home.accounts.role.set',
   'home.accounts.disable',
   'home.accounts.enable',
   'home.accounts.delete',
+  'home.accounts.signOutEverywhere',
   'home.policy.set',
+  'home.settings.get',
+  'home.settings.set',
+  'home.mailDelivery.get',
+  'home.mailDelivery.test',
+  'home.audit.list',
+  'home.reachability.get',
+  'home.reachability.iroh.set',
+  'home.retention.dryRun',
 ] as const;
 
 export type HomeGovernanceActionIdV1 = typeof HOME_GOVERNANCE_ACTION_IDS_V1[number];
@@ -39,3 +51,6 @@ export const HomeGovernanceGetInputV1Schema = z.object({}).strict();
  * rely on a client to discard its policy and deployment facts.
  */
 export const HomeGovernanceEligibilityGetInputV1Schema = z.object({}).strict();
+
+/** The authenticated Home and owner are selected by the request, never by caller input. */
+export const HomeEmptinessGetInputV1Schema = z.object({}).strict();

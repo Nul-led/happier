@@ -2418,6 +2418,7 @@ export {
 } from './connect/buildConnectedServiceCredentialRecord.js';
 
 export { parseBooleanEnv, parseOptionalBooleanEnv } from './env/parseBooleanEnv.js';
+export * from './serverConfig/index.js';
 export * from './features/payload/capabilities/automationCapabilities.js';
 export {
   PluginDataCollectionsCapabilitiesSchema,
@@ -7402,6 +7403,8 @@ export {
   DEFAULT_SESSION_MESSAGES_CAPABILITIES,
   CapabilitiesSchema,
   AccountServicePresentationV1Schema,
+  HomePresentationV1Schema,
+  HomeHostFactSchema,
   FeatureGateSchema,
   FeatureGatesSchema,
   FeaturesResponseSchema,
@@ -7473,6 +7476,8 @@ export {
   type BrowserViewTargetCapabilities,
   type Capabilities,
   type AccountServicePresentationV1,
+  type HomePresentationV1,
+  type HomeHostFact,
   type DeviceCapabilities,
   type DeviceSimulatorPreviewCapabilities,
   type FeatureGate,
@@ -7548,7 +7553,10 @@ export {
 export {
   applyFeatureDependencies,
   evaluateFeatureDecisionBase,
+  evaluateServerFeatureDecisions,
+  listFeatureDependents,
   type FeatureDecisionBaseInput,
+  type ServerFeatureDecisionsInput,
 } from './features/featureDecisionEngine.js';
 export {
   mergeFeatureBuildPolicies,
@@ -8935,6 +8943,7 @@ export {
 } from './home/governance/capabilities.js';
 export {
   HOME_TEAM_CREATION_POLICY_DEFAULT_V1,
+  HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1,
   HomeAdmissionModeV1Schema,
   HomeAuthenticationPolicyV1Schema,
   HomeGovernancePolicySetInputV1Schema,
@@ -8959,11 +8968,13 @@ export {
   type TeamCreationPolicyV1,
 } from './home/governance/policy.js';
 export {
+  HOME_ACCOUNT_DETAIL_RECENT_EVENTS_LIMIT_V1,
   HOME_ACCOUNT_PAGE_CURSOR_MAX_LENGTH_V1,
   HOME_ACCOUNT_PAGE_LIMIT_DEFAULT_V1,
   HOME_ACCOUNT_PAGE_LIMIT_MAX_V1,
   HOME_ACCOUNT_SEARCH_QUERY_MAX_LENGTH_V1,
   HomeAccountDeleteResultV1Schema,
+  HomeAccountDetailV1Schema,
   HomeAccountListInputV1Schema,
   HomeAccountListResultV1Schema,
   HomeAccountMutationCapabilitiesV1Schema,
@@ -8976,7 +8987,9 @@ export {
   HomeAccountSearchResultV1Schema,
   HomeAccountSearchScopeV1Schema,
   HomeAccountTargetInputV1Schema,
+  HomeAccountTeamMembershipV1Schema,
   type HomeAccountDeleteResultV1,
+  type HomeAccountDetailV1,
   type HomeAccountListInputV1,
   type HomeAccountListResultV1,
   type HomeAccountMutationCapabilitiesV1,
@@ -8989,6 +9002,7 @@ export {
   type HomeAccountSearchResultV1,
   type HomeAccountSearchScopeV1,
   type HomeAccountTargetInputV1,
+  type HomeAccountTeamMembershipV1,
 } from './home/governance/accounts.js';
 export {
   HomeAuthenticationPolicyProjectionV1Schema,
@@ -9013,6 +9027,11 @@ export {
   type HomeGovernanceErrorCodeV1,
   type HomeGovernanceErrorV1,
 } from './home/governance/errors.js';
+export * from './home/governance/settings.js';
+export * from './home/governance/audit.js';
+export * from './home/governance/retention.js';
+export * from './home/governance/reachability.js';
+export * from './home/governance/claim.js';
 export {
   HOME_GOVERNANCE_ACTION_IDS_V1,
   HomeGovernanceActionIdV1Schema,

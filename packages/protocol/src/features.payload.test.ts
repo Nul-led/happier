@@ -37,6 +37,17 @@ function readOptionalPath(root: unknown, path: ReadonlyArray<string>): unknown {
 }
 
 describe('FeaturesResponseSchema', () => {
+  it('keeps an optional Home host fact and treats malformed facts as unknown', () => {
+    const known = { kind: 'known', machineName: 'Studio', platform: 'darwin', mobility: 'stationary' };
+    expect(FeaturesResponseSchema.parse({ features: {}, capabilities: {}, homeHostFact: known }).homeHostFact).toEqual(known);
+    expect(FeaturesResponseSchema.parse({ features: {}, capabilities: {} }).homeHostFact).toBeUndefined();
+    expect(FeaturesResponseSchema.parse({
+      features: {}, capabilities: {}, homeHostFact: { ...known, mobility: 'portable', trusted: true },
+    }).homeHostFact).toBeUndefined();
+    expect(FeaturesResponseSchema.parse({
+      features: {}, capabilities: {}, homeHostFact: { kind: 'known', machineName: 'Studio', platform: 'linux' },
+    }).homeHostFact).toBeUndefined();
+  });
   it('accepts an optional strict Home search capability and keeps old-server omission safe', () => {
     const oldServer = FeaturesResponseSchema.parse({ features: {}, capabilities: {} });
     expect(oldServer.capabilities.homeSearch).toBeUndefined();

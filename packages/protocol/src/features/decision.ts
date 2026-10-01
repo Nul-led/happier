@@ -39,8 +39,21 @@ export const FeatureDecisionSchema = z
     diagnostics: z.array(z.string()),
     evaluatedAt: z.number().int().nonnegative(),
     scope: FeatureDecisionScopeSchema,
+    /**
+     * The dependency that decided a `blockedBy: 'dependency'` state (additive, set only by
+     * `applyFeatureDependencies`): the first disabled dependency, else the first unknown one.
+     * The `dependency:<id>:<state>` diagnostics strings stay for humans; clients read this field.
+     */
+    blockingDependencyId: z.enum(FEATURE_ID_ENUM).optional(),
   })
   .superRefine((value, ctx) => {
+    if (value.blockingDependencyId !== undefined && value.blockedBy !== 'dependency') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['blockingDependencyId'],
+        message: 'blockingDependencyId is set only on decisions blocked by a dependency',
+      });
+    }
     if (value.state === 'enabled') {
       if (value.blockedBy !== null) {
         ctx.addIssue({

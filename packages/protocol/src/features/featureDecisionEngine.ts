@@ -126,10 +126,10 @@ export function applyFeatureDependencies(
     ]),
   ];
 
-  const hasDisabled = blockers.some(
+  const disabledBlocker = blockers.find(
     ({ decision }) => decision.state === 'disabled' || decision.state === 'unsupported',
   );
-  if (hasDisabled) {
+  if (disabledBlocker) {
     return createFeatureDecision({
       featureId: params.featureId,
       state: 'disabled',
@@ -138,6 +138,7 @@ export function applyFeatureDependencies(
       diagnostics,
       evaluatedAt: params.baseDecision.evaluatedAt,
       scope: params.baseDecision.scope,
+      blockingDependencyId: disabledBlocker.dependencyId,
     });
   }
 
@@ -149,47 +150,101 @@ export function applyFeatureDependencies(
     diagnostics,
     evaluatedAt: params.baseDecision.evaluatedAt,
     scope: params.baseDecision.scope,
+    blockingDependencyId: blockers[0]!.dependencyId,
   });
+}
+
+const DEPENDENTS_BY_ID: ReadonlyMap<FeatureId, readonly FeatureId[]> = (() => {
+  const dependents = new Map<FeatureId, FeatureId[]>();
+  for (const featureId of FEATURE_IDS) {
+    for (const dependencyId of FEATURE_CATALOG[featureId].dependencies) {
+      const list = dependents.get(dependencyId) ?? [];
+      list.push(featureId);
+      dependents.set(dependencyId, list);
+    }
+  }
+  return dependents;
+})();
+
+/**
+ * Every feature that depends on `featureId`, directly or through another dependent, in catalog
+ * order: the features a parent takes with it when it turns off. Read from the same catalog edges
+ * `applyFeatureDependencies` enforces, so a client previewing a change never rebuilds the closure.
+ */
+export function listFeatureDependents(featureId: FeatureId): readonly FeatureId[] {
+  const found = new Set<FeatureId>();
+  const pending: FeatureId[] = [featureId];
+  while (pending.length > 0) {
+    for (const dependent of DEPENDENTS_BY_ID.get(pending.pop()!) ?? []) {
+      if (dependent === featureId || found.has(dependent)) continue;
+      found.add(dependent);
+      pending.push(dependent);
+    }
+  }
+  return FEATURE_IDS.filter((id) => found.has(id));
 }
 
 const SERVER_FEATURE_DEPENDENCY_SCOPE: FeatureDecisionScope = { scopeKind: 'runtime' };
 
-function evaluateServerEnabledBitDecision(
-  featureId: FeatureId,
-  serverEnabled: boolean,
-): FeatureDecision {
-  return evaluateFeatureDecisionBase({
-    featureId,
-    scope: SERVER_FEATURE_DEPENDENCY_SCOPE,
-    supportsClient: true,
-    buildPolicy: 'neutral',
-    localPolicyEnabled: true,
-    serverSupported: true,
-    serverEnabled,
-    evaluatedAt: 0,
-  });
+export type ServerFeatureDecisionsInput = Readonly<{
+  /** A server payload before dependency closure (its bits are the resolvers' own answers). */
+  serverPayload: FeaturesResponse;
+  /** The server build policy; omitted when denies were already written into the payload. */
+  buildPolicy?: (featureId: FeatureId) => FeatureBuildPolicyEvaluation;
+}>;
+
+/**
+ * One typed decision per feature the payload carries an enabled bit for: build policy
+ * first, then the payload's own bit, then dependency closure through `applyFeatureDependencies`
+ * (so a blocked feature names the dependency that blocked it). The closure of `/v1/features` is
+ * computed from these same decisions, so what the console explains is what clients receive.
+ * The payload is not modified.
+ */
+export function evaluateServerFeatureDecisions(
+  params: ServerFeatureDecisionsInput,
+): ReadonlyMap<FeatureId, FeatureDecision> {
+  const response = params.serverPayload;
+  const decisions = new Map<FeatureId, FeatureDecision>();
+  const evaluating = new Set<FeatureId>();
+
+  const evaluate = (featureId: FeatureId): FeatureDecision => {
+    const known = decisions.get(featureId);
+    if (known) return known;
+    const base = evaluateFeatureDecisionBase({
+      featureId,
+      scope: SERVER_FEATURE_DEPENDENCY_SCOPE,
+      supportsClient: true,
+      buildPolicy: params.buildPolicy?.(featureId) ?? 'neutral',
+      localPolicyEnabled: true,
+      serverSupported: true,
+      serverEnabled: readServerEnabledBit(response, featureId) === true,
+      evaluatedAt: 0,
+    });
+    // The catalog is acyclic; a cycle would stop at the feature's own bit rather than recurse.
+    if (evaluating.has(featureId)) return base;
+    evaluating.add(featureId);
+    const decision = applyFeatureDependencies({
+      featureId,
+      baseDecision: base,
+      resolveDependencyDecision: evaluate,
+    });
+    evaluating.delete(featureId);
+    decisions.set(featureId, decision);
+    return decision;
+  };
+
+  const out = new Map<FeatureId, FeatureDecision>();
+  for (const featureId of FEATURE_IDS) {
+    if (readServerEnabledBit(response, featureId) === null) continue;
+    out.set(featureId, evaluate(featureId));
+  }
+  return out;
 }
 
 function applyServerFeatureDependencyClosureInPlace(response: FeaturesResponse): void {
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const featureId of FEATURE_IDS) {
-      if (readServerEnabledBit(response, featureId) !== true) continue;
-
-      const decision = applyFeatureDependencies({
-        featureId,
-        baseDecision: evaluateServerEnabledBitDecision(featureId, true),
-        resolveDependencyDecision: (dependencyId) => evaluateServerEnabledBitDecision(
-          dependencyId,
-          readServerEnabledBit(response, dependencyId) === true,
-        ),
-      });
-
-      if (decision.state === 'enabled') continue;
-      if (tryWriteServerEnabledBitInPlace(response, featureId, false)) {
-        changed = true;
-      }
-    }
+  const decisions = evaluateServerFeatureDecisions({ serverPayload: response });
+  for (const [featureId, decision] of decisions) {
+    if (decision.state === 'enabled') continue;
+    tryWriteServerEnabledBitInPlace(response, featureId, false);
   }
 }

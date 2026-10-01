@@ -17,6 +17,8 @@ export const HomeCapabilitiesV1Schema = z.object({
   manageHomeRoles: z.boolean(),
   manageTeamCreationPolicy: z.boolean(),
   manageAuthentication: z.boolean(),
+  /** Home settings (server configuration, mail, reachability), claim and runtime actions: owners only. */
+  manageHomeSettings: z.boolean(),
   eraseAccounts: z.boolean(),
   createTeam: z.boolean(),
   manageAllTeams: z.boolean(),
@@ -34,6 +36,7 @@ export const NO_HOME_CAPABILITIES_V1: HomeCapabilitiesV1 = Object.freeze({
   manageHomeRoles: false,
   manageTeamCreationPolicy: false,
   manageAuthentication: false,
+  manageHomeSettings: false,
   eraseAccounts: false,
   createTeam: false,
   manageAllTeams: false,

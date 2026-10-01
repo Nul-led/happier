@@ -6,6 +6,7 @@ import {
 } from './capabilities.js';
 import {
   HOME_TEAM_CREATION_POLICY_DEFAULT_V1,
+  HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1,
   HomeAuthenticationPolicyV1Schema,
   HomeGovernancePolicySetInputV1Schema,
   readHomeAuthenticationPolicyV1,
@@ -42,6 +43,59 @@ describe('Home governance eligibility contract', () => {
       teamsEnabled: true,
       createTeam: false,
       activeOwnerCount: 1,
+    }).success).toBe(false);
+  });
+
+  it('carries the creation policy class, administrator names and Teams visibility for admitted members', () => {
+    // The current answer: who to ask, and whether this viewer is shown Teams at all.
+    expect(HomeGovernanceEligibilityV1Schema.safeParse({
+      teamsEnabled: true,
+      createTeam: false,
+      createTeamForChosenAccount: false,
+      teamCreationPolicy: 'managed_only',
+      administratorNames: ['Ada Lovelace', 'grace'],
+      showTeams: true,
+    }).success).toBe(true);
+    // Names only: an administrator's id or email never rides along.
+    expect(HomeGovernanceEligibilityV1Schema.safeParse({
+      teamsEnabled: true,
+      createTeam: false,
+      createTeamForChosenAccount: false,
+      teamCreationPolicy: 'managed_only',
+      administratorNames: [{ accountId: 'acc_1', displayName: 'Ada' }],
+    }).success).toBe(false);
+    expect(HomeGovernanceEligibilityV1Schema.safeParse({
+      teamsEnabled: true,
+      createTeam: false,
+      createTeamForChosenAccount: false,
+      teamCreationPolicy: 'self_service_for_friends',
+    }).success).toBe(false);
+  });
+
+  it('reads an answer from a Home that predates the policy class, names and visibility', () => {
+    // Compatibility (older server -> current client): every added fact is optional.
+    const parsed = HomeGovernanceEligibilityV1Schema.safeParse({
+      teamsEnabled: true,
+      createTeam: false,
+      createTeamForChosenAccount: false,
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.teamCreationPolicy).toBeUndefined();
+    expect(parsed.data?.administratorNames).toBeUndefined();
+    expect(parsed.data?.showTeams).toBeUndefined();
+  });
+});
+
+describe('Home Teams visibility policy', () => {
+  it('shows Teams to members unless a Home turned it off', () => {
+    expect(HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1).toBe(true);
+    expect(HomeGovernancePolicySetInputV1Schema.safeParse({
+      expectedRevision: 2,
+      teamsVisibleToMembers: false,
+    }).success).toBe(true);
+    expect(HomeGovernancePolicySetInputV1Schema.safeParse({
+      expectedRevision: 2,
+      teamsVisibleToMembers: 'no',
     }).success).toBe(false);
   });
 });
@@ -221,6 +275,7 @@ describe('Home account projections', () => {
         disable: { status: 'unavailable', reason: 'target_not_active' },
         reenable: { status: 'available' },
         delete: { status: 'unavailable', reason: 'team_owner_transfer_required' },
+        signOutEverywhere: { status: 'available' },
       },
     };
     expect(HomeAccountRowV1Schema.safeParse(row).success).toBe(true);

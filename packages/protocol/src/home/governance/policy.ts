@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { CanonicalGitHubHostV1Schema } from '../../identity/githubApps.js';
 
-import { AccountEncryptionModeSchema } from '../../features/payload/capabilities/encryptionCapabilities.js';
+import {
+  AccountEncryptionModeSchema,
+  EncryptionStoragePolicySchema,
+} from '../../features/payload/capabilities/encryptionCapabilities.js';
 
 /**
  * Who may create a Team on this Home. This can only narrow a deployed Teams
@@ -26,6 +29,13 @@ export function readTeamCreationPolicyV1(value: unknown): TeamCreationPolicyV1 {
   return parsed.success ? parsed.data : HOME_TEAM_CREATION_POLICY_DEFAULT_V1;
 }
 
+/**
+ * Whether members who belong to no Team are shown the Teams destination. A Home
+ * that never stored the choice shows it: absent means on. Members of a Team and
+ * Home administrators are always shown it.
+ */
+export const HOME_TEAMS_VISIBLE_TO_MEMBERS_DEFAULT_V1 = true;
+
 /** Who may obtain an Account on this Home, narrowest first. */
 export const HomeAdmissionModeV1Schema = z.enum(['closed', 'invitation_only', 'self_service']);
 export type HomeAdmissionModeV1 = z.infer<typeof HomeAdmissionModeV1Schema>;
@@ -44,13 +54,23 @@ const HomeAuthenticationMethodIdV1Schema = z.string().min(1).max(128).refine(
 );
 
 /**
- * The bounded Home authentication/storage/admission narrowing document.
+ * The bounded Home authentication/storage/admission policy document.
  *
- * Every field is optional and subtractive: an absent field inherits the
- * deployment ceiling rather than enabling everything. The effective method and
- * mode sets are intersections resolved by the canonical `authPolicy` owner and
- * the encryption owner; this codec only owns storage shape and the document's
- * internal consistency.
+ * Every field is optional and an absent field inherits the deployment. A present
+ * field decides in both directions (plan `2026-09-26-home-owner-console` §3.4,
+ * AM-4) but only where the deployment left the matching env key unset: an
+ * explicitly set key is a lock the document can never override (D-1).
+ *
+ * - `enabledMethodIds` lists the methods offered. A listed method whose enable
+ *   key the deployment left unset is turned on; an unlisted method is off.
+ * - `permittedAccountModes` including `plain` turns keyless Accounts on where
+ *   the deployment left that unset.
+ * - `anonymousSignup` and `storagePolicy` set their deployment keys where unset;
+ *   the storage policy applies at the next server start.
+ *
+ * The effective method and mode sets are resolved by the canonical `authPolicy`
+ * owner and the encryption owner; this codec only owns storage shape and the
+ * document's internal consistency.
  */
 export const HomeAuthenticationPolicyV1Schema = z.object({
   v: z.literal(1),
@@ -59,6 +79,10 @@ export const HomeAuthenticationPolicyV1Schema = z.object({
   recommendedProvisioningMode: AccountEncryptionModeSchema.optional(),
   admission: HomeAdmissionModeV1Schema.optional(),
   signInService: HomeSignInServiceNarrowingV1Schema.nullable().optional(),
+  /** Key-only (anonymous) signup; `AUTH_ANONYMOUS_SIGNUP_ENABLED` where the deployment leaves it unset. */
+  anonymousSignup: z.boolean().optional(),
+  /** Which Accounts may store data without E2EE; applies at the next server start. */
+  storagePolicy: EncryptionStoragePolicySchema.optional(),
 }).strict().superRefine((policy, ctx) => {
   if (policy.enabledMethodIds && new Set(policy.enabledMethodIds).size !== policy.enabledMethodIds.length) {
     ctx.addIssue({
@@ -193,11 +217,19 @@ export function readHomeIdentityNetworkPolicyV1(value: unknown): HomeIdentityNet
 export const HomeGovernancePolicySetInputV1Schema = z.object({
   expectedRevision: z.number().int().min(0),
   teamCreationPolicy: TeamCreationPolicyV1Schema.optional(),
+  teamsVisibleToMembers: z.boolean().optional(),
   authenticationPolicy: HomeAuthenticationPolicyV1Schema.nullable().optional(),
   teamProviderPolicy: HomeTeamProviderPolicyV1Schema.nullable().optional(),
   identityNetworkPolicy: HomeIdentityNetworkPolicyV1Schema.nullable().optional(),
+  /**
+   * The owner saw and accepted the consequence of widening sign-in, admission or
+   * storage policy. A widening patch without it is refused with
+   * `home_policy_widening_unconfirmed` and changes nothing; narrowing needs none.
+   */
+  confirmWidening: z.literal(true).optional(),
 }).strict().refine(
   (input) => input.teamCreationPolicy !== undefined
+    || input.teamsVisibleToMembers !== undefined
     || input.authenticationPolicy !== undefined
     || input.teamProviderPolicy !== undefined
     || input.identityNetworkPolicy !== undefined,

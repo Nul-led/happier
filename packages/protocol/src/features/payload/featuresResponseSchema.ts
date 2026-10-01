@@ -10,11 +10,12 @@ import { CapabilitiesSchema, type Capabilities } from './capabilities/capabiliti
 import { FeatureGatesSchema, type FeatureGates } from './featureGatesSchema.js';
 import { isRecord } from './isRecord.js';
 import { coerceBugReportsCapabilitiesFromFeaturesPayload } from './capabilities/bugReportsCapabilities.js';
+import { SERVER_IDENTITY_ID_PATTERN } from './capabilities/serverIdentityCapabilities.js';
 import { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from './responseLimits.js';
 
 export { FEATURES_RESPONSE_MAX_UTF8_BYTES_V1 } from './responseLimits.js';
 
-const ServerIdentityIdSchema = z.string().trim().regex(/^srv_[A-Za-z0-9._-]{1,60}$/u);
+const ServerIdentityIdSchema = z.string().trim().regex(SERVER_IDENTITY_ID_PATTERN);
 
 export const HomeSignInServicePolicyV1Schema = z.discriminatedUnion('mode', [
   z.object({ v: z.literal(1), mode: z.literal('disabled') }).strict(),
@@ -41,6 +42,27 @@ export const AccountServicePresentationV1Schema = z.object({
 }).strict();
 export type AccountServicePresentationV1 = z.infer<typeof AccountServicePresentationV1Schema>;
 
+export const HomePresentationV1Schema = z.object({
+  v: z.literal(1),
+  displayName: z.string().trim().min(1).superRefine((value, context) => {
+    if (/\p{Cc}/u.test(value) || new TextEncoder().encode(value).byteLength > ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid Home display name' });
+    }
+  }),
+}).strict();
+export type HomePresentationV1 = z.infer<typeof HomePresentationV1Schema>;
+
+export const HomeHostFactSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('known'),
+    machineName: z.string().trim().min(1).refine((value) => !/\p{Cc}/u.test(value)),
+    platform: z.enum(['darwin', 'linux', 'win32']),
+    mobility: z.enum(['portable', 'stationary']),
+  }).strict(),
+  z.object({ kind: z.literal('unknown') }).strict(),
+]);
+export type HomeHostFact = z.infer<typeof HomeHostFactSchema>;
+
 function coerceFeaturesResponsePayload(raw: unknown): unknown {
   if (!isRecord(raw)) return raw;
 
@@ -50,6 +72,8 @@ function coerceFeaturesResponsePayload(raw: unknown): unknown {
   for (const [key, schema] of [
     ['signInService', HomeSignInServicePolicyV1Schema],
     ['accountServicePresentation', AccountServicePresentationV1Schema],
+    ['homePresentation', HomePresentationV1Schema],
+    ['homeHostFact', HomeHostFactSchema],
   ] as const) {
     if (next[key] !== undefined) {
       const parsed = schema.safeParse(next[key]);
@@ -103,6 +127,8 @@ export const FeaturesResponseSchema = z.preprocess(
     homeConnectionDescriptor: HomeConnectionDescriptorV1Schema.optional(),
     signInService: HomeSignInServicePolicyV1Schema.optional(),
     accountServicePresentation: AccountServicePresentationV1Schema.optional(),
+    homePresentation: HomePresentationV1Schema.optional(),
+    homeHostFact: HomeHostFactSchema.optional(),
   }),
 );
 
@@ -112,4 +138,6 @@ export type FeaturesResponse = Readonly<{
   homeConnectionDescriptor?: HomeConnectionDescriptorV1;
   signInService?: HomeSignInServicePolicyV1;
   accountServicePresentation?: AccountServicePresentationV1;
+  homePresentation?: HomePresentationV1;
+  homeHostFact?: HomeHostFact;
 }>;

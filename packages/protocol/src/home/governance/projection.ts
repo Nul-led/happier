@@ -9,7 +9,10 @@ import {
   TeamCreationPolicyV1Schema,
 } from './policy.js';
 import { AccountStatusV1Schema, HomeRoleV1Schema } from './roles.js';
-import { AccountEncryptionModeSchema } from '../../features/payload/capabilities/encryptionCapabilities.js';
+import {
+  AccountEncryptionModeSchema,
+  EncryptionStoragePolicySchema,
+} from '../../features/payload/capabilities/encryptionCapabilities.js';
 
 /**
  * Whether this Home has an active owner. `setup_required` is a bootstrap state
@@ -33,6 +36,14 @@ export const HomeAuthenticationPolicyProjectionV1Schema = z.discriminatedUnion('
     recommendedProvisioningMode: z.enum(['e2ee', 'plain']).nullable(),
     admission: HomeAdmissionModeV1Schema.nullable(),
     signInServiceDisabled: z.boolean(),
+    /**
+     * The stored key-only signup and storage decisions (`null` when the document
+     * leaves them to the deployment). An editor that replaces the document must
+     * carry them over, so they are projected as stored, never as effective.
+     * Optional because a Home that predates them does not report them.
+     */
+    anonymousSignup: z.boolean().nullable().optional(),
+    storagePolicy: EncryptionStoragePolicySchema.nullable().optional(),
   }).strict(),
   z.object({ status: z.literal('unreadable') }).strict(),
 ]);
@@ -54,6 +65,8 @@ const HomeIdentityNetworkPolicyProjectionV1Schema = z.discriminatedUnion('status
 export const HomeGovernancePolicyProjectionV1Schema = z.object({
   revision: z.number().int().min(0),
   teamCreationPolicy: TeamCreationPolicyV1Schema,
+  /** Optional because a Home that predates it reports nothing; absent means Teams are shown. */
+  teamsVisibleToMembers: z.boolean().optional(),
   authentication: HomeAuthenticationPolicyProjectionV1Schema,
   teamProviders: HomeTeamProviderPolicyProjectionV1Schema.optional(),
   identityNetwork: HomeIdentityNetworkPolicyProjectionV1Schema.optional(),
@@ -80,6 +93,16 @@ export const HomeIdentityDeploymentServicesV1Schema = z.object({
    * saves a narrowing. The policy editor seeds from it, never from the enum.
    */
   teamProviderKinds: z.array(ManagedIdentityProviderKindV1Schema),
+  /**
+   * OIDC providers the deployment declares itself (`AUTH_PROVIDERS_CONFIG_PATH|JSON`): shown
+   * read-only beside the Home's managed providers. Name and the declaring key only; issuer,
+   * client id and secret stay on the server. Optional: older Homes do not report it.
+   */
+  deploymentOidcProviders: z.array(z.object({
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+    sourceKey: z.enum(['AUTH_PROVIDERS_CONFIG_PATH', 'AUTH_PROVIDERS_CONFIG_JSON']),
+  }).strict()).optional(),
 }).strict();
 
 export type HomeIdentityDeploymentServicesV1 = z.infer<typeof HomeIdentityDeploymentServicesV1Schema>;
@@ -100,6 +123,17 @@ export const HomeAuthenticationOptionsV1Schema = z.object({
         'email_delivery_unavailable',
       ]).optional(),
     }).strict()),
+    /**
+     * The deployment env key that fixes this method on or off (D-1). The Home
+     * policy cannot turn a fixed method on; the row is read-only.
+     */
+    fixedBy: z.string().min(1).optional(),
+    /**
+     * The method cannot be offered on this deployment whatever the Home decides:
+     * a prerequisite is missing. `requires` names the deployment keys to set,
+     * when this Home knows them.
+     */
+    unavailable: z.object({ requires: z.array(z.string().min(1)) }).strict().optional(),
   }).strict()),
   permittedAccountModes: z.array(AccountEncryptionModeSchema).min(1),
   recommendedProvisioningMode: AccountEncryptionModeSchema.nullable(),
@@ -107,6 +141,21 @@ export const HomeAuthenticationOptionsV1Schema = z.object({
     deploymentMode: z.enum(['disabled', 'self', 'external']).nullable(),
     canDisable: z.boolean(),
   }).strict(),
+  /** Key-only signup as it applies now, and the deployment key that fixes it. */
+  anonymousSignup: z.object({
+    enabled: z.boolean(),
+    fixedBy: z.string().min(1).nullable(),
+  }).strict().optional(),
+  /**
+   * The storage policy the running server applies, the one stored for the next
+   * start (`null` when the Home stores none or it equals the running one), and
+   * the deployment key that fixes it.
+   */
+  storagePolicy: z.object({
+    running: EncryptionStoragePolicySchema,
+    pending: EncryptionStoragePolicySchema.nullable(),
+    fixedBy: z.string().min(1).nullable(),
+  }).strict().optional(),
 }).strict();
 
 export type HomeAuthenticationOptionsV1 = z.infer<typeof HomeAuthenticationOptionsV1Schema>;
@@ -137,6 +186,10 @@ export const HomeGovernanceProjectionV1Schema = z.object({
 
 export type HomeGovernanceProjectionV1 = z.infer<typeof HomeGovernanceProjectionV1Schema>;
 
+/** A fresh owner-only Home read for the optional empty-Personal-Home removal affordance. */
+export const HomeEmptinessV1Schema = z.object({ isEmpty: z.boolean() }).strict();
+export type HomeEmptinessV1 = z.infer<typeof HomeEmptinessV1Schema>;
+
 /**
  * The complete non-administrative Home projection available to any active viewer.
  *
@@ -146,6 +199,21 @@ export type HomeGovernanceProjectionV1 = z.infer<typeof HomeGovernanceProjection
 export const HomeGovernanceEligibilityV1Schema = z.object({
   teamsEnabled: z.boolean(),
   createTeam: z.boolean(),
+  /**
+   * Creation here names the Account the Team is created for (managed creation):
+   * the form asks for that first owner instead of offering self-service creation
+   * the Home would refuse. Always false when `createTeam` is false.
+   */
+  createTeamForChosenAccount: z.boolean(),
+  /** How Teams are created here, so a member who cannot create one knows why. */
+  teamCreationPolicy: TeamCreationPolicyV1Schema.optional(),
+  /**
+   * The active Home owners, then administrators, by display name only — never
+   * their ids or emails — so a member knows whom to ask.
+   */
+  administratorNames: z.array(z.string().min(1)).optional(),
+  /** Whether this viewer is offered the Teams destination on this Home. */
+  showTeams: z.boolean().optional(),
 }).strict();
 
 export type HomeGovernanceEligibilityV1 = z.infer<typeof HomeGovernanceEligibilityV1Schema>;

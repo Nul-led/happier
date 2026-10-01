@@ -270,10 +270,14 @@ export {
 export { FeatureGatesSchema, type FeatureGates } from './features/payload/featureGatesSchema.js';
 export {
   AccountServicePresentationV1Schema,
+  HomePresentationV1Schema,
+  HomeHostFactSchema,
   FEATURES_RESPONSE_MAX_UTF8_BYTES_V1,
   FeaturesResponseSchema,
   HomeSignInServicePolicyV1Schema,
   type AccountServicePresentationV1,
+  type HomePresentationV1,
+  type HomeHostFact,
   type FeaturesResponse,
   type HomeSignInServicePolicyV1,
 } from './features/payload/featuresResponseSchema.js';

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { AccountDisplayProfileV1Schema } from '../../account/accountDisplayProfileV1.js';
+import { TeamRoleV1Schema } from '../../teams/team.js';
+import { HomeAdministrationEventV1Schema } from './audit.js';
 import { AccountStatusV1Schema, HomeRoleV1Schema } from './roles.js';
 
 export const HomeAccountMutationUnavailableReasonV1Schema = z.enum([
@@ -37,6 +39,8 @@ export const HomeAccountMutationCapabilitiesV1Schema = z.object({
   disable: HomeAccountMutationCapabilityV1Schema,
   reenable: HomeAccountMutationCapabilityV1Schema,
   delete: HomeAccountMutationCapabilityV1Schema,
+  /** End every signed-in session of the Account (D-9). Needs an active target; no role changes. */
+  signOutEverywhere: HomeAccountMutationCapabilityV1Schema,
 }).strict();
 
 export type HomeAccountMutationCapabilitiesV1 = z.infer<
@@ -158,3 +162,42 @@ export const HomeAccountDeleteResultV1Schema = z.discriminatedUnion('status', [
 ]);
 
 export type HomeAccountDeleteResultV1 = z.infer<typeof HomeAccountDeleteResultV1Schema>;
+
+/** One Team the Account belongs to, as Home administration may see it: name and role only. */
+export const HomeAccountTeamMembershipV1Schema = z.object({
+  teamId: z.string().min(1),
+  name: z.string(),
+  role: TeamRoleV1Schema,
+  /** A suspended membership is still listed, flagged. */
+  status: z.enum(['active', 'suspended']),
+  archived: z.boolean(),
+}).strict();
+
+export type HomeAccountTeamMembershipV1 = z.infer<typeof HomeAccountTeamMembershipV1Schema>;
+
+export const HOME_ACCOUNT_DETAIL_RECENT_EVENTS_LIMIT_V1 = 10;
+
+/**
+ * One person as Home administration sees them (plan `2026-09-26-home-owner-console` §3.12).
+ *
+ * The row half is exactly the People row. Everything added is a fact an owner already has: linked
+ * provider ids (never the provider's user id), Team names and roles, and counts — never token
+ * labels or prefixes, Group membership or Session facts. There is no per-device session model, so
+ * no device list (D-8).
+ */
+export const HomeAccountDetailV1Schema = HomeAccountRowV1Schema.extend({
+  authentication: HomeAccountAuthenticationV1Schema.extend({
+    linkedProviderIds: z.array(z.string().min(1)),
+  }).strict(),
+  teams: z.array(HomeAccountTeamMembershipV1Schema),
+  machines: z.object({ count: z.number().int().min(0) }).strict(),
+  apiTokens: z.object({
+    count: z.number().int().min(0),
+    /** Milliseconds since the epoch; null when no token was ever used. */
+    lastUsedAt: z.number().int().min(0).nullable(),
+  }).strict(),
+  /** Newest first, at most `HOME_ACCOUNT_DETAIL_RECENT_EVENTS_LIMIT_V1`. */
+  recentEvents: z.array(HomeAdministrationEventV1Schema),
+}).strict();
+
+export type HomeAccountDetailV1 = z.infer<typeof HomeAccountDetailV1Schema>;
