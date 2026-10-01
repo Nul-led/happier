@@ -15,6 +15,10 @@ host is in [cli-architecture.md](cli-architecture.md#action-derived-command-argu
 | Decision or fact | Owner |
 |---|---|
 | The Action registry: every row, its schemas, surfaces, safety and approval | `packages/protocol/src/actions/actionSpecs.ts` |
+| Canonical Action input/result contracts | Runtime schemas reached by `packages/protocol/src/actions/actionSpecs.ts` |
+| Generated validator-neutral Protocol and SDK Action DTOs | `packages/plugin-sdk/scripts/generateActionTypeMap.mjs`; family-local `*ActionDtos.ts` and the aggregate are outputs |
+| Explicit schema/DTO type and catalog correspondence gate | `packages/protocol/src/actions/pluginActionDtoCorrespondence.ts` |
+| Portable SDK Action declarations and publication currentness | `packages/plugin-sdk/scripts/generateActionTypeMap.mjs` |
 | Surface-independent metadata vocabulary (surfaces, authority, placement, tool exposure) | `packages/protocol/src/actions/metadata.ts` |
 | Discovery projection and serialization for external consumers | `packages/protocol/src/actions/actionCatalog.ts`, `.../actionDefinitionV1.ts` |
 | Execution: input parse, authority admission, approval routing, output settlement | `packages/protocol/src/actions/actionExecutor.ts` |
@@ -29,6 +33,43 @@ There is no server-side Action executor. Three hosts execute: the UI executor
 MCP), and the public API's relay to a daemon. A server-owned Action declares its Home path on
 its spec row and the family clients build their requests from that declaration — see
 `serverTransport` below.
+
+## SDK Action declarations (0.3 development source)
+
+SDK authors retain exact literal Action ids and input/result types without importing
+Protocol's validators. The canonical schemas are the single source of truth.
+Named DTO maps generated beside their existing Action families are outputs, never
+hand-edited contracts. The explicit source compiler witness checks each family against the canonical schemas
+and complete catalog coverage, including the named declarative-node grammar, Action
+support declarations and icon vocabulary. This witness is excluded from Protocol's
+normal dependency build: DTO staleness fails the correspondence gate, never the SDK's
+prerequisite compilation. After changing a schema, regenerate its declaration
+projection through the same producer. Existing public projections keep
+validator slots opaque, erase validator-only string brands, and admit readonly JSON
+inputs without changing normalized result types.
+
+The retained Action-map producer derives each family from its selected canonical
+schema expressions in an independent compiler program, then projects the generated
+neutral declaration closure into SDK family modules and a small
+`actionTypeMap.generated.ts` index. Each family program exits before the next starts;
+the producer never renders one whole-catalog structural map. Public support and the
+declarative UI grammar are derived from their canonical owners by the same producer.
+Stable public support exports remain derivation roots even when an Action schema
+inlines their uses; recursive interfaces retain their canonical readonly heritage.
+The SDK's declarative UI aliases consume that generated neutral grammar;
+Protocol remains the runtime parser and policy owner. SDK runtime delegates and
+validated values cross one private declaration-projection seam, retaining canonical
+identity and validation without making SDK compilation depend on DTO freshness.
+
+Use the SDK's `generate:action-type-map` command after editing canonical schemas.
+`check:action-type-map` compares both Protocol DTO outputs and SDK projections without
+writing source; the compiler correspondence suite independently verifies their types.
+The authoritative local checkout owns all generated source writes. Its existing
+derivation/publication locks, input fencing and cache cover every generated family
+module and Protocol DTO as well as the index. Declaration/publication checks enforce current output;
+ordinary internal `build:prepared` dependency compilation does not regenerate or
+reject a stale Action map. This is an internal development representation change,
+not a new SDK API or a released availability claim.
 
 ## The three host-stamped facts
 

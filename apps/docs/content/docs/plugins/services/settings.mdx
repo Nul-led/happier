@@ -35,6 +35,11 @@ const watcher = accountSettings.watch((change) => {
 ```
 
 Use `{ kind: 'daemon' }` only for fields declared with daemon scope.
+
+A non-secret field id must be unique within its scope, so the same id may name
+one Account field and one daemon field. Secret ids share one plugin-wide
+namespace: a secret field or a top-level `secrets` entry cannot reuse any other
+Settings id.
 `ScopedSettingsService.watch(listener)` returns a `Disposable`. Dispose it when
 its owning activation or runtime stops. A watcher is a live observation, not a
 history API.

@@ -96,20 +96,32 @@ dispatch authority is maintainer-owned; obtain its private bootstrap contract
 from an absolute checkout path with
 `hmaint release bootstrap --repo <absolute checkout> --json`.
 
-On the Mac host, resolve the existing conductor in this order: `hmaint` on
-`PATH`, then the configured maintainer-tools checkout's `bin/hmaint` wrapper.
-Prove it with `hmaint --help`; there is intentionally no required
-`hmaint --version` command. Do not invoke its internal JavaScript entry point
-or install a second conductor in the VM. From the managed Linux VM, route the
-same Mac command through the configured execution target:
+On the configured Mac host, invoke
+`/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint`
+directly and prove that exact wrapper with
+`/Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint --help`;
+there is intentionally no required `hmaint --version` command. Do not resolve
+a different copy from `PATH`, invoke its internal JavaScript entry point, or
+install a second conductor in the VM. From the managed Linux VM, first enter
+the configured 0.3 checkout that owns the launcher, then route the Mac command
+through its execution target. Invoking this launcher while still in a 0.2
+checkout fails its repository boundary. The launcher projects the invocation
+directory remotely; its optional `--cwd` selects only a directory within the
+synchronized 0.3 checkout, not a different release repository:
 
 ```bash
-apps/stack/bin/hstack-exec --target=mac-host --cwd=<repo-relative-dir> -- \
-  hmaint release bootstrap --repo <macOS-mounted-absolute-checkout> --json
+cd <absolute-0.3-checkout>
+./apps/stack/bin/hstack-exec --target=mac-host -- \
+  /Users/leeroy/Documents/Development/happier/maintainers-tools/bin/hmaint release bootstrap \
+  --repo <macOS-mounted-absolute-checkout> --json
 ```
 
-Use the absolute checkout path reported by the actual execution host; similarly
-named host and VM paths are not interchangeable.
+The launcher's owning checkout and `hmaint --repo` target are independent.
+`--repo` may name a 0.2 checkout, but must use its independently verified absolute
+path on the Mac execution host, not an inferred translation of a VM path. If the
+launcher, configured `mac-host`, Mac wrapper, or target path cannot be proved,
+fail closed; do not substitute a VM-local conductor or copy credentials into
+the VM.
 
 For preview, the analyzed range starts at the currently promoted `preview`
 source; for production it starts at the current `main` source. This prevents
@@ -276,6 +288,29 @@ Tauri surfaces likewise retain direct `run.mjs` commands, so their semantic
 operations are callable without GitHub even though GitHub remains the normal
 official-release privilege boundary.
 
+Immutable version publication creates or resumes a draft, uploads missing
+assets, and verifies every remote asset's bytes before publishing the draft.
+Failed uploads or audits leave the draft private for retry. An existing public
+immutable release is audited without adding assets or changing visibility;
+missing or different assets fail. Rolling promotion follows successful immutable
+publication and verification.
+
+Immutable publication audits and rolling-promotion asset downloads share the
+read-retry owner in `scripts/pipeline/github/lib/release-asset-transfer.mjs`.
+Publication retains its existing `HAPPIER_PIPELINE_GH_RELEASE_UPLOAD_RETRIES`
+(three attempts), `HAPPIER_PIPELINE_GH_RELEASE_UPLOAD_RETRY_DELAY_MS` (2,000 ms),
+and `HAPPIER_PIPELINE_GH_RELEASE_TRANSFER_TIMEOUT_MS` (ten minutes per command).
+The legacy `UPLOAD` names also govern publication audit reads. Promotion retains
+its existing `HAPPIER_PIPELINE_GH_ASSET_READ_ATTEMPTS` (four attempts),
+`HAPPIER_PIPELINE_GH_ASSET_READ_RETRY_DELAY_MS` (2,000 ms), and
+`HAPPIER_PIPELINE_GH_ASSET_READ_MAX_RETRY_DELAY_MS` (8,000 ms) capped exponential
+backoff, with ten minutes per download command. This policy covers immutable,
+staged, and published downloads. Staged asset reads keep their temporary-file
+rename boundary; bulk release downloads clobber incomplete local files.
+Retries log their original error and apply only to transient read failures,
+including `gh`'s `unexpected end of JSON input`, never to authorization failures
+or integrity checks. A read retry never repeats a publication mutation.
+
 For hosted failures, first rerun failed jobs when no workflow/control change is
 needed. When control code changed but candidate bytes did not, a new release
 attempt may reuse only individually verified immutable candidates from the
@@ -326,6 +361,22 @@ final release source gate. Blacksmith is only an explicitly approved,
 budget-checked accelerator for the same non-secret Linux graph. It has no
 automatic fallback. Do not select it while included credits are exhausted.
 
+### Desktop macOS build tooling
+
+Repository desktop builds use the shared UI tooling adapter
+`apps/ui/scripts/tauriActoolEnvironment.mjs`: the release pipeline's build/bundle
+commands and `hstack build --tauri` consume it.
+It temporarily wraps the resolved Xcode `actool` executable to reopen stdin on
+`/dev/null`, preserving arguments, environment, exit status, and layered icons.
+The native Node Tauri CLI otherwise closes inherited stdin at exec, which can
+leave Apple's persistent `ibtoold` helper failing on later invocations too.
+The adapter warns when active and removes its private executable directory when
+the command settles; it does not restart shared Apple helpers or set private
+Apple process-registry options. Raw third-party `tauri` invocations are unchanged.
+Remove the adapter and its callers once the pinned CLI includes
+[the upstream captured-command stdin fix](https://github.com/tauri-apps/tauri/pull/15991),
+then verify a real layered-icon bundle with a fresh macOS build worker.
+
 ### Best-effort TestFlight distribution
 
 The native iOS build/submission and App Store processing/group attachment are
@@ -339,6 +390,13 @@ The reconciliation action validates source, environment, profile, app, and
 build identity before querying App Store Connect. A skipped fingerprint build
 is an explicit no-op. Retry only that reconciliation action after an Apple
 processing or group-attachment failure; do not start a second native build.
+
+A successful dispatch proves only that reconciliation was requested, not that
+Apple processed or distributed the build. Attachment errors remain failures in
+the follow-up run: a relationship 404 is reconciled against the current build
+and app groups, and an absent group is not silently treated as success. Recover
+an uploaded local IPA with its build number and app version; an EAS submission
+id is not an EAS build id.
 
 Self-hosted relays upgrade independently. The release contract never holds a
 fleet at a barrier, coordinates a migration, or declares a global cutover. A
@@ -356,6 +414,33 @@ Register the workflow filename without `.github/workflows/`; do not add a
 long-lived `NPM_TOKEN` fallback. A cluster of otherwise-authorized `ENEEDAUTH`
 publisher failures normally indicates a missing or mismatched top-level caller.
 Verify the package/version in the npm registry after publication.
+
+### Desktop artifact isolation and recovery
+
+The development desktop workflow scopes candidate, finalized, and publication
+artifact names by environment, so concurrent channel calls cannot select or
+merge each other's bytes. Nightly desktop recovery also accepts historical
+unscoped candidates from its single-channel predecessor. Both name shapes use
+the same origin admission and exact-environment materialization checks; candidates
+explicitly named for preview or production are rejected by nightly recovery.
+
+Standard release recovery admits only the requested UI channel's scoped desktop
+artifacts from the exact terminal origin and source. It prefers unexpired
+finalized updater archives, verifies their admitted SHA-256 archive digest, and
+restores the same payloads and signatures without rebuilding, re-signing, or
+re-notarizing. Missing finalized platforms reuse admitted unsigned candidates or
+build normally. Full release callers forward the canonical resolver's artifact
+maps, source identity, and original run number. Trusted preparation regenerates
+the publication envelope and verifies every updater signature before publishing.
+
+### Mobile and OTA current-origin recovery
+
+Standard release recovery can retain accepted OTA, native iOS/Android, and APK
+flows from exact-source successful jobs and their decisive successful steps.
+The canonical status projection records the original Expo action; completion is
+reused only for that same action. Missing historical mode or ambiguous job evidence
+keeps the flow enabled. Partial native recovery builds only the missing platform.
+These accepted workflow outcomes do not prove public App Store or Play availability.
 
 ### Reusing an exact CLI native candidate
 
@@ -400,6 +485,11 @@ fail closed. Ordinary publishing still builds and signs a fresh matrix when
 the candidate inputs are empty.
 
 Deploy branches typically include `deploy/<env>/ui`, `deploy/<env>/server`, `deploy/<env>/website`, and `deploy/<env>/docs` (depending on what changed and which options you select).
+
+Release/deploy-ref promotion requests both Contents and Workflows write permission from
+the release app: moving a branch to a source commit can change `.github/workflows`
+even when the deployed component itself is unchanged. Asset-only publishing
+tokens retain their narrower scope.
 
 ## Deploy branches → production infrastructure
 

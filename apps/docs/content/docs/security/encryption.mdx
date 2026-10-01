@@ -38,8 +38,10 @@ for the missing E2EE material.
 
 ### Passwords and E2EE accounts
 
-On an E2EE account you can add a password and sign in with it. The password does not
-replace your secret key: your device uses it locally to unwrap the same secret, and the
+
+In development builds, an E2EE account can add a password and sign in with it when
+the Home permits the method. The password does not replace your recovery key:
+your device uses it locally to unwrap the same secret, and the
 server only ever holds an encrypted wrapper it cannot open. This has two consequences
 worth knowing before you rely on it:
 
