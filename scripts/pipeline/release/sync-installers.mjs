@@ -78,7 +78,7 @@ async function fileExists(path) {
 // Project the CLI's planet at authoring time: shipped installers remain
 // standalone Bash/PowerShell, with no renderer or JavaScript runtime dependency.
 function projectInstallerPlanet(source, filename) {
-  const marker = /^([ \t]*)# BEGIN GENERATED PLANET\n[\s\S]*?^[ \t]*# END GENERATED PLANET/m;
+  const marker = /^([ \t]*)# BEGIN GENERATED PLANET\r?\n[\s\S]*?^[ \t]*# END GENERATED PLANET/m;
   if (!source.includes('# BEGIN GENERATED PLANET')) return source;
   if (!marker.test(source)) throw new Error('Unterminated installer planet projection: ' + filename);
   // The settled, fully lit pose of the same planet `happier setup` animates.
@@ -117,7 +117,7 @@ function projectInstallerPlanet(source, filename) {
     '# BEGIN GENERATED PLANET',
     ...lines,
     '# END GENERATED PLANET',
-  ].map((line) => indent + line).join('\n'));
+  ].map((line) => indent + line).join(source.includes('\r\n') ? '\r\n' : '\n'));
 }
 
 export async function syncInstallers({

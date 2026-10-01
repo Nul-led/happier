@@ -64,6 +64,16 @@ describe('cli-common/output help formatter', () => {
     expect(out).toContain('background service did last');
   });
 
+  it('stacks descriptions under their labels when the description column has no room', () => {
+    const plain = Object.create(chalk) as typeof chalk;
+    plain.level = 0;
+    const out = createHelpFormatter(plain).renderRows([
+      { label: 'status', description: 'Show whether this computer is connected to its relay' },
+    ], { columns: 40, labelWidth: 31 });
+    for (const line of out.split('\n')) expect(line.length).toBeLessThanOrEqual(40);
+    expect(out).toContain('connected to its relay');
+  });
+
   it('does not wrap when the width is unknown (piped output)', () => {
     const plain = Object.create(chalk) as typeof chalk;
     plain.level = 0;
