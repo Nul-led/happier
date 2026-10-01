@@ -28,7 +28,10 @@ import { decryptTranscriptRows } from '@/session/replay/decryptTranscriptRows';
 import { fetchEncryptedTranscriptMessagesPage } from '@/session/replay/fetchEncryptedTranscriptMessages';
 import { logger } from '@/ui/logger';
 import { startSingleFlightIntervalLoop, type SingleFlightIntervalLoopHandle } from '@/daemon/lifecycle/singleFlightIntervalLoop';
-import { fetchSessionsPage } from '@/session/transport/http/sessionsHttp';
+import {
+  collectRetainedSessionInventoryVisibility,
+  fetchSessionInventoryPage,
+} from '@/daemon/sessions/sessionInventoryVisibility';
 import { syncMemoryHintsForSessionsOnce } from './syncMemoryHintsForSessionsOnce';
 import { runMemoryHintsExecutionRun } from './hints/runMemoryHintsExecutionRun';
 import { commitMemorySystemRecords } from '@/session/systemRecords/memory/commitMemorySystemRecords';
@@ -413,10 +416,10 @@ export async function startMemoryWorker(params: Readonly<{
     limit: number;
     signal?: AbortSignal;
   }>): Promise<MemoryInventoryPage> => {
-    return await fetchSessionsPage({
+    return await fetchSessionInventoryPage({
       token: params.credentials.token,
       ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
-      ...(args.scope === 'archived' ? { archivedOnly: true } : { activeOnly: false }),
+      scope: args.scope,
       limit: args.limit,
       ...(args.signal ? { signal: args.signal } : {}),
     });
@@ -554,7 +557,6 @@ export async function startMemoryWorker(params: Readonly<{
   const reconcileRetainedSessionAccess = async (): Promise<void> => {
     const retained = new Set(listIndexedSessionIds());
     if (retained.size === 0) return;
-    const visible = new Set<string>();
     // Archived sessions are only eligible when the setting is enabled.  The
     // retained-access reconciliation is also the recovery path for archive
     // transitions missed while the worker was offline, so querying archived
@@ -563,30 +565,14 @@ export async function startMemoryWorker(params: Readonly<{
     const scopes = settings.includeArchivedSessions
       ? (['active', 'archived'] as const)
       : (['active'] as const);
-    for (const scope of scopes) {
-      let cursor: string | undefined;
-      const seenCursors = new Set<string>();
-      for (;;) {
-        const page = await fetchMemoryInventoryPage({
-          scope,
-          ...(cursor ? { cursor } : {}),
-          limit: settings.worker.sessionListPageLimit,
-        });
-        for (const row of page.sessions) {
-          const id = typeof (row as { id?: unknown }).id === 'string'
-            ? String((row as { id?: unknown }).id).trim()
-            : '';
-          if (id && retained.has(id)) visible.add(id);
-        }
-        if (visible.size === retained.size) return;
-        if (!page.hasNext || !page.nextCursor) break;
-        if (seenCursors.has(page.nextCursor)) {
-          throw new Error('memory_access_reconciliation_cursor_stalled');
-        }
-        seenCursors.add(page.nextCursor);
-        cursor = page.nextCursor;
-      }
-    }
+    const visible = await collectRetainedSessionInventoryVisibility({
+      retainedSessionIds: [...retained],
+      scopes,
+      fetchInventoryPage: async (args) => await fetchMemoryInventoryPage({
+        ...args,
+        limit: settings.worker.sessionListPageLimit,
+      }),
+    });
     await removeSessions([...retained].filter((sessionId) => !visible.has(sessionId)));
   };
 
