@@ -186,6 +186,42 @@ describe('recordProviderAccountUsageSnapshotForSession', () => {
     } finally { persistence.dispose(); }
   });
 
+  it.each([true, false])('preserves the existing record proof across future sources (persisted source first: %s)', async (persistedSourceFirst) => {
+    const { recordProviderAccountUsageSnapshotForSession } = await import('./record');
+    const { createProviderAccountUsageStore } = await import('./store');
+    const { createProviderAccountUsagePersistenceScheduler } = await import('./persistence');
+    const write = vi.fn(async () => {});
+    const publishRecordId = vi.fn(async () => {});
+    const store = createProviderAccountUsageStore();
+    const persistence = createProviderAccountUsagePersistenceScheduler({
+      api: { getAccountEncryptionMode: async () => 'plain', registerProviderAccountUsageSnapshotPlain: write },
+      now: () => 10_000, fingerprintKey: new Uint8Array(32).fill(9),
+    });
+    const snapshot = createSnapshot();
+    const knownSource: ConnectedServiceUsageSourceV1 = { serviceId: 'openai-codex', profileId: 'known', bindingKind: 'profile' };
+    const newSource: ConnectedServiceUsageSourceV1 = { serviceId: 'openai-codex', profileId: 'new', bindingKind: 'profile' };
+    const getChildren = () => [{ happySessionId: 'past' }, { happySessionId: 'future' }];
+    try {
+      await recordProviderAccountUsageSnapshotForSession({
+        getChildren, sessionId: 'past', snapshot, store, persistence, publishRecordId,
+        observation: { sources: [knownSource] }, sourceProviderAccountId: snapshot.accountSubject.id,
+      });
+      await persistence.flush(1_000);
+      await vi.waitFor(() => expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'past', recordId: snapshot.recordId }));
+      expect(write).toHaveBeenCalledTimes(1);
+      const result = await recordProviderAccountUsageSnapshotForSession({
+        getChildren, sessionId: 'future', snapshot: { ...snapshot, fetchedAtMs: 100_000, observedAtMs: 100_000 },
+        store, persistence, publishRecordId, sourceProviderAccountId: snapshot.accountSubject.id,
+        observation: { sources: persistedSourceFirst ? [knownSource, newSource] : [newSource, knownSource] },
+      });
+      await Promise.resolve();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(publishRecordId).toHaveBeenCalledTimes(2);
+      expect(publishRecordId).toHaveBeenCalledWith({ sessionId: 'future', recordId: snapshot.recordId });
+      expect(result).toMatchObject({ status: 'snapshot_advanced', persisted: true });
+    } finally { persistence.dispose(); }
+  });
+
   it('records latest state, forwards explicit source context, queues persistence, and waits for confirmed persistence before metadata refs', async () => {
     const module = await loadRecordModule();
     expect(module).not.toBeNull();

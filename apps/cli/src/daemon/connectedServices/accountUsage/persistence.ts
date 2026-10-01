@@ -312,7 +312,8 @@ export function createProviderAccountUsagePersistenceScheduler(params: Readonly<
           nowMs: normalizeNonNegativeInteger(params.now()),
         });
         if (!decision.persist) {
-          lastSuppressionReason = decision.reason;
+          // Any confirmed source proves this same global record exists.
+          if (lastSuppressionReason !== 'future_existing_record') lastSuppressionReason = decision.reason;
           continue;
         }
 
