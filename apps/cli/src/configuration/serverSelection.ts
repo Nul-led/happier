@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol/server/urls';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
 
 import { deriveServerIdFromUrl, sanitizeServerIdForFilesystem } from '@/server/serverId';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
@@ -89,8 +90,7 @@ export function resolveServerSelection(params: Readonly<{
   persisted: PersistedServerSettings | null;
   serversDir: string;
 }>): Readonly<{ activeServerId: string; serverUrl: string; apiServerUrl: string; webappUrl: string }> {
-  const DEFAULT_SERVER_URL = 'https://api.happier.dev';
-  const DEFAULT_WEBAPP_URL = 'https://app.happier.dev';
+  const DEFAULT_WEBAPP_URL = 'https://cloud.happier.dev';
   const resolveActiveServerId = (fallbackId: string): string =>
     sanitizeServerIdForFilesystem(params.envActiveServerId ?? fallbackId, 'cloud');
 
@@ -198,7 +198,7 @@ export function resolveServerSelection(params: Readonly<{
     if (!webappUrl) {
       if (persistedMatch?.webappUrl) {
         webappUrl = persistedMatch.webappUrl;
-      } else if (envCanonicalServerUrl === DEFAULT_SERVER_URL) {
+      } else if (envCanonicalServerUrl === DEFAULT_HAPPIER_CLOUD_SERVER_URL) {
         webappUrl = DEFAULT_WEBAPP_URL;
       } else {
         try {
@@ -231,8 +231,8 @@ export function resolveServerSelection(params: Readonly<{
 
   return {
     activeServerId: resolveActiveServerId('cloud'),
-    serverUrl: DEFAULT_SERVER_URL,
-    apiServerUrl: DEFAULT_SERVER_URL,
+    serverUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
+    apiServerUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
     webappUrl: DEFAULT_WEBAPP_URL,
   };
 }

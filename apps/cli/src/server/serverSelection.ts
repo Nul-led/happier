@@ -3,6 +3,7 @@ import { deriveServerIdFromUrl } from '@/server/serverId';
 import { getServerProfile, upsertServerProfileByUrl, useServerProfile } from '@/server/serverProfiles';
 import { resolveCliHomeTarget } from '@/server/homeTarget';
 import type { ResolvedHomeTarget } from '@happier-dev/cli-common/homeTarget';
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
 
 function takeFlagValue(args: string[], name: string): { value: string | null; rest: string[] } {
   const rest: string[] = [];
@@ -59,8 +60,8 @@ function deriveProfileNameFromServerUrl(serverUrl: string): string {
 }
 
 function deriveDefaultWebappUrl(serverUrl: string): string {
-  if (serverUrl.replace(/\/+$/, '') === 'https://api.happier.dev') {
-    return 'https://app.happier.dev';
+  if (serverUrl.replace(/\/+$/, '') === DEFAULT_HAPPIER_CLOUD_SERVER_URL) {
+    return 'https://cloud.happier.dev';
   }
   return new URL(serverUrl).origin;
 }

@@ -279,7 +279,7 @@ For the full user guide (UI behavior, defaults, apply timing), see the app docs:
 - `HAPPIER_SERVER_URL` - Legacy/compat CLI connection URL
   - If `HAPPIER_PUBLIC_SERVER_URL` is unset, the CLI treats it as the selected Home URL.
   - If `HAPPIER_PUBLIC_SERVER_URL` is set, the CLI may use `HAPPIER_SERVER_URL` as its local API route while keeping the public URL for links.
-- `HAPPIER_WEBAPP_URL` - Custom web app URL (default: https://app.happier.dev)
+- `HAPPIER_WEBAPP_URL` - Custom web app URL (default: https://cloud.happier.dev)
 - `HAPPIER_HOME_DIR` - Custom home directory for Happier data (default: ~/.happier)
 - `HAPPIER_DISABLE_CAFFEINATE` - Disable macOS sleep prevention (set to `true`, `1`, or `yes`)
 - `HAPPIER_EXPERIMENTAL` - Enable experimental features (set to `true`, `1`, or `yes`)

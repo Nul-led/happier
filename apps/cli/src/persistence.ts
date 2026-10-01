@@ -10,6 +10,7 @@ import { readFile, writeFile, mkdir, open, unlink, rename, stat, chmod, readdir 
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { constants } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { DEFAULT_HAPPIER_CLOUD_SERVER_URL } from '@happier-dev/cli-common/happierCloud';
 import { configuration } from './configuration';
 import { resolveCliApiToken } from './auth/cliApiToken';
 import { resolveDaemonStateCandidatePaths } from './daemon/ownership/daemonOwnershipPaths';
@@ -195,8 +196,8 @@ const defaultSettings: Settings = {
     cloud: {
       id: 'cloud',
       name: 'Happier Cloud',
-      serverUrl: 'https://api.happier.dev',
-      webappUrl: 'https://app.happier.dev',
+      serverUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
+      webappUrl: 'https://cloud.happier.dev',
       createdAt: 0,
       updatedAt: 0,
       lastUsedAt: 0,
@@ -237,8 +238,7 @@ function migrateSettings(raw: any, fromVersion: number): any {
 
   // Migration from v4 to v5 (server profiles + per-server state)
   if (fromVersion < 5) {
-    const DEFAULT_SERVER_URL = 'https://api.happier.dev';
-    const DEFAULT_WEBAPP_URL = 'https://app.happier.dev';
+    const DEFAULT_WEBAPP_URL = 'https://cloud.happier.dev';
     const now = Date.now();
 
     const cloudId = 'cloud';
@@ -247,7 +247,7 @@ function migrateSettings(raw: any, fromVersion: number): any {
       [cloudId]: {
         id: cloudId,
         name: 'Happier Cloud',
-        serverUrl: DEFAULT_SERVER_URL,
+        serverUrl: DEFAULT_HAPPIER_CLOUD_SERVER_URL,
         webappUrl: DEFAULT_WEBAPP_URL,
         createdAt: now,
         updatedAt: now,
