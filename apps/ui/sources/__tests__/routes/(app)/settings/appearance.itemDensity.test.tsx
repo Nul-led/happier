@@ -173,6 +173,18 @@ describe('Appearance settings item density', () => {
         delete shared.settingsState.loadingIndicatorStyle;
     });
 
+    it('keeps the loading indicator previews out of the accessibility tree, since the option title already names the style', async () => {
+        const { LoadingIndicatorStylePreview } = await import('@/components/settings/appearance/LoadingIndicatorStylePreview');
+        const screen = await renderSettingsView(React.createElement(LoadingIndicatorStylePreview, { styleId: 'radar' }));
+
+        const root = screen.findAllByType('View' as any)[0];
+        expect(root?.props).toEqual(expect.objectContaining({
+            'aria-hidden': true,
+            accessibilityElementsHidden: true,
+            importantForAccessibility: 'no-hide-descendants',
+        }));
+    });
+
     it('shows every content width as a visible choice and updates the local setting', async () => {
         const mod = await import('@/app/(app)/settings/appearance');
         const screen = await renderSettingsView(React.createElement(mod.default));
