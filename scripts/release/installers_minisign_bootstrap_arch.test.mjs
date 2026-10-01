@@ -15,7 +15,9 @@ async function sha256(path) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-test('install.sh bootstraps minisign with the correct Linux arch (aarch64)', async () => {
+// Runs the real installer against stubbed release assets on linux-arm64; the aarch64 minisign stub exits
+// with `minisignExitCode`, so a non-zero code is a release signature that does not verify.
+async function runInstallerWithStubbedRelease({ minisignExitCode }) {
   const root = await mkdtemp(join(tmpdir(), 'happier-installer-minisign-arch-'));
   const binDir = join(root, 'bin');
   const installDir = join(root, 'install');
@@ -87,7 +89,7 @@ echo ok
   await writeFile(
     minisignAarch64,
     `#!/usr/bin/env bash
-exit 0
+exit ${minisignExitCode}
 `,
     'utf8',
   );
@@ -223,13 +225,30 @@ printf '%s' '${releaseJson}'
   };
 
   const res = spawnSync('bash', [installerPath, '--without-daemon'], { env, encoding: 'utf8' });
-  const stdout = String(res.stdout ?? '');
-  const stderr = String(res.stderr ?? '');
-  assert.equal(res.status, 0, `installer failed:\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
+  const result = {
+    status: res.status,
+    stdout: String(res.stdout ?? ''),
+    stderr: String(res.stderr ?? ''),
+    installedBinary: spawnSync('test', ['-e', join(outBinDir, 'happier')]).status === 0,
+  };
+  await rm(root, { recursive: true, force: true });
+  return result;
+}
+
+test('install.sh bootstraps minisign with the correct Linux arch (aarch64)', async () => {
+  const { status, stdout, stderr } = await runInstallerWithStubbedRelease({ minisignExitCode: 0 });
+  assert.equal(status, 0, `installer failed:\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
 
   assert.ok(stdout.includes('[✓] Verifying archive checksum'), 'installer should verify checksums');
   assert.ok(stdout.includes('[✓] Verifying release signature'), 'installer should verify minisign signature');
   assert.doesNotMatch(stderr, /Ignoring unknown extended header keyword/i, 'installer should suppress non-actionable tar warnings');
+});
 
-  await rm(root, { recursive: true, force: true });
+// Redirected output runs steps without the spinner; a rejected signature must stop the install there too.
+test('install.sh stops before extracting when the release signature does not verify', async () => {
+  const { status, stdout, stderr, installedBinary } = await runInstallerWithStubbedRelease({ minisignExitCode: 1 });
+  assert.notEqual(status, 0, `installer should fail:\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`);
+  assert.ok(stdout.includes('[x] Verifying release signature'), 'the signature step should report failure');
+  assert.doesNotMatch(stdout, /Extracting payload/, 'the installer must not extract an unverified archive');
+  assert.equal(installedBinary, false, 'no binary should be installed from an unverified archive');
 });
