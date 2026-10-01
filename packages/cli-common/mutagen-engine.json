@@ -29,6 +29,9 @@
     "epoch": "external-stream-v1",
     "urlShape": "external://<opaque-endpoint-id>"
   },
+  "engine": {
+    "contentHashAlgorithm": "sha1"
+  },
   "targets": [
     "darwin-arm64",
     "darwin-amd64",

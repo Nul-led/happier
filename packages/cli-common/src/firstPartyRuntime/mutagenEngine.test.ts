@@ -13,6 +13,7 @@ import {
   MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
   MUTAGEN_ENGINE_VERSION,
   MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256,
+  MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM,
   MUTAGEN_ENGINE_PROTOCOL_EPOCH,
   MUTAGEN_ENGINE_SUPPORTED_TARGETS,
   MUTAGEN_ENGINE_UPSTREAM_COMMIT,
@@ -45,6 +46,7 @@ const MUTAGEN_ENGINE_SOURCE_POLICY = JSON.parse(
     distributionSha256: Readonly<Record<string, string>>;
   }>;
   protocol: Readonly<{ epoch: string }>;
+  engine: Readonly<{ contentHashAlgorithm: string }>;
   targets: readonly string[];
   artifact: Readonly<{ releaseRepository: string; sourceRepository: string }>;
   license: Readonly<{
@@ -119,6 +121,7 @@ describe('Mutagen engine artifact contract', () => {
         distributionSha256: MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256,
       },
       protocol: { epoch: MUTAGEN_ENGINE_PROTOCOL_EPOCH },
+      engine: { contentHashAlgorithm: MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM },
       targets: MUTAGEN_ENGINE_SUPPORTED_TARGETS,
       artifact: {
         releaseRepository: 'happier-dev/mutagen',
@@ -146,6 +149,7 @@ describe('Mutagen engine artifact contract', () => {
         distributionSha256: MUTAGEN_ENGINE_SOURCE_POLICY.toolchain.distributionSha256,
       },
       protocol: { epoch: MUTAGEN_ENGINE_SOURCE_POLICY.protocol.epoch },
+      engine: { contentHashAlgorithm: MUTAGEN_ENGINE_SOURCE_POLICY.engine.contentHashAlgorithm },
       targets: MUTAGEN_ENGINE_SOURCE_POLICY.targets,
       artifact: {
         releaseRepository: MUTAGEN_ENGINE_SOURCE_POLICY.artifact.releaseRepository,
@@ -167,6 +171,7 @@ describe('Mutagen engine artifact contract', () => {
     expect(MUTAGEN_ENGINE_UPSTREAM_TAG).toBe('v0.18.1');
     expect(MUTAGEN_ENGINE_GO_VERSION).toBe('1.22.12');
     expect(MUTAGEN_ENGINE_PROTOCOL_EPOCH).toBe('external-stream-v1');
+    expect(MUTAGEN_ENGINE_SOURCE_POLICY.engine.contentHashAlgorithm).toBe(MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM);
     expect(MUTAGEN_ENGINE_SUPPORTED_TARGETS).toEqual([
       'darwin-arm64',
       'darwin-amd64',

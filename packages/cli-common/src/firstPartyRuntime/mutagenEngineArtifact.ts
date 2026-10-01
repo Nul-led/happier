@@ -29,6 +29,8 @@ export const MUTAGEN_ENGINE_VERSION = '0.18.1-happier.9';
 export const MUTAGEN_ENGINE_UPSTREAM_COMMIT = 'a225ae50aee3d7ebb59139203cb84e8a6a3ff4bf';
 export const MUTAGEN_ENGINE_GO_VERSION = '1.22.12';
 export const MUTAGEN_ENGINE_PROTOCOL_EPOCH = 'external-stream-v1';
+/** Mutagen's conflict fingerprints are SHA-1; readers and delete preconditions consume this owner. */
+export const MUTAGEN_ENGINE_CONTENT_HASH_ALGORITHM = 'sha1' as const;
 export const MUTAGEN_ENGINE_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const MUTAGEN_ENGINE_ARTIFACT_FORMAT = 'happier-mutagen-engine';
 const MUTAGEN_ENGINE_SOURCE_REPOSITORY = 'https://github.com/happier-dev/mutagen';
