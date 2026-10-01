@@ -1,6 +1,5 @@
 import { join } from 'node:path';
 import { run } from '../utils/proc/proc.mjs';
-import { listAllStackNames } from '../utils/stack/stacks.mjs';
 import { getRuntimePortExtraEnv, withStackEnv } from './stack_environment.mjs';
 
 export async function cmdService({ rootDir, stackName, svcCmd, args = [] }) {
@@ -87,20 +86,4 @@ export async function cmdAuth({ rootDir, stackName, args }) {
       await run(process.execPath, [join(rootDir, 'scripts', 'auth.mjs'), ...forwarded], { cwd: rootDir, env });
     },
   });
-}
-
-export async function cmdListStacks() {
-  try {
-    const names = (await listAllStackNames()).filter((n) => n !== 'main');
-    if (!names.length) {
-      console.log('[stack] no stacks found');
-      return;
-    }
-    console.log('[stack] stacks:');
-    for (const n of names) {
-      console.log(`- ${n}`);
-    }
-  } catch {
-    console.log('[stack] no stacks found');
-  }
 }
