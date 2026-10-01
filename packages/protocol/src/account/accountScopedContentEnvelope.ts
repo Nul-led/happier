@@ -18,7 +18,7 @@ export function buildAccountScopedContentEnvelopeV1Schema<TValue extends z.ZodTy
 
 /** Shared mode/purpose admission, after the domain's complete envelope parse. */
 export function assertAccountScopedContentEnvelopeForModeV1<
-  TContent extends { t: 'plain'; v: unknown } | { t: 'encrypted'; c: string },
+  TContent extends { t: 'plain' } | { t: 'encrypted'; c: string },
 >(params: Readonly<{
   content: TContent;
   mode: 'plain' | 'e2ee';
