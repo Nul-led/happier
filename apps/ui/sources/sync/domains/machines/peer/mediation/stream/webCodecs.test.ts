@@ -3,6 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import { createBrowserLiveStreamWebCodecsAdapter } from './webCodecs';
 
 describe('browser WebCodecs stream adapter', () => {
+    it('rejects decode before configuration and after close instead of claiming an output', async () => {
+        class VideoDecoder {
+            configure(): void {}
+            decode(): void {}
+            close(): void {}
+        }
+        class EncodedVideoChunk {}
+        const adapter = createBrowserLiveStreamWebCodecsAdapter({ scope: { VideoDecoder, EncodedVideoChunk } });
+        const chunk = { type: 'keyframe' as const, payload: new Uint8Array([0x65]) };
+        await expect(adapter.decode(chunk)).rejects.toThrow('webcodecs_decoder_not_configured');
+        await adapter.configure({ description: new Uint8Array([1, 0x64, 0, 0x28]) });
+        adapter.close();
+        await expect(adapter.decode(chunk)).rejects.toThrow('webcodecs_decoder_not_configured');
+    });
     it('resolves decode only after an output frame is delivered', async () => {
         let output: ((frame: { close?: () => void }) => void) | null = null;
         const getOutput = (): (frame: { close?: () => void }) => void => {

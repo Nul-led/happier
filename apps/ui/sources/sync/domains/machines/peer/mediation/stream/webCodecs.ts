@@ -162,7 +162,8 @@ export function createBrowserLiveStreamWebCodecsAdapter(input: Readonly<{
         },
         decode: async ({ type, payload, timestampUs }) => {
             const support = resolveBrowserLiveStreamWebCodecsSupport(scope);
-            if (!support.ok || decoder === null) return;
+            if (!support.ok) throw new Error(support.reasonCode);
+            if (decoder === null) throw new Error('webcodecs_decoder_not_configured');
 
             const webCodecsScope = getWebCodecsScope(scope);
             const EncodedVideoChunkCtor = webCodecsScope.EncodedVideoChunk as BrowserEncodedVideoChunkConstructor;

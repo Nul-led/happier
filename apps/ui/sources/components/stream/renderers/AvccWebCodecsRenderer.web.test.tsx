@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
@@ -18,6 +19,35 @@ function jpegBytes(seed: number): Uint8Array {
 }
 
 describe('AvccWebCodecsRenderer web', () => {
+    it('keeps decoded output observable when a newer relay batch arrives first', async () => {
+        const { AvccWebCodecsRenderer } = await import('./AvccWebCodecsRenderer.web');
+        const outputs: (() => void)[] = [];
+        const onDecoded = vi.fn();
+        const adapter = { isSupported: () => ({ ok: true as const }), configure: async () => ({}),
+            decode: () => new Promise<void>((resolve) => outputs.push(resolve)), close: () => undefined };
+        const screen = await renderScreen(<AvccWebCodecsRenderer adapter={adapter} onDecoded={onDecoded}
+            chunks={[avccEnvelope(0x02, [0x65])]} testID="avcc" />);
+        await act(async () => screen.update(<AvccWebCodecsRenderer adapter={adapter} onDecoded={onDecoded}
+            chunks={[avccEnvelope(0x03, [0x41])]} testID="avcc" />));
+        await act(async () => outputs[0]?.());
+        expect(onDecoded).toHaveBeenCalledOnce();
+        await act(async () => outputs[1]?.());
+        expect(onDecoded).toHaveBeenCalledTimes(2);
+    });
+    it('decodes successive relay batches with the same chunk count', async () => {
+        const { AvccWebCodecsRenderer } = await import('./AvccWebCodecsRenderer.web');
+        const decoded: number[] = [];
+        const adapter = { isSupported: () => ({ ok: true as const }), configure: async () => ({}),
+            decode: async ({ payload }: { payload: Uint8Array }) => { decoded.push(payload[0]!); }, close: () => undefined };
+        const screen = await renderScreen(<AvccWebCodecsRenderer adapter={adapter}
+            chunks={[avccEnvelope(0x02, [0x65])]} testID="avcc" />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        await act(async () => screen.update(<AvccWebCodecsRenderer adapter={adapter}
+            chunks={[avccEnvelope(0x03, [0x41])]} testID="avcc" />));
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(decoded).toEqual([0x65, 0x41]);
+    });
+
     it('routes AVCC description, seed, keyframe, delta, and reconfiguration through a sanitized adapter boundary', async () => {
         const mod = await import('./AvccWebCodecsRenderer.web').catch((error: unknown) => ({ importError: error }));
 

@@ -20,6 +20,7 @@ export type AvccWebCodecsRendererProps = Readonly<{
     maxBufferedBytes?: number;
     startupTimeoutMs?: number;
     onDiagnostic?: (diagnostic: LiveStreamPlayerDiagnostic) => void;
+    onDecoded?: () => void;
     onReconfigured?: (event: LiveStreamPlayerRenderEvent) => void;
     onStartupTimeout?: (diagnostic: LiveStreamPlayerDiagnostic) => void;
     style?: StyleProp<ViewStyle>;
@@ -59,6 +60,7 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
         chunks,
         maxBufferedBytes: maxBufferedBytesProp,
         onDiagnostic,
+        onDecoded,
         onReconfigured,
         onStartupTimeout,
         startupTimeoutMs: startupTimeoutMsProp,
@@ -75,15 +77,18 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
         () => createMachineLiveStreamAvccDemuxer({ maxBufferedBytes }),
         [maxBufferedBytes],
     );
-    const processedChunkCountRef = React.useRef(0);
+    const previousChunksRef = React.useRef<readonly Uint8Array[]>([]);
+    const lifetime = React.useMemo(() => ({ active: true }), [adapter, demuxer]);
     const decodedFrameRef = React.useRef(false);
     const [seedFrameUrl, setSeedFrameUrl] = React.useState<string | null>(null);
 
     React.useEffect(() => {
+        lifetime.active = true;
         demuxer.reset();
-        processedChunkCountRef.current = 0;
+        previousChunksRef.current = [];
         decodedFrameRef.current = false;
-    }, [demuxer]);
+        return () => { lifetime.active = false; };
+    }, [demuxer, lifetime]);
 
     React.useEffect(() => {
         return () => {
@@ -98,25 +103,24 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
             return;
         }
 
-        if (chunks.length < processedChunkCountRef.current) {
-            demuxer.reset();
-            processedChunkCountRef.current = 0;
-        }
-
-        const chunksToProcess = chunks.slice(processedChunkCountRef.current);
-        processedChunkCountRef.current = chunks.length;
+        const previous = previousChunksRef.current;
+        const isAppend = previous.length <= chunks.length && previous.every((chunk, index) => chunks[index] === chunk);
+        const chunksToProcess = isAppend ? chunks.slice(previous.length) : chunks;
+        // Relay updates are batches, not a cumulative array. Keep the demuxer's
+        // partial packet across batches, including equal-sized successive ones.
+        previousChunksRef.current = chunks;
         if (chunksToProcess.length === 0) return;
 
-        let cancelled = false;
         const processChunks = async (): Promise<void> => {
             for (const chunkBytes of chunksToProcess) {
+                if (!lifetime.active) return;
                 const demuxed = demuxer.push(chunkBytes);
                 if (demuxed.reasonCode) {
                     onDiagnostic?.(sanitizedDiagnostic(demuxed.reasonCode));
                 }
 
                 for (const chunk of demuxed.chunks) {
-                    if (cancelled) return;
+                    if (!lifetime.active) return;
                     if (chunk.type === 'seed') {
                         setSeedFrameUrl(createJpegDataUrl(chunk.payload));
                         continue;
@@ -124,7 +128,7 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
                     if (chunk.type === 'description') {
                         try {
                             const reconfiguration = await adapter.configure({ description: chunk.payload });
-                            if (cancelled) return;
+                            if (!lifetime.active) return;
                             onReconfigured?.({
                                 type: 'decoderReconfigured',
                                 ...(typeof reconfiguration.width === 'number' ? { width: reconfiguration.width } : {}),
@@ -132,7 +136,7 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
                                 ...(reconfiguration.orientation ? { orientation: reconfiguration.orientation } : {}),
                             });
                         } catch {
-                            onDiagnostic?.(sanitizedDiagnostic('webcodecs_configure_failed'));
+                            if (lifetime.active) onDiagnostic?.(sanitizedDiagnostic('webcodecs_configure_failed'));
                         }
                         continue;
                     }
@@ -142,9 +146,11 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
                                 type: chunk.type,
                                 payload: chunk.payload,
                             });
+                            if (!lifetime.active) return;
                             decodedFrameRef.current = true;
+                            onDecoded?.();
                         } catch {
-                            onDiagnostic?.(sanitizedDiagnostic('webcodecs_decode_failed'));
+                            if (lifetime.active) onDiagnostic?.(sanitizedDiagnostic('webcodecs_decode_failed'));
                         }
                     }
                 }
@@ -152,10 +158,7 @@ export function AvccWebCodecsRenderer(props: AvccWebCodecsRendererProps): React.
         };
 
         void processChunks();
-        return () => {
-            cancelled = true;
-        };
-    }, [adapter, chunks, demuxer, onDiagnostic, onReconfigured]);
+    }, [adapter, chunks, demuxer, lifetime, onDiagnostic, onDecoded, onReconfigured]);
 
     React.useEffect(() => {
         const startupTimeoutMs = Math.max(0, Math.floor(startupTimeoutMsProp ?? 0));
