@@ -1,8 +1,9 @@
-import { buildPeerMediationObservabilityFlowSnapshots } from './flowSnapshotFold.js';
+import { applyPeerMediationObservabilityEventToFlowSnapshot } from './flowSnapshotFold.js';
 import { peerMediationObservabilityScopeKey } from './scopeIdentity.js';
 import type {
   PeerMediationObservabilityDeltaV1,
   PeerMediationObservabilityEventV1,
+  PeerMediationObservabilityFlowSnapshotV1,
   PeerMediationObservabilityScopeV1,
   PeerMediationObservabilitySnapshotV1,
 } from './v1.js';
@@ -143,15 +144,24 @@ export function createPeerMediationObservabilityFlowStore(
   );
   const nowMs = options.nowMs ?? Date.now;
   const eventsByScope = new Map<string, PeerMediationObservabilityEventV1[]>();
+  const flowsByScope = new Map<string, Map<string, PeerMediationObservabilityFlowSnapshotV1>>();
   const sequenceByScope = new Map<string, number>();
   const listenersByScope = new Map<string, Set<PeerMediationObservabilityFlowStoreDeltaListener>>();
 
   function writeEvents(key: string, events: PeerMediationObservabilityEventV1[]): void {
     if (events.length === 0) {
       eventsByScope.delete(key);
+      flowsByScope.delete(key);
       return;
     }
     eventsByScope.set(key, events);
+    // Details may be evicted without losing a retained flow's start, counters or terminal state.
+    // The existing detail-retention policy still owns the lifetime of the aggregate.
+    const retainedFlowIds = new Set(events.map((event) => event.flow.flowId));
+    const flows = flowsByScope.get(key);
+    for (const flowId of flows?.keys() ?? []) {
+      if (!retainedFlowIds.has(flowId)) flows?.delete(flowId);
+    }
   }
 
   function pruneScope(key: string, currentTimeMs: number): PeerMediationObservabilityEventV1[] {
@@ -179,6 +189,14 @@ export function createPeerMediationObservabilityFlowStore(
         maxEventsPerScope,
       });
       writeEvents(key, events);
+      if (events.includes(sequenced)) {
+        const flows = flowsByScope.get(key)
+          ?? new Map<string, PeerMediationObservabilityFlowSnapshotV1>();
+        flows.set(sequenced.flow.flowId, applyPeerMediationObservabilityEventToFlowSnapshot(
+          flows.get(sequenced.flow.flowId), sequenced,
+        ));
+        flowsByScope.set(key, flows);
+      }
       const listeners = events.includes(sequenced) ? listenersByScope.get(key) : undefined;
       if (listeners && listeners.size > 0) {
         const delta: PeerMediationObservabilityDeltaV1 = {
@@ -203,13 +221,13 @@ export function createPeerMediationObservabilityFlowStore(
     snapshot(scope) {
       const key = peerMediationObservabilityScopeKey(scope);
       const currentTimeMs = nowMs();
-      const events = pruneScope(key, currentTimeMs);
+      pruneScope(key, currentTimeMs);
       return {
         v: 1,
         scope,
         sequence: sequenceByScope.get(key) ?? 0,
         capturedAtMs: currentTimeMs,
-        flows: buildPeerMediationObservabilityFlowSnapshots(events),
+        flows: [...(flowsByScope.get(key)?.values() ?? [])],
       };
     },
     subscribe(scope, listener) {

@@ -135,6 +135,59 @@ describe('peer mediation observability byte folding', () => {
 });
 
 describe('createPeerMediationObservabilityFlowStore', () => {
+  it('keeps complete flow aggregates when event details are evicted and expires them with the flow', () => {
+    let now = 1_000;
+    const store = createPeerMediationObservabilityFlowStore({
+      nowMs: () => now,
+      maxEventsPerFlow: 2,
+      retentionWindowMs: 1_000,
+    });
+    let streamed: ReturnType<typeof applyPeerMediationObservabilityEventToFlowSnapshot> | undefined;
+    store.subscribe(MACHINE_SCOPE, (delta) => {
+      for (const event of delta.events) {
+        streamed = applyPeerMediationObservabilityEventToFlowSnapshot(streamed, event);
+      }
+    });
+    store.publish(tunnelEvent({ kind: 'flow.started', emittedAtMs: 1_000 }));
+    for (let index = 1; index <= 3; index += 1) {
+      now += 100;
+      store.publish(tunnelEvent({
+        kind: 'http.request.finished', emittedAtMs: now,
+        data: { requestBytes: 100, responseBytes: 200 },
+      }));
+    }
+
+    expect(store.delta(MACHINE_SCOPE).events).toHaveLength(2);
+    expect(store.snapshot(MACHINE_SCOPE).flows).toEqual([streamed]);
+    expect(store.snapshot(MACHINE_SCOPE).flows[0]).toMatchObject({
+      startedAtMs: 1_000, bytesIn: 300, bytesOut: 600,
+    });
+
+    now = 2_301;
+    expect(store.snapshot(MACHINE_SCOPE).flows).toEqual([]);
+    store.publish(tunnelEvent({ kind: 'flow.started', emittedAtMs: now }));
+    expect(store.snapshot(MACHINE_SCOPE).flows[0]).toMatchObject({
+      startedAtMs: now, bytesIn: 0, bytesOut: 0,
+    });
+  });
+
+  it('keeps a retained terminal state and forgets aggregates when the scope evicts their flow', () => {
+    const store = createPeerMediationObservabilityFlowStore({
+      nowMs: () => 1_000, maxEventsPerFlow: 1, maxEventsPerScope: 2,
+    });
+    store.publish(tunnelEvent({
+      kind: 'flow.aborted', emittedAtMs: 1_000,
+      data: { reasonCode: 'upstream_failed', bytesIn: 600 },
+    }));
+    store.publish(tunnelEvent({ kind: 'tunnel.bytes', emittedAtMs: 1_000, data: { bytesIn: 700 } }));
+    expect(store.snapshot(MACHINE_SCOPE).flows[0]).toMatchObject({
+      lifecycleState: 'aborted', abortReasonCode: 'upstream_failed', bytesIn: 700,
+    });
+    store.publish(tunnelEvent({ kind: 'flow.started', emittedAtMs: 1_000, flowId: 'other_1' }));
+    store.publish(tunnelEvent({ kind: 'flow.started', emittedAtMs: 1_000, flowId: 'other_2' }));
+    expect(store.snapshot(MACHINE_SCOPE).flows.map((flow) => flow.flow.flowId)).toEqual(['other_1', 'other_2']);
+  });
+
   it('keys every scope kind distinctly instead of collapsing non-machine scopes', () => {
     const store = createPeerMediationObservabilityFlowStore({ nowMs: () => 1_000 });
     const sessionScope: PeerMediationObservabilityScopeV1 = {
