@@ -38,18 +38,11 @@ export async function detectSaplingRepo(input: { cwd: string }): Promise<ScmRepo
             throw detectionUnavailable(root.stderr.trim() || 'the repository probe did not complete');
         }
 
-        // `sl root` exits non-zero both outside a repository and when the binary itself is broken.
-        // `SAPLING_INSTALLABLE_DESCRIPTOR` declares `--version` as its liveness probe; a working
-        // binary makes the refusal a real answer.
-        const liveness = await runScmCommand({
-            cwd: input.cwd,
-            args: ['--version'],
-            timeoutMs: 5000,
-        });
-        if (!liveness.success || liveness.exitCode !== 0) {
-            throw detectionUnavailable(
-                (liveness.stderr.trim() || root.stderr.trim()) || 'sl is not usable on this machine',
-            );
+        // This absence diagnostic is pinned by Sapling's eden/scm/tests/test-root.t.
+        // Every other refusal remains undetermined, even when `sl --version` succeeds.
+        const diagnostic = root.stderr.trim();
+        if (!/^abort: '[^\r\n]+' is not inside a repository, but this command requires a repository!(?:\r?\n|$)/.test(diagnostic)) {
+            throw detectionUnavailable(diagnostic || 'the repository probe was refused');
         }
         return {
             isRepo: false,
