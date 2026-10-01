@@ -330,7 +330,9 @@ export function buildSessionUsageLimitRecoveryPresentation(params: Readonly<{
                 testID: 'session-usageLimit-status-badge', tone: active && !offline ? 'active' : 'warning' },
         };
     }
-    if (params.hasActivityAfterRuntimeIssue === true) return null;
+    // The failed turn may append its own terminal limit notice after the runtime issue. That
+    // activity is part of the same failure, not proof that a later turn recovered.
+    if (params.hasActivityAfterRuntimeIssue === true && params.latestTurnStatus !== 'failed') return null;
     if (params.latestTurnStatus != null && params.latestTurnStatus !== 'failed') return null;
 
     const resetAtMs = readUsageLimitResetAtMs(lastRuntimeIssue, params.recoveryState);

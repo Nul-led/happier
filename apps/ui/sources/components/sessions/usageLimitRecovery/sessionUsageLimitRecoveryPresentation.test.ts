@@ -738,8 +738,8 @@ describe('sessionUsageLimitRecoveryPresentation', () => {
         })).not.toBeNull();
     });
 
-    it('does not show stale recovery affordances after later meaningful session activity', () => {
-        expect(buildSessionUsageLimitRecoveryPresentation({
+    it('keeps the current failed recovery visible when the provider emits its terminal limit notice', () => {
+        const presentation = buildSessionUsageLimitRecoveryPresentation({
             featureEnabled: true,
             lastRuntimeIssue: usageLimitIssue,
             latestTurnStatus: 'failed',
@@ -747,6 +747,9 @@ describe('sessionUsageLimitRecoveryPresentation', () => {
             recoveryState: null,
             settings: { v: 1, mode: 'ask' },
             translate: translateUsageLimitRecoveryKeyForTest,
-        })).toBeNull();
+        });
+
+        expect(presentation?.banner.testID).toBe('session-usageLimit-recovery');
+        expect(presentation?.statusBadge.testID).toBe('session-usageLimit-status-badge');
     });
 });
