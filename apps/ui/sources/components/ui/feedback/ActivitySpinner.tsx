@@ -39,7 +39,13 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
 
     if (Platform.OS !== 'web') {
         const { animationEnabled: _animationEnabled, ...nativeProps } = props;
-        return <RNActivityIndicator {...nativeProps} color={resolvedColor} />;
+        return (
+            <RNActivityIndicator
+                {...nativeProps}
+                accessibilityRole={nativeProps.accessibilityRole ?? 'progressbar'}
+                color={resolvedColor}
+            />
+        );
     }
 
     return <WebActivitySpinner {...props} resolvedColor={resolvedColor} />;

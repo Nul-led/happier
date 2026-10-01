@@ -117,12 +117,14 @@ export function createSessionCallerHostedHtmlRequestController(input: Readonly<{
     const watchHandlers = (pluginId: string, target: CurrentPluginTarget): ResourceHandlers => {
         const existing = watchHandlersByPluginId.get(pluginId);
         if (existing) return existing;
+        const occurrenceId = target.projection.installedPackagesById[pluginId]?.occurrenceId;
+        if (!occurrenceId) throw new Error('caller_surface_retired');
         const created = createPluginSurfaceResourceWatchHandlers({
             pluginId,
             resource: {
                 machineId: target.machineId,
                 serverId: target.serverId,
-                expectedGeneration: String(target.generation),
+                expectedCallerOccurrenceId: occurrenceId,
                 context: { kind: 'session', sessionId: input.sessionId },
             },
             deliver: input.publishResourceEvent,
@@ -180,11 +182,9 @@ export function createSessionCallerHostedHtmlRequestController(input: Readonly<{
                 contributedAction: {
                     machineId: target.machineId,
                     serverId: target.serverId,
-                    expectedGeneration: String(target.generation),
                     sessionId: input.sessionId,
                 },
                 clientAction: {
-                    projectionGeneration: target.generation,
                     sessionId: input.sessionId,
                 },
                 invocationSurface: 'ui',
@@ -203,12 +203,14 @@ export function createSessionCallerHostedHtmlRequestController(input: Readonly<{
             const target = readPluginTarget();
             assertProjectedResource(target, reference);
             if (request.method === 'readResource') {
+                const occurrenceId = target.projection.installedPackagesById[reference.pluginId]?.occurrenceId;
+                if (!occurrenceId) throw new Error('caller_surface_retired');
                 const handler = createPluginSurfaceResourceReadHandler({
                     pluginId: reference.pluginId,
                     resource: {
                         machineId: target.machineId,
                         serverId: target.serverId,
-                        expectedGeneration: String(target.generation),
+                        expectedCallerOccurrenceId: occurrenceId,
                         context: { kind: 'session', sessionId: input.sessionId },
                         ...(input.readResource === undefined ? {} : { read: input.readResource }),
                     },

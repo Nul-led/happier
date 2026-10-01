@@ -61,7 +61,7 @@ function makeVirtualizedSource(
 ): SelectionListVirtualizedOptionSource {
     const focusable = (index: number) => index >= 0 && index < ids.length && !disabled.has(index);
     return {
-        items: ids.map((_, optionIndex) => ({ kind: 'option' as const, optionIndex, positionInSet: optionIndex + 1 })),
+        items: ids.map((id, optionIndex) => ({ kind: 'option' as const, key: id, optionIndex, positionInSet: optionIndex + 1 })),
         optionCount: ids.length,
         stateKey: ids.join('|'),
         getOption: (index) => ({ id: ids[index] ?? '', label: ids[index] ?? '' }),

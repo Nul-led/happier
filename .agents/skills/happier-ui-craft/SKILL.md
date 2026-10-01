@@ -29,6 +29,10 @@ means the owner's value; never copy a number from this file into a component.
 
 ## Core taste rules
 
+These keep a surface correct. What makes it feel premium and alive rather than bland is in
+`references/premium-feel.md`: one signature moment, the thing itself rather than a link to it, a live and
+personal present, one hero, one rhythm, inviting empty states. Read it before designing any surface.
+
 **Hierarchy**
 - One primary action per view. Everything else is secondary (bordered or quiet) or tertiary (text).
   Two filled buttons side by side means you have not decided.
@@ -48,6 +52,9 @@ means the owner's value; never copy a number from this file into a component.
   select, segmented, inline field, button) don't. Identity marks (agent, provider, service, machine,
   person, device) always stay. One icon family, one size, `text.secondary`, no bordered tile, in the
   `Item` leading column so titles align within a section.
+- No border, fill or tile behind icons or logos anywhere, including provider and service marks in
+  columns, rows, headers and cards. The mark stands on its own. The only exceptions are avatars and
+  an app icon rendered as an actual app icon. (User ruling, 2026-09-30.)
 
 **Controls** (full decision table in `references/components.md`)
 - 2–4 short options: segmented, all visible. More, or long labels: bordered field select.
@@ -74,11 +81,10 @@ means the owner's value; never copy a number from this file into a component.
   action; only capabilities the contract really has are shown.
 
 **Collections** (see `references/anatomy.md` → Collections)
-- The generic Collection (list, table, board, grid and their detail containers) is owned by the
-  Triage program (`.happier/design-lab/prs-and-issues/COLLECTION-SPEC.md`); pages consume it, with
-  this program's needs in `.project/plans/2026-09-23-configuration-surfaces-redesign/COLLECTION-REQUIREMENTS.md`.
-  Never build a page-local generic collection; a page-local composition is fine until the Collection
-  presentation lands.
+- The generic Collection (list, table, board, grid and detail composition) lives in
+  `@happier-dev/plugin-ui`; [Collection presentation](../../../docs/collection-presentation.md)
+  names its current model, List engine and layout owners. Pages consume them rather than building
+  another generic collection. A domain-specific page composition can bind those owners.
 
 **Phones recompose**
 - Only a switch, a short value or a chevron sits right of a label; everything wider moves beneath.
@@ -93,7 +99,7 @@ means the owner's value; never copy a number from this file into a component.
 2. **Start from a reference, not from a blank file.** For a new or reworked surface, sketch it in the
    design lab (`.happier/design-lab/`, HTML in the product's real tokens) or pick the closest shipped
    Happier screen as the reference. Compare two or three compositions when hierarchy is unclear;
-   choose one and write down why.
+   choose one and write down why. Run lab rounds by `references/design-labs.md`.
 3. **Build through the owners**, then render it live.
 4. **Validate side by side** (`references/validation.md`): the reference and the live screen, same
    state, same theme, same size, one image next to the other, region by region; light, dark and
@@ -109,3 +115,8 @@ means the owner's value; never copy a number from this file into a component.
 - `references/copy.md` — voice mechanics, smells, and rewrites.
 - `references/states-and-motion.md` — loading, empty, offline, error, stability, focus and motion.
 - `references/validation.md` — reference-first workflow, side-by-side acceptance, review checklist.
+- `references/premium-feel.md` — what makes a surface feel premium: signature moment, real content,
+  aliveness, one hero, one rhythm, inviting states, honest copy, anticipation; with a self-check.
+- `references/design-labs.md` — how to run a lab round that lands premium: standard lab format, product
+  truth first, the user's words and variants, populated data, every state, the output contract, and a brief
+  skeleton.

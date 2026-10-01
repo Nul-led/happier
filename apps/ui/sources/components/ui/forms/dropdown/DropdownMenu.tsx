@@ -10,13 +10,16 @@ import { SelectableMenuResults } from '@/components/ui/forms/dropdown/Selectable
 import type { SelectableMenuItem } from '@/components/ui/forms/dropdown/selectableMenuTypes';
 import { useSelectableMenu, CREATE_ITEM_ID } from '@/components/ui/forms/dropdown/useSelectableMenu';
 import { Item, type ItemProps } from '@/components/ui/lists/Item';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
 import { useResolvedItemDensity } from '@/components/ui/lists/useResolvedItemDensity';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { TextInput } from '@/components/ui/text/Text';
+import { resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
 import { renderDropdownItemTriggerRightElement } from '@/components/ui/forms/dropdown/renderDropdownItemTriggerRightElement';
 import { KeyHint } from '@/components/ui/keyboard/KeyHint';
 import { useScrollRectIntoViewRegistry } from '@/components/ui/scroll/useScrollRectIntoView';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
+import { useViewportClass } from '@/utils/platform/useViewportClass';
 import { Icon } from '@/components/ui/icons/Icon';
 
 const DROPDOWN_ACTION_FRAME_FALLBACK_MS = 100;
@@ -33,6 +36,8 @@ export type DropdownMenuItem = Readonly<{
     rightElement?: React.ReactNode;
     rowContainerStyle?: StyleProp<ViewStyle>;
     disabled?: boolean;
+    /** An irreversible operation (delete, clear): the row's title takes the danger tone. */
+    destructive?: boolean;
     /** Current choice state, independent of keyboard highlight. */
     checked?: boolean;
     submenu?: DropdownMenuSubmenu;
@@ -279,6 +284,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 checked: item.checked,
                 left: item.icon ?? null,
                 rowContainerStyle: item.rowContainerStyle,
+                ...(item.destructive ? { rowTitleStyle: { color: theme.colors.state.danger.foreground } } : {}),
                 right: item.rightElement
                     ? item.rightElement
                     : hasSubmenu
@@ -289,7 +295,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
                 hasSubmenu,
             };
         });
-    }, [props.items, theme.colors.text.secondary]);
+    }, [props.items, theme.colors.state.danger.foreground, theme.colors.text.secondary]);
 
     const closeOnSelect = props.closeOnSelect !== false;
     const onRequestClose = React.useCallback(() => props.onOpenChange(false), [props]);
@@ -351,21 +357,45 @@ export function DropdownMenu(props: DropdownMenuProps) {
         }
     }, [activeSubmenu, props.open]);
 
+    // On a configuration page the trigger is a bordered field showing the current value; on phone
+    // widths it falls back to the value and a chevron beside the label (PLAN §3). Elsewhere (menus,
+    // sheets, grouped lists) the grouped trigger is unchanged.
+    const isPagePresentation = useListPresentation() === 'page';
+    const viewportClass = useViewportClass();
+    const pageTrigger: 'field' | 'compact' | null = !isPagePresentation
+        ? null
+        : viewportClass === 'compact' ? 'compact' : 'field';
+    const fieldColors = React.useMemo(
+        () => (pageTrigger === 'field' ? resolveFieldBoxColors(theme) : undefined),
+        [pageTrigger, theme],
+    );
+    // A page field names whatever is stored, including an option that can no longer be chosen; only
+    // an empty selection asks for a choice.
+    const pageSelectedItem = React.useMemo((): DropdownMenuItem | null => {
+        if (!pageTrigger) return null;
+        const selectedId = typeof props.selectedId === 'string' ? props.selectedId.trim() : '';
+        if (!selectedId) return null;
+        return props.items.find((it) => it.id === selectedId) ?? null;
+    }, [pageTrigger, props.items, props.selectedId]);
     const triggerNode = React.useMemo(() => {
         if (props.itemTrigger) {
             const cfg = props.itemTrigger;
             const showSelectedDetail = cfg.showSelectedDetail !== false;
             const showSelectedSubtitle = cfg.showSelectedSubtitle !== false;
-            const detail =
-                showSelectedDetail
-                    ? (cfg.detailFormatter
-                        ? cfg.detailFormatter(selectedItemForTrigger)
-                        : (selectedItemForTrigger?.title ?? null))
-                    : null;
-            const subtitle =
+            const formattedDetail = showSelectedDetail
+                ? (cfg.detailFormatter
+                    ? cfg.detailFormatter(selectedItemForTrigger)
+                    : (selectedItemForTrigger?.title ?? null))
+                : null;
+            // A page field always shows the value; `showSelectedDetail: false` only means the grouped
+            // row carries it in its description instead.
+            const detail = pageTrigger ? (formattedDetail || pageSelectedItem?.title || null) : formattedDetail;
+            const resolvedSubtitle =
                 cfg.subtitleFormatter
                     ? cfg.subtitleFormatter(selectedItemForTrigger)
                     : (showSelectedSubtitle ? (selectedItemForTrigger?.subtitle ?? cfg.subtitle ?? null) : (cfg.subtitle ?? null));
+            // The field shows the value, so a description that only restates it is dropped.
+            const subtitle = pageTrigger && detail && resolvedSubtitle === detail ? null : resolvedSubtitle;
 
             return (
                 <Item
@@ -379,7 +409,13 @@ export function DropdownMenu(props: DropdownMenuProps) {
                         detailColor: theme.colors.text.secondary,
                         chevronColor: theme.colors.text.secondary,
                         detailDensity: resolvedTriggerDensity,
+                        field: fieldColors,
+                        placeholder: pageTrigger ? t('common.choose') : undefined,
+                        placeholderColor: theme.colors.input.placeholder,
                     })}
+                    // Both page triggers measure the row (R9): a narrow row puts the value under the
+                    // label rather than pushing it off the side of the screen.
+                    accessoryLayout={pageTrigger ? 'adaptive' : undefined}
                     onPress={toggle}
                     showChevron={false}
                     selected={false}
@@ -401,7 +437,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
             }), props.open);
         }
         return withExpandedTriggerState(props.trigger, props.open);
-    }, [closeMenu, openMenu, props.itemTrigger, props.open, props.trigger, resolvedTriggerDensity, selectedItemForTrigger, theme.colors.text.secondary, toggle]);
+    }, [closeMenu, fieldColors, openMenu, pageSelectedItem, pageTrigger, props.itemTrigger, props.open, props.trigger, resolvedTriggerDensity, selectedItemForTrigger, theme.colors.input.placeholder, theme.colors.text.secondary, toggle]);
 
     const {
         searchQuery,

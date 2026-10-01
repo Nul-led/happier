@@ -5,6 +5,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { normalizeNodeForView } from '@/components/ui/rendering/normalizeNodeForView';
 import { GradientSurface } from '@/components/ui/surfaces/GradientSurface';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import type { Theme } from '@/theme';
 
 const stylesheet = StyleSheet.create((theme) => ({
   root: {
@@ -27,6 +29,8 @@ export const PrimaryCircleIconButton = React.memo(
   (
     props: Readonly<{
       active: boolean;
+      /** Static previews supply the same resolved theme as their surrounding panel. */
+      appearance?: Theme;
       disabled?: boolean;
       loading?: boolean;
       testID?: string;
@@ -39,7 +43,8 @@ export const PrimaryCircleIconButton = React.memo(
       children?: React.ReactNode;
     }>,
   ) => {
-    const { theme } = useUnistyles();
+    const { theme: currentTheme } = useUnistyles();
+    const theme = props.appearance ?? currentTheme;
     const styles = stylesheet;
 
     const computedDisabled = Boolean(props.disabled || props.loading || !props.onPress);
@@ -65,7 +70,7 @@ export const PrimaryCircleIconButton = React.memo(
             {
               borderRadius: 16,
               backgroundColor,
-              opacity: pressed ? 0.72 : 1,
+              opacity: pressed ? motionTokens.press.opacity : 1,
               overflow: 'hidden',
             },
           ]}

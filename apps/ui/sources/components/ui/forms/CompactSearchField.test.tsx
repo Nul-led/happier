@@ -33,6 +33,9 @@ vi.mock('@/components/ui/icons/Icon', () => ({
     ICON_SIZE: { xs: 14 },
 }));
 
+// Resolve the source dependency closure during collection, outside each interaction test's clock.
+await import('./CompactSearchField');
+
 describe('CompactSearchField', () => {
     it('runs an explicit search on submit and stays read-only while the list cannot be searched', async () => {
         const onSubmit = vi.fn();
@@ -110,6 +113,53 @@ describe('CompactSearchField', () => {
         };
         expect(await minHeightOn('ios')).toBe(44);
         expect(await minHeightOn('android')).toBe(48);
-        expect(await minHeightOn('web')).toBeUndefined();
+        // A precise pointer gets the lab's compact 32px field.
+        expect(await minHeightOn('web')).toBe(32);
+    });
+
+    it('draws one compact frame: no vertical padding past its height and a 10px leading inset for the glass', async () => {
+        const { CompactSearchField, COMPACT_SEARCH_FIELD_METRICS } = await import('./CompactSearchField');
+        const { flattenTestStyle } = await import('@/dev/testkit');
+        const screen = await renderScreen(<CompactSearchField testID="search" value="" onChangeText={() => {}} placeholder="Search" />);
+        const field = flattenTestStyle(screen.findByTestId('search.field')!.props.style);
+        expect(field.paddingLeft ?? field.paddingHorizontal).toBe(10);
+        expect(field.paddingVertical ?? 0).toBe(0);
+        expect(COMPACT_SEARCH_FIELD_METRICS.heightPx).toBe(32);
+        expect(COMPACT_SEARCH_FIELD_METRICS.iconInsetPx).toBe(10);
+    });
+});
+
+describe('CompactSearchField placement above a page list', () => {
+    it('sits in the page content column, aligned with the sheets, instead of spanning the pane', async () => {
+        const { CompactSearchField } = await import('./CompactSearchField');
+        const { ListPresentationProvider } = await import('@/components/ui/lists/listPresentation');
+        const { PAGE_COLUMN_MAX_WIDTH_PX } = await import('@/components/ui/layout/contentWidthMode');
+        const { resolveItemGroupContentHorizontalInsetPx } = await import('@/components/ui/lists/itemGroupSpacing');
+        const { flattenTestStyle } = await import('@/dev/testkit');
+        const screen = await renderScreen(
+            <ListPresentationProvider value="page">
+                <CompactSearchField testID="search" value="" onChangeText={() => {}} placeholder="Search" placement="page" />
+            </ListPresentationProvider>,
+        );
+        const column = screen.tree.root.findAll((node) => typeof node.type === 'string' && node.props.testID === 'search.column')[0];
+        expect(column).toBeDefined();
+        const style = flattenTestStyle(column!.props.style) as Record<string, unknown>;
+        // The same column the page's sheets use: capped at the page column, centred, with the sheet inset.
+        expect(typeof style.maxWidth).toBe('number');
+        expect(style.maxWidth as number).toBeLessThanOrEqual(PAGE_COLUMN_MAX_WIDTH_PX.reading);
+        expect(style.width).toBe('100%');
+        // Centred in a band that spans the list header, as ItemGroup centres its sheets.
+        const band = flattenTestStyle(column!.parent!.props.style) as Record<string, unknown>;
+        expect(band.alignSelf).toBe('stretch');
+        expect(band.alignItems).toBe('center');
+        expect(style.paddingHorizontal).toBe(resolveItemGroupContentHorizontalInsetPx());
+    });
+
+    it('adds no column of its own where it is placed inline (a rail or a section row)', async () => {
+        const { CompactSearchField } = await import('./CompactSearchField');
+        const screen = await renderScreen(
+            <CompactSearchField testID="search" value="" onChangeText={() => {}} placeholder="Search" />,
+        );
+        expect(screen.tree.root.findAll((node) => node.props.testID === 'search.column')).toHaveLength(0);
     });
 });

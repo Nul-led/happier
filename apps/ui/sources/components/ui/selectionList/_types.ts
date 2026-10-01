@@ -91,6 +91,11 @@ type SelectionListOptionBase = Readonly<{
     subtitle?: string;
     /** Rich visual subtitle; `subtitle` remains the searchable plain-text value. */
     subtitleContent?: SelectionListLazyVisual;
+    /**
+     * A small mark leading the subtitle line (a presence or trouble dot: "● Online · this
+     * computer"). Rendered by the row's `Item`, so the line keeps the row's subtitle typography.
+     */
+    subtitleLeading?: SelectionListLazyVisual;
     /** Optional assistive label for rows whose visible label repeats across sections. */
     accessibilityLabel?: string;
     /** Render-time assistive label for a virtualized row. */
@@ -178,13 +183,20 @@ export type SelectionListOption =
  * still owns option materialization, activation, focus, accessibility, and
  * the one canonical virtualizer.
  */
+/**
+ * Every item carries its own list `key`. The virtualized list compares a replaced listing by calling
+ * its key extractor on the PREVIOUS items (LegendList `checkStructuralDataChange`), so a key must
+ * never be read back through the current source, whose indexes may no longer cover an old item.
+ */
 export type SelectionListVirtualizedOptionSourceItem =
     | Readonly<{
         kind: 'section-header';
+        key: string;
         sectionIndex: number;
     }>
     | Readonly<{
         kind: 'option';
+        key: string;
         /** Opaque source-local option position, not a public option id. */
         optionIndex: number;
         /** One-based listbox position, excluding section headers. */
@@ -615,6 +627,57 @@ export type SelectionListSelection =
     | Readonly<{ kind: 'single'; selectedId: string | null }>
     | Readonly<{ kind: 'multiple'; selectedIds: ReadonlySet<string> }>;
 
+/** One choice of a {@link SelectionListFilter}. */
+export type SelectionListFilterOption = Readonly<{
+    id: string;
+    /** Already-translated label. */
+    label: string;
+    subtitle?: string;
+    /** A leading mark (an Agent's brand mark), shown in the popover row and, when selected, the chip. */
+    icon?: React.ReactNode;
+    disabled?: boolean;
+}>;
+
+/**
+ * A filter chip: what is being chosen, its current value and how to change it. Single choice.
+ *
+ * The popover lists `options` (a small `SelectionList`), unless the filter's canonical owner draws
+ * its own chooser (`renderPopoverContent`, e.g. the machine list the machine owner already has).
+ * A filter with neither is a fixed scope: the chip shows the value and does not open.
+ */
+export type SelectionListFilter = Readonly<{
+    id: string;
+    /** What is being chosen ("Agent", "Machine"): the chip's accessible name is `<label>: <value>`. */
+    label: string;
+    /** The chip text; defaults to the selected option's label. */
+    valueLabel?: string;
+    /** The chip's leading glyph; defaults to the selected option's icon. */
+    icon?: React.ReactNode;
+    /** Presence of what the value names (a machine): a dot after the value. Omitted: no dot. */
+    presence?: 'online' | 'offline';
+    /** The value is a placeholder ("Choose a machine") rather than a choice. */
+    muted?: boolean;
+    options?: ReadonlyArray<SelectionListFilterOption>;
+    selectedId?: string | null;
+    onChange?: (id: string) => void;
+    /** The canonical owner's own chooser. `close` dismisses the popover. */
+    renderPopoverContent?: (context: Readonly<{ close: () => void; maxHeight: number }>) => React.ReactNode;
+    /** Controlled popover state, for a page state that opens the filter ("Choose another"). */
+    open?: boolean;
+    onOpenChange?: (open: boolean) => void;
+    disabled?: boolean;
+    /** How many things the filter leaves in view ("Changed only 14"), after the value in a quieter tone. */
+    count?: string;
+    /**
+     * An on/off filter that is on: the chip ends in × and pressing it turns the filter off. Such a
+     * chip has no chooser; `clearAccessibilityLabel` names what pressing it does ("Show all files").
+     */
+    onClear?: () => void;
+    clearAccessibilityLabel?: string;
+    /** The chip's testID; its popover list is `<testID>.list` and each option `<testID>:<optionId>`. */
+    testID?: string;
+}>;
+
 export type SelectionListProps = Readonly<{
     /** Root step. Pushes accumulate above this. */
     rootStep: SelectionListStep;
@@ -676,8 +739,28 @@ export type SelectionListProps = Readonly<{
      * relationship, one scroll owner — beneath the results, for keyboard-seated
      * surfaces where the field must stay directly above the software keyboard.
      * It never creates a second TextInput or a second query state.
+     *
+     * `'body'` seats the same input inside the body's scroll owner, after `bodyHeader`, so a pane
+     * whose title, status and search scroll with its rows reads as one surface (the engine picker).
      */
-    inputPlacement?: 'top' | 'bottom';
+    inputPlacement?: 'top' | 'bottom' | 'body';
+    /**
+     * `'check'` (default): the current choice of a single-choice list carries a trailing check (the
+     * picker anatomy). `'none'`: the options draw their own selection state — a list of per-group
+     * radios (one choice per connected service) whose `selectedOptionId` only seeds focus.
+     * `'enter'`: the rows are commands, not choices (the ⌘K palette). The row the keyboard is on
+     * shows the ↵ it runs with, only while a hardware keyboard is present (`keyboardHintsEnabled`).
+     */
+    selectionMark?: 'check' | 'enter' | 'none';
+    /**
+     * Content a picker shows above its rows (a pane title, a status line, a notice) that must scroll
+     * WITH the rows. It renders inside the body's one scroll owner, before the first section, and
+     * stays mounted in every body state (rows, empty). Not part of the measured height: a list with
+     * body slots sizes itself from its container (`fillAvailableSpace` / `maxHeight`).
+     */
+    bodyHeader?: React.ReactNode;
+    /** Content after the last row that scrolls with the rows (a "Custom…" entry). See `bodyHeader`. */
+    bodyFooter?: React.ReactNode;
     /** Optional element rendered to the left of the input (e.g. folder icon). */
     inputPrefix?: React.ReactNode;
     /**
@@ -687,6 +770,19 @@ export type SelectionListProps = Readonly<{
      * keyboard hints only.
      */
     inputSuffix?: React.ReactNode;
+    /**
+     * Optional row of controls beneath the search field (filter chips that do not fit beside it on a
+     * phone). It belongs to the header zone, so it stays on screen in every content state and
+     * never scrolls with the results.
+     */
+    inputAccessoryRow?: React.ReactNode;
+    /**
+     * Filters that narrow what the list shows (machine, Agent, source, Home). Each renders as one
+     * compact chip beside the search field — or on its own row beneath it when the list is too
+     * narrow for both — and opens a small popover to change its value. The consumer owns what a
+     * filter means; SelectionList owns how filters look and behave.
+     */
+    filters?: ReadonlyArray<SelectionListFilter>;
     /** Optional controlled input value. Library is uncontrolled when omitted. */
     inputValue?: string;
     /** Optional visual truncation for the input value (useful for path-like values). */
@@ -694,6 +790,11 @@ export type SelectionListProps = Readonly<{
     onChangeInputValue?: (next: string) => void;
     /** Called when an option is selected (may close the popover). */
     onSelect: (id: string, option: SelectionListOption) => void;
+    /**
+     * Cmd/Ctrl+Enter on the focused row: the row's secondary commit ("Add and place"). Without it,
+     * Cmd/Ctrl+Enter selects like Enter.
+     */
+    onCommandSelect?: (id: string, option: SelectionListOption) => void;
     /**
      * Called when the user commits the raw input value (only when
      * `inputMode === 'value'` and Enter is pressed without a focused row).

@@ -605,6 +605,42 @@ describe('resolveTreeInstruction', () => {
         });
     });
 
+    it('lets a domain rule adopt a leaf row, with the wide middle band and no folder depth limit', async () => {
+        // session:root is a leaf at y=140 h=30. A rule that lets this leaf take the source as a
+        // child (a Session put under another Session) turns its middle band into a nest, and the
+        // folder depth ceiling does not apply to that relationship.
+        const adopt = (y: number) => resolveTreeInstruction({
+            rows: baseRows,
+            dropZones: baseDropZones,
+            source: source(),
+            pointer: { x: 36, y },
+            rules: {
+                ...allowRules,
+                maxDepth: 0,
+                canNestInto: () => false,
+                canAdoptLeaf: (_source, target) => target.id === 'session:root',
+            },
+        });
+        expect(adopt(148)).toEqual({
+            instruction: {
+                kind: 'nest-into',
+                targetId: 'session:root',
+                containerId: 'session:root',
+                parentId: 'session:root',
+                depth: 1,
+            },
+            visual: { kind: 'outline', targetId: 'session:root' },
+        });
+        expect(adopt(142).instruction.kind).toBe('reorder-before');
+        expect(resolveTreeInstruction({
+            rows: baseRows,
+            dropZones: baseDropZones,
+            source: source(),
+            pointer: { x: 36, y: 155 },
+            rules: { ...allowRules, canAdoptLeaf: () => false },
+        }).instruction).toEqual({ kind: 'blocked', reason: 'leaf-cannot-be-parent', hintTargetId: 'session:root' });
+    });
+
     it('returns no-target when the pointer is outside rows and explicit drop zones', async () => {
         expect(resolveTreeInstruction).toEqual(expect.any(Function));
 

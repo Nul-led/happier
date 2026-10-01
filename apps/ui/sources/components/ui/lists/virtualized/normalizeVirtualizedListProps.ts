@@ -47,6 +47,7 @@ export type NormalizedSharedListProps<T> = Readonly<{
     initialScrollIndex?: number;
     initialNumToRender?: number;
     maxToRenderPerBatch?: number;
+    disableVirtualization?: boolean;
     windowSize?: number;
     removeClippedSubviews?: boolean;
     getItemLayout?: VirtualizedListProps<T>['getItemLayout'];
@@ -119,6 +120,7 @@ export function normalizeVirtualizedListProps<T>(
             initialScrollIndex: props.initialScrollIndex,
             initialNumToRender: props.initialNumToRender,
             maxToRenderPerBatch: props.maxToRenderPerBatch,
+            disableVirtualization: props.disableVirtualization,
             windowSize: props.windowSize,
             removeClippedSubviews: props.removeClippedSubviews,
             getItemLayout: props.getItemLayout,

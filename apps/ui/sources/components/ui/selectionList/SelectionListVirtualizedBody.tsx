@@ -642,6 +642,12 @@ type SelectionListBodyVirtualizedProps = Readonly<{
     columnCount?: number;
     /** Gutter between adjacent columns. Defaults to the shared list gutter. */
     columnGapPx?: number;
+    /** `SelectionListProps.bodyHeader`, already wrapped by the body: scrolls with the rows. */
+    bodyHeader?: React.ReactElement | null;
+    /** `SelectionListProps.bodyFooter`, already wrapped by the body: scrolls with the rows. */
+    bodyFooter?: React.ReactElement | null;
+    /** The empty state shown between the slots when the plan has no rows. */
+    emptyContent?: React.ReactElement | null;
 }>;
 
 export function SelectionListBodyVirtualized(props: SelectionListBodyVirtualizedProps): React.ReactElement {
@@ -794,7 +800,11 @@ function SelectionListBodyFlattenedVirtualized(props: SelectionListBodyVirtualiz
                 onLayout={measureMode ? undefined : onViewportLayout}
                 onEndReached={onEndReached}
                 onEndReachedThreshold={props.pagination ? 0.35 : undefined}
-                ListFooterComponent={paginationFooter}
+                ListHeaderComponent={props.bodyHeader ?? undefined}
+                ListFooterComponent={props.bodyFooter
+                    ? <>{paginationFooter}{props.bodyFooter}</>
+                    : paginationFooter}
+                ListEmptyComponent={props.emptyContent ?? undefined}
             />
         </View>
     );
@@ -939,11 +949,7 @@ function SelectionListBodyDirectVirtualizedSource(props: SelectionListBodyVirtua
                     : selectionListTestId(props.rootTestID, 'bodyVirtualizedList')}
                 data={source.items}
                 extraData={sourceStateKey}
-                keyExtractor={(item: SelectionListVirtualizedOptionSourceItem) => (
-                    item.kind === 'section-header'
-                        ? `${source.getHeader(item.sectionIndex).id}::header`
-                        : source.getOptionId(item.optionIndex)
-                )}
+                keyExtractor={(item: SelectionListVirtualizedOptionSourceItem) => item.key}
                 renderItem={renderItem}
                 getItemType={(item: SelectionListVirtualizedOptionSourceItem) => item.kind}
                 estimatedItemSize={SELECTION_LIST_VIRTUALIZED_ROW_ESTIMATED_HEIGHT_PX}

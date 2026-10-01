@@ -85,6 +85,7 @@ interface MultiTextInputProps {
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
     accessibilityLabel?: string;
+    accessibilityHint?: string;
     onFilesPasted?: (files: readonly File[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
     onFileDragActiveChange?: (active: boolean) => void;
@@ -613,6 +614,9 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
     const commonTextareaProps = {
         ref: textareaRef,
         'data-testid': props.testID,
+        // This raw DOM textarea bypasses the shared TextInput host. Reuse its
+        // forced-colors-only focus cue without restoring normal-mode chrome.
+        'data-happier-text-input': 'true',
         placeholder,
         defaultValue: value,
         onChange: handleChange,
@@ -633,6 +637,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
         autoCorrect: 'on',
         autoComplete: 'off',
         'aria-label': props.accessibilityLabel,
+        'aria-description': props.accessibilityHint,
         role: props.accessibilityRole,
         'aria-expanded': props.accessibilityState?.expanded,
         'aria-haspopup': props['aria-haspopup'],
@@ -642,6 +647,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
     } satisfies React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
         ref: React.Ref<HTMLTextAreaElement>;
         'data-testid'?: string;
+        'data-happier-text-input'?: 'true';
     };
 
     return (

@@ -1,3 +1,4 @@
+import { readSessionDirectoryKind } from '@happier-dev/protocol';
 import React from 'react';
 import { View } from 'react-native';
 import { Typography } from '@/constants/Typography';
@@ -109,7 +110,7 @@ export function EmptyMessages({ session }: EmptyMessagesProps) {
                 </Text>
             ) : null}
             
-            {metadata?.path ? (
+            {metadata?.path && readSessionDirectoryKind(metadata) !== 'managed' ? (
                 <Text style={styles.pathText}>
                     {formatPathRelativeToHome(metadata.path, metadata.homeDir)}
                 </Text>

@@ -11,3 +11,7 @@ export async function hapticsLight(): Promise<void> {
 export async function hapticsSelection(): Promise<void> {
     await Haptics.selectionAsync().catch(() => undefined);
 }
+
+export async function hapticsSuccess(): Promise<void> {
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+}

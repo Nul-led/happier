@@ -34,10 +34,27 @@ function FlatListBackendInner<T>(
     }), []);
 
     const onScroll = createFlatListStartReachedHandler(shared, virtualization, startReachedRef);
+    // The stable ref promises `scrollToIndex` on every backend, but FlatList throws for an index
+    // outside its rendered window unless it can measure it (`getItemLayout`) or is told what to do
+    // (`onScrollToIndexFailed`). Without a caller handler, move to the estimated offset, the way
+    // FlatList itself suggests; the row then renders and a later measurement settles it.
+    const callerScrollToIndexFailed = shared.onScrollToIndexFailed;
+    const onScrollToIndexFailed = React.useCallback((info: Readonly<{
+        index: number;
+        highestMeasuredFrameIndex: number;
+        averageItemLength: number;
+    }>) => {
+        if (callerScrollToIndexFailed) {
+            callerScrollToIndexFailed(info);
+            return;
+        }
+        innerRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+    }, [callerScrollToIndexFailed]);
     const {
         maintainVisibleContentPosition,
         refreshControl,
         webScrollHandlers,
+        disableVirtualization,
         ...flatShared
     } = shared;
     const flatMaintainVisibleContentPosition =
@@ -54,9 +71,11 @@ function FlatListBackendInner<T>(
         ...webScrollHandlers,
         maintainVisibleContentPosition: flatMaintainVisibleContentPosition,
         refreshControl: refreshControl as FlatListProps<T>['refreshControl'],
+        disableVirtualization,
         renderItem: shared.renderItem as unknown as FlatListProps<T>['renderItem'],
         data: shared.data as FlatListProps<T>['data'],
         onScroll,
+        onScrollToIndexFailed,
     } satisfies Partial<FlatListProps<T>> as FlatListProps<T>;
 
     return <FlatList<T> {...flatListProps} ref={innerRef} />;

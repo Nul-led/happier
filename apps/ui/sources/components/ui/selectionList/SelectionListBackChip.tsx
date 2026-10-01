@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const stylesheet = StyleSheet.create((theme) => ({
     chip: {
@@ -16,7 +17,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.pressedOverlay,
     },
     pressed: {
-        opacity: 0.7,
+        opacity: motionTokens.press.opacity,
     },
     label: {
         fontSize: Platform.select({ ios: 13, default: 12 }),

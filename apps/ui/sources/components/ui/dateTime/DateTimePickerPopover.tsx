@@ -11,4 +11,6 @@ export type DateTimePickerPopoverProps = Readonly<{
     onDismiss: () => void;
 }>;
 
+export function isDateTimePickerPopoverAvailable(): boolean { return false; }
+
 export function DateTimePickerPopover(_props: DateTimePickerPopoverProps) { return null; }

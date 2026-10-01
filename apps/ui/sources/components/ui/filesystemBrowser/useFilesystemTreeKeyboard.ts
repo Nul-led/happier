@@ -1,8 +1,9 @@
 import * as React from 'react';
+import type { Pressable } from 'react-native';
 import type { ItemProps } from '@/components/ui/lists/Item';
 
 export type FilesystemTreeKeyboardNode = Readonly<{ path: string; depth: number; type: string; isExpanded: boolean }>;
-type FocusTarget = { focus?: () => void; ownerDocument?: { activeElement: unknown } };
+type FocusTarget = React.ComponentRef<typeof Pressable>;
 
 /** One keyboard/focus owner for filesystem trees and their changed-file projection. */
 export function useFilesystemTreeKeyboard(nodes: readonly FilesystemTreeKeyboardNode[], onFocusIndex?: (index: number) => void) {
@@ -35,8 +36,7 @@ export function useFilesystemTreeKeyboard(nodes: readonly FilesystemTreeKeyboard
         accessibilityExpanded: node.type === 'directory' ? node.isExpanded : undefined,
         pressableRef: target => {
             if (!target) {
-                const previous = targets.current.get(node.path);
-                if (previous && previous.ownerDocument?.activeElement === previous) pendingFocus.current = node.path;
+                if (focusedPath === node.path) pendingFocus.current = node.path;
                 targets.current.delete(node.path);
                 return;
             }
@@ -65,6 +65,6 @@ export function useFilesystemTreeKeyboard(nodes: readonly FilesystemTreeKeyboard
             event.preventDefault?.();
             if (next) focusPath(next.path);
         },
-    }), [activePath, focusPath, navigable]);
+    }), [activePath, focusPath, focusedPath, navigable]);
     return { activePath, getRowProps, focusPath };
 }

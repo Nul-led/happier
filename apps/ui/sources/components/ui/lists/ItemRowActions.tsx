@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Pressable, useWindowDimensions, type GestureResponderEvent, Platform } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { type ItemAction } from '@/components/ui/lists/itemActions';
+import { ITEM_ROW_ACTIONS_COMPACT_THRESHOLD_PX, type ItemAction } from '@/components/ui/lists/itemActions';
 import { Popover, type PopoverPlacement, type PopoverPortalOptions } from '@/components/ui/popover';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
 import { resolveWebBlurTintColor } from '@/components/ui/overlays/resolveWebBlurTintColor';
@@ -12,6 +12,7 @@ import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInterac
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Icon } from '@/components/ui/icons/Icon';
 import type { FocusReturnTarget } from '@/keyboard/focusReturn';
+import { resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 
 export interface ItemRowActionsProps {
     title: string;
@@ -34,6 +35,9 @@ export interface ItemRowActionsProps {
         accessibilityHint: string;
     }>) => React.ReactNode;
     renderOverflowAnchorOverlay?: () => React.ReactNode;
+    /** Controlled overflow, for a row that also opens its actions another way (a long press on touch). */
+    overflowOpen?: boolean;
+    onOverflowOpenChange?: (open: boolean) => void;
     compactThreshold?: number;
     compactActionIds?: string[];
     /**
@@ -86,8 +90,15 @@ export function ItemRowActions(props: ItemRowActionsProps) {
         && props.layoutWidthPx > 0
             ? props.layoutWidthPx
             : windowWidth;
-    const compact = widthForCompact < (props.compactThreshold ?? 450);
-    const [showOverflow, setShowOverflow] = React.useState(false);
+    const compact = widthForCompact < (props.compactThreshold ?? ITEM_ROW_ACTIONS_COMPACT_THRESHOLD_PX);
+    const [uncontrolledShowOverflow, setUncontrolledShowOverflow] = React.useState(false);
+    const showOverflow = props.overflowOpen ?? uncontrolledShowOverflow;
+    const onOverflowOpenChange = props.onOverflowOpenChange;
+    const setShowOverflow = React.useCallback((next: boolean | ((current: boolean) => boolean)) => {
+        const resolved = typeof next === 'function' ? next(showOverflow) : next;
+        if (props.overflowOpen === undefined) setUncontrolledShowOverflow(resolved);
+        onOverflowOpenChange?.(resolved);
+    }, [onOverflowOpenChange, props.overflowOpen, showOverflow]);
     const overflowAnchorRef = React.useRef<View>(null);
 
     const blurTintOnWeb = React.useMemo(() => {
@@ -269,7 +280,7 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                     return [
                         styles.actionControl,
                         actionControlFrame,
-                        webState.focused === true ? styles.actionControlFocused : null,
+                        resolveHappierFocusRingVisible(webState.focused) ? styles.actionControlFocused : null,
                     ];
                 }}
                 accessibilityRole="button"
@@ -316,7 +327,7 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                                         styles.actionControl,
                                         actionControlFrame,
                                         showOverflow ? { opacity: 0 } : null,
-                                        webState.focused === true ? styles.actionControlFocused : null,
+                                        resolveHappierFocusRingVisible(webState.focused) ? styles.actionControlFocused : null,
                                     ];
                                 }}
                                 onPressIn={() => props.onActionPressIn?.()}

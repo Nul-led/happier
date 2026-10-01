@@ -1,29 +1,25 @@
 import React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
-import { installCardCommonModuleMocks } from './cardTestHelpers';
-
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-installCardCommonModuleMocks();
-
-vi.mock('@/components/ui/buttons/RoundButton', () => ({
-    RoundButton: (props: any) => React.createElement('RoundButton', props),
-}));
 
 describe('ActionCard', () => {
-    it('renders primary button with correct label', async () => {
+    it('keeps the complete primary action readable and operable', async () => {
         const { ActionCard } = await import('../ActionCard');
         const onPress = vi.fn();
         const screen = await renderScreen(
             <ActionCard
                 testID="action-card"
                 title="Install CLI"
-                primaryAction={{ label: 'Install', onPress }}
+                primaryAction={{ label: 'Connect this computer here', onPress }}
             />,
         );
 
-        expect(screen.findByTestId('action-card-primary')?.props.title).toBe('Install');
+        const label = screen.tree.findAllByType('Text' as never).find((node) => node.props.children === 'Connect this computer here');
+        expect(label).toBeTruthy();
+        expect(label?.props.numberOfLines).toBeUndefined();
+        await act(async () => { screen.findByTestId('action-card-primary')?.props.onPress(); });
+        expect(onPress).toHaveBeenCalledOnce();
     });
 
     it('renders secondary button when provided', async () => {
@@ -37,8 +33,10 @@ describe('ActionCard', () => {
             />,
         );
 
-        expect(screen.findByTestId('action-card-secondary')?.props.title).toBe('Skip');
-        expect(screen.findByTestId('action-card-secondary')?.props.display).toBe('inverted');
+        expect(screen.findByTestId('action-card-secondary')).toBeTruthy();
+        const label = screen.tree.findAllByType('Text' as never).find((node) => node.props.children === 'Skip');
+        expect(label).toBeTruthy();
+        expect(label?.props.numberOfLines).toBeUndefined();
     });
 
     it('does not render secondary button when omitted', async () => {
@@ -66,8 +64,10 @@ describe('ActionCard', () => {
             />,
         );
 
-        expect(screen.findByTestId('action-card-primary')?.props.disabled).toBe(true);
-        expect(screen.findByTestId('action-card-secondary')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('action-card-primary')?.props.accessibilityState.disabled).toBe(true);
+        expect(screen.findByTestId('action-card-secondary')?.props.accessibilityState.disabled).toBe(true);
+        expect(screen.findByTestId('action-card-primary')?.props.loading).toBe(true);
+        expect(screen.findByTestId('action-card-secondary')?.props.loading).toBe(true);
     });
 
     it('description is optional', async () => {
@@ -80,6 +80,6 @@ describe('ActionCard', () => {
             />,
         );
 
-        expect(screen.getTextContent()).toBe('No Desc');
+        expect(screen.getTextContent()).toBe('No Desc Go');
     });
 });

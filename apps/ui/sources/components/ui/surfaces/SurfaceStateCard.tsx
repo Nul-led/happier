@@ -1,42 +1,68 @@
+import { HAPPIER_STATE_LINE_METRICS, HAPPIER_STATE_SIZE_METRICS, HappierSurfaceStateFrame, HappierStateLine, HappierStateDetails, resolveHappierStateAnnouncement, resolveHappierStateFailureGlyph, type HappierStateSize, type HappierSurfaceStateKind } from '@happier-dev/plugin-ui/presentation';
+import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
+import { HappierPressable } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
-import { AccessibilityInfo, Platform, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
-import { SurfaceCard } from '@/components/ui/cards/SurfaceCard';
 import { EmptyState } from '@/components/ui/empty/EmptyState';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { t } from '@/text';
 
-export type SurfaceStateKind = 'empty' | 'loading' | 'error' | 'warning' | 'unavailable';
+import { useSurfaceStateSize } from './surfaceStateSize';
+
+export type SurfaceStateKind = HappierSurfaceStateKind;
+/**
+ * The container the state sits in (see `HappierStateSize`), or `line`: the compact in-list variant — one
+ * quiet line on the rows' edge (glyph · sentence · inline link) that keeps a section in place when it is
+ * loading, empty, failed or denied.
+ */
+export type SurfaceStateSize = HappierStateSize | 'line';
 export type SurfaceStateAccessibilitySemantics = 'status' | 'alert';
 
 export type SurfaceStateAction = Readonly<{
     /** Already-translated action label. */
     label: string;
     onPress: () => void | Promise<unknown>;
+    testID?: string;
+    disabled?: boolean;
+    /** Pending work owned by the caller; returned promises also retain shared pending behavior. */
+    busy?: boolean;
 }>;
 
-const DEFAULT_ICONS: Record<Exclude<SurfaceStateKind, 'loading'>, IconName> = {
+const DEFAULT_ICONS: Partial<Record<SurfaceStateKind, IconName>> = {
     empty: 'tray',
-    error: 'warning-circle',
+    success: 'check-circle',
     warning: 'warning-circle',
-    unavailable: 'cloud-slash',
 };
 
+/** In a line the glyph is the only tint: a failure shows the warning mark, nothing else changes. */
+const LINE_ICONS: Partial<Record<SurfaceStateKind, IconName | null>> = {
+    empty: null,
+    success: 'check-circle',
+    warning: 'warning',
+};
+
+/**
+ * A wait becomes worth narrating after this long: a first read that answers quickly never shows the
+ * line, one that doesn't says so instead of spinning silently (pane-states lab 0, "L").
+ */
+const STILL_WAITING_AFTER_MS = 5_000;
+
+/** A present-tense line under the state: "Reconnecting · next try in 8 s", "Still waiting · 12 s". */
+export type SurfaceStateLive = Readonly<{
+    /** Already-translated. */
+    text: string;
+    /** Draws a small working ring before the text. */
+    busy?: boolean;
+}>;
+
 const stylesheet = StyleSheet.create((theme) => ({
-    root: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 16,
-    },
-    card: {
-        maxWidth: 560,
-        alignSelf: 'center',
-    },
     actions: {
         flexDirection: 'row',
         gap: 12,
@@ -57,38 +83,97 @@ const stylesheet = StyleSheet.create((theme) => ({
         width: 0,
         height: 0,
     },
+    detailsToggleLabel: {
+        ...Typography.default(),
+        fontSize: 12,
+        lineHeight: 16,
+        // Quiet by size and placement, not by contrast: small text keeps the
+        // secondary role so it stays legible.
+        color: theme.colors.text.secondary,
+    },
+    detailsCode: {
+        ...Typography.mono(),
+        fontSize: 12,
+        lineHeight: 18,
+        color: theme.colors.text.secondary,
+        textAlign: 'center',
+    },
     iconWrap: {
         alignItems: 'center',
         justifyContent: 'center',
     },
+    quiet: {
+        ...Typography.default(),
+        color: theme.colors.text.tertiary,
+        textAlign: 'center',
+    },
+    quietLink: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.secondary,
+        textDecorationLine: 'underline',
+    },
+    live: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+    },
+    liveText: {
+        ...Typography.default(),
+        color: theme.colors.text.secondary,
+        fontVariant: ['tabular-nums'],
+    },
+    fullWidth: {
+        alignSelf: 'stretch',
+    },
+    liveAndActions: {
+        alignItems: 'center',
+        gap: 16,
+    },
 }));
 
 /**
- * The ONE shared terminal-state card for surface panes (audit XS-3): unifies
- * the bespoke unavailable / empty / error / loading states across browser,
- * simulator, local-services, and plugin surfaces. Composes the canonical
- * {@link EmptyState} tile (icon + title + copy + action slot).
+ * The ONE shared state composition for panes, details and app surfaces (audit XS-3; pane-states lab 0):
+ * empty that invites, loading, unavailable/offline, error with cause and recovery, permission denied,
+ * and the compact in-list line. Composes the canonical {@link EmptyState} (icon + title + copy + action
+ * slot); stale content is not a card but {@link SurfaceFreshnessLine} over the retained content.
  *
- * i18n is the caller's responsibility: `title` and `reason` are
- * already-translated HUMAN copy (route reason codes through
- * `resolveReasonCopy` first). The raw machine code goes on `diagnosticCode`,
- * which is exposed ONLY through a testID marker for QA/diagnostics — it never
- * reaches visible text or accessibility labels.
+ * Size comes from the container: the right sidebar, details drawer and phone panes set it once through
+ * `SurfaceStateSizeProvider`, an explicit `size` wins, and outside both the card keeps its unsized
+ * centred column. One message per state; the container never resizes around it.
+ *
+ * i18n is the caller's responsibility: `title` and `reason` are already-translated HUMAN copy (route
+ * reason codes through `resolveReasonCopy` first). The raw machine code goes on `diagnosticCode`: it is
+ * never the headline, reason or an accessibility label. On a failure card (error, unavailable, warning)
+ * it stays behind a quiet, collapsed "Details" disclosure for support and expert users (DESIGN.md "Error
+ * and recovery copy"); every card keeps it on a testID marker for QA.
  */
 export function SurfaceStateCard(props: Readonly<{
     testID?: string;
     kind: SurfaceStateKind;
-    /** Already-translated title. */
+    /** The container step; defaults to the enclosing `SurfaceStateSizeProvider`. */
+    size?: SurfaceStateSize;
+    /** Already-translated title: what is here, or what failed, in the person's words. */
     title: string;
-    /** Already-translated human explanation (never a raw reason code). */
+    /** Already-translated human explanation — the promise, or the cause (never a raw reason code). */
     reason?: string;
-    /** Raw machine reason code — testID diagnostics channel only. */
+    /** Raw machine reason code — collapsed Details disclosure and testID marker only. */
     diagnosticCode?: string | null;
     /** Optional sanitized supplemental detail. Never pass a raw machine code. */
     detail?: string;
-    /** Primary next step (retry, open, rescan…). */
+    /** The one next step (create the first item, retry, check again…). */
     action?: SurfaceStateAction;
+    /** A quiet second way forward beside it. */
     secondaryAction?: SurfaceStateAction;
+    /** "How it works": a quiet link under the actions, after the {@link note} when there is one. */
+    learnMore?: SurfaceStateAction;
+    /** A quiet line under the actions: a prerequisite ("Runs on a machine in Personal Home.") or a reassurance ("Nothing is lost."). */
+    note?: string;
+    /**
+     * The present, under the copy ("Reconnecting · next try in 8 s"). A sized loading state narrates a
+     * long wait on its own ("Still waiting · 12 s") unless this is given.
+     */
+    live?: SurfaceStateLive;
     /** Caller-owned glyph when a surface has a domain-specific icon. */
     icon?: React.ReactNode;
     /** Override the per-kind default glyph. */
@@ -99,72 +184,176 @@ export function SurfaceStateCard(props: Readonly<{
 }>): React.ReactElement {
     const { theme } = useUnistyles();
     const styles = stylesheet;
+    const containerSize = useSurfaceStateSize();
+    const size = props.size ?? containerSize;
+    const failureGlyph = resolveHappierStateFailureGlyph(props.kind, size === 'line');
+    const kindIconName = failureGlyph ? resolvePluginUiIconName(failureGlyph) : undefined;
 
-    const tint = props.kind === 'error'
-        ? theme.colors.state.danger.foreground
-        : props.kind === 'warning'
-            ? theme.colors.state.warning.foreground
-        : theme.colors.text.secondary;
-    const accessibilityLiveRegion = props.accessibilitySemantics === 'alert'
-        ? 'assertive'
-        : props.accessibilitySemantics === 'status'
-            ? 'polite'
-            : undefined;
+    // U8.5 craft S4: every kind shares the empty-state anatomy. The glyph stays calm in the secondary
+    // colour; the title carries the trouble, so a failure is never a red "!" on a muted card.
+    const glyphColor = theme.colors.text.secondary;
     const accessibilityAnnouncement = [props.title, props.reason, props.detail]
         .map((value) => value?.trim())
         .filter((value): value is string => Boolean(value))
         .join('. ');
     const lastIosAnnouncementRef = React.useRef<string | null>(null);
 
+    // iOS has no live regions, so the card speaks through the canonical announcer on
+    // mount and whenever its semantics or text change; web/Android use the live
+    // region on the root below (assertive for alerts, polite for status).
     React.useEffect(() => {
         if (Platform.OS !== 'ios' || !props.accessibilitySemantics) return;
         const transitionKey = `${props.accessibilitySemantics}\u0000${accessibilityAnnouncement}`;
         if (lastIosAnnouncementRef.current === transitionKey) return;
         lastIosAnnouncementRef.current = transitionKey;
-        try {
-            AccessibilityInfo.announceForAccessibility(accessibilityAnnouncement);
-        } catch {
-            // Accessibility announcements are best effort on native platforms.
-        }
+        announceAccessibilityMessage(accessibilityAnnouncement);
     }, [accessibilityAnnouncement, props.accessibilitySemantics]);
 
+    const liveRegionProps = resolveHappierStateAnnouncement(props.accessibilitySemantics);
+
+    const diagnosticMarker = props.diagnosticCode ? (
+        // Nothing failed (or nothing to disclose in a line), so the code stays on the QA testID channel only.
+        <View
+            testID={props.testID ? `${props.testID}-diagnostic-${props.diagnosticCode}` : undefined}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={styles.hiddenDiagnostic}
+        />
+    ) : null;
+
+    if (size === 'line') {
+        const lineIconName = props.iconName ?? kindIconName ?? LINE_ICONS[props.kind];
+        const lineTint = props.kind === 'error' || props.kind === 'warning'
+            ? theme.colors.state.warning.foreground
+            : theme.colors.text.tertiary;
+        const lineGlyph = props.kind === 'loading' ? (
+            <ActivitySpinner
+                testID={props.testID ? `${props.testID}-loading-spinner` : undefined}
+                size={HAPPIER_STATE_LINE_METRICS.glyphPx - 2}
+                color={theme.colors.text.tertiary}
+                animationEnabled={props.animationEnabled !== false}
+            />
+        ) : props.icon ?? (lineIconName
+            ? <Icon name={lineIconName} size={HAPPIER_STATE_LINE_METRICS.glyphPx} color={lineTint} />
+            : undefined);
+        return (
+            <View {...liveRegionProps}>
+                <HappierStateLine
+                    testID={props.testID}
+                    icon={lineGlyph}
+                    action={(
+                        <View style={{ flexDirection: 'row', gap: HAPPIER_STATE_LINE_METRICS.gapPx }}>
+                            {[props.action, props.secondaryAction].map((action, index) => action ? (
+                                <HappierPressable
+                                    key={index}
+                                    testID={action.testID ?? (props.testID ? `${props.testID}-${index === 0 ? 'action' : 'secondary-action'}` : undefined)}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={action.label}
+                                    disabled={action.disabled}
+                                    busy={action.busy}
+                                    onPress={action.onPress}
+                                    style={{ minHeight: HAPPIER_STATE_LINE_METRICS.minHeightPx, justifyContent: 'center' }}
+                                >
+                                    <Text style={[styles.quietLink, HAPPIER_STATE_LINE_METRICS.text]}>{action.label}</Text>
+                                </HappierPressable>
+                            ) : null)}
+                        </View>
+                    )}
+                ><Text style={[styles.liveText, HAPPIER_STATE_LINE_METRICS.text]}>{props.title}{props.reason ? ` · ${props.reason}` : null}</Text></HappierStateLine>
+                {diagnosticMarker}
+            </View>
+        );
+    }
+
+    const metrics = size ? HAPPIER_STATE_SIZE_METRICS[size] : null;
+    const glyphSize = metrics?.glyphPx ?? 32;
     const icon = props.kind === 'loading' ? (
         <ActivitySpinner
             testID={props.testID ? `${props.testID}-loading-spinner` : undefined}
-            size={28}
+            size={metrics ? glyphSize - 4 : 28}
             color={theme.colors.text.secondary}
             animationEnabled={props.animationEnabled !== false}
         />
     ) : props.icon ?? (
         <Icon
-            name={props.iconName ?? DEFAULT_ICONS[props.kind]}
-            size={32}
-            color={tint}
+            name={props.iconName ?? kindIconName ?? DEFAULT_ICONS[props.kind]!}
+            size={glyphSize}
+            color={glyphColor}
         />
     );
+    const buttonStyle = metrics?.fullWidthActions ? styles.fullWidth : undefined;
+    const quietTextStyle = metrics
+        ? { fontSize: metrics.quiet.fontSize, lineHeight: metrics.quiet.lineHeight }
+        : { fontSize: 12, lineHeight: 17 };
+    const quietGap = metrics?.quietGapPx ?? 12;
+
+    const live = props.live
+        ? <SurfaceStateLiveLine testID={props.testID} live={props.live} textStyle={quietTextStyle} animationEnabled={props.animationEnabled !== false} />
+        : props.kind === 'loading' && size && props.animationEnabled !== false
+            ? <SurfaceStateStillWaiting testID={props.testID} textStyle={quietTextStyle} />
+            : null;
+
+    const quietLine = props.note || props.learnMore ? (
+        <Text
+            testID={props.testID ? `${props.testID}-note` : undefined}
+            style={[styles.quiet, quietTextStyle, { marginTop: quietGap }]}
+        >
+            {props.note ?? null}
+            {props.note && props.learnMore ? ' ' : null}
+            {props.learnMore ? (
+                <Text
+                    testID={props.testID ? `${props.testID}-learn-more` : undefined}
+                    accessibilityRole="link"
+                    onPress={() => { void props.learnMore!.onPress(); }}
+                    style={styles.quietLink}
+                >
+                    {props.learnMore.label}
+                </Text>
+            ) : null}
+        </Text>
+    ) : null;
+
+    const actions = props.action || props.secondaryAction ? (
+        <View style={[styles.actions, metrics?.fullWidthActions ? { flexDirection: 'column', alignItems: 'stretch' } : null]}>
+            {props.action ? (
+                <RoundButton
+                    testID={props.action.testID ?? (props.testID ? `${props.testID}-action` : undefined)}
+                    disabled={props.action.disabled}
+                    loading={props.action.busy}
+                    // Lab 0: an invitation's one primary is filled; a recovery is bordered. In a pane or
+                    // details drawer the primary steps down to the small button; a page or phone keeps the normal one.
+                    size={props.kind === 'empty' && (size === undefined || size === 'page' || size === 'phone') ? 'normal' : 'small'}
+                    display={props.kind === 'empty' ? undefined : 'secondary'}
+                    title={props.action.label}
+                    accessibilityLabel={props.action.label}
+                    style={buttonStyle}
+                    action={() => Promise.resolve(props.action!.onPress())}
+                />
+            ) : null}
+            {props.secondaryAction ? (
+                <RoundButton
+                    testID={props.secondaryAction.testID ?? (props.testID ? `${props.testID}-secondary-action` : undefined)}
+                    disabled={props.secondaryAction.disabled}
+                    loading={props.secondaryAction.busy}
+                    size="small"
+                    display="inverted"
+                    title={props.secondaryAction.label}
+                    accessibilityLabel={props.secondaryAction.label}
+                    style={buttonStyle}
+                    action={() => Promise.resolve(props.secondaryAction!.onPress())}
+                />
+            ) : null}
+        </View>
+    ) : undefined;
 
     return (
-        <View
+        <HappierSurfaceStateFrame
             testID={props.testID}
-            style={styles.root}
-            accessibilityRole={props.accessibilitySemantics === 'alert'
-                ? 'alert'
-                : props.accessibilitySemantics === 'status'
-                    ? 'text'
-                    : undefined}
-            accessibilityLiveRegion={accessibilityLiveRegion}
-            {...(props.accessibilitySemantics ? ({
-                role: props.accessibilitySemantics,
-                'aria-live': accessibilityLiveRegion,
-            } as Record<string, unknown>) : {})}
+            size={size}
+            accessibilitySemantics={props.accessibilitySemantics}
         >
-            <SurfaceCard
-                testID={props.testID ? `${props.testID}-card` : undefined}
-                tone="muted"
-                padding="lg"
-                style={styles.card}
-            >
                 <EmptyState
+                    size={metrics ? size : undefined}
                     icon={(
                         <View
                             testID={props.testID ? `${props.testID}-icon` : undefined}
@@ -179,29 +368,14 @@ export function SurfaceStateCard(props: Readonly<{
                     subtitle={props.reason}
                     titleTestID={props.testID ? `${props.testID}-title` : undefined}
                     subtitleTestID={props.testID && props.reason != null ? `${props.testID}-reason` : undefined}
-                    action={props.action || props.secondaryAction ? (
-                        <View style={styles.actions}>
-                            {props.action ? (
-                                <RoundButton
-                                    testID={props.testID ? `${props.testID}-action` : undefined}
-                                    size="small"
-                                    title={props.action.label}
-                                    accessibilityLabel={props.action.label}
-                                    action={() => Promise.resolve(props.action!.onPress())}
-                                />
-                            ) : null}
-                            {props.secondaryAction ? (
-                                <RoundButton
-                                    testID={props.testID ? `${props.testID}-secondary-action` : undefined}
-                                    size="small"
-                                    display="inverted"
-                                    title={props.secondaryAction.label}
-                                    accessibilityLabel={props.secondaryAction.label}
-                                    action={() => Promise.resolve(props.secondaryAction!.onPress())}
-                                />
-                            ) : null}
+                    paddingHorizontal={metrics ? 0 : undefined}
+                    // The present reads with the copy, before the way forward (lab 0: title · copy · live · action).
+                    action={live && actions ? (
+                        <View style={[styles.liveAndActions, metrics?.fullWidthActions ? styles.fullWidth : null]}>
+                            {live}
+                            {actions}
                         </View>
-                    ) : undefined}
+                    ) : live ?? actions}
                 />
                 {props.detail ? (
                     <Text
@@ -211,17 +385,101 @@ export function SurfaceStateCard(props: Readonly<{
                         {props.detail}
                     </Text>
                 ) : null}
+                {quietLine}
                 {props.diagnosticCode ? (
-                    // Diagnostics-only channel: the raw code is reachable for QA via
-                    // testID, never rendered as text or announced to screen readers.
-                    <View
-                        testID={props.testID ? `${props.testID}-diagnostic-${props.diagnosticCode}` : undefined}
-                        accessibilityElementsHidden
-                        importantForAccessibility="no-hide-descendants"
-                        style={styles.hiddenDiagnostic}
-                    />
+                    props.kind === 'loading' || props.kind === 'empty' || props.kind === 'success' || props.kind === 'denied'
+                        ? diagnosticMarker
+                        : (
+                            <SurfaceStateDiagnosticDetails
+                                testID={props.testID}
+                                diagnosticCode={props.diagnosticCode}
+                            />
+                        )
                 ) : null}
-            </SurfaceCard>
+        </HappierSurfaceStateFrame>
+    );
+}
+
+function SurfaceStateLiveLine(props: Readonly<{
+    testID?: string;
+    live: SurfaceStateLive;
+    textStyle: Readonly<{ fontSize: number; lineHeight: number }>;
+    animationEnabled: boolean;
+}>): React.ReactElement {
+    const { theme } = useUnistyles();
+    return (
+        <View testID={props.testID ? `${props.testID}-live` : undefined} style={stylesheet.live}>
+            {props.live.busy ? (
+                <ActivitySpinner
+                    size={props.textStyle.fontSize}
+                    color={theme.colors.text.secondary}
+                    animationEnabled={props.animationEnabled}
+                />
+            ) : null}
+            <Text style={[stylesheet.liveText, props.textStyle]}>{props.live.text}</Text>
         </View>
+    );
+}
+
+/**
+ * The live "Still waiting · 12 s" line of a sized loading state. A leaf with its own clock, so the tick
+ * re-renders only this line; it mounts only while a sized loading state is visible and animated.
+ */
+function SurfaceStateStillWaiting(props: Readonly<{
+    testID?: string;
+    textStyle: Readonly<{ fontSize: number; lineHeight: number }>;
+}>): React.ReactElement | null {
+    const [elapsedMs, setElapsedMs] = React.useState(0);
+    React.useEffect(() => {
+        const startedAt = Date.now();
+        const interval = setInterval(() => setElapsedMs(Date.now() - startedAt), 1_000);
+        return () => clearInterval(interval);
+    }, []);
+    if (elapsedMs < STILL_WAITING_AFTER_MS) return null;
+    return (
+        <SurfaceStateLiveLine
+            testID={props.testID}
+            live={{ text: t('surfaceState.stillWaiting', { seconds: Math.floor(elapsedMs / 1_000) }) }}
+            textStyle={props.textStyle}
+            animationEnabled
+        />
+    );
+}
+
+/**
+ * Quiet disclosure for the raw reason code: collapsed by default so the card
+ * leads with human copy, one tap away when someone needs to report or debug.
+ */
+function SurfaceStateDiagnosticDetails(props: Readonly<{
+    testID?: string;
+    diagnosticCode: string;
+}>): React.ReactElement {
+    const { theme } = useUnistyles();
+    const styles = stylesheet;
+    const label = t('common.details');
+    return (
+        <HappierStateDetails
+            testID={props.testID}
+            markerTestID={props.testID ? `${props.testID}-diagnostic-${props.diagnosticCode}` : undefined}
+            label={label}
+            details={props.diagnosticCode}
+            renderToggle={(open) => <>
+                <Text accessible={false} style={styles.detailsToggleLabel}>{label}</Text>
+                <Icon
+                    name={open ? 'caret-up' : 'caret-down'}
+                    size={12}
+                    color={theme.colors.text.secondary}
+                />
+            </>}
+            renderDetails={(detail) => (
+                <Text
+                    testID={props.testID ? `${props.testID}-details-code` : undefined}
+                    selectable
+                    style={styles.detailsCode}
+                >
+                    {detail}
+                </Text>
+            )}
+        />
     );
 }

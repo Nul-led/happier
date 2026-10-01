@@ -4,4 +4,5 @@ export * from './escape';
 export * from './focusReturn';
 export * from './KeyboardShortcutProvider';
 export * from './runtime';
+export * from './shortcutLabels';
 export * from './types';

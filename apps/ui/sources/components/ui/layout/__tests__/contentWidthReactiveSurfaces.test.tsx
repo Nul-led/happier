@@ -163,26 +163,4 @@ describe('surfaces follow the content-width setting without a reload', () => {
 
         expect(mountCounts.constrainedViews).toBe(mountsAfterFirstPaint);
     });
-
-    it('re-applies the setting to the MCP segmented header in place', async () => {
-        const { McpSegmentedHeader } = await import('@/components/settings/mcpServers/McpSegmentedHeader');
-
-        const screen = await renderScreen(
-            <McpSegmentedHeader
-                title="Servers"
-                subtitle="Manage"
-                tabs={[{ id: 'a', label: 'A' }]}
-                activeTabId="a"
-                onSelectTab={() => {}}
-                testIDPrefix="mcp"
-            />,
-        );
-        expect(readConstrainedMaxWidths(screen)).toContain(CONTENT_WIDTH_PX_BY_MODE.compact);
-        const mountsAfterFirstPaint = mountCounts.constrainedViews;
-
-        await setContentWidthMode('full');
-        expect(readConstrainedMaxWidths(screen)).toContain(Number.POSITIVE_INFINITY);
-
-        expect(mountCounts.constrainedViews).toBe(mountsAfterFirstPaint);
-    });
 });

@@ -17,30 +17,37 @@ export interface ActionCardProps {
     testID?: string;
     style?: StyleProp<ViewStyle>;
     tone?: 'surface' | 'muted';
+    /** A quiet, setup-like presentation for contextual recovery actions. */
+    appearance?: 'default' | 'quiet';
 }
 
 export const ActionCard = React.memo<ActionCardProps>(
-    ({ title, description, primaryAction, secondaryAction, icon, loading, disabled, testID, style, tone = 'surface' }) => {
+    ({ title, description, primaryAction, secondaryAction, icon, loading, disabled, testID, style, tone = 'surface', appearance = 'default' }) => {
         const styles = stylesheet;
+        const quiet = appearance === 'quiet';
 
         return (
             <SurfaceCard
                 testID={testID}
                 tone={tone}
                 padding="md"
-                style={style}
+                style={[quiet ? styles.quietSurface : null, style]}
             >
-                <View style={styles.container}>
-                {icon ? <View style={styles.iconRow}>{icon}</View> : null}
-                <Text style={styles.title}>{title}</Text>
+                <View style={[styles.container, quiet ? styles.quietContainer : null]}>
+                {icon ? <View style={[styles.iconRow, quiet ? styles.quietIconRow : null]}>{icon}</View> : null}
+                <Text style={[styles.title, quiet ? styles.quietTitle : null]}>{title}</Text>
                 {description ? (
-                    <Text style={styles.description}>
+                    <Text style={[styles.description, quiet ? styles.quietDescription : null]}>
                         {description}
                     </Text>
                 ) : null}
-                <View style={styles.buttonRow}>
+                <View style={[styles.buttonRow, quiet ? styles.quietButtonRow : null]}>
                     <RoundButton
                         title={primaryAction.label}
+                        titleNumberOfLines="complete"
+                        style={[styles.button, quiet ? styles.quietButton : null]}
+                        size={quiet ? 'normal' : undefined}
+                        loading={loading}
                         onPress={loading ? undefined : primaryAction.onPress}
                         disabled={disabled || loading}
                         testID={testID ? `${testID}-primary` : undefined}
@@ -48,7 +55,11 @@ export const ActionCard = React.memo<ActionCardProps>(
                     {secondaryAction ? (
                         <RoundButton
                             title={secondaryAction.label}
+                            titleNumberOfLines="complete"
+                            style={[styles.button, quiet ? styles.quietButton : null]}
+                            size={quiet ? 'normal' : undefined}
                             display="inverted"
+                            loading={loading}
                             onPress={secondaryAction.onPress}
                             disabled={disabled || loading}
                             testID={testID ? `${testID}-secondary` : undefined}
@@ -66,8 +77,28 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
         gap: 0,
     },
+    quietSurface: {
+        alignSelf: 'center',
+        maxWidth: 560,
+        padding: 0,
+        borderRadius: 0,
+        borderWidth: 0,
+        borderColor: 'transparent',
+        backgroundColor: 'transparent',
+        boxShadow: 'none',
+        shadowOpacity: 0,
+        elevation: 0,
+    },
+    quietContainer: {
+        alignItems: 'center',
+        width: '100%',
+    },
     iconRow: {
         marginBottom: 12,
+    },
+    quietIconRow: {
+        alignItems: 'center',
+        marginBottom: 18,
     },
     title: {
         ...Typography.default('semiBold'),
@@ -82,10 +113,39 @@ const stylesheet = StyleSheet.create((theme) => ({
         marginTop: 4,
         color: theme.colors.text.secondary,
     },
+    quietTitle: {
+        width: '100%',
+        textAlign: 'center',
+        fontSize: 22,
+        lineHeight: 28,
+        letterSpacing: -0.25,
+    },
+    quietDescription: {
+        width: '100%',
+        maxWidth: 520,
+        textAlign: 'center',
+        fontSize: 15,
+        lineHeight: 22,
+        marginTop: 8,
+    },
     buttonRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
         gap: 12,
         marginTop: 16,
+    },
+    button: {
+        maxWidth: '100%',
+    },
+    quietButtonRow: {
+        width: '100%',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginTop: 24,
+    },
+    quietButton: {
+        alignSelf: 'center',
+        flexGrow: 0,
+        flexShrink: 1,
     },
 }));

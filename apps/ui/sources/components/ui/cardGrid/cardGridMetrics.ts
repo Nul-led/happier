@@ -1,0 +1,22 @@
+import { resolveHappierColumnCountForWidth } from '@happier-dev/plugin-ui/presentation';
+
+/**
+ * The one card-grid rhythm (lab `.hi-tiles`: three columns, 10 px apart): Home's setup, usage, machines
+ * and widgets, and set-up blocks wherever they appear, share edges, widths and gaps. A cell never gets
+ * narrower than `minColumnWidthPx`; below that the grid drops a column, down to one on a phone.
+ */
+export const CARD_GRID = Object.freeze({
+    columns: 3,
+    gapPx: 10,
+    minColumnWidthPx: 200,
+});
+
+/** How many columns a card grid of this width shows. */
+export function resolveCardGridColumns(widthPx: number, requestedColumns: number = CARD_GRID.columns): number {
+    return resolveHappierColumnCountForWidth({
+        availableWidthPx: widthPx,
+        requestedColumns,
+        minColumnWidthPx: CARD_GRID.minColumnWidthPx,
+        columnGapPx: CARD_GRID.gapPx,
+    });
+}

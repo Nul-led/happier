@@ -84,14 +84,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         alignItems: 'center',
         gap: 0,
     },
-    inputWrapFocused: {
-        ...(Platform.select({
-            web: {
-                boxShadow: `0 0 0 2px ${theme.colors.border.focus}`,
-            },
-            default: {},
-        }) as object),
-    },
     /**
      * RUX-10/RUX-15: input-cell is the LAYERING container for the editable
      * TextInput + the visual mirror beneath it (web). On native the cell only
@@ -131,16 +123,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: Platform.select({ ios: 20, default: 22 }),
         color: theme.colors.input.text,
         paddingVertical: 0,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-            },
-            default: {},
-        }) as object),
     },
     /**
      * Standard native/web input: an opaque, flexing TextInput with no visual
@@ -279,7 +261,6 @@ export function SelectionListSearchHeader(props: SelectionListSearchHeaderProps)
     const styles = stylesheet;
     const detectedReducedMotion = useReducedMotionPreference();
     const reducedMotion = props.reducedMotion ?? detectedReducedMotion;
-    const [isInputFocused, setIsInputFocused] = React.useState(false);
 
     // Attention shake: each `attentionNonce` increment plays one brief
     // left/right wobble of the whole header row (transform-only, native-driven),
@@ -446,7 +427,7 @@ export function SelectionListSearchHeader(props: SelectionListSearchHeaderProps)
               */}
             <View
                 testID={selectionListTestId(props.testID, 'input-wrap')}
-                style={[styles.inputWrap, isInputFocused ? styles.inputWrapFocused : null]}
+                style={styles.inputWrap}
             >
                 <View
                     testID={selectionListTestId(props.testID, 'input-cell')}
@@ -486,8 +467,6 @@ export function SelectionListSearchHeader(props: SelectionListSearchHeaderProps)
                         selectionColor={useOverlayInput ? theme.colors.input.text : undefined}
                         autoCapitalize="none"
                         autoCorrect={false}
-                        onFocus={() => setIsInputFocused(true)}
-                        onBlur={() => setIsInputFocused(false)}
                         onKeyPress={nativeKeyPress}
                         // Web commits via the keydown listener (Enter); wiring
                         // onSubmitEditing there too would double-fire. Native has

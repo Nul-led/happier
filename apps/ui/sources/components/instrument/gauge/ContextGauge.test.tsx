@@ -103,6 +103,27 @@ describe('ContextGauge (tier 2 ring)', () => {
         expect(onPress).toHaveBeenCalledTimes(1);
     });
 
+    it('press: minimal motion acknowledges with opacity only, never a scale', () => {
+        motionState.level = 'minimal';
+        const element = () => <ContextGauge usedPct={30} size={20} onPress={() => {}} testID="cg" />;
+        const tree = render(element());
+        const pressable = () => tree.root.findAll((node) => String(node.type) === 'Pressable')[0]!;
+        act(() => {
+            pressable().props.onPressIn();
+        });
+        act(() => {
+            tree.update(element());
+        });
+        // The outermost animated frame is the press frame; the ring animates inside it.
+        const frames = pressable().findAll((node) => String(node.type) === 'Animated.View');
+        const style = [frames[0]!.props.style].flat(Infinity).reduce<Record<string, unknown>>(
+            (result, entry) => Object.assign(result, entry ?? {}),
+            {},
+        );
+        expect(style.opacity).toBeCloseTo(0.7);
+        expect(style.transform).toBeUndefined();
+    });
+
     it('minimal level still renders the ring statically (no liquid tier)', () => {
         motionState.level = 'minimal';
         const tree = render(<ContextGauge usedPct={50} size={20} testID="cg" />);

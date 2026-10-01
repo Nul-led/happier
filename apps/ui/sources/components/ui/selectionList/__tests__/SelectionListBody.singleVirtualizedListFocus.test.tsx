@@ -93,8 +93,9 @@ function buildBodyStep(): SelectionListStep {
 function buildDirectSource(): SelectionListVirtualizedOptionSource {
     const options = makeOptions(8, 'direct');
     return {
-        items: options.map((_, optionIndex) => ({
+        items: options.map((option, optionIndex) => ({
             kind: 'option',
+            key: option.id,
             optionIndex,
             positionInSet: optionIndex + 1,
         })),
@@ -132,7 +133,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId={null}
                 listboxId="listbox"
@@ -149,7 +150,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId={null}
                 listboxId="listbox"
@@ -161,7 +162,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId="second-4"
                 listboxId="listbox"
@@ -184,7 +185,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMixedSectionPlan()}
                 focusedOptionId={null}
                 listboxId="listbox"
@@ -196,7 +197,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMixedSectionPlan()}
                 focusedOptionId="provider-10"
                 listboxId="listbox"
@@ -219,7 +220,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId="second-4"
                 listboxId="listbox"
@@ -248,7 +249,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={[]}
                 virtualizedOptionSource={source}
                 focusedOptionId="direct-5"
@@ -279,7 +280,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId={null}
                 listboxId="listbox"
@@ -291,7 +292,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId="second-4"
                 listboxId="listbox"
@@ -309,7 +310,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId={null}
                 listboxId="listbox"
@@ -321,7 +322,7 @@ describe('SelectionListBody flat virtualized-list focused-row scroll (RV-9)', ()
             <SelectionListBody
                 step={buildBodyStep()}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={buildMultiSectionPlan()}
                 focusedOptionId="not-in-any-section"
                 listboxId="listbox"

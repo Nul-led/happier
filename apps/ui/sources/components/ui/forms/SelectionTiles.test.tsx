@@ -9,6 +9,19 @@ import { installFormsCommonModuleMocks } from './formsTestHelpers';
 const windowStub = { innerWidth: 1440 } as Window & typeof globalThis;
 (globalThis as unknown as { window: Window & typeof globalThis }).window = windowStub;
 
+// Hoisted, so the web runtime is in force before `@/dev/testkit` loads the shared
+// presentation layer, which now owns the tile mechanism (and its web keyboard).
+vi.mock('react-native', async () => {
+    const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeWebMock({
+        Platform: {
+            OS: 'web',
+            select: <T,>(values: { web?: T; ios?: T; default?: T }) => values.web ?? values.ios ?? values.default,
+        },
+        useWindowDimensions: () => ({ width: 1440, height: 900 }),
+    });
+});
+
 installFormsCommonModuleMocks({
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -311,4 +324,138 @@ describe('SelectionTiles', () => {
         expect(flattenedStyle.width).toBe(115);
     });
 
+
+    it('renders a visual picker whose tiles show the real preview and still behave as one radio group', async () => {
+        const onChange = vi.fn();
+        const { SelectionTiles } = await import('./SelectionTiles');
+        const screen = await renderScreen(<SelectionTiles
+            variant="visual"
+            accessibilityLabel="Density"
+            options={[
+                { id: 'detailed', title: 'Detailed', preview: React.createElement('Preview', { kind: 'detailed' }) },
+                { id: 'narrow', title: 'Narrow', preview: React.createElement('Preview', { kind: 'narrow' }) },
+            ]}
+            value="narrow"
+            onChange={onChange}
+            testIdPrefix="density"
+        />);
+
+        expect(screen.findAllByType('Preview' as never).map((node) => node.props.kind)).toEqual(['detailed', 'narrow']);
+        const narrow = screen.findByTestId('density:narrow')!;
+        const detailed = screen.findByTestId('density:detailed')!;
+        expect(narrow.props.accessibilityRole).toBe('radio');
+        expect(narrow.props.accessibilityState).toEqual({ selected: true, disabled: false });
+        expect(detailed.props.accessibilityState).toEqual({ selected: false, disabled: false });
+        await act(async () => {
+            await pressTestInstanceAsync(detailed, 'density:detailed');
+        });
+        expect(onChange).toHaveBeenCalledWith('detailed');
+    });
+
+    it('renders action tiles as buttons that run their action and never hold a selection', async () => {
+        const onPress = vi.fn();
+        const { SelectionTiles } = await import('./SelectionTiles');
+        const screen = await renderScreen(<SelectionTiles
+            variant="action"
+            accessibilityLabel="Devices"
+            options={[
+                { id: 'phone', title: 'Add your phone', subtitle: 'Show a QR code', icon: 'device-mobile', testID: 'add-phone' },
+                { id: 'scan', title: 'Link a new device', icon: 'qr-code', disabled: true, testID: 'link-device' },
+            ]}
+            onPress={onPress}
+        />);
+
+        const phone = screen.findByTestId('add-phone')!;
+        const scan = screen.findByTestId('link-device')!;
+        expect(phone.props.accessibilityRole).toBe('button');
+        expect(phone.props.accessibilityState).toEqual({ disabled: false });
+        expect(scan.props.accessibilityState).toEqual({ disabled: true });
+        await act(async () => {
+            await pressTestInstanceAsync(phone, 'add-phone');
+        });
+        await act(async () => {
+            await pressTestInstanceAsync(scan, 'link-device');
+        });
+        expect(onPress.mock.calls).toEqual([['phone']]);
+    });
+
+    describe('keyboard (web)', () => {
+        const THEME_OPTIONS = [
+            { id: 'light', title: 'Light' },
+            { id: 'dark', title: 'Dark' },
+            { id: 'contrast', title: 'Contrast', disabled: true },
+            { id: 'system', title: 'System' },
+        ];
+
+        function keyEvent(key: string) {
+            return { key, nativeEvent: { key }, preventDefault: vi.fn() };
+        }
+
+        it.each(['visual', 'card'] as const)('moves the %s radio selection with the arrow keys and keeps one tab stop', async (variant) => {
+            const onChange = vi.fn();
+            const { SelectionTiles } = await import('./SelectionTiles');
+            const screen = await renderScreen(<SelectionTiles
+                variant={variant}
+                accessibilityLabel="Theme"
+                options={THEME_OPTIONS}
+                value="dark"
+                onChange={onChange}
+                testIdPrefix="theme"
+            />);
+            const tile = (id: string) => screen.findByTestId(`theme:${id}`)!;
+
+            // The browser hears which tile is chosen (RNW drops `accessibilityState`).
+            expect(tile('dark').props['aria-checked']).toBe(true);
+            expect(tile('light').props['aria-checked']).toBe(false);
+            // Only the selected tile is in the tab order; the others are reached with the arrows.
+            expect(tile('dark').props.tabIndex).toBe(0);
+            expect(tile('light').props.tabIndex).toBe(-1);
+            expect(tile('system').props.tabIndex).toBe(-1);
+
+            const right = keyEvent('ArrowRight');
+            await act(async () => { tile('dark').props.onKeyDown(right); });
+            // The disabled tile is skipped.
+            expect(onChange).toHaveBeenLastCalledWith('system');
+            expect(right.preventDefault).toHaveBeenCalled();
+
+            await act(async () => { tile('dark').props.onKeyDown(keyEvent('ArrowUp')); });
+            expect(onChange).toHaveBeenLastCalledWith('light');
+
+            await act(async () => { tile('light').props.onKeyDown(keyEvent('End')); });
+            expect(onChange).toHaveBeenLastCalledWith('system');
+        });
+
+        it('selects the focused tile with Space', async () => {
+            const onChange = vi.fn();
+            const { SelectionTiles } = await import('./SelectionTiles');
+            const screen = await renderScreen(<SelectionTiles
+                variant="visual"
+                options={THEME_OPTIONS}
+                value={null}
+                onChange={onChange}
+                testIdPrefix="theme"
+            />);
+            // With nothing selected the first enabled tile holds the tab stop.
+            expect(screen.findByTestId('theme:light')!.props.tabIndex).toBe(0);
+            const space = keyEvent(' ');
+            await act(async () => { screen.findByTestId('theme:light')!.props.onKeyDown(space); });
+            expect(onChange).toHaveBeenCalledWith('light');
+            expect(space.preventDefault).toHaveBeenCalled();
+        });
+
+        it('toggles a checkbox tile with Space and leaves each one in the tab order', async () => {
+            const onChange = vi.fn();
+            const { SelectionTiles } = await import('./SelectionTiles');
+            const screen = await renderScreen(<SelectionTiles
+                selectionMode="multiple"
+                options={THEME_OPTIONS}
+                value={['light']}
+                onChange={onChange}
+                testIdPrefix="multi"
+            />);
+            expect(screen.findByTestId('multi:dark')!.props.tabIndex).toBeUndefined();
+            await act(async () => { screen.findByTestId('multi:dark')!.props.onKeyDown(keyEvent(' ')); });
+            expect(onChange).toHaveBeenCalledWith(['light', 'dark']);
+        });
+    });
 });

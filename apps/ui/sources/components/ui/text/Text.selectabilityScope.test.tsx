@@ -14,9 +14,18 @@ vi.mock('react-native', async () => {
     );
 });
 
-vi.mock('@/constants/Typography', () => ({
-  Typography: { default: () => ({}), mono: () => ({}) },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/constants/Typography')>();
+  return {
+    ...actual,
+    Typography: {
+      ...actual.Typography,
+      default: () => ({}),
+      mono: () => ({}),
+      rowMeta: () => ({}),
+    },
+  };
+});
 
 vi.mock('@/sync/store/hooks', () => ({
   useLocalSetting: () => 1,
@@ -96,16 +105,32 @@ describe('Text (selectability scope)', () => {
     ]));
   });
 
-  it('preserves the browser focus indicator unless a consumer supplies its own', async () => {
+  it('suppresses normal browser focus chrome while marking the field for forced-colors accessibility', async () => {
     const { TextInput } = await import('./Text');
 
-    const screen = await renderScreen(<TextInput value="" onChangeText={() => {}} />);
+    const onFocus = vi.fn();
+    const onBlur = vi.fn();
+    const screen = await renderScreen(
+      <TextInput value="" onChangeText={() => {}} onFocus={onFocus} onBlur={onBlur} />,
+    );
     const input = screen.findByType('RNTextInput' as any);
-    expect(input.props.style).not.toEqual(expect.arrayContaining([
+    expect(input.props.style).toEqual(expect.arrayContaining([
       expect.objectContaining({ outlineStyle: 'none' }),
     ]));
-    expect(input.props.style).not.toEqual(expect.arrayContaining([
+    expect(input.props.style).toEqual(expect.arrayContaining([
       expect.objectContaining({ outlineWidth: 0 }),
+    ]));
+    expect(input.props.style).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ boxShadow: expect.anything() }),
+    ]));
+    expect(input.props['data-happier-text-input']).toBe('true');
+
+    input.props.onFocus?.({});
+    input.props.onBlur?.({});
+    expect(onFocus).toHaveBeenCalledTimes(1);
+    expect(onBlur).toHaveBeenCalledTimes(1);
+    expect(input.props.style).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ boxShadow: expect.anything() }),
     ]));
   });
 });

@@ -111,6 +111,7 @@ export type VirtualizedListProps<T> = Readonly<{
     initialScrollIndex?: number;
     initialNumToRender?: number;
     maxToRenderPerBatch?: number;
+    disableVirtualization?: boolean;
     windowSize?: number;
     removeClippedSubviews?: boolean;
 

@@ -46,10 +46,6 @@ installDropdownCommonModuleMocks({
     modal: installDropdownModalMock,
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}), keyHint: () => ({}) },
-}));
-
 vi.mock('@/components/ui/popover', () => ({
     Popover: ({ children }: any) => (typeof children === 'function' ? children({ maxHeight: 320, maxWidth: 320 }) : children),
     PopoverScope: ({ children }: any) => React.createElement(React.Fragment, null, children),

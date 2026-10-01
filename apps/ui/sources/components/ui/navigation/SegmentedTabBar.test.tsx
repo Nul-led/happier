@@ -55,7 +55,7 @@ function requireTab(screen: RenderedScreen, testID: string) {
 function requireTabLabel(screen: RenderedScreen, testID: string): string {
     const tab = requireTab(screen, testID);
     const labelNode = tab.findByType('Text' as never);
-    return labelNode.props.children;
+    return labelNode.children.filter((child): child is string => typeof child === 'string').join('');
 }
 
 /**
@@ -70,9 +70,12 @@ function requireTabSurface(screen: RenderedScreen, testID: string) {
 
 /** The track the segments sit in. Its padding is the only vertical space the frame may take. */
 function requireTrack(screen: RenderedScreen, testID: string) {
-    const track = requireTab(screen, testID).parent;
-    expect(track).toBeTruthy();
-    return track!;
+    // Walk up from the segment to the element that announces itself as the tablist. `.parent` alone
+    // lands on the Pressable mock's wrapper when `findByTestId` returns the host node.
+    let node = requireTab(screen, testID).parent;
+    while (node && node.props?.accessibilityRole !== 'tablist') node = node.parent;
+    expect(node).toBeTruthy();
+    return node!;
 }
 
 /**
@@ -270,9 +273,8 @@ describe('SegmentedTabBar', () => {
                     const context = `${platform}/${compact ? 'compact' : 'regular'}`;
 
                     expect(`${context}: ${targetHeight >= WCAG_MINIMUM_TARGET_PX}`).toBe(`${context}: true`);
-                    // 38 regular / 32 compact — the real per-variant numbers, not the 28/20 that
-                    // only ever applied to a LABEL bar.
-                    expect(`${context}: ${targetHeight}`).toBe(`${context}: ${compact ? 32 : 38}`);
+                    // An icon bar is as tall as a label bar: 32 regular / 24 compact, still on the WCAG floor.
+                    expect(`${context}: ${targetHeight}`).toBe(`${context}: ${compact ? 24 : 32}`);
                     expect(targetHeight).toBeLessThan(44);
                 }
             } finally {
@@ -312,28 +314,37 @@ describe('SegmentedTabBar', () => {
         expect((frame.minWidth as number) * 6 + 4).toBeLessThanOrEqual(148);
     });
 
-    it('reaches the platform target when a consumer explicitly owns enough room', async () => {
+    it('reaches the platform target on touch when a consumer owns enough room, and stays dense under a pointer', async () => {
         const { SegmentedTabBar } = await import('./SegmentedTabBar');
         const { Platform } = await import('react-native');
         const previousPlatform = Platform.OS;
 
-        for (const [platform, minimum] of [['web', 44], ['ios', 44], ['android', 48]] as const) {
+        for (const [platform, minimum] of [['ios', 44], ['android', 48]] as const) {
             (Platform as { OS: string }).OS = platform;
             try {
                 const screen = await renderScreen(
-                    <SegmentedTabBar
-                        tabs={TABS}
-                        activeTabId="alpha"
-                        onSelectTab={() => {}}
-                        testIDPrefix="seg"
-                        targetSize="platform"
-                    />,
+                    <SegmentedTabBar tabs={TABS} activeTabId="alpha" onSelectTab={() => {}} testIDPrefix="seg" targetSize="platform" />,
                 );
                 expect(flattenStyle(requireTab(screen, 'seg:alpha').props.style).minWidth).toBe(minimum);
                 expect(flattenStyle(requireTabSurface(screen, 'seg:alpha').props.style).minHeight).toBe(minimum - 4);
             } finally {
                 (Platform as { OS: string }).OS = previousPlatform;
             }
+        }
+
+        // A precise pointer (desktop, desktop web) keeps the lab's dense control: the drawn segment is
+        // its padding-driven 28px inside the 2px track (32 tall), never a 44px phone target.
+        (Platform as { OS: string }).OS = 'web';
+        try {
+            const screen = await renderScreen(
+                <SegmentedTabBar tabs={TABS} activeTabId="alpha" onSelectTab={() => {}} testIDPrefix="seg" targetSize="platform" />,
+            );
+            const surface = flattenStyle(requireTabSurface(screen, 'seg:alpha').props.style);
+            expect(surface.minHeight).toBeUndefined();
+            expect(flattenStyle(requireTab(screen, 'seg:alpha').props.style).minWidth).toBe(24);
+            expect((surface.paddingVertical as number) * 2 + 14 + 4).toBe(32);
+        } finally {
+            (Platform as { OS: string }).OS = previousPlatform;
         }
     });
 
@@ -356,6 +367,22 @@ describe('SegmentedTabBar', () => {
         } finally {
             (Platform as { OS: string }).OS = previousPlatform;
         }
+    });
+
+    it('draws an icon bar and a label bar at one height: the lab\'s 28px segment in a 32px track', async () => {
+        const { SegmentedTabBar, SEGMENTED_TAB_ICON_SIZE_PX } = await import('./SegmentedTabBar');
+        const drawn = async (tabs: typeof TABS, prefix: string) => {
+            const screen = await renderScreen(<SegmentedTabBar tabs={tabs} activeTabId="alpha" onSelectTab={() => {}} testIDPrefix={prefix} />);
+            const surface = flattenStyle(requireTabSurface(screen, `${prefix}:alpha`).props.style);
+            const label = requireTab(screen, `${prefix}:alpha`).findAllByType('Text' as never)[0];
+            const content = label ? flattenStyle(label.props.style).lineHeight as number : measureIconSlotHeight(screen, `${prefix}:alpha`);
+            return (surface.paddingVertical as number) * 2 + content;
+        };
+        const labelled = await drawn(TABS, 'txt');
+        const iconic = await drawn(ICON_TABS, 'ico');
+        expect(labelled).toBe(28);
+        expect(iconic).toBe(labelled);
+        expect(SEGMENTED_TAB_ICON_SIZE_PX).toBe(16);
     });
 
     // Icons replace labels only when EVERY tab supplies one; a half-iconic row reads as broken.
@@ -522,7 +549,7 @@ describe('SegmentedTabBar', () => {
         expect(beta.props.tabIndex).toBe(0);
         expect(alpha.props.tabIndex).toBe(-1);
         expect(gamma.props.tabIndex).toBe(-1);
-        expect(beta.parent?.props.accessibilityLabel).toBe('Thinking effort');
+        expect(requireTrack(screen, 'seg:beta').props.accessibilityLabel).toBe('Thinking effort');
 
         const keyEvent = (key: string) => ({
             key,
@@ -610,6 +637,29 @@ describe('SegmentedTabBar', () => {
         expect(flattenStyle(requireTabSurface(screen, 'seg:beta').props.style).outlineStyle).toBeUndefined();
     });
 
+    it('shows the focus ring for keyboard focus only, never for the focus a pointer press leaves', async () => {
+        const { SegmentedTabBar } = await import('./SegmentedTabBar');
+        const screen = await renderScreen(
+            <SegmentedTabBar tabs={TABS} activeTabId="alpha" onSelectTab={() => {}} testIDPrefix="seg" />,
+        );
+        // The browser's own verdict on the focused element (`:focus-visible`) is the boundary:
+        // a click leaves focus that does not match it, Tab moves focus that does.
+        const focusedElement = (focusVisible: boolean) => ({
+            matches: (selector: string) => selector === ':focus-visible' && focusVisible,
+        });
+
+        await act(async () => {
+            requireTab(screen, 'seg:beta').props.onFocus?.({ target: focusedElement(false) });
+        });
+        expect(flattenStyle(requireTabSurface(screen, 'seg:beta').props.style).outlineStyle).toBeUndefined();
+
+        await act(async () => {
+            requireTab(screen, 'seg:beta').props.onBlur?.({});
+            requireTab(screen, 'seg:gamma').props.onFocus?.({ target: focusedElement(true) });
+        });
+        expect(flattenStyle(requireTabSurface(screen, 'seg:gamma').props.style).outlineStyle).toBe('solid');
+    });
+
     // A `pointerEvents: 'none'` wrapper silences the pointer but leaves every segment announcing
     // as an enabled tab and reachable by keyboard. `disabled` has to reach the rendered segments.
     it('announces every segment as disabled, dims the track, and refuses selection when disabled', async () => {
@@ -629,11 +679,55 @@ describe('SegmentedTabBar', () => {
         }
 
         // The dim comes from the bar's own themed track style, not a caller-side opacity wrapper.
-        const track = requireTab(screen, 'seg:beta').parent!;
+        const track = requireTrack(screen, 'seg:beta');
         expect(flattenStyle(track.props.style).opacity).toBe(0.5);
 
         screen.pressByTestId('seg:gamma');
         expect(onSelectTab).not.toHaveBeenCalled();
+    });
+
+    // A value the options do not name (a custom schedule, a retired choice) leaves no active tab; the
+    // tablist must still take keyboard focus somewhere, or it drops out of the tab order entirely.
+    it('keeps the first enabled segment focusable when the value matches no tab', async () => {
+        const { SegmentedTabBar } = await import('./SegmentedTabBar');
+        const screen = await renderScreen(
+            <SegmentedTabBar
+                tabs={TABS}
+                activeTabId={'custom' as 'alpha'}
+                onSelectTab={() => {}}
+                testIDPrefix="seg"
+            />,
+        );
+
+        expect(requireTab(screen, 'seg:alpha').props.tabIndex).toBe(0);
+        expect(requireTab(screen, 'seg:beta').props.tabIndex).toBe(-1);
+        expect(requireTab(screen, 'seg:gamma').props.tabIndex).toBe(-1);
+    });
+
+    it('disables one segment on its own: announced, not pressable, skipped by the keyboard', async () => {
+        const { SegmentedTabBar } = await import('./SegmentedTabBar');
+        const onSelectTab = vi.fn();
+        const tabs: ReadonlyArray<SegmentedTab<'alpha' | 'beta' | 'gamma'>> = [
+            { id: 'alpha', label: 'Alpha' },
+            { id: 'beta', label: 'Beta', disabled: true },
+            { id: 'gamma', label: 'Gamma' },
+        ];
+        const screen = await renderScreen(
+            <SegmentedTabBar tabs={tabs} activeTabId="alpha" onSelectTab={onSelectTab} testIDPrefix="seg" />,
+        );
+
+        const beta = requireTab(screen, 'seg:beta');
+        expect(beta.props.accessibilityState).toEqual({ selected: false, disabled: true });
+        expect(beta.props.disabled).toBe(true);
+        expect(requireTab(screen, 'seg:alpha').props.accessibilityState).toEqual({ selected: true, disabled: false });
+
+        screen.pressByTestId('seg:beta');
+        expect(onSelectTab).not.toHaveBeenCalled();
+
+        await act(async () => {
+            requireTab(screen, 'seg:alpha').props.onKeyDown({ key: 'ArrowRight', nativeEvent: { key: 'ArrowRight' }, preventDefault: vi.fn() });
+        });
+        expect(onSelectTab).toHaveBeenLastCalledWith('gamma');
     });
 
     it('stays interactive and undimmed when disabled is not set', async () => {
@@ -643,7 +737,7 @@ describe('SegmentedTabBar', () => {
             <SegmentedTabBar tabs={TABS} activeTabId="beta" onSelectTab={onSelectTab} testIDPrefix="seg" />,
         );
 
-        const track = requireTab(screen, 'seg:beta').parent!;
+        const track = requireTrack(screen, 'seg:beta');
         expect(flattenStyle(track.props.style).opacity).toBeUndefined();
         expect(requireTab(screen, 'seg:beta').props.tabIndex).toBe(0);
 

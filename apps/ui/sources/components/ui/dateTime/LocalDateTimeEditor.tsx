@@ -6,7 +6,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
-import { DateTimePickerPopover } from './DateTimePickerPopover';
+import { DateTimePickerPopover, isDateTimePickerPopoverAvailable } from './DateTimePickerPopover';
 import {
     formatLocalDateInput,
     formatLocalTimeInput,
@@ -35,6 +35,7 @@ export function LocalDateTimeEditor(props: Readonly<{
     testIDPrefix: string;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
+    const pickerAvailable = isDateTimePickerPopoverAvailable();
     const [pickerMode, setPickerMode] = React.useState<'date' | 'time' | null>(null);
     const dateAnchorRef = React.useRef<View | null>(null);
     const timeAnchorRef = React.useRef<View | null>(null);
@@ -85,7 +86,7 @@ export function LocalDateTimeEditor(props: Readonly<{
                             placeholder="YYYY-MM-DD"
                             style={fieldStyle}
                         />
-                        <Pressable
+                        {pickerAvailable ? <Pressable
                             testID={`${props.testIDPrefix}-date-picker-button`}
                             accessibilityRole="button"
                             accessibilityLabel={props.labels.date}
@@ -94,7 +95,7 @@ export function LocalDateTimeEditor(props: Readonly<{
                             style={accessoryStyle}
                         >
                             <Icon name="calendar" size={18} color={theme.colors.text.secondary} />
-                        </Pressable>
+                        </Pressable> : null}
                     </View>
                 </View>
                 <View style={{ width: 132, gap: 7 }}>
@@ -109,7 +110,7 @@ export function LocalDateTimeEditor(props: Readonly<{
                             keyboardType="numbers-and-punctuation"
                             style={fieldStyle}
                         />
-                        <Pressable
+                        {pickerAvailable ? <Pressable
                             testID={`${props.testIDPrefix}-time-picker-button`}
                             accessibilityRole="button"
                             accessibilityLabel={props.labels.time}
@@ -118,12 +119,12 @@ export function LocalDateTimeEditor(props: Readonly<{
                             style={accessoryStyle}
                         >
                             <Icon name="clock" size={18} color={theme.colors.text.secondary} />
-                        </Pressable>
+                        </Pressable> : null}
                     </View>
                 </View>
             </View>
 
-            {pickerMode ? <DateTimePickerPopover
+            {pickerAvailable && pickerMode ? <DateTimePickerPopover
                 mode={pickerMode}
                 anchorRef={pickerMode === 'date' ? dateAnchorRef : timeAnchorRef}
                 value={pickerValue}

@@ -5,8 +5,16 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { shadowLevelStyle } from '@/shadowElevation';
 import { resolveThemeSurfaceBorderStyle } from '@/components/ui/surfaces/resolveThemeHairlineBorderStyle';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { useListPresentation } from '@/components/ui/lists/listPresentation';
+import { PAGE_LIST_METRICS } from '@/components/ui/lists/pageListMetrics';
 
-type SurfaceCardTone = 'surface' | 'muted';
+/**
+ * `flat` draws no chrome at all: the content is one section of a column that already
+ * separates its sections (the Companion). It keeps the card's one element topology,
+ * so a host that switches tone never remounts its content.
+ */
+type SurfaceCardTone = 'surface' | 'muted' | 'flat';
 export type SurfaceCardPadding = 'none' | 'sm' | 'md' | 'lg';
 
 /**
@@ -37,7 +45,11 @@ type SurfaceCardProps = Readonly<{
     tone?: SurfaceCardTone;
     padding?: SurfaceCardPadding;
     style?: StyleProp<ViewStyle>;
+    /** Fill the parent's height (a card in a grid row that shares its height with its neighbours). */
+    fill?: boolean;
 }>;
+
+const FILL_STYLE = { flexGrow: 1 } as const;
 
 const styles = StyleSheet.create((theme) => {
     const surfaceBorderStyle = resolveThemeSurfaceBorderStyle({
@@ -58,6 +70,28 @@ const styles = StyleSheet.create((theme) => {
         toneMuted: {
             backgroundColor: theme.colors.surface.inset,
         },
+        toneFlat: {
+            backgroundColor: 'transparent',
+            borderRadius: 0,
+            borderWidth: 0,
+            borderTopWidth: 0,
+            boxShadow: 'none',
+            shadowOpacity: 0,
+            elevation: 0,
+        },
+        // On a configuration page a card is a small sheet: the same section tint and hairline as the
+        // page's sections, never a shadowed card floating on paper.
+        cardPage: {
+            backgroundColor: theme.colors.surface.sectionTint,
+            borderRadius: PAGE_LIST_METRICS.sheetRadiusPx,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: theme.colors.border.default,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: theme.colors.border.default,
+            boxShadow: 'none',
+            shadowOpacity: 0,
+            elevation: 0,
+        },
         paddingSm: {
             paddingHorizontal: SURFACE_CARD_PADDING_PX.sm.horizontal,
             paddingVertical: SURFACE_CARD_PADDING_PX.sm.vertical,
@@ -74,8 +108,11 @@ const styles = StyleSheet.create((theme) => {
             width: '100%',
             borderRadius: SURFACE_CARD_RADIUS_PX,
         },
+        pressablePage: {
+            borderRadius: PAGE_LIST_METRICS.sheetRadiusPx,
+        },
         pressablePressed: {
-            opacity: 0.985,
+            opacity: motionTokens.press.opacitySurface,
         },
     };
 });
@@ -102,12 +139,15 @@ export const SurfaceCard = React.memo(function SurfaceCard(props: SurfaceCardPro
         padding = 'md',
         style,
     } = props;
+    const page = useListPresentation() === 'page';
 
     const content = (
         <View
             style={[
                 styles.cardBase,
+                page ? styles.cardPage : null,
                 tone === 'muted' ? styles.toneMuted : null,
+                tone === 'flat' ? styles.toneFlat : null,
                 resolvePaddingStyle(padding),
                 style,
             ]}
@@ -120,7 +160,9 @@ export const SurfaceCard = React.memo(function SurfaceCard(props: SurfaceCardPro
         <HappierSurface
             testID={testID}
             onPress={onPress}
-            pressableStyle={styles.pressable}
+            frameStyle={props.fill ? FILL_STYLE : undefined}
+            style={props.fill ? FILL_STYLE : undefined}
+            pressableStyle={[styles.pressable, page ? styles.pressablePage : null]}
             pressedStyle={styles.pressablePressed}
         >
             {content}

@@ -91,7 +91,6 @@ export const MachinePathBrowserListRow = React.memo(function MachinePathBrowserL
                     ? t('newSession.pathPicker.truncatedDirectoryInfo', { count: props.node.entryCount ?? 0 })
                     : props.node.name || props.node.path
             }
-            subtitle={props.node.type === 'error' ? props.node.errorMessage : undefined}
             icon={icon}
             testID={getPathBrowserRowTestId(props.node.path)}
             selected={props.selected}
@@ -106,8 +105,6 @@ export const MachinePathBrowserListRow = React.memo(function MachinePathBrowserL
             basePaddingLeft={rowBasePaddingLeft}
             depthIndent={rowDepthIndent}
             density="tight"
-            errorTitle={t('errors.tryAgain')}
-            errorSubtitle={props.node.errorMessage}
             onRetryError={(errorNode) => {
                 if (errorNode.parentDirectoryPath) {
                     props.onRetryDirectory(errorNode.parentDirectoryPath);

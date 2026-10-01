@@ -43,8 +43,8 @@ const stylesheet = StyleSheet.create({
 });
 
 export function SlideTransitionFrame(props: SlideTransitionFrameProps): React.ReactElement {
-    const preset = props.preset ?? 'soft';
-    const presetTokens = slideTransitionTokens[preset];
+    const preset = props.preset ?? 'signature';
+    const presetTokens = slideTransitionTokens[preset].spring;
     const distance = props.reducedMotion ? 0 : presetTokens.translatePx;
     const blurEnabled = props.blur !== false && !props.reducedMotion;
     const maxBlur = blurEnabled ? presetTokens.maxBlurPx : 0;
@@ -53,6 +53,7 @@ export function SlideTransitionFrame(props: SlideTransitionFrameProps): React.Re
         <View style={[stylesheet.container, props.style]} testID={props.testID}>
             {props.previous != null ? (
                 <SlideTransitionLayer
+                    key={props.previousKey ?? 'previous'}
                     role="previous"
                     progress={props.progress}
                     distance={distance}
@@ -67,6 +68,7 @@ export function SlideTransitionFrame(props: SlideTransitionFrameProps): React.Re
                 </SlideTransitionLayer>
             ) : null}
             <SlideTransitionLayer
+                key={props.currentKey ?? 'current'}
                 role="current"
                 progress={props.progress}
                 distance={distance}
@@ -81,6 +83,7 @@ export function SlideTransitionFrame(props: SlideTransitionFrameProps): React.Re
             </SlideTransitionLayer>
             {props.next != null ? (
                 <SlideTransitionLayer
+                    key={props.nextKey ?? 'next'}
                     role="next"
                     progress={props.progress}
                     distance={distance}

@@ -9,6 +9,7 @@ import type {
     PluginUiLaunchInputV1,
     PluginUiResourceSubscriptionEventV1,
     UiSurfaceExecutableApprovalKeyV1,
+    NormalizedUiSurfaceCapabilityRequestV1,
 } from '@happier-dev/protocol/plugins/ui';
 
 import {
@@ -67,8 +68,8 @@ export type CallerHostedHtmlRuntime = Readonly<{
     accountId: string;
     hostOrigin: string;
     admittedHostMethods: readonly PluginUiHostMethodV1[];
-    isApproved: (approval: UiSurfaceExecutableApprovalKeyV1, approvalKey: string) => boolean;
-    approve: (approval: UiSurfaceExecutableApprovalKeyV1, approvalKey: string) => void;
+    isApproved: (approval: UiSurfaceExecutableApprovalKeyV1, approvalKey: string, capabilities: NormalizedUiSurfaceCapabilityRequestV1) => boolean;
+    approve: (approval: UiSurfaceExecutableApprovalKeyV1, approvalKey: string, capabilities: NormalizedUiSurfaceCapabilityRequestV1) => void;
     revoke: (approval: UiSurfaceExecutableApprovalKeyV1, approvalKey: string) => void;
     createRequestController: (
         publishResourceEvent: (event: PluginUiResourceSubscriptionEventV1) => void,
@@ -192,7 +193,7 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
             || prepared.capabilityManifest.requested.actions.length > 0
             || prepared.capabilityManifest.requested.networkOrigins.length > 0);
     const approved = prepared?.kind === 'admitted'
-        && (!requiresApproval || props.runtime.isApproved(prepared.approval, prepared.approvalKey));
+        && (!requiresApproval || props.runtime.isApproved(prepared.approval, prepared.approvalKey, prepared.capabilityManifest.requested));
     // "Not now" is a local dismissal, not a recorded refusal: nothing is
     // written, and a different request (a new approval key) is a new review.
     const approvalKey = prepared?.kind === 'admitted' ? prepared.approvalKey : null;
@@ -376,7 +377,7 @@ export function HostedHtmlSurfaceAdapter(props: Readonly<{
                 diagnosticCode={`${props.recordRevision}:${prepared.approval.executableSecurityFingerprint}`}
                 action={{
                     label: t('sessionBoard.hostedHtmlApproval.allow'),
-                    onPress: () => props.runtime.approve(prepared.approval, prepared.approvalKey),
+                    onPress: () => props.runtime.approve(prepared.approval, prepared.approvalKey, prepared.capabilityManifest.requested),
                 }}
                 secondaryAction={{
                     label: t('sessionBoard.hostedHtmlApproval.notNow'),

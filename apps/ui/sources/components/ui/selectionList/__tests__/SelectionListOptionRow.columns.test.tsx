@@ -38,7 +38,7 @@ function makeProps(overrides: Partial<RenderPlanRowsProps> = {}): RenderPlanRows
         plan: makePlan(5),
         rootTestID: 'sl',
         stepId: 'root',
-        selectedOptionId: null,
+        selectedOptionIds: new Set<string>(),
         focusedOptionId: null,
         onSelect,
         onPushStep,

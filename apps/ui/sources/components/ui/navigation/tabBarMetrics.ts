@@ -22,10 +22,10 @@ export type TabBarMetrics = Readonly<{
     activePillRadius: number;
 }>;
 
-const SIZE_PRESETS: Record<TabBarSize, Readonly<{ iconSize: number; minWidth: number; padV: number; gap: number; pillRadius: number }>> = {
-    compact: { iconSize: 20, minWidth: 44, padV: 3, gap: 4, pillRadius: 13 },
-    regular: { iconSize: 24, minWidth: 50, padV: 5, gap: 5, pillRadius: 16 },
-    large: { iconSize: 28, minWidth: 54, padV: 7, gap: 7, pillRadius: 20 },
+const SIZE_PRESETS: Record<TabBarSize, Readonly<{ iconSize: number; minWidth: number; padV: number; pillRadius: number }>> = {
+    compact: { iconSize: 20, minWidth: 44, padV: 3, pillRadius: 13 },
+    regular: { iconSize: 24, minWidth: 50, padV: 5, pillRadius: 16 },
+    large: { iconSize: 28, minWidth: 54, padV: 7, pillRadius: 20 },
 };
 
 const LABELED_PILL_RADIUS_BOOST = 6;
@@ -39,7 +39,7 @@ export function resolveTabBarMetrics(size: TabBarSize, showLabels: boolean): Tab
         // Horizontal padding is aligned to the vertical (base) padding so each tab's
         // padding is symmetric — H = V = padV per size (compact 3, regular 5, large 7).
         tabPaddingHorizontal: preset.padV,
-        rowGap: preset.gap,
+        rowGap: 0,
         showLabels,
         activePillRadius: showLabels ? preset.pillRadius + LABELED_PILL_RADIUS_BOOST : preset.pillRadius,
     };

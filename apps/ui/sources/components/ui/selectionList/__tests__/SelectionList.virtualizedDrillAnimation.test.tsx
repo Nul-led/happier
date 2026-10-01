@@ -51,7 +51,7 @@ describe('SelectionList virtualized drill animation (FR3-9)', () => {
             <SelectionListBody
                 step={{ id: 'root', sections: [] }}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"
@@ -74,7 +74,7 @@ describe('SelectionList virtualized drill animation (FR3-9)', () => {
             <SelectionListBody
                 step={{ id: 'root', sections: [] }}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"
@@ -106,7 +106,7 @@ describe('SelectionList virtualized drill animation (FR3-9)', () => {
             <SelectionListBody
                 step={{ id: 'root', sections: [] }}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"

@@ -34,6 +34,31 @@ export const ResizableDockedPane = React.memo((props: ResizableDockedPaneProps) 
         onDragSizePx: props.onDragWidthPx,
     });
 
+    // The handle sits on the edge it resizes in document order too, because order is focus order: a
+    // modal focuses its first focusable element on open, and a leading pane's handle must not come
+    // before that pane's own content (the settings rail's search field).
+    const handle = canResize ? (
+        <ResizablePaneDividerHandle
+            axis="x"
+            edge={resizeEdge === 'left' ? 'start' : 'end'}
+            interactionProps={Platform.OS === 'web'
+                ? ({
+                    ...webHandleProps,
+                } as any)
+                : panHandlers as any}
+            accessibilityHandleProps={accessibilityHandleProps}
+            style={{
+                position: 'absolute',
+                ...(resizeEdge === 'left' ? { left: 0 } : { right: 0 }),
+                top: 0,
+                bottom: 0,
+                width: 10,
+                zIndex: 1000,
+            }}
+            showIndicator={false}
+        />
+    ) : null;
+
     return (
         <View
             testID={props.testID}
@@ -46,28 +71,9 @@ export const ResizableDockedPane = React.memo((props: ResizableDockedPaneProps) 
                 minHeight: 0,
             }}
         >
-            {canResize ? (
-                <ResizablePaneDividerHandle
-                    axis="x"
-                    edge={resizeEdge === 'left' ? 'start' : 'end'}
-                    interactionProps={Platform.OS === 'web'
-                        ? ({
-                            ...webHandleProps,
-                        } as any)
-                        : panHandlers as any}
-                    accessibilityHandleProps={accessibilityHandleProps}
-                    style={{
-                        position: 'absolute',
-                        ...(resizeEdge === 'left' ? { left: 0 } : { right: 0 }),
-                        top: 0,
-                        bottom: 0,
-                        width: 10,
-                        zIndex: 1000,
-                    }}
-                    showIndicator={false}
-                />
-            ) : null}
+            {resizeEdge === 'left' ? handle : null}
             <View style={{ flex: 1, width: '100%', minHeight: 0 }}>{props.children}</View>
+            {resizeEdge === 'right' ? handle : null}
         </View>
     );
 });

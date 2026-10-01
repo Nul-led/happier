@@ -1,4 +1,10 @@
 export type PaneLayoutKind = 'single' | 'overlayStack' | 'twoPane' | 'threePane';
+/**
+ * The region Details was opened from: the main content (a tool line in the transcript, the rail)
+ * or the side column's own list (Files, Changes, history). Details never covers what it was
+ * opened from (details lab 2, Q1).
+ */
+export type DetailsOpenerRegion = 'main' | 'side';
 export type PanePresentation = 'hidden' | 'docked' | 'overlay';
 
 export type ResolvedPaneLayout = Readonly<{
@@ -24,6 +30,8 @@ export type ResolvePaneLayoutInput = Readonly<{
      * Same as `rightPreferOverlayWhenPreferredDoesNotFit`, but for the details pane.
      */
     detailsPreferOverlayWhenPreferredDoesNotFit?: boolean;
+    /** Where Details was opened from, when both side columns are open and cannot all dock. */
+    detailsOpenedFrom?: DetailsOpenerRegion | null;
     mainMinPx?: number;
     mainMinPxThreePane?: number;
     rightMinPx?: number;
@@ -38,8 +46,9 @@ export type ResolvePaneLayoutInput = Readonly<{
  * number instead of guessing a second Chat minimum.
  */
 export const DEFAULT_MAIN_MIN_PX = 420;
-const DEFAULT_RIGHT_MIN_PX = 260;
-const DEFAULT_DETAILS_MIN_PX = 320;
+/** The narrowest docked right sidebar and details pane. `PANE_SIZING_DEFAULTS` re-exports these. */
+export const DEFAULT_RIGHT_MIN_PX = 260;
+export const DEFAULT_DETAILS_MIN_PX = 320;
 
 export function resolvePaneLayout(input: ResolvePaneLayoutInput): ResolvedPaneLayout {
     const mainMinPx = input.mainMinPx ?? DEFAULT_MAIN_MIN_PX;
@@ -68,6 +77,15 @@ export function resolvePaneLayout(input: ResolvePaneLayoutInput): ResolvedPaneLa
 
     if (rightOpen && detailsOpen) {
         if (fitsThreeDockedPreferred) return { kind: 'threePane', right: 'docked', details: 'docked' };
+        // Opened from the transcript: the side column folds to its rail (it stays open, only
+        // hidden, so closing Details brings it back) and Details docks beside what was clicked.
+        if (input.detailsOpenedFrom === 'main' && fitsMainPlusDetails) {
+            return { kind: 'twoPane', right: 'hidden', details: 'docked' };
+        }
+        // Opened from the side column's list: the list stays and Details is a drawer over main.
+        if (input.detailsOpenedFrom === 'side' && fitsMainPlusRight) {
+            return { kind: 'twoPane', right: 'docked', details: 'overlay' };
+        }
         // If the user has expressed a preference that cannot fit with three docked panes, prefer
         // keeping one pane docked while presenting the other as an overlay. This avoids forcing
         // the main region into an overly narrow three-pane layout when the user is actively

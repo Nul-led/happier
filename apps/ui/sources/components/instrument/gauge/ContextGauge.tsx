@@ -15,8 +15,9 @@ import Animated, {
 
 import { t } from '@/text';
 import { resolveTokenUsageToneColor } from '@/components/sessions/usage/tokenUsageTone';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 
-import { INSTRUMENT_DURATIONS, INSTRUMENT_PRESS_SCALE, INSTRUMENT_SPRINGS } from '../motion/motionTokens';
+import { INSTRUMENT_DURATIONS, INSTRUMENT_SPRINGS } from '../motion/motionTokens';
 import { instrumentThresholdImpact } from '../motion/haptics';
 import { useMotionPreferences } from '../motion/useMotionPreferences';
 import { GaugeRing } from './GaugeRing';
@@ -213,33 +214,34 @@ export const ContextGauge = React.memo(function ContextGauge(props: ContextGauge
 
     const hitSlop = Math.max(0, Math.ceil((MIN_HIT_SIZE - size) / 2));
     return (
-        <PressableScale
+        <GaugePressable
             testID={props.testID}
             accessibilityLabel={accessibilityLabel}
             onPress={props.onPress}
             hitSlop={hitSlop}
-            pressAnimationEnabled={animateFill}
+            reducedMotion={!animateFill}
         >
             {body}
-        </PressableScale>
+        </GaugePressable>
     );
 });
 
-type PressableScaleProps = Readonly<{
+type GaugePressableProps = Readonly<{
     children: React.ReactNode;
     onPress: () => void;
     accessibilityLabel: string;
     hitSlop: number;
-    pressAnimationEnabled: boolean;
+    /** The instrument motion cap (`minimal`): opacity-only acknowledgement. */
+    reducedMotion: boolean;
     testID?: string;
 }>;
 
-function PressableScale(props: PressableScaleProps) {
-    const pressScale = useSharedValue(1);
-    const pressStyle = useAnimatedStyle(() => ({
-        transform: [{ scale: pressScale.value }],
-    }));
-    const enabled = props.pressAnimationEnabled;
+/**
+ * The gauge keeps its own Pressable for the expanded hit slop a 16-20px ring needs;
+ * the press response itself is the shared `usePressFeedback` owner (glyph-sized mark).
+ */
+function GaugePressable(props: GaugePressableProps) {
+    const feedback = usePressFeedback({ glyph: true, reduced: props.reducedMotion });
 
     return (
         <Pressable
@@ -248,15 +250,11 @@ function PressableScale(props: PressableScaleProps) {
             accessibilityLabel={props.accessibilityLabel}
             hitSlop={props.hitSlop}
             onPress={props.onPress}
-            onPressIn={() => {
-                if (enabled) pressScale.value = withSpring(INSTRUMENT_PRESS_SCALE, INSTRUMENT_SPRINGS.snappy);
-            }}
-            onPressOut={() => {
-                if (enabled) pressScale.value = withSpring(1, INSTRUMENT_SPRINGS.snappy);
-            }}
+            onPressIn={feedback.onPressIn}
+            onPressOut={feedback.onPressOut}
             style={styles.root}
         >
-            <Animated.View style={pressStyle}>{props.children}</Animated.View>
+            <Animated.View style={feedback.animatedStyle}>{props.children}</Animated.View>
         </Pressable>
     );
 }

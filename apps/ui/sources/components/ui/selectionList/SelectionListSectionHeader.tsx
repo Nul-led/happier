@@ -26,7 +26,7 @@ import { buildSelectionListSectionHeaderGridA11yProps } from './buildSelectionLi
  * virtualized section helper above the virtualized list host.
  */
 export type SelectionListSectionHeaderProps = Readonly<{
-    /** Section title (rendered as uppercase eyebrow text). May be undefined. */
+    /** Section title, rendered in its own (sentence) case. May be undefined. */
     title?: string;
     /**
      * Optional count rendered to the right of the title with tabular-nums so
@@ -78,19 +78,17 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     label: {
         flex: 1,
-        // R13 (Fix 4): use the most muted text token so the eyebrow recedes
-        // visually below option rows. R6 used `text.secondary`.
-        color: theme.colors.text.tertiary,
-        // Keep app-wide uppercase eyebrow text without extra letter spacing,
-        // so section labels align with the rest of the app without reverting
-        // to the heavier settings-list group title treatment.
-        fontSize: Platform.select({ ios: 13, default: 11 }),
-        lineHeight: Platform.select({ ios: 16, default: 14 }),
+        // U8.5 craft S1: a sentence-case group label in the secondary text colour, medium weight —
+        // the group reads by weight and rhythm, not by an uppercase eyebrow.
+        ...Typography.default('medium'),
+        color: theme.colors.text.secondary,
+        fontSize: Platform.select({ ios: 13, default: 12 }),
+        lineHeight: Platform.select({ ios: 18, default: 16 }),
     },
     count: {
         color: theme.colors.text.tertiary,
-        fontSize: Platform.select({ ios: 13, default: 11 }),
-        lineHeight: Platform.select({ ios: 16, default: 14 }),
+        fontSize: Platform.select({ ios: 13, default: 12 }),
+        lineHeight: Platform.select({ ios: 18, default: 16 }),
         marginLeft: 8,
     },
 }));
@@ -104,7 +102,7 @@ export function SelectionListSectionHeader(
 ): React.ReactElement | null {
     const styles = stylesheet;
     if (props.title === undefined || props.title.length === 0) return null;
-    const title = props.title.toLocaleUpperCase();
+    const title = props.title;
     // In `grid` mode the header's own box becomes the row's single cell, so the
     // visible chrome — padding, typography, the count accessory — stays on the
     // exact same node it has always been on, and only a role-carrying row is

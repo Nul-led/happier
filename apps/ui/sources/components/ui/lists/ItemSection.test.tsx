@@ -72,7 +72,7 @@ async function renderTwoCellSection(props: Record<string, unknown> = {}) {
 }
 
 function readCellIsFullWidth(screen: Screen): boolean {
-    return flattenStyle(screen.findByTestId('cell-1')?.parent?.props.style).width === '100%';
+    return flattenStyle(screen.findByTestId('cell-1')?.parent?.parent?.props.style).width === '100%';
 }
 
 describe('ItemSection', () => {

@@ -89,4 +89,37 @@ describe('itemTextClamp is the clamp Item actually paints', () => {
             flat,
         )).toBe(resolveItemSubtitleMaxLines({ text: flat, subtitleLines: 0 }));
     });
+
+    it('lets a status subtitle (one led by a status mark) wrap to two lines instead of cutting it', async () => {
+        const { Item } = await import('./Item');
+        const { resolveItemSubtitleMaxLines, ITEM_STATUS_SUBTITLE_MAX_LINES } = await import('./itemTextClamp');
+        const { View } = await import('react-native');
+        const status = 'Happier 0.2.10 on this machine · 0.2.12 available';
+        const dot = <View testID="presence" style={{ width: 7, height: 7 }} />;
+
+        const painted = await paintedLines(<Item title="devbox" subtitle={status} subtitleLeading={dot} showChevron={false} />, status);
+        expect(painted).toBe(resolveItemSubtitleMaxLines({ text: status, subtitleLines: undefined, status: true }));
+        expect(painted).toBe(ITEM_STATUS_SUBTITLE_MAX_LINES);
+        expect(ITEM_STATUS_SUBTITLE_MAX_LINES).toBe(2);
+        // A plain description keeps its single line, so index rows stay compact.
+        expect(await paintedLines(<Item title="devbox" subtitle={status} showChevron={false} />, status)).toBe(1);
+    });
+
+    it('keeps the status mark on the first line of a wrapped status subtitle', async () => {
+        const { Item } = await import('./Item');
+        const { View } = await import('react-native');
+        const { flattenTestStyle } = await import('@/dev/testkit');
+        const status = 'Happier 0.2.10 on this machine · 0.2.12 available';
+        const screen = await renderScreen(
+            <Item title="devbox" subtitle={status} subtitleLeading={<View testID="presence" style={{ width: 7, height: 7 }} />} showChevron={false} />,
+        );
+        const text = screen.tree.findAllByType('Text' as never).find((node: { props: Record<string, unknown> }) => node.props.children === status)!;
+        const lineHeight = flattenTestStyle(text.props.style).lineHeight as number;
+        const mark = screen.tree.findAll((node: { props: Record<string, unknown> }) => node.props.testID === 'presence')[0]!;
+        // The mark's slot is one subtitle line tall and sits at the top of the text, whatever the line count.
+        const slot = flattenTestStyle(mark.parent!.props.style);
+        const row = flattenTestStyle(mark.parent!.parent!.props.style);
+        expect(slot.height).toBe(lineHeight);
+        expect(row.alignItems).toBe('flex-start');
+    });
 });

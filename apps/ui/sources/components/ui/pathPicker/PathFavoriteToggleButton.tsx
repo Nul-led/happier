@@ -22,6 +22,7 @@ import * as React from 'react';
 import { Pressable, type GestureResponderEvent } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconWeight } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 // F8 — Narrow boundary types: the cross-platform stop-propagation pattern
 // needs to call DOM-only `stopImmediatePropagation` on the underlying
@@ -107,7 +108,7 @@ export function PathFavoriteToggleButton(
                 styles.pressable,
                 props.isFavorite ? styles.pressableActive : styles.pressableInactive,
                 state.hovered ? styles.pressableActive : null,
-                state.pressed ? { opacity: 0.7 } : null,
+                state.pressed ? { opacity: motionTokens.press.opacity } : null,
             ]}
         >
             <Icon name="star" size={16} weight={iconWeight} color={iconColor} />

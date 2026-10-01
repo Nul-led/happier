@@ -50,7 +50,7 @@ import {
 } from './buildSelectionListOptionA11yProps';
 import { SelectionListA11yPatternContext } from './SelectionListA11yPatternContext';
 import { buildSelectionListGridRowModel } from './selectionListGridRowModel';
-import { SelectionListOptionPresentationContext } from './SelectionListOptionPresentationContext';
+import { SelectionListOptionPresentationContext, SelectionListSelectedMarkContext } from './SelectionListOptionPresentationContext';
 import {
     flattenRenderPlanForVirtualizedList,
     groupVirtualizedItemsIntoColumnRows,
@@ -169,6 +169,14 @@ export type SelectionListBodyProps = Readonly<{
      * different presentation than the one on screen.
      */
     optionPresentation?: SelectionListOptionPresentation;
+    /** See `SelectionListProps.selectionMark`. */
+    selectionMark?: 'check' | 'enter' | 'none';
+    /** See `SelectionListProps.bodyHeader`. Ignored by the measure mirror. */
+    bodyHeader?: React.ReactNode;
+    /** See `SelectionListProps.bodyFooter`. Ignored by the measure mirror. */
+    bodyFooter?: React.ReactNode;
+    /** Reports each rendered slot's height, which the measure mirror cannot see. */
+    onBodySlotLayout?: (slot: 'header' | 'footer', height: number) => void;
     /**
      * The popup's ARIA pattern, resolved by the orchestrator from the caller's
      * DECLARED capabilities (`columns`, `optionsHostInlineControls`) and passed
@@ -194,7 +202,15 @@ export function SelectionListBody(props: SelectionListBodyProps): React.ReactEle
     return (
         <SelectionListA11yPatternContext.Provider value={pattern}>
             <SelectionListOptionPresentationContext.Provider value={props.optionPresentation ?? 'row'}>
-                <SelectionListBodyContent {...props} />
+                <SelectionListSelectedMarkContext.Provider
+                    value={props.selectionMark === 'none'
+                        || props.multiselectable === true
+                        || (props.optionPresentation ?? 'row') !== 'row'
+                        ? null
+                        : props.selectionMark === 'enter' ? 'enter' : 'check'}
+                >
+                    <SelectionListBodyContent {...props} />
+                </SelectionListSelectedMarkContext.Provider>
             </SelectionListOptionPresentationContext.Provider>
         </SelectionListA11yPatternContext.Provider>
     );
@@ -328,17 +344,41 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
     // once per keystroke around the boundary. See
     // `advanceSelectionListBodyRendererLatch` for the escalation-only ladder
     // and why a list that GROWS past the threshold still ends up virtualized.
+    // Slots scroll with the rows, so they need the body's own scroll owner in every state: never
+    // the early empty branch (which would remount them, and any input inside them, on the keystroke
+    // that empties the list) and never the per-section virtualized renderer.
+    const hasBodySlots = !isMeasure && (props.bodyHeader != null || props.bodyFooter != null);
+    const bodyHeaderSlot = hasBodySlots && props.bodyHeader != null ? (
+        <View role="none" testID={selectionListTestId(props.rootTestID, 'bodyHeader')} onLayout={(event) => props.onBodySlotLayout?.('header', event.nativeEvent.layout.height)}>{props.bodyHeader}</View>
+    ) : null;
+    const bodyFooterSlot = hasBodySlots && props.bodyFooter != null ? (
+        <View role="none" testID={selectionListTestId(props.rootTestID, 'bodyFooter')} onLayout={(event) => props.onBodySlotLayout?.('footer', event.nativeEvent.layout.height)}>{props.bodyFooter}</View>
+    ) : null;
     const latch = useLatchedBodyRenderer({
         stepId: props.step.id,
         plan,
         declaresPagination: props.pagination !== undefined,
-        declaresColumns: props.declaresColumns === true,
+        declaresColumns: props.declaresColumns === true || hasBodySlots,
     });
 
-    if (plan.length === 0 && props.pagination === undefined) {
-        const emptyStateGroupA11y = isMeasure
-            ? null
-            : buildSelectionListSectionGroupA11yProps({ pattern: a11yPattern });
+    const emptyNode = isMeasure ? null : (() => {
+        const emptyStateGroupA11y = buildSelectionListSectionGroupA11yProps({ pattern: a11yPattern });
+        return emptyStateGroupA11y === null ? (
+            <SelectionListEmptyState
+                label={props.step.emptyStateLabel}
+                testID={selectionListTestId(props.rootTestID, 'empty')}
+            />
+        ) : (
+            <View role="group" {...emptyStateGroupA11y}>
+                <SelectionListEmptyState
+                    label={props.step.emptyStateLabel}
+                    testID={selectionListTestId(props.rootTestID, 'empty')}
+                />
+            </View>
+        );
+    })();
+
+    if (plan.length === 0 && props.pagination === undefined && !hasBodySlots) {
         return (
             <View
                 testID={bodyTestId}
@@ -348,19 +388,7 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
                     : (listboxAria as unknown as Record<string, never>))}
                 {...(bodyHostAccessibilityHide ?? {})}
             >
-                {isMeasure ? null : emptyStateGroupA11y === null ? (
-                    <SelectionListEmptyState
-                        label={props.step.emptyStateLabel}
-                        testID={selectionListTestId(props.rootTestID, 'empty')}
-                    />
-                ) : (
-                    <View role="group" {...emptyStateGroupA11y}>
-                        <SelectionListEmptyState
-                            label={props.step.emptyStateLabel}
-                            testID={selectionListTestId(props.rootTestID, 'empty')}
-                        />
-                    </View>
-                )}
+                {emptyNode}
             </View>
         );
     }
@@ -381,6 +409,9 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
                 columnGapPx={props.columnGapPx}
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
                 pagination={props.pagination}
+                bodyHeader={bodyHeaderSlot}
+                bodyFooter={bodyFooterSlot}
+                emptyContent={plan.length === 0 ? emptyNode : null}
             />
         );
     }
@@ -441,7 +472,9 @@ function SelectionListBodyPlannedContent(props: SelectionListBodyProps & Readonl
                 scrollTargetOptionId={props.scrollTargetOptionId ?? null}
                 showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
             >
-                {sectionNodes}
+                {bodyHeaderSlot}
+                {plan.length === 0 ? emptyNode : sectionNodes}
+                {bodyFooterSlot}
             </SelectionListBodyScrollFrame>
         );
     }

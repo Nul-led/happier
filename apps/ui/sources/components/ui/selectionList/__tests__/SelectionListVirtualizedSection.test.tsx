@@ -67,7 +67,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={{ id: 'lazy', options }}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
                 virtualization="force"
@@ -88,7 +88,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -112,7 +112,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -130,7 +130,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
                 virtualization="force"
@@ -148,7 +148,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={{ ...makeSection(3), id: 'short-parent' }}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
                 virtualization="force"
@@ -181,7 +181,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -229,7 +229,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId="expanded"
+                selectedOptionIds={new Set(['expanded'])}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -262,7 +262,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
                 virtualization="never"
@@ -282,7 +282,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -302,7 +302,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,
@@ -326,7 +326,7 @@ describe('SelectionListVirtualizedSection', () => {
                 section={section}
                 stepId="root"
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 onSelect={() => {}}
                 onPushStep={() => {}}
             />,

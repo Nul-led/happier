@@ -1,20 +1,11 @@
-import { StyleSheet } from 'react-native';
+import { HAPPIER_FIELD_BOX_METRICS, HAPPIER_FIELD_BOX_SHAPE } from '@happier-dev/plugin-ui/presentation';
 
 /**
  * The bordered field box of configuration pages: a page select's trigger and a page text field share
- * this one shape, so a row of fields reads as one set whatever the control.
+ * this one shape, so a row of fields reads as one set whatever the control. The shape is owned by
+ * shared presentation (a plugin page-row select draws the same box); this adapter maps the colours.
  */
-export const FIELD_BOX_METRICS = {
-    minHeightPx: 32,
-    radiusPx: 9,
-    borderWidthPx: 1,
-    paddingLeftPx: 12,
-    paddingRightPx: 8,
-    fontSizePx: 13.5,
-    lineHeightPx: 18,
-    /** Narrowest width beside a label; stacked under the label a field spans the row instead. */
-    inlineMinWidthPx: 240,
-} as const;
+export const FIELD_BOX_METRICS = HAPPIER_FIELD_BOX_METRICS;
 
 type FieldBoxTheme = Readonly<{
     colors: Readonly<{
@@ -41,12 +32,4 @@ export function resolveFieldBoxColors(theme: FieldBoxTheme, state: FieldBoxState
     } as const;
 }
 
-export const fieldBoxShapeStyle = StyleSheet.create({
-    box: {
-        minHeight: FIELD_BOX_METRICS.minHeightPx,
-        borderRadius: FIELD_BOX_METRICS.radiusPx,
-        borderWidth: FIELD_BOX_METRICS.borderWidthPx,
-        paddingLeft: FIELD_BOX_METRICS.paddingLeftPx,
-        paddingRight: FIELD_BOX_METRICS.paddingRightPx,
-    },
-}).box;
+export const fieldBoxShapeStyle = HAPPIER_FIELD_BOX_SHAPE;

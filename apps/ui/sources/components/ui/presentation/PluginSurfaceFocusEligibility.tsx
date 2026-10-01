@@ -3,6 +3,7 @@ import * as React from 'react';
 type PluginSurfaceFocusEligibility = Readonly<{
     effective: boolean;
     currentUiContextEffective: boolean;
+    presentationEffective: boolean;
 }>;
 
 // The absence of a provider means there is no proven presentation owner for a
@@ -17,6 +18,8 @@ const PluginSurfaceFocusEligibilityContext = React.createContext<PluginSurfaceFo
  */
 export function PluginSurfaceFocusEligibilityProvider(props: Readonly<{
     active: boolean;
+    /** Visible panes may keep presentation work active without owning keyboard focus. */
+    presentationActive?: boolean;
     /**
      * A named layout or route owner may opt this subtree into semantic current
      * context. Presentation focus alone is not enough: several pane surfaces
@@ -28,6 +31,7 @@ export function PluginSurfaceFocusEligibilityProvider(props: Readonly<{
     const parent = React.useContext(PluginSurfaceFocusEligibilityContext);
     const value = React.useMemo<PluginSurfaceFocusEligibility>(() => {
         const effective = (parent?.effective ?? true) && props.active;
+        const presentationEffective = (parent?.presentationEffective ?? true) && (props.presentationActive ?? props.active);
         // A root must name its semantic-current owner explicitly. Nested
         // providers inherit only an already-proven owner and can still fence
         // themselves with `false`; this never turns simultaneous panes into a
@@ -35,8 +39,8 @@ export function PluginSurfaceFocusEligibilityProvider(props: Readonly<{
         const currentUiContextEffective = effective && (parent === null
             ? props.currentUiContextActive === true
             : parent.currentUiContextEffective && (props.currentUiContextActive ?? true));
-        return Object.freeze({ effective, currentUiContextEffective });
-    }, [parent, props.active, props.currentUiContextActive]);
+        return Object.freeze({ effective, currentUiContextEffective, presentationEffective });
+    }, [parent, props.active, props.currentUiContextActive, props.presentationActive]);
 
     return (
         <PluginSurfaceFocusEligibilityContext.Provider value={value}>
@@ -56,4 +60,14 @@ export function usePluginSurfaceFocusEligibility(): boolean {
  */
 export function usePluginSurfaceCurrentUiContextEligibility(): boolean {
     return React.useContext(PluginSurfaceFocusEligibilityContext)?.currentUiContextEffective === true;
+}
+
+/**
+ * Whether this subtree is being presented right now, for presentation-only work (status pulses,
+ * countdown ticks). A retained pane that is hidden says `false` through its provider; a subtree with
+ * no layout owner is presented as far as anyone knows, so this reads `true` there. Motion must not
+ * freeze app-wide for want of a provider, which is why it does not fail closed like focus does.
+ */
+export function useLayoutPresentationActive(): boolean {
+    return React.useContext(PluginSurfaceFocusEligibilityContext)?.presentationEffective ?? true;
 }

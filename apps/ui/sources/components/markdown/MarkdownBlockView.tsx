@@ -15,6 +15,7 @@ import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { EnrichedMarkdownTextAdapter } from './enriched/EnrichedMarkdownTextAdapter';
 import type { MarkdownRenderingProfile } from './rendering/MarkdownRenderingProfile';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 // Option type for callback
 export type Option = {
@@ -673,7 +674,7 @@ const style = StyleSheet.create((theme) => ({
         position: 'relative',
     },
     optionItemPressed: {
-        opacity: 0.7,
+        opacity: motionTokens.press.opacity,
         backgroundColor: theme.colors.surface.inset,
     },
     optionText: {

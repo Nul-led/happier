@@ -23,6 +23,17 @@ function findHostNodeByTestID(
     return screen.findAllByTestId(testID).find((node) => typeof node.type === 'string');
 }
 
+/**
+ * The row surface a split row paints: the nearest host `View` around the row's own pressable. Found by
+ * host type rather than a fixed `.parent` hop, because the pressable reaches the tree through wrapper
+ * components whose depth is not part of the contract.
+ */
+function findRowSurface(node: ReactTestInstance): ReactTestInstance | null {
+    let parent = node.parent;
+    while (parent && (parent.type as unknown) !== 'View') parent = parent.parent;
+    return parent;
+}
+
 function hasAncestor(node: ReactTestInstance, ancestor: ReactTestInstance) {
     let parent = node.parent;
     while (parent) {
@@ -346,9 +357,9 @@ describe('Item mode prop', () => {
 
         const row = () => findHostNodeByTestID(screen, 'split-row');
         const action = findHostNodeByTestID(screen, 'split-row-action');
-        if (!row() || !action || !row()!.parent) throw new Error('Expected split row surface and controls');
+        if (!row() || !action || !findRowSurface(row()!)) throw new Error('Expected split row surface and controls');
 
-        const initialSurface = row()!.parent!;
+        const initialSurface = findRowSurface(row()!)!;
         expect(initialSurface.type).toBe('View');
         expect(hasAncestor(action, initialSurface)).toBe(true);
         expect(flattenTestStyle(initialSurface.props.style).backgroundColor).toBe('transparent');
@@ -356,18 +367,18 @@ describe('Item mode prop', () => {
         await act(async () => {
             row()!.props.onHoverIn();
         });
-        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
+        expect(flattenTestStyle(findRowSurface(row()!)!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
 
         await act(async () => {
             row()!.props.onHoverOut();
             row()!.props.onPressIn();
         });
-        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
+        expect(flattenTestStyle(findRowSurface(row()!)!.props.style).backgroundColor).toBe(lightTheme.colors.surface.pressed);
 
         await act(async () => {
             row()!.props.onPressOut();
         });
-        expect(flattenTestStyle(row()!.parent!.props.style).backgroundColor).toBe('transparent');
+        expect(flattenTestStyle(findRowSurface(row()!)!.props.style).backgroundColor).toBe('transparent');
     });
 
     it('applies a hover background on web for interactive items', async () => {

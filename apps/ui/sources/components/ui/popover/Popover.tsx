@@ -83,6 +83,18 @@ const WEB_POPOVER_FOCUSABLE_SELECTOR = [
     '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+type FocusableForOpen = { focus?: (options?: FocusOptions) => void };
+
+/**
+ * Moves focus into an opening popover without scrolling. The popover is focused before it is
+ * measured and placed, so a scrolling focus makes the browser scroll the page to reveal the
+ * still-unplaced popover: the whole app jumps sideways for a frame and then snaps back.
+ */
+function focusWithoutScrolling(target: FocusableForOpen): void {
+    if (Platform.OS === 'web') target.focus?.({ preventScroll: true });
+    else target.focus?.();
+}
+
 function readNumericStyleValue(value: unknown): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -175,6 +187,17 @@ type PopoverCommonProps = Readonly<{
     gap?: number;
     maxHeightCap?: number;
     maxWidthCap?: number;
+    /**
+     * The narrowest a content-sized popover (`portal.sizeToContent`) may be. Defaults to
+     * `CONTENT_SIZED_POPOVER_WIDTH.minPx`, the compact-picker floor; a tooltip passes `0`.
+     */
+    minWidth?: number;
+    /**
+     * An explicit side that cannot hold `maxHeightCap` (`maxWidthCap` for left/right) moves to the
+     * opposite side when that one has more room, instead of overlapping its anchor. `auto*`
+     * placements already choose their side.
+     */
+    flip?: boolean;
     portal?: PopoverPortalOptions;
     /**
      * Adds padding around the popover content inside the anchored container.
@@ -230,6 +253,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         gap = 8,
         maxHeightCap = 400,
         maxWidthCap = 520,
+        minWidth: contentSizedMinWidth = CONTENT_SIZED_POPOVER_WIDTH.minPx,
         onRequestClose,
         edgePadding = 0,
         backdrop,
@@ -290,6 +314,8 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
     const anchorAlignVerticalOnPortal = props.portal?.anchorAlignVertical ?? 'center';
     const topBottomLayoutOnPortal = props.portal?.topBottomLayout ?? 'anchored';
     const sizeToContentOnPortal = props.portal?.sizeToContent === true && topBottomLayoutOnPortal === 'anchored';
+    // A content-sized popover centred on its anchor (a tooltip) is placed from its measured width.
+    const centresMeasuredContent = sizeToContentOnPortal && anchorAlignOnPortal === 'center';
 
     const shouldPortalWeb = Platform.OS === 'web' && Boolean(portalWeb);
     const shouldPortalNative = Platform.OS !== 'web' && Boolean(portalNative) && Boolean(overlayPortal);
@@ -420,9 +446,9 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
     }, [getDomElementFromNode, shouldPortalWeb]);
 
     const focusInitialTarget = React.useCallback((): boolean => {
-        const target = initialFocusRefProp?.current as { focus?: () => void } | null | undefined;
+        const target = initialFocusRefProp?.current as FocusableForOpen | null | undefined;
         if (typeof target?.focus !== 'function') return false;
-        target.focus();
+        focusWithoutScrolling(target);
         return true;
     }, [initialFocusRefProp]);
 
@@ -459,7 +485,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 candidate.getAttribute('aria-selected') === 'true'
             )) ?? focusableCandidates[0] ?? null;
             if (target) {
-                target.focus();
+                focusWithoutScrolling(target);
                 return;
             }
 
@@ -894,7 +920,10 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
 
             const resolvedPlacement = resolveHappierPopoverPlacement({
                 placement,
-                preferredMinAvailable: placement === 'auto-horizontal' ? maxWidthCap : maxHeightCap,
+                preferredMinAvailable: placement === 'auto-horizontal' || placement === 'left' || placement === 'right'
+                    ? maxWidthCap
+                    : maxHeightCap,
+                flip: props.flip === true,
                 available: {
                     top: availableTop,
                     bottom: availableBottom,
@@ -1271,23 +1300,49 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                 } as any;
             })();
 
-            if (sizeToContentOnPortal && (computed.placement === 'top' || computed.placement === 'bottom')) {
-                // The content decides the width; only its bounds and one edge are pinned, so no
-                // measurement of the content width is needed to place it.
+            if (sizeToContentOnPortal) {
+                // The content decides the width within its bounds. An edge-aligned popover pins
+                // one edge, so it needs no measurement of the content width; a centred one (a
+                // tooltip) is placed from that measurement and clamped inside the boundary, and
+                // stays hidden until the measurement exists (`portalOpacity`).
                 const anchorRight = anchorRectState.x + anchorRectState.width;
-                const alignEnd = anchorAlignOnPortal === 'end';
-                const room = alignEnd
-                    ? anchorRight - boundaryRect.x
-                    : boundaryRect.x + boundaryRect.width - anchorRectState.x;
+                const vertical = computed.placement === 'top' || computed.placement === 'bottom';
+                const alignEnd = vertical ? anchorAlignOnPortal === 'end' : computed.placement === 'left';
+                const room = !vertical
+                    ? computed.maxWidth
+                    : centresMeasuredContent
+                        ? boundaryRect.width
+                        : alignEnd
+                            ? anchorRight - boundaryRect.x
+                            : boundaryRect.x + boundaryRect.width - anchorRectState.x;
                 const maxWidth = Math.max(0, Math.min(computed.maxWidth, CONTENT_SIZED_POPOVER_WIDTH.maxPx, Math.floor(room)));
-                const minWidth = Math.min(CONTENT_SIZED_POPOVER_WIDTH.minPx, maxWidth);
+                const minWidth = Math.min(Math.max(0, contentSizedMinWidth), maxWidth);
                 const offsetX = position === 'absolute' ? webPortalOffsetX : 0;
                 const portalWidth = Platform.OS === 'web' && position === 'absolute'
                     ? (webPortalTargetRect?.width ?? windowWidth)
                     : windowWidth;
-                const horizontal: ViewStyle = alignEnd
-                    ? { right: Math.floor(portalWidth - (anchorRight - offsetX) - nativePortalShadowOutset) }
-                    : { left: Math.floor(Math.max(boundaryRect.x, anchorRectState.x) - offsetX - nativePortalShadowOutset) };
+                const horizontal: ViewStyle = (() => {
+                    if (computed.placement === 'left') {
+                        return { right: Math.floor(portalWidth - (anchorRectState.x - gap - offsetX) - nativePortalShadowOutset) };
+                    }
+                    if (computed.placement === 'right') {
+                        return { left: Math.floor(anchorRight + gap - offsetX - nativePortalShadowOutset) };
+                    }
+                    if (centresMeasuredContent) {
+                        const measuredWidth = contentRectState
+                            ? Math.min(maxWidth, Math.max(minWidth, contentRectState.width - nativePortalShadowOutset * 2))
+                            : maxWidth;
+                        const centredLeft = anchorRectState.x + (anchorRectState.width - measuredWidth) / 2;
+                        const clampedCentredLeft = Math.min(
+                            boundaryRect.x + boundaryRect.width - measuredWidth,
+                            Math.max(boundaryRect.x, centredLeft),
+                        );
+                        return { left: Math.round(clampedCentredLeft - offsetX - nativePortalShadowOutset) };
+                    }
+                    return alignEnd
+                        ? { right: Math.floor(portalWidth - (anchorRight - offsetX) - nativePortalShadowOutset) }
+                        : { left: Math.floor(Math.max(boundaryRect.x, anchorRectState.x) - offsetX - nativePortalShadowOutset) };
+                })();
                 return {
                     position,
                     ...horizontal,
@@ -1295,6 +1350,11 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
                     zIndex: 1000,
                     minWidth: minWidth + (nativePortalShadowOutset * 2),
                     maxWidth: maxWidth + (nativePortalShadowOutset * 2),
+                    // A web portal host can be a 0-wide node (inside the sidebar), and an
+                    // absolutely positioned box shrinks to fit ITS containing block: the content
+                    // would wrap at its longest word. Size to the content's own width instead,
+                    // bounded by min/max above.
+                    ...(Platform.OS === 'web' ? ({ width: 'max-content' } as unknown as ViewStyle) : null),
                 };
             }
 
@@ -1330,6 +1390,7 @@ export function Popover(props: PopoverWithBackdrop | PopoverWithoutBackdrop) {
         // Hide them until we have enough layout info to position them correctly.
         if (!shouldPortalWeb && !shouldPortalNative) return 1;
         if (!anchorRectState) return 0;
+        if (centresMeasuredContent && (!contentRectState || contentRectState.width < 1)) return 0;
         if (
             (computed.placement === 'top' || computed.placement === 'bottom') &&
             shouldPortalWeb &&

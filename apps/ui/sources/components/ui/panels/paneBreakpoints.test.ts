@@ -194,4 +194,34 @@ describe('resolvePaneLayout', () => {
             mainMinPxThreePane: 320,
         })).toEqual({ kind: 'threePane', right: 'docked', details: 'docked' });
     });
+
+    describe('Details never covers what it was opened from (details lab 2, Q1)', () => {
+        const wideEnoughForTwoNotThree = {
+            containerWidthPx: 1200,
+            deviceType: 'tablet' as const,
+            multiPaneEnabled: true,
+            rightOpen: true,
+            detailsOpen: true,
+            rightPreferredPx: 360,
+            detailsPreferredPx: 600,
+        };
+
+        it('folds the sidebar to its rail and docks Details when opened from the transcript', () => {
+            expect(resolvePaneLayout({ ...wideEnoughForTwoNotThree, detailsOpenedFrom: 'main' }))
+                .toEqual({ kind: 'twoPane', right: 'hidden', details: 'docked' });
+        });
+
+        it('keeps the sidebar list and draws Details as a drawer when opened from that list', () => {
+            expect(resolvePaneLayout({ ...wideEnoughForTwoNotThree, detailsOpenedFrom: 'side', rightPreferredPx: 900 }))
+                .toEqual({ kind: 'twoPane', right: 'docked', details: 'overlay' });
+        });
+
+        it('docks all three when they fit, whichever region opened Details', () => {
+            for (const detailsOpenedFrom of ['main', 'side'] as const) {
+                expect(resolvePaneLayout({ ...wideEnoughForTwoNotThree, containerWidthPx: 1800, detailsOpenedFrom }))
+                    .toEqual({ kind: 'threePane', right: 'docked', details: 'docked' });
+            }
+        });
+    });
 });
+

@@ -8,16 +8,22 @@ import { installPopoverCommonModuleMocks } from '@/components/ui/popover/popover
 
 installPopoverCommonModuleMocks({ reactNative: async () => await vi.importActual('react-native-web') });
 
+const { IconButton } = await import('./IconButton');
+const { Tooltip } = await import('../overlays/Tooltip');
+await import('../overlays/AnchoredTooltip');
+
 it.each(['action', 'help'] as const)('keeps a focused %s tooltip outside a clipping toolbar without moving focus', async (kind) => {
     vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(1024);
     vi.spyOn(document.documentElement, 'clientHeight', 'get').mockReturnValue(768);
+    // Cold module imports may have cached jsdom's initial zero-sized viewport.
+    // Notify the real RN-web Dimensions owner after establishing browser geometry.
+    window.dispatchEvent(new Event('resize'));
+    const { Dimensions } = await import('react-native');
+    expect(Dimensions.get('window')).toMatchObject({ width: 1024, height: 768 });
     const originalRaf = globalThis.requestAnimationFrame;
     const originalCancelRaf = globalThis.cancelAnimationFrame;
     globalThis.requestAnimationFrame = (callback) => window.setTimeout(() => callback(performance.now()), 0);
     globalThis.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
-    const { IconButton } = await import('./IconButton');
-    const { Tooltip } = await import('../overlays/Tooltip');
-    await import('../overlays/AnchoredTooltip');
     const container = document.createElement('div');
     container.style.overflow = 'hidden';
     document.body.appendChild(container);
@@ -26,15 +32,21 @@ it.each(['action', 'help'] as const)('keeps a focused %s tooltip outside a clipp
         x: 100, y: 100, width: 28, height: 28,
         top: 100, left: 100, right: 128, bottom: 128, toJSON: () => ({}),
     });
+    let contentMounts = 0;
+    function RichTooltip() {
+        React.useEffect(() => { contentMounts += 1; return () => { contentMounts -= 1; }; }, []);
+        return <span data-testid="rich-tooltip">1234 files +7836 −1398 feature/rail</span>;
+    }
     try {
         await act(async () => {
             root.render(kind === 'action'
-                ? <IconButton testID="review-action" icon={<span>↓</span>} accessibilityLabel="Next file" tooltip="Next file" onPress={() => {}} />
+                ? <IconButton testID="review-action" icon={<span>↓</span>} accessibilityLabel="Next file" tooltip="Next file" tooltipContent={<RichTooltip />} tooltipPlacement="left" onPress={() => {}} />
                 : <Tooltip testID="review-action" label="Large diff help"><span>i</span></Tooltip>);
         });
         const button = container.querySelector<HTMLElement>('[data-testid="review-action"]');
         if (!button) throw new Error('Missing review action');
         if (kind === 'help') expect(button.getAttribute('role')).not.toBe('button');
+        expect(contentMounts).toBe(0);
         await act(async () => { button.focus(); });
         await vi.waitFor(() => {
             const tooltip = document.body.querySelector('[data-testid="review-action-tooltip"]');
@@ -47,9 +59,14 @@ it.each(['action', 'help'] as const)('keeps a focused %s tooltip outside a clipp
                 expect(style.visibility).not.toBe('hidden');
             }
         }, { timeout: 10000 });
+        if (kind === 'action') {
+            expect(document.body.querySelector('[data-testid="rich-tooltip"]')?.textContent).toContain('1234 files');
+            expect(contentMounts).toBe(1);
+        }
         expect(document.activeElement).toBe(button);
         await act(async () => { button.blur(); });
         expect(document.body.querySelector('[data-testid="review-action-tooltip"]')).toBeNull();
+        expect(contentMounts).toBe(0);
         await act(async () => { button.dispatchEvent(new MouseEvent(window.PointerEvent != null ? 'pointerenter' : 'mouseenter', { bubbles: true })); });
         await vi.waitFor(() => expect(document.body.querySelector('[data-testid="review-action-tooltip"]')).not.toBeNull());
         expect(document.activeElement).not.toBe(button);

@@ -9,7 +9,7 @@
  */
 
 import * as React from 'react';
-import { View } from 'react-native';
+import { TextInput, View } from 'react-native';
 import { act } from 'react-test-renderer';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -79,7 +79,7 @@ async function measureGrid(screen: Screen, widthPx: number): Promise<void> {
 function readActiveColumns(screen: Screen): number {
     const cells = screen.root.findAll((node) => (
         typeof node.props?.testID === 'string' && node.props.testID.startsWith('cell-')
-    ), { deep: true }).map((child) => child.parent!);
+    ), { deep: true }).map((child) => child.parent!.parent!);
     expect(cells.length).toBeGreaterThan(0);
     const isCollapsed = cells.map((cell) => flattenStyle(cell.props.style).width === '100%');
     expect(new Set(isCollapsed).size).toBe(1);
@@ -106,6 +106,29 @@ beforeEach(() => {
 });
 
 describe('ItemGroupColumns column ownership', () => {
+    it('keeps an edited control mounted as the container crosses its column breakpoint', async () => {
+        const { ItemGroupColumns, ItemGroupColumn } = await import('./ItemGroupColumns');
+        function DraftField() {
+            const [value, setValue] = React.useState('');
+            return <TextInput testID="draft" value={value} onChangeText={setValue} />;
+        }
+        const screen = await renderScreen(
+            <ItemGroupColumns columns={2}>
+                <ItemGroupColumn><DraftField /></ItemGroupColumn>
+                <ItemGroupColumn><View /></ItemGroupColumn>
+            </ItemGroupColumns>,
+        );
+        const field = screen.findHostByTestId('draft');
+        await act(async () => {
+            field?.props.onChangeText('Keep this draft');
+        });
+        for (const width of [1000, 400, 1000]) {
+            await measureGrid(screen, width);
+            expect(screen.findHostByTestId('draft')).toBe(field);
+            expect(screen.findHostByTestId('draft')?.props.value).toBe('Keep this draft');
+        }
+    });
+
     it('stays at one column until a width has actually been measured', async () => {
         const screen = await renderGrid();
 
@@ -201,6 +224,6 @@ describe('ItemGroupColumn spans', () => {
             </ItemGroupColumns>,
         );
 
-        expect(flattenStyle(screen.findByTestId('wide')?.parent?.props.style).width).toBe('100%');
+        expect(flattenStyle(screen.findByTestId('wide')?.parent?.parent?.props.style).width).toBe('100%');
     });
 });

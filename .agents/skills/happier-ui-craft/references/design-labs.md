@@ -1,0 +1,70 @@
+# Design labs: how to get premium results
+
+This is the method behind the lab rounds the user rated best: the Home index, Homes journeys and Channels
+(2026-09-28). The standalone contact sheet they replaced (`homes-journeys.html`) was rejected, even though
+its product thinking was sound. The difference was the method, not the designer.
+
+## The rules
+
+1. **Build inside the one standard lab.** Use the same folder, tooling, chrome, variant picker and shot
+   script as the other concepts. Today that's `.happier/design-lab/app-surfaces/`: `index.html`, the
+   `?c=<concept>` pages and `shots/`. Draw frames inside the shell as it ships (rail, columns, panes). Never
+   make a one-off page or contact sheet: the user compares concepts side by side, and a different format
+   reads as a lesser design.
+2. **Product truth before pixels.** Before drawing, read the real owner: the manifest, data model, routes,
+   states and actions, and for a plugin its `src/**` and docs.
+   - Design only what the system can back.
+   - Tag anything that needs new data or capability as `new` and list it.
+   - Report every doc/code mismatch you find.
+   - An invented activity feed, unread counts or a mute that doesn't exist makes a beautiful frame that
+     can't ship.
+3. **Quote the user, bind the decisions.** The brief carries the user's own words and every ratified
+   decision.
+   - Address every point the user raised, one by one.
+   - Where the user asked a question ("maybe X, or Y?"), render the options as variants and recommend
+     one, with the reason.
+4. **Fewest frames that decide the design.**
+   - One frame per decision.
+   - Every desktop variant gets a 390 phone twin, and every frame renders in light and dark at 1440 and
+     390.
+   - No filler frames.
+5. **Populated, realistic data.** Use real-looking names, numbers, times, statuses and mixed states:
+   working, needs you, failed, stale. A lab with three "Lorem" rows hides every density and hierarchy
+   problem.
+6. **Every state, not just the happy path.** Show fresh, loading, stale (showing cached data, refreshing),
+   empty (explains what the surface is for and offers the next action), error with its recovery, and
+   offline. Show these for each new surface or widget.
+7. **The lab consumes the design system.** Reuse the approved primitives: row metrics, 32px segmented and
+   search controls, popovers, the flat settings-sidebar column, pane headers, the empty-state composition.
+   A lab that invents new chrome fails even when it looks good, because it can't be built through the
+   owners.
+8. **Load the taste layers.** Load this skill and `references/premium-feel.md` first, and run its
+   self-check on every frame. Then load `make-interfaces-feel-better` and
+   `interface-details`. Describe motion (morphs, drag, expansion) in the notes if the lab can't prototype
+   it.
+9. **A fixed output contract.**
+   - The rationale for each frame.
+   - The capability gaps (`new`).
+   - At most 3 open questions, each with a recommended default.
+   - A final message of 10 lines or fewer: the lab path, the concept ids, one recommendation per question.
+10. **Design lanes design; build lanes build.** A lab lane never edits product source. Implementation
+    lanes consume the approved frames and are validated side by side against them
+    (`references/validation.md`).
+11. **The orchestrator looks before the user does.** Open the rendered shots and check them against rules
+    1–7. Reject any format drift before presenting.
+
+## Brief skeleton
+
+```
+Design-lab lane for <surface>. DESIGN LAB ONLY: no product source edits.
+Read AGENTS.md, DESIGN.md, happier-ui-craft (+ references/premium-feel.md, references/design-labs.md); load make-interfaces-feel-better
+and interface-details.
+Study how the existing labs are built and follow exactly the same format: <lab path>.
+Product truth: read <owners/plugin src/docs>; design only what exists; tag gaps `new`.
+Binding decisions: <ratified list>.
+The user's words: "<quote>". Address every point; where they asked a question, render variants and recommend one.
+Scope: <frames/states>. Keep it lean: the fewest frames that decide.
+Render light/dark at 1440/390 with the lab's shot tooling and check they render without errors.
+Write rationale, `new` gaps and ≤3 open questions (each with a default) to <lanes/…-lab.md>. Final ≤ 10 lines.
+Concurrent labs: use your own concept page/CSS; add your index link last as one small edit.
+```

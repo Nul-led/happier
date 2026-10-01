@@ -7,6 +7,8 @@ type SelectionListMeasuredPopoverHeightConfig = Readonly<{
     headerExpected: boolean;
     footerExpected: boolean;
     shrinkDelayMs: number;
+    /** Body content the offscreen measure host does not render (`bodyHeader` / `bodyFooter` slots). */
+    bodyExtraHeight?: number;
 }>;
 
 type MeasuredSegmentHeights = Readonly<{
@@ -59,7 +61,9 @@ export function useSelectionListMeasuredPopoverHeight(
         if (!enabled || boundedMaxHeight === undefined) return undefined;
 
         const headerHeight = config.headerExpected ? segmentHeights.header : 0;
-        const bodyHeight = segmentHeights.body;
+        const bodyHeight = segmentHeights.body === undefined
+            ? undefined
+            : segmentHeights.body + (config.bodyExtraHeight ?? 0);
         const footerHeight = config.footerExpected ? segmentHeights.footer : 0;
         if (headerHeight === undefined || bodyHeight === undefined || footerHeight === undefined) {
             return undefined;
@@ -70,6 +74,7 @@ export function useSelectionListMeasuredPopoverHeight(
         return Math.min(measuredHeight, boundedMaxHeight);
     }, [
         boundedMaxHeight,
+        config.bodyExtraHeight,
         config.footerExpected,
         config.headerExpected,
         enabled,

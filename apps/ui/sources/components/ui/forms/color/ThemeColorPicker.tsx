@@ -4,7 +4,10 @@ import { StyleSheet } from 'react-native-unistyles';
 import ColorPicker, { HueSlider, OpacitySlider, Panel1, Swatches, type ColorFormatsObject } from 'reanimated-color-picker';
 
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
-import { Popover } from '@/components/ui/popover';
+import {
+    MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS,
+    Popover,
+} from '@/components/ui/popover';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { isValidThemeProfileColorValue } from '@/theme/profiles/themeProfileColorValidation';
 import { t } from '@/text';
@@ -129,7 +132,7 @@ export const ThemeColorPicker = React.memo(function ThemeColorPicker(props: Read
                     gap={8}
                     maxHeightCap={360}
                     maxWidthCap={320}
-                    portal={{ web: { target: 'body' }, native: true, matchAnchorWidth: false }}
+                    portal={MODAL_AWARE_FLOATING_POPOVER_PORTAL_OPTIONS}
                     onRequestClose={() => setOpen(false)}
                 >
                     {({ maxHeight }) => (

@@ -11,6 +11,8 @@ import { useModalCardDimensions, type ModalCardDimensionOptions, type ModalCardS
 
 type ModalCardFrameProps = Readonly<{
     children: React.ReactNode;
+    /** `none`: no title band; the content is the top of the card. The title remains the accessible name. */
+    header?: 'band' | 'none';
     leading?: React.ReactNode;
     title?: React.ReactNode;
     subtitle?: React.ReactNode;
@@ -29,6 +31,10 @@ type ModalCardFrameProps = Readonly<{
     bodyStyle?: StyleProp<ViewStyle>;
     footerStyle?: StyleProp<ViewStyle>;
     dimensions?: ModalCardDimensionOptions;
+    /** `sheet`: a phone bottom sheet — full width, top corners only, the safe area inside its body. */
+    presentation?: 'card' | 'sheet';
+    /** The bottom safe area a sheet pads inside itself (its host reached the edge). */
+    sheetBottomInset?: number;
 }>;
 
 const MODAL_CARD_BORDER_RADIUS = 14;
@@ -52,6 +58,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         flexDirection: 'column',
         minHeight: 0,
     },
+    sheetFrame: {
+        alignSelf: 'stretch',
+        borderBottomLeftRadius: 0,
+        borderBottomRightRadius: 0,
+    },
     footer: {},
     bodyScrollView: {
         flexGrow: 1,
@@ -68,17 +79,18 @@ export function ModalCardFrame(props: ModalCardFrameProps) {
     useUnistyles();
     const styles = stylesheet;
     const scrollHost = props.scrollHost ?? 'overlay';
+    const sheet = props.presentation === 'sheet';
     const bodyScroll = props.bodyScroll ?? 'none';
     const dimensions = useModalCardDimensions({
         ...props.dimensions,
         size: props.size ?? props.dimensions?.size,
     });
 
-    const hasHeader = props.leading != null
+    const hasHeader = props.header !== 'none' && (props.leading != null
         || props.title != null
         || props.subtitle != null
         || props.actions != null
-        || typeof props.onClose === 'function';
+        || typeof props.onClose === 'function');
 
     return (
         <View
@@ -88,10 +100,12 @@ export function ModalCardFrame(props: ModalCardFrameProps) {
                 : null)}
             style={[
                 styles.shadowFrame,
-                {
-                    width: dimensions.width,
-                    maxWidth: dimensions.width,
-                },
+                sheet
+                    ? [styles.sheetFrame, { width: '100%', maxWidth: '100%' }]
+                    : {
+                        width: dimensions.width,
+                        maxWidth: dimensions.width,
+                    },
                 scrollHost === 'body'
                     ? {
                         height: dimensions.maxHeight,
@@ -103,6 +117,7 @@ export function ModalCardFrame(props: ModalCardFrameProps) {
             <View style={[
                 styles.clipSurface,
                 scrollHost === 'body' ? { flex: 1 } : null,
+                sheet ? [styles.sheetFrame, { paddingBottom: props.sheetBottomInset ?? 0 }] : null,
             ]}>
                 {hasHeader ? (
                     <ModalCardHeader

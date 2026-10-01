@@ -128,6 +128,8 @@ import { InformationCircleIcon } from '@hugeicons/core-free-icons';
 import { Key01Icon } from '@hugeicons/core-free-icons';
 import { LaptopIcon } from '@hugeicons/core-free-icons';
 import { Layers01Icon } from '@hugeicons/core-free-icons';
+import { LayoutTwoColumnIcon } from '@hugeicons/core-free-icons';
+import { LayoutTwoRowIcon } from '@hugeicons/core-free-icons';
 import { Leaf01Icon } from '@hugeicons/core-free-icons';
 import { LeftToRightListBulletIcon } from '@hugeicons/core-free-icons';
 import { LeftToRightListNumberIcon } from '@hugeicons/core-free-icons';
@@ -451,6 +453,8 @@ export const HUGE_ICON_REGISTRY = {
     'speaker-slash': VolumeMute01Icon,
     'speedometer': DashboardSpeed01Icon,
     'square': SquareIcon,
+    'square-split-horizontal': LayoutTwoColumnIcon,
+    'square-split-vertical': LayoutTwoRowIcon,
     'squares-four': DashboardSquare01Icon,
     'stack': Layers01Icon,
     'stack-simple': Layers01Icon,

@@ -82,6 +82,7 @@ export const FilesystemBrowserList = React.memo(function FilesystemBrowserList(p
             contentContainerStyle={props.contentContainerStyle}
             extraData={props.extraData}
             ListHeaderComponent={listHeaderComponent}
+            ListFooterComponent={props.listFooter ?? null}
             renderItem={renderItem}
             initialNumToRender={props.initialNumToRender}
             maxToRenderPerBatch={props.maxToRenderPerBatch}

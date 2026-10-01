@@ -24,15 +24,32 @@ type WindowLike = Readonly<{ matchMedia?: (query: string) => MediaQueryListLike 
  * app's lifetime, like the primary-pointer watch in `rowActionRevealHost`.
  */
 let reducedMotionPreferred = false;
+/** A surface's own value (the embed live preview's "Reduce motion"), over the host's. */
+let reducedMotionOverride: boolean | null = null;
 let watchStarted = false;
 const preferenceListeners = new Set<() => void>();
+
+function notifyReducedMotionListeners(): void {
+    for (const listener of preferenceListeners) {
+        listener();
+    }
+}
 
 function publishReducedMotionPreference(next: boolean): void {
     if (reducedMotionPreferred === next) return;
     reducedMotionPreferred = next;
-    for (const listener of preferenceListeners) {
-        listener();
-    }
+    if (reducedMotionOverride === null) notifyReducedMotionListeners();
+}
+
+/**
+ * Forces the preference for this JS realm (`null` restores the host's). Only the Settings → Embeds
+ * live preview uses it, as its preview-only "Reduce motion" (plan 04 §4.10).
+ */
+export function setReducedMotionPreferenceOverride(value: boolean | null): void {
+    if (reducedMotionOverride === value) return;
+    const before = readReducedMotionPreference();
+    reducedMotionOverride = value;
+    if (readReducedMotionPreference() !== before) notifyReducedMotionListeners();
 }
 
 function startWebWatch(): void {
@@ -85,7 +102,7 @@ function startReducedMotionWatch(): void {
  */
 export function readReducedMotionPreference(): boolean {
     startReducedMotionWatch();
-    return reducedMotionPreferred;
+    return reducedMotionOverride ?? reducedMotionPreferred;
 }
 
 function subscribeToReducedMotionPreference(listener: () => void): () => void {

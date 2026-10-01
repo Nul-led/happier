@@ -16,6 +16,8 @@ import {
 type OverlayHarnessProps = Readonly<{
     active: boolean;
     includeTrigger?: boolean;
+    /** The shell stays in the document after release, as a modal does while it animates out. */
+    retainedShell?: boolean;
     focusReturn?: WebOverlayFocusReturnStrategy;
 }>;
 
@@ -74,6 +76,24 @@ describe('useWebOverlayFocusContainment', () => {
         await harness.render({ active: true, includeTrigger: true });
         expect(document.activeElement).toBe(getElement('overlay-shell'));
         await harness.render({ active: false, includeTrigger: true });
+
+        expect(document.activeElement).toBe(trigger);
+    });
+
+    it('keeps focus on the trigger when the released overlay stays mounted to animate out', async () => {
+        // React restores the element that was focused before a commit once the commit's DOM work is done;
+        // a shell still in the document would take focus back from the trigger the release just focused.
+        const harness = await mountHarness((props: OverlayHarnessProps) => <OverlayHarness {...props} />, {
+            active: false,
+            includeTrigger: true,
+            retainedShell: true,
+        });
+        const trigger = getElement<HTMLButtonElement>('overlay-trigger');
+        trigger.focus();
+        await harness.render({ active: true, includeTrigger: true, retainedShell: true });
+        getElement<HTMLButtonElement>('overlay-last-action').focus();
+
+        await harness.render({ active: false, includeTrigger: true, retainedShell: true });
 
         expect(document.activeElement).toBe(trigger);
     });
@@ -152,7 +172,7 @@ function OverlayHarness(props: OverlayHarnessProps): React.ReactElement {
         <>
             {props.includeTrigger ? <button data-testid="overlay-trigger">Trigger</button> : null}
             <button ref={fallbackRef} data-testid="overlay-pane-fallback">Pane fallback</button>
-            {props.active ? (
+            {props.active || props.retainedShell ? (
                 <div ref={shellRef} data-testid="overlay-shell" tabIndex={-1}>
                     <button data-testid="overlay-first-action">First</button>
                     <button data-testid="overlay-last-action">Last</button>

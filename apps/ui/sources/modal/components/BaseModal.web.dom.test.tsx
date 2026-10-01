@@ -29,13 +29,10 @@ vi.mock('@/sync/domains/state/storage', async () => {
     });
 });
 
-vi.mock('@/utils/web/radixCjs', () => ({
-    requireRadixDismissableLayer: () => ({
-        Branch: (props: React.PropsWithChildren<Record<string, unknown>>) => (
-            React.createElement(React.Fragment, null, props.children)
-        ),
-    }),
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsRealModule } = await import('@/dev/testkit/mocks/radixCjs');
+    return await createRadixCjsRealModule();
+});
 
 vi.mock('react-native-keyboard-controller', () => ({
     KeyboardAvoidingView: (props: React.PropsWithChildren<Record<string, unknown>>) => (

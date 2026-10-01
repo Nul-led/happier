@@ -1,26 +1,44 @@
 import React from 'react';
-import { View, Pressable, Platform, useWindowDimensions } from 'react-native';
+import {
+    HAPPIER_SELECTION_TILE_TEXT,
+    HappierSelectionTiles,
+    type HappierSelectionTileTextRole,
+    type HappierSelectionTilesColors,
+    type HappierSelectionTilesGlyphRenderer,
+    type HappierSelectionTilesTextRenderer,
+} from '@happier-dev/plugin-ui/presentation';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
-import {
-    ITEM_CHEVRON_SIZE,
-    ITEM_ICON_BOX_SIZE,
-    ITEM_ICON_MARGIN_RIGHT,
-    ITEM_SUBTITLE_TEXT_METRICS,
-    ITEM_TITLE_TEXT_METRICS,
-} from '@/components/ui/lists/itemDensityMetrics';
-
+/**
+ * Happier core's adapter for the shared tile owner (`HappierSelectionTiles` in
+ * `@happier-dev/plugin-ui/presentation`), which owns selection, semantics, the
+ * keyboard, layout and the selection ring. This adapter supplies only what is
+ * app-private: the Unistyles colours, the Unistyles typography through the app
+ * `Text` (so the in-app font scale applies) and the app icon pack.
+ */
 export interface SelectionTile<T extends string> {
     id: T;
     title: string;
     subtitle?: string;
     icon?: IconName;
+    /**
+     * An identity mark drawn in the icon's place (a service's logo) when the option is a thing with an
+     * identity of its own. Plain, like every mark: nothing behind it.
+     */
+    mark?: React.ReactNode;
     disabled?: boolean;
     badge?: string;
+    /**
+     * A small rendering of what this option looks like (visual variant). Pass the real component at
+     * static props — not a drawn replica — so the preview cannot drift from the product.
+     */
+    preview?: React.ReactNode;
+    /** Overrides the `testIdPrefix:id` test id of this tile. */
+    testID?: string;
 }
 
 export type SelectionTileFooterRenderer<T extends string> = (params: Readonly<{
@@ -31,6 +49,19 @@ export type SelectionTileFooterRenderer<T extends string> = (params: Readonly<{
 
 type SelectionTilesBaseProps<T extends string> = {
     options: Array<SelectionTile<T>>;
+    /**
+     * `card` (default): text tiles with an icon, title and subtitle. `visual`: a picker for options that
+     * change what you see — each tile is the option's preview with its label underneath.
+     */
+    variant?: 'card' | 'visual';
+    /**
+     * Visual variant only. `natural` (default) keeps each tile at its natural size, left-aligned under
+     * the row label. `fill` shares the full width equally, for a picker that is the section's main
+     * decision (theme mode).
+     */
+    tileSizing?: 'natural' | 'fill';
+    /** The group's accessible name (the setting it chooses). */
+    accessibilityLabel?: string;
     testIdPrefix?: string;
     density?: 'regular' | 'compact';
     minimumColumns?: number;
@@ -49,281 +80,147 @@ type MultipleSelectionTilesProps<T extends string> = SelectionTilesBaseProps<T> 
     onChange: (next: T[]) => void;
 };
 
+/**
+ * `action`: tiles that each start an operation (add a device, open a flow). They are buttons, not a
+ * choice: no value, no selected state. Each tile shows its icon, title and a one-line description.
+ */
+type ActionSelectionTilesProps<T extends string> = {
+    variant: 'action';
+    options: Array<SelectionTile<T>>;
+    onPress: (id: T) => void;
+    /** Action tiles hold no choice; declared so `selectionMode` keeps discriminating the choice variants. */
+    selectionMode?: undefined;
+    value?: undefined;
+    onChange?: undefined;
+    /** The group's accessible name. */
+    accessibilityLabel?: string;
+    testIdPrefix?: string;
+};
+
 export type SelectionTilesProps<T extends string> =
     | SingleSelectionTilesProps<T>
-    | MultipleSelectionTilesProps<T>;
+    | MultipleSelectionTilesProps<T>
+    | ActionSelectionTilesProps<T>;
 
-function isSelected<T extends string>(props: SelectionTilesProps<T>, id: T): boolean {
-    if (props.selectionMode === 'multiple') {
-        return props.value.includes(id);
-    }
-    return props.value === id;
+/** An option's mark travels to the shared owner as a glyph token the adapter draws back. */
+type MarkGlyphToken = `mark:${string}`;
+type TileGlyphName = IconName | MarkGlyphToken;
+
+function markToken(id: string): MarkGlyphToken {
+    return `mark:${id}`;
 }
 
-function handleToggle<T extends string>(props: SelectionTilesProps<T>, id: T) {
-    if (props.selectionMode === 'multiple') {
-        const next = props.value.includes(id)
-            ? props.value.filter((value) => value !== id)
-            : [...props.value, id];
-        props.onChange(next);
-        return;
-    }
-
-    props.onChange(id);
+function isMarkToken(name: TileGlyphName): name is MarkGlyphToken {
+    return name.startsWith('mark:');
 }
 
 export function SelectionTiles<T extends string>(props: SelectionTilesProps<T>) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
-    const [width, setWidth] = React.useState<number>(0);
-    const { width: windowWidth } = useWindowDimensions();
-    const webViewportWidth =
-        Platform.OS === 'web' && typeof window !== 'undefined' && typeof window.innerWidth === 'number'
-            ? window.innerWidth
-            : null;
-    const fallbackViewportWidth = webViewportWidth ?? windowWidth;
-    const selectionAccessibilityRole = props.selectionMode === 'multiple' ? 'checkbox' : 'radio';
-    const gap = 10;
-    const density = props.density ?? 'regular';
-    const compact = density === 'compact';
-    const minimumColumns = React.useMemo(
-        () => Math.max(1, Math.min(props.minimumColumns ?? 1, Math.max(1, props.options.length))),
-        [props.minimumColumns, props.options.length],
-    );
+    const colors = React.useMemo((): HappierSelectionTilesColors => ({
+        tileBackground: theme.colors.surface.base,
+        tileBorder: theme.colors.border.default,
+        selection: theme.colors.button.primary.background,
+        glyph: theme.colors.text.secondary,
+        ring: theme.colors.text.primary,
+        previewBackground: theme.colors.background.canvas,
+        actionBackground: theme.colors.surface.sectionTint,
+        actionBorderHovered: theme.colors.border.strong,
+    }), [theme]);
 
-    const columns = React.useMemo(() => {
-        const ensureMinimumColumns = (computed: number, availableWidth: number): number => {
-            if (minimumColumns <= 1) {
-                return computed;
-            }
-            const enforcedColumns = Math.min(minimumColumns, props.options.length);
-            const minimumTileWidth = compact ? 108 : 144;
-            const minimumRequiredWidth =
-                enforcedColumns * minimumTileWidth + gap * Math.max(0, enforcedColumns - 1);
-            if (availableWidth < minimumRequiredWidth) {
-                return computed;
-            }
-            return Math.max(computed, enforcedColumns);
-        };
+    const renderText = React.useCallback<HappierSelectionTilesTextRenderer>(({ role, text, selected, compact, numberOfLines }) => (
+        <Text style={textStyle(styles, role, selected, compact)} numberOfLines={numberOfLines}>{text}</Text>
+    ), [styles]);
 
-        if (width <= 0) {
-            if (fallbackViewportWidth >= 1100) {
-                const computed = props.options.length === 3
-                    ? Math.min(3, props.options.length)
-                    : Math.min(2, props.options.length);
-                return ensureMinimumColumns(computed, fallbackViewportWidth);
-            }
-            if (fallbackViewportWidth >= 720) {
-                return ensureMinimumColumns(Math.min(2, props.options.length), fallbackViewportWidth);
-            }
-            return 1;
-        }
-        if (props.options.length === 3) {
-            if (width >= 520) return ensureMinimumColumns(3, width);
-            return width >= 260 ? ensureMinimumColumns(2, width) : 1;
-        }
-        if (width >= 520) return ensureMinimumColumns(Math.min(3, props.options.length), width);
-        if (width >= 260) return ensureMinimumColumns(Math.min(2, props.options.length), width);
-        return ensureMinimumColumns(1, width);
-    }, [compact, fallbackViewportWidth, gap, minimumColumns, props.options.length, width]);
+    const marks = React.useMemo(() => {
+        const byToken = new Map<MarkGlyphToken, React.ReactNode>();
+        for (const option of props.options) if (option.mark) byToken.set(markToken(option.id), option.mark);
+        return byToken;
+    }, [props.options]);
+    const options = React.useMemo(() => (marks.size === 0 ? props.options : props.options.map((option) => (
+        option.mark ? { ...option, icon: markToken(option.id) } : option
+    ))), [marks, props.options]);
+    const renderGlyph = React.useCallback<HappierSelectionTilesGlyphRenderer<TileGlyphName>>(({ glyph, size, color }) => {
+        if (glyph.kind === 'icon' && isMarkToken(glyph.name)) return marks.get(glyph.name) ?? null;
+        return <Icon name={glyph.kind === 'icon' && !isMarkToken(glyph.name) ? glyph.name : 'check-circle'} size={size} color={color} />;
+    }, [marks]);
 
-    const tileWidth = React.useMemo(() => {
-        if (width <= 0) return undefined;
-        const totalGap = gap * (columns - 1);
-        return Math.floor((width - totalGap) / columns);
-    }, [columns, width]);
-    const fallbackTileWidthStyle = React.useMemo(() => {
-        if (width > 0) return null;
-        if (columns <= 1) return { width: '100%' } as const;
-        if (columns === 2) return { width: '48%', maxWidth: '48%', flexGrow: 0, flexShrink: 0 } as const;
-        return { width: '31%', maxWidth: '31%', flexGrow: 0, flexShrink: 0 } as const;
-    }, [columns, width]);
+    return <HappierSelectionTiles {...props} options={options} colors={colors} renderText={renderText} renderGlyph={renderGlyph} />;
+}
 
-    return (
-        <View
-            onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
-            style={[
-                styles.grid,
-                { flexDirection: 'row', flexWrap: 'wrap', gap },
-            ]}
-        >
-            {props.options.map((option) => {
-                const selected = isSelected(props, option.id);
-                const disabled = option.disabled === true;
-                const iconName = option.icon ?? (selected ? 'check-circle' : 'circle');
-                const borderColor = selected
-                    ? theme.colors.button.primary.background
-                    : theme.colors.border.default;
-                const iconColor = selected
-                    ? theme.colors.button.primary.background
-                    : theme.colors.text.secondary;
-                const hasSubtitle = typeof option.subtitle === 'string' && option.subtitle.trim().length > 0;
-                const footer = props.renderOptionFooter?.({ option, selected, disabled });
+function textStyle(
+    styles: typeof stylesheet,
+    role: HappierSelectionTileTextRole,
+    selected: boolean,
+    compact: boolean,
+) {
+    switch (role) {
+        case 'cardTitle': return [styles.title, compact ? styles.titleCompact : null];
+        case 'cardSubtitle': return [styles.subtitle, compact ? styles.subtitleCompact : null];
+        case 'badge': return styles.badgeText;
+        case 'visualLabel': return [styles.visualLabel, selected ? styles.visualLabelSelected : null];
+        case 'visualSublabel': return styles.visualSublabel;
+        case 'actionTitle': return styles.actionTitle;
+        case 'actionSubtitle': return styles.actionSubtitle;
+    }
+}
 
-                return (
-                    <View
-                        key={option.id}
-                        style={[
-                            styles.tile,
-                            tileWidth ? { width: tileWidth } : fallbackTileWidthStyle,
-                            { borderColor },
-                        ]}
-                    >
-                        <Pressable
-                            testID={props.testIdPrefix ? `${props.testIdPrefix}:${option.id}` : undefined}
-                            accessibilityRole={selectionAccessibilityRole}
-                            accessibilityState={props.selectionMode === 'multiple'
-                                ? { checked: selected, disabled }
-                                : { selected, disabled }}
-                            disabled={disabled}
-                            onPress={() => {
-                                if (disabled) {
-                                    return;
-                                }
-                                handleToggle(props, option.id);
-                            }}
-                            style={({ pressed }) => [
-                                styles.tilePressable,
-                                compact ? styles.tileCompact : null,
-                                compact && !hasSubtitle ? styles.tileCompactWithoutSubtitle : null,
-                                tileWidth ? { width: tileWidth } : fallbackTileWidthStyle,
-                                { opacity: disabled ? 0.5 : (pressed ? 0.85 : 1) },
-                            ]}
-                        >
-                            <View style={[styles.headerRow, compact && !hasSubtitle ? styles.headerRowCentered : null]}>
-                                <View style={[styles.titleRow, compact && !hasSubtitle ? styles.titleRowCentered : null]}>
-                                    <View style={[styles.iconSlot, compact ? styles.iconSlotCompact : null]}>
-                                        <Icon
-                                            name={iconName}
-                                            size={compact ? 16 : 29}
-                                            color={iconColor}
-                                        />
-                                    </View>
-                                    <View style={[styles.textContainer, compact && !hasSubtitle ? styles.textContainerCentered : null]}>
-                                        <Text style={[styles.title, compact ? styles.titleCompact : null]} numberOfLines={2}>{option.title}</Text>
-                                        {option.subtitle ? (
-                                            <Text style={[styles.subtitle, compact ? styles.subtitleCompact : null]} numberOfLines={4}>{option.subtitle}</Text>
-                                        ) : null}
-                                    </View>
-                                </View>
-                                {option.badge ? (
-                                    <View style={styles.badge}>
-                                        <Text style={styles.badgeText} numberOfLines={1}>{option.badge}</Text>
-                                    </View>
-                                ) : null}
-                            </View>
-                        </Pressable>
-                        {footer != null && footer !== false ? (
-                            <View style={[styles.footer, compact ? styles.footerCompact : null]}>
-                                {footer}
-                            </View>
-                        ) : null}
-                    </View>
-                );
-            })}
-        </View>
-    );
+// The tiles' type scale is the shared owner's (`HAPPIER_SELECTION_TILE_TEXT`, which the plugin tiles
+// draw with too); this adapter adds Happier's face per weight and its colours.
+const TILE_TEXT = HAPPIER_SELECTION_TILE_TEXT;
+function tileMetrics(role: keyof typeof TILE_TEXT) {
+    const step = TILE_TEXT[role];
+    return { fontSize: step.fontSize, lineHeight: step.lineHeight };
 }
 
 const stylesheet = StyleSheet.create((theme) => ({
-    grid: {
-        width: '100%',
-        alignSelf: 'stretch',
+    actionTitle: {
+        ...Typography.default(TILE_TEXT.actionTitle.weight),
+        ...tileMetrics('actionTitle'),
+        color: theme.colors.text.primary,
     },
-    tile: {
-        backgroundColor: theme.colors.surface.base,
-        borderRadius: 12,
-        borderWidth: 2,
-        overflow: 'hidden',
+    actionSubtitle: {
+        ...Typography.default(TILE_TEXT.actionSubtitle.weight),
+        ...tileMetrics('actionSubtitle'),
+        color: theme.colors.text.secondary,
     },
-    tilePressable: {
-        paddingHorizontal: 12,
-        paddingVertical: 14,
-        minHeight: 92,
+    visualLabel: {
+        ...Typography.default(TILE_TEXT.visualLabel.weight),
+        ...tileMetrics('visualLabel'),
+        textAlign: 'center',
+        color: theme.colors.text.secondary,
     },
-    tileCompact: {
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        minHeight: 48,
+    visualLabelSelected: {
+        ...Typography.default(TILE_TEXT.visualLabel.selectedWeight ?? 'medium'),
+        color: theme.colors.text.primary,
     },
-    tileCompactWithoutSubtitle: {
-        minHeight: 44,
-        paddingTop: 8,
-        paddingBottom: 8,
-    },
-    headerRow: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    headerRowCentered: {
-        alignItems: 'center',
-    },
-    footer: {
-        marginTop: 10,
-        gap: 8,
-    },
-    footerCompact: {
-        marginTop: 8,
-        gap: 6,
-    },
-    titleRow: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        flex: 1,
-        gap: 10,
-    },
-    titleRowCentered: {
-        alignItems: 'center',
-    },
-    iconSlot: {
-        width: ITEM_ICON_BOX_SIZE.comfortable,
-        height: ITEM_ICON_BOX_SIZE.comfortable,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginTop: 1,
-    },
-    iconSlotCompact: {
-        width: ITEM_ICON_BOX_SIZE.compact,
-        height: ITEM_ICON_BOX_SIZE.compact,
-        marginTop: 0,
-    },
-    textContainer: {
-        flex: 1,
-        gap: 0,
-    },
-    textContainerCentered: {
-        justifyContent: 'center',
+    visualSublabel: {
+        ...Typography.default(TILE_TEXT.visualSublabel.weight),
+        ...tileMetrics('visualSublabel'),
+        textAlign: 'center',
+        color: theme.colors.text.tertiary,
+        marginTop: -4,
     },
     title: {
-        ...Typography.default('regular'),
-        fontSize: ITEM_TITLE_TEXT_METRICS.comfortable.fontSize,
+        ...Typography.default(TILE_TEXT.cardTitle.weight),
+        fontSize: TILE_TEXT.cardTitle.fontSize,
         color: theme.colors.text.primary,
     },
     titleCompact: {
-        fontSize: ITEM_TITLE_TEXT_METRICS.compact.fontSize,
+        fontSize: TILE_TEXT.cardTitle.compactFontSize ?? TILE_TEXT.cardTitle.fontSize,
     },
     subtitle: {
-        ...Typography.default(),
-        fontSize: ITEM_SUBTITLE_TEXT_METRICS.comfortable.fontSize,
+        ...Typography.default(TILE_TEXT.cardSubtitle.weight),
+        fontSize: TILE_TEXT.cardSubtitle.fontSize,
         color: theme.colors.text.secondary,
     },
     subtitleCompact: {
-        fontSize: ITEM_SUBTITLE_TEXT_METRICS.compact.fontSize,
+        fontSize: TILE_TEXT.cardSubtitle.compactFontSize ?? TILE_TEXT.cardSubtitle.fontSize,
         marginTop: 2,
     },
-    badge: {
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-    },
     badgeText: {
-        ...Typography.default('regular'),
-        fontSize: Platform.select({ ios: 12, default: 12 }),
-        lineHeight: 16,
+        ...Typography.default(TILE_TEXT.badge.weight),
+        ...tileMetrics('badge'),
         color: theme.colors.text.secondary,
     },
 }));

@@ -48,6 +48,9 @@ export function CardGrid(props: CardGridProps): React.ReactElement {
     );
 }
 
+/** A card fills its cell, and cells in one row share its height, so a row of cards lines up. */
+const CARD_GRID_CELL_STYLE: ViewStyle = { flex: 1 };
+
 export function CardGridColumn(props: ItemGroupColumnProps): React.ReactElement {
-    return <ItemGroupColumn {...props} />;
+    return <ItemGroupColumn {...props} style={[CARD_GRID_CELL_STYLE, props.style]} />;
 }

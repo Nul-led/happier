@@ -7,14 +7,22 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 // single owner for both rules so that core's tablist and the public `HappierTabs` adapter cannot
 // drift apart, and `sharedFamilyOwnership.test.ts` names this file as the required core consumer of
 // `resolveHappierTabKeySelection` — importing it is the contract, not a convenience.
-import { isHappierTabSelected, resolveHappierTabKeySelection } from '@happier-dev/plugin-ui/presentation';
+import {
+    isHappierFocusVisible,
+    HAPPIER_SEGMENTED_METRICS,
+    isHappierTabSelected,
+    resolveHappierTabKeySelection,
+} from '@happier-dev/plugin-ui/presentation';
 
 import { shadowLevelStyle } from '@/shadowElevation';
 import { Text } from '@/components/ui/text/Text';
 import { GradientSurface } from '@/components/ui/surfaces/GradientSurface';
 import { ICON_SIZE } from '@/components/ui/icons/Icon';
-import { INSTRUMENT_SPRINGS, useMotionPreferences } from '@/components/instrument';
-import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+// The motion modules directly, not the instrument barrel: a segmented control must not load the
+// gauge and chart components (and their SVG dependency) that the barrel also exports.
+import { INSTRUMENT_SPRINGS } from '@/components/instrument/motion/motionTokens';
+import { useMotionPreferences } from '@/components/instrument/motion/useMotionPreferences';
+import { isTouchPrimaryPointer, resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 
 /**
  * The glyph size for an icon-only segmented bar.
@@ -25,21 +33,26 @@ import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactive
  * textual one it replaced. A tab is a primary control in its pane — it takes the standard toolbar
  * step.
  */
-export const SEGMENTED_TAB_ICON_SIZE_PX = ICON_SIZE.md;
+export const SEGMENTED_TAB_ICON_SIZE_PX = ICON_SIZE.sm;
 
 /**
+ * The segmented geometry (track inset, radii, padding-driven heights, label slot and type, segment
+ * width floor) is shared presentation: the plugin segmented `Select` draws the same shape. This bar
+ * keeps what is its own — the sliding spring thumb, icon-only bars, the press-frame budget below and
+ * the theme's gradient/shadow on the active surface.
+ *
  * Padding-driven visible heights. These are the numbers that decide how tall the control LOOKS, and
  * they are the only ones allowed to: a segment must never carry a `minHeight`, because a minimum
  * sized for a *touch target* silently becomes the drawn box and inflates every consumer.
  */
-const SEGMENT_PADDING_VERTICAL_PX = { default: 7, compact: 4 } as const;
+const SEGMENT_PADDING_VERTICAL_PX = HAPPIER_SEGMENTED_METRICS.segmentPaddingVerticalPx;
 
 /**
  * The label's optical slot. Nominal — Inter's line box at these sizes — and used only to reason
  * about the press frame below. When the user scales text up the real segment grows past it, which
  * only makes the target larger.
  */
-const SEGMENT_LABEL_SLOT_PX = { default: 14, compact: 12 } as const;
+const SEGMENT_LABEL_SLOT_PX = HAPPIER_SEGMENTED_METRICS.labelSlotPx;
 
 /**
  * The track's inset, and therefore the entire vertical budget of the press frame below.
@@ -47,7 +60,7 @@ const SEGMENT_LABEL_SLOT_PX = { default: 14, compact: 12 } as const;
  * One constant because it is one fact wearing three hats: the gap the track paints around its
  * segments, the inset the sliding thumb rides at, and the only space the frame is allowed to claim.
  */
-const SEGMENT_TRACK_PADDING_PX = 2;
+const SEGMENT_TRACK_PADDING_PX = HAPPIER_SEGMENTED_METRICS.trackPaddingPx;
 
 /**
  * The per-segment width floor.
@@ -59,7 +72,7 @@ const SEGMENT_TRACK_PADDING_PX = 2;
  * asks for 24 CSS px — six of those need 148px, which fits. Raising this would require every
  * consumer to guarantee `segments x floor + 4` of width, which none of them can.
  */
-const SEGMENT_MIN_WIDTH_PX = 24;
+const SEGMENT_MIN_WIDTH_PX = HAPPIER_SEGMENTED_METRICS.segmentMinWidthPx;
 
 export type SegmentedTab<T extends string = string> = Readonly<{
     id: T;
@@ -71,6 +84,18 @@ export type SegmentedTab<T extends string = string> = Readonly<{
      * opt-in and the other consumers are unaffected.
      */
     icon?: React.ReactNode;
+    /**
+     * This one option cannot be chosen right now. It stays visible and announces itself as disabled;
+     * presses and arrow keys skip it.
+     */
+    disabled?: boolean;
+    /** Why this disabled option cannot be chosen, announced with its name. */
+    unavailableReason?: string;
+    /**
+     * A formatted count after the label ("Changes 14"), in the quieter tertiary ink so the label stays
+     * the name. Announced with the label.
+     */
+    count?: string;
 }>;
 
 export type SegmentedTabBarProps<T extends string = string> = Readonly<{
@@ -98,8 +123,15 @@ export type SegmentedTabBarProps<T extends string = string> = Readonly<{
     activeLabelStyle?: StyleProp<TextStyle>;
     /** Expand each segment to the platform touch-target floor when its consumer owns enough room. */
     targetSize?: 'platform';
-    /** Accessible name for the tab group. */
+    /** Accessible name for the group. */
     accessibilityLabel?: string;
+    /**
+     * What the bar is. `'tablist'` (default) is a view switch: each segment is a tab that shows a
+     * different view of the same content. `'radiogroup'` is a value choice (a setting, a mode, a
+     * field): each segment is a radio announcing whether it is checked. A tablist promises panels a
+     * value choice never has, so the two must not share a role.
+     */
+    role?: 'tablist' | 'radiogroup';
     /**
      * Renders the whole bar as a non-interactive, dimmed control that still ANNOUNCES itself as
      * disabled. Owned here rather than left to callers: wrapping the bar in
@@ -125,7 +157,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     inner: {
         flexDirection: 'row',
         backgroundColor: theme.colors.segmentedControl.trackBackground,
-        borderRadius: 9,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.trackRadiusPx.default,
         padding: SEGMENT_TRACK_PADDING_PX,
         width: '100%',
         flexGrow: 1,
@@ -133,7 +165,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         position: 'relative',
     },
     innerCompact: {
-        borderRadius: 7,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.trackRadiusPx.compact,
     },
     innerContent: {
         width: 'auto',
@@ -142,7 +174,11 @@ const stylesheet = StyleSheet.create((theme) => ({
     // One dim on the track, not per segment: stacking opacity on each Pressable would double up
     // behind the active thumb and read as two different greys.
     innerDisabled: {
-        opacity: 0.5,
+        opacity: HAPPIER_SEGMENTED_METRICS.disabledOpacity,
+    },
+    /** One unavailable segment in an otherwise usable bar: the same dim as a disabled bar. */
+    tabDisabled: {
+        opacity: HAPPIER_SEGMENTED_METRICS.disabledOpacity,
     },
     /**
      * The PRESS FRAME. Transparent and paint-free: it exists only to be big enough to hit. Its
@@ -187,15 +223,23 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingVertical: SEGMENT_PADDING_VERTICAL_PX.default,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 7,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.segmentRadiusPx.default,
         overflow: 'hidden',
+    },
+    // An icon bar is as tall as a label bar (the lab draws both at 28 in a 32 track): the glyph's own
+    // slot plus padding that makes up the label slot's difference.
+    tabSurfaceIcon: {
+        paddingVertical: (SEGMENT_LABEL_SLOT_PX.default + SEGMENT_PADDING_VERTICAL_PX.default * 2 - SEGMENTED_TAB_ICON_SIZE_PX) / 2,
+    },
+    tabSurfaceIconCompact: {
+        paddingVertical: Math.max(0, (SEGMENT_LABEL_SLOT_PX.compact + SEGMENT_PADDING_VERTICAL_PX.compact * 2 - SEGMENTED_TAB_ICON_SIZE_PX) / 2),
     },
     tabSurfaceCompact: {
         paddingVertical: SEGMENT_PADDING_VERTICAL_PX.compact,
-        borderRadius: 5,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.segmentRadiusPx.compact,
     },
     tabSurfaceContent: {
-        paddingHorizontal: 12,
+        paddingHorizontal: HAPPIER_SEGMENTED_METRICS.segmentPaddingHorizontalPx,
     },
     tabActive: {
         backgroundColor: theme.colors.segmentedControl.activeBackground,
@@ -217,13 +261,13 @@ const stylesheet = StyleSheet.create((theme) => ({
         top: SEGMENT_TRACK_PADDING_PX,
         bottom: SEGMENT_TRACK_PADDING_PX,
         left: 0,
-        borderRadius: 7,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.segmentRadiusPx.default,
         backgroundColor: theme.colors.segmentedControl.activeBackground,
         overflow: 'hidden',
         ...shadowLevelStyle(theme.colors.shadowLevels[1]),
     },
     thumbCompact: {
-        borderRadius: 5,
+        borderRadius: HAPPIER_SEGMENTED_METRICS.segmentRadiusPx.compact,
     },
     // Sized to the glyph, not to the label it replaces. Holding the slot at the label's 16px optical
     // height kept an iconic bar exactly as tall as a textual one, which sounds right and is not: the
@@ -233,16 +277,24 @@ const stylesheet = StyleSheet.create((theme) => ({
         justifyContent: 'center',
         height: SEGMENTED_TAB_ICON_SIZE_PX,
     },
+    // The label's line box is its slot, so the drawn segment is exactly padding + slot.
     tabLabel: {
-        fontSize: 12,
+        fontSize: HAPPIER_SEGMENTED_METRICS.labelFontSizePx.default,
+        lineHeight: SEGMENT_LABEL_SLOT_PX.default,
         color: theme.colors.text.secondary,
     },
     tabLabelCompact: {
-        fontSize: 10,
+        fontSize: HAPPIER_SEGMENTED_METRICS.labelFontSizePx.compact,
+        lineHeight: SEGMENT_LABEL_SLOT_PX.compact,
+    },
+    tabCount: {
+        color: theme.colors.text.tertiary,
+        fontWeight: '400',
+        fontVariant: ['tabular-nums'],
     },
     tabLabelActive: {
         color: theme.colors.text.primary,
-        fontWeight: '600',
+        fontWeight: HAPPIER_SEGMENTED_METRICS.labelActiveFontWeight,
     },
 }));
 
@@ -290,7 +342,7 @@ function SlidingThumb(props: Readonly<{
             <GradientSurface
                 fallbackColor={theme.colors.segmentedControl.activeBackground}
                 gradient={theme.colors.segmentedControl.activeGradient}
-                borderRadius={props.compact ? 5 : 7}
+                borderRadius={HAPPIER_SEGMENTED_METRICS.segmentRadiusPx[props.compact ? 'compact' : 'default']}
                 style={StyleSheet.absoluteFillObject}
             />
         </Animated.View>
@@ -303,11 +355,15 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
     const compact = props.compact;
     const disabled = props.disabled === true;
     const slidingThumb = props.slidingThumb === true;
+    const valueChoice = props.role === 'radiogroup';
     const contentSized = props.segmentSizing === 'content';
     // Icons replace labels only when the whole bar is iconic; a half-iconic row reads as broken.
     const iconOnly = props.tabs.length > 0 && props.tabs.every((tab) => tab.icon != null);
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
-    const platformTarget = props.targetSize === 'platform';
+    // The consumer's room grant takes effect only where a finger is the pointer: under a mouse or a
+    // trackpad the control keeps its dense padding-driven height (32 for labels), which is what the
+    // lab draws and what WCAG 2.2 SC 2.5.8 asks of a dense pointer layout.
+    const platformTarget = props.targetSize === 'platform' && isTouchPrimaryPointer(Platform.OS);
 
     /**
      * The press frame's vertical budget — bounded on BOTH sides.
@@ -335,12 +391,12 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
      * explicit grant from a consumer that owns enough horizontal and vertical room; only then does
      * the surface take the extra height and each flush segment take the 44/48 width floor.
      */
-    const drawnSegmentHeight = (compact
-        ? SEGMENT_PADDING_VERTICAL_PX.compact
-        : SEGMENT_PADDING_VERTICAL_PX.default) * 2
-        + (iconOnly
-            ? SEGMENTED_TAB_ICON_SIZE_PX
-            : (compact ? SEGMENT_LABEL_SLOT_PX.compact : SEGMENT_LABEL_SLOT_PX.default));
+    // Icon and label bars draw at one height (see `tabSurfaceIcon`), never less than the glyph.
+    const drawnSegmentHeight = Math.max(
+        (compact ? SEGMENT_PADDING_VERTICAL_PX.compact : SEGMENT_PADDING_VERTICAL_PX.default) * 2
+            + (compact ? SEGMENT_LABEL_SLOT_PX.compact : SEGMENT_LABEL_SLOT_PX.default),
+        iconOnly ? SEGMENTED_TAB_ICON_SIZE_PX : 0,
+    );
     const targetExpandY = Math.min(
         SEGMENT_TRACK_PADDING_PX,
         Math.max(0, (minimumInteractiveTargetSize - drawnSegmentHeight) / 2),
@@ -370,10 +426,15 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
     }, []);
 
     const activeRect = tabRects[props.activeTabId] ?? null;
+    // Roving tabindex: the active segment takes focus; when the value names no enabled segment (a
+    // custom value, or a choice that cannot apply now) the first enabled one does, so the group
+    // never drops out of the tab order.
+    const activeEnabledIndex = props.tabs.findIndex((tab) => tab.disabled !== true && isHappierTabSelected(props.activeTabId, tab.id));
+    const focusableIndex = activeEnabledIndex >= 0 ? activeEnabledIndex : props.tabs.findIndex((tab) => tab.disabled !== true);
     const activateTabAt = React.useCallback((index: number, focus: boolean) => {
         if (props.disabled === true) return;
         const tab = props.tabs[index];
-        if (!tab) return;
+        if (!tab || tab.disabled === true) return;
         props.onSelectTab(tab.id);
         if (focus) tabRefs.current.get(tab.id)?.focus?.();
     }, [props]);
@@ -390,7 +451,7 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
         if (nextIndex === null || props.tabs.length === 0) return;
         event?.preventDefault?.();
         activateTabAt(nextIndex, nextIndex !== tabIndex);
-    }, [activateTabAt, props.disabled, props.tabs.length]);
+    }, [activateTabAt, props.disabled, props.tabs]);
 
     return (
         <View style={[styles.container, contentSized ? styles.containerContent : null]}>
@@ -401,7 +462,7 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                     contentSized ? styles.innerContent : null,
                     disabled ? styles.innerDisabled : null,
                 ]}
-                accessibilityRole="tablist"
+                accessibilityRole={valueChoice ? 'radiogroup' : 'tablist'}
                 accessibilityLabel={props.accessibilityLabel}
             >
                 {slidingThumb ? (
@@ -413,7 +474,10 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                 ) : null}
                 {props.tabs.map((tab, tabIndex) => {
                     const active = isHappierTabSelected(props.activeTabId, tab.id);
+                    const tabDisabled = disabled || tab.disabled === true;
                     const showOwnActiveSurface = active && !slidingThumb;
+                    const tabName = tab.count ? `${tab.label} ${tab.count}` : tab.label;
+                    const unavailableReason = tab.disabled === true ? tab.unavailableReason : undefined;
                     const webKeyDownProps = Platform.OS === 'web'
                         ? ({ onKeyDown: (event: any) => handleTabKeyDown(tabIndex, event) } as Record<string, unknown>)
                         : {};
@@ -425,12 +489,13 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                                 else tabRefs.current.delete(tab.id);
                             }}
                             testID={props.testIDPrefix ? `${props.testIDPrefix}:${tab.id}` : undefined}
-                            disabled={disabled}
+                            disabled={tabDisabled}
                             onPress={() => {
-                                if (disabled) return;
+                                if (tabDisabled) return;
                                 props.onSelectTab(tab.id);
                             }}
-                            onFocus={() => setFocusedTabId(tab.id)}
+                            // The ring is for keyboard focus only; a click on a segment focuses it too.
+                            onFocus={(event) => setFocusedTabId(isHappierFocusVisible(event?.target) ? tab.id : null)}
                             onBlur={() => setFocusedTabId((current) => (current === tab.id ? null : current))}
                             {...webKeyDownProps}
                             onLayout={slidingThumb ? (event) => handleTabLayout(tab.id, event) : undefined}
@@ -440,28 +505,32 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                                 tabFrameTarget,
                             ]}
                             {...(iconOnly ? ({ title: tab.label } as object) : {})}
-                            accessibilityRole="tab"
-                            accessibilityLabel={tab.label}
-                            accessibilityState={{ selected: active, disabled }}
-                            aria-selected={active}
-                            aria-disabled={disabled || undefined}
-                            tabIndex={Platform.OS === 'web' ? (disabled || !active ? -1 : 0) : undefined}
+                            accessibilityRole={valueChoice ? 'radio' : 'tab'}
+                            accessibilityLabel={unavailableReason ? `${tabName}, ${unavailableReason}` : tabName}
+                            accessibilityState={valueChoice
+                                ? { checked: active, disabled: tabDisabled }
+                                : { selected: active, disabled: tabDisabled }}
+                            {...(valueChoice ? { 'aria-checked': active } : { 'aria-selected': active })}
+                            aria-disabled={tabDisabled || undefined}
+                            tabIndex={Platform.OS === 'web' ? (disabled || tabIndex !== focusableIndex ? -1 : 0) : undefined}
                         >
                             <View
                                 style={[
                                     styles.tabSurface,
                                     compact ? styles.tabSurfaceCompact : null,
+                                    iconOnly ? (compact ? styles.tabSurfaceIconCompact : styles.tabSurfaceIcon) : null,
                                     tabSurfaceTarget,
                                     contentSized ? styles.tabSurfaceContent : null,
                                     showOwnActiveSurface ? styles.tabActive : null,
-                                    !disabled && focusedTabId === tab.id ? styles.tabFocused : null,
+                                    !tabDisabled && focusedTabId === tab.id ? styles.tabFocused : null,
+                                    !disabled && tab.disabled === true ? styles.tabDisabled : null,
                                 ]}
                             >
                                 {showOwnActiveSurface ? (
                                     <GradientSurface
                                         fallbackColor={theme.colors.segmentedControl.activeBackground}
                                         gradient={theme.colors.segmentedControl.activeGradient}
-                                        borderRadius={compact ? 5 : 7}
+                                        borderRadius={HAPPIER_SEGMENTED_METRICS.segmentRadiusPx[compact ? 'compact' : 'default']}
                                         style={StyleSheet.absoluteFillObject}
                                     />
                                 ) : null}
@@ -479,6 +548,7 @@ function SegmentedTabBarInner<T extends string>(props: SegmentedTabBarProps<T>) 
                                         ]}
                                     >
                                         {tab.label}
+                                        {tab.count ? <Text style={styles.tabCount}>{` ${tab.count}`}</Text> : null}
                                     </Text>
                                 )}
                             </View>

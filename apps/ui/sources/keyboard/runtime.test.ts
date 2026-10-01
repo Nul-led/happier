@@ -155,7 +155,7 @@ describe('createKeyboardShortcutDispatcher', () => {
         expect(previous).toHaveBeenCalledTimes(1);
     });
 
-    it('prefers split-canvas focus over global session-list navigation for shared Alt+Arrow defaults', () => {
+    it('keeps session navigation and focused workspace pane movement on distinct shortcuts', () => {
         const sessionVisibleNext = vi.fn();
         const splitCanvasFocusDown = vi.fn();
         const dispatcher = createKeyboardShortcutDispatcher({
@@ -167,14 +167,16 @@ describe('createKeyboardShortcutDispatcher', () => {
             overrides: {},
             handlers: {
                 'session.visible.next': sessionVisibleNext,
-                'splitCanvas.focusDown': splitCanvasFocusDown,
+                'workspace.focusDown': splitCanvasFocusDown,
             },
             getContext: () => context,
         });
 
         expect(dispatcher(keyEvent({ key: 'ArrowDown', code: 'ArrowDown', altKey: true }))).toBe(true);
+        expect(sessionVisibleNext).toHaveBeenCalledTimes(1);
+        expect(splitCanvasFocusDown).not.toHaveBeenCalled();
+        expect(dispatcher(keyEvent({ key: 'ArrowDown', code: 'ArrowDown', altKey: true, metaKey: true }))).toBe(true);
         expect(splitCanvasFocusDown).toHaveBeenCalledTimes(1);
-        expect(sessionVisibleNext).not.toHaveBeenCalled();
     });
 
     it('does not dispatch during IME composition', () => {
@@ -284,13 +286,17 @@ describe('createKeyboardShortcutDispatcher', () => {
                 'session.new': vi.fn(),
                 'shortcutsHelp.open': vi.fn(),
                 'settings.open': vi.fn(),
+                'transcript.message.next': vi.fn(),
             },
         });
 
         expect(labels['commandPalette.open']).toBeUndefined();
         expect(labels['session.new']).toBe('Cmd+P');
         expect(labels['shortcutsHelp.open']).toBeUndefined();
-        expect(labels['settings.open']).toBeUndefined();
+        // The platform's preferences shortcut opens Settings in the desktop app.
+        expect(labels['settings.open']).toBe('Cmd+,');
+        // A command with a handler but no binding has no label.
+        expect(labels['transcript.message.next']).toBeUndefined();
     });
 
     it('keeps editable-safe commands editable when their shortcut is overridden', () => {

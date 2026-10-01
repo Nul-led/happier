@@ -52,6 +52,14 @@ function makeKeyEvent(key: string): Readonly<{
     };
 }
 
+function statusText(screen: { findByTestId: (id: string) => { props: Record<string, any> } | null }): unknown {
+    return screen.findByTestId('sl:status')?.props.children?.props.children;
+}
+
+function statusEventKey(screen: { findByTestId: (id: string) => { props: Record<string, any> } | null }): unknown {
+    return screen.findByTestId('sl:status')?.props.children?.key;
+}
+
 beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
 });
@@ -122,9 +130,8 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
         });
 
-        const status = screen.findByTestId('sl:status');
-        expect(status?.props.accessibilityLabel).toContain('2 · SESSIONS');
-        expect(status?.props.accessibilityLabel).not.toContain('3 · SESSIONS');
+        expect(statusText(screen)).toContain('2 · SESSIONS');
+        expect(statusText(screen)).not.toContain('3 · SESSIONS');
     });
 
     it('publishes a new live-region event when a distinct settled query has the same announcement text', async () => {
@@ -148,7 +155,8 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
         });
         const firstStatus = screen.findByTestId('sl:status');
-        expect(firstStatus?.props.accessibilityLabel).toBe('1 · SESSIONS');
+        const firstEventKey = statusEventKey(screen);
+        expect(statusText(screen)).toBe('1 · SESSIONS');
 
         await act(async () => {
             screen.tree.update(
@@ -158,9 +166,10 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
         });
 
-        const secondStatus = screen.findByTestId('sl:status');
-        expect(secondStatus?.props.accessibilityLabel).toBe('1 · SESSIONS');
-        expect(secondStatus).not.toBe(firstStatus);
+        // One region stays mounted; the repeated text arrives as a freshly keyed node.
+        expect(screen.findByTestId('sl:status') === firstStatus).toBe(true);
+        expect(statusText(screen)).toBe('1 · SESSIONS');
+        expect(statusEventKey(screen)).not.toBe(firstEventKey);
     });
 
     it('announces a settled provider with no matches without turning it into an error alert', async () => {
@@ -203,7 +212,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
         });
 
-        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe('MESSAGES · Still indexing messages…');
+        expect(statusText(screen)).toBe('MESSAGES · Still indexing messages…');
     });
 
     it('announces a provider notFoundHint through the shared status region', async () => {
@@ -221,7 +230,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe('FILES · Folder not found.');
+        expect(statusText(screen)).toBe('FILES · Folder not found.');
     });
 
     it('announces a static resultHint through the shared status region', async () => {
@@ -239,7 +248,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         };
         const screen = await renderScreen(<SelectionList {...defaultProps(root)} inputValue="query" />);
 
-        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toBe(
+        expect(statusText(screen)).toBe(
             'SESSIONS · Some Sessions could not be loaded.',
         );
     });
@@ -260,7 +269,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(screen.findByTestId('sl:status')?.props.accessibilityLabel).toContain('FILES');
+        expect(statusText(screen)).toContain('FILES');
 
         await act(async () => {
             screen.tree.update(
@@ -275,7 +284,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
             );
         });
 
-        expect(screen.findByTestId('sl:status')).toBeNull();
+        expect(statusText(screen)).toBe('');
     });
 
     it('renders loading skeleton rows while the resolver is pending', async () => {
@@ -373,8 +382,7 @@ describe('SelectionList dynamic-section state rendering (Phase 2.2 mapping)', ()
         expect(hint).not.toBeNull();
         expect(hint?.props?.onPress).toBeUndefined();
         expect(screen.getTextContent()).toContain('More results are available');
-        const status = screen.findByTestId('sl:status');
-        expect(status?.props.accessibilityLabel).toContain('More results are available');
+        expect(statusText(screen)).toContain('More results are available');
         expect(screen.tree.root.findAllByProps({ accessibilityLiveRegion: 'polite' })).toHaveLength(1);
     });
 

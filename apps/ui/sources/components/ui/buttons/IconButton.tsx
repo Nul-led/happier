@@ -1,5 +1,7 @@
 import {
     HappierPressable,
+    HAPPIER_ICON_BUTTON_SIZE,
+    resolveHappierIconButtonChrome,
     type HappierPressableProps,
     type HappierPressableRole,
 } from '@happier-dev/plugin-ui/presentation';
@@ -14,7 +16,7 @@ import { Icon, type IconName } from '@/components/ui/icons/Icon';
 
 import { DeferredAnchoredTooltip } from '@/components/ui/overlays/DeferredAnchoredTooltip';
 
-const DEFAULT_SIZE = 28;
+const DEFAULT_SIZE = HAPPIER_ICON_BUTTON_SIZE;
 
 export type IconButtonTone = 'default' | 'primary' | 'danger';
 export type IconButtonVariant = 'outlined' | 'plain';
@@ -23,39 +25,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     pressFrame: {
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    button: {
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    /**
-     * The outlined border draws the VISIBLE square, so it lives on the surface.
-     * Its fill lives on the frame below: the surface stays transparent, which is
-     * what lets the frame's interaction tint show through instead of being
-     * covered by an opaque inset background.
-     */
-    surfaceOutlined: {
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
-    },
-    frameOutlined: {
-        backgroundColor: theme.colors.surface.inset,
-    },
-    buttonHovered: {
-        backgroundColor: theme.colors.surface.selected,
-    },
-    buttonPressed: {
-        backgroundColor: theme.colors.surface.pressed,
-    },
-    buttonSelected: {
-        backgroundColor: theme.colors.surface.pressed,
-    },
-    buttonFocused: {
-        borderWidth: 1,
-        borderColor: theme.colors.border.focus,
-    },
-    buttonDisabled: {
-        opacity: 0.5,
     },
     tooltipWrap: {
         // Wide invisible strip below the button so the bubble can center on it
@@ -135,6 +104,13 @@ export function IconButton(props: Readonly<{
     accessibilityLabel: string;
     /** Short helper shown on hover/focus (desktop pointer/keyboard users). */
     tooltip?: string;
+    tooltipContent?: React.ReactNode;
+    tooltipPlacement?: 'top' | 'bottom' | 'left' | 'right';
+    /**
+     * Hide the tooltip for now (for example while this button's own popover is open) without
+     * changing the button's structure, so the pressable is not remounted and keeps its focus.
+     */
+    tooltipHidden?: boolean;
     /** VISIBLE container square in px (icon scales with it). Default 28. */
     size?: number;
     /**
@@ -159,15 +135,30 @@ export function IconButton(props: Readonly<{
     disabled?: boolean;
     /** Whether this toggle-style action is currently selected. */
     selected?: boolean;
+    /** Disable the resting selection fill when the caller supplies another selection marker. */
+    selectedBackground?: boolean;
     /** Opt into a concrete toggle semantic such as checkbox or switch. */
     accessibilityRole?: HappierPressableRole;
     /** Checked state paired with an explicit checkbox/radio/switch role. */
     checked?: boolean;
+    /** Whether the menu or panel this button opens is showing (a popover trigger). */
+    expanded?: boolean;
+    /** The kind of surface this button opens, announced to assistive technology. */
+    hasPopup?: HappierPressableProps['hasPopup'];
+    /** Receives the focusable control, so a surface this button opened can hand focus back to it. */
+    controlRef?: HappierPressableProps['controlRef'];
+    /** Compound controls use the shared pressable's keyboard and roving-focus contract. */
+    onKeyDown?: HappierPressableProps['onKeyDown'];
+    tabIndex?: HappierPressableProps['tabIndex'];
     /** Human copy for WHY the button is disabled — tooltip + a11y hint. */
     disabledReason?: string;
     animationEnabled?: boolean;
     /** Receives the gesture event so a row-nested action can stop propagation to its row. */
     onPress: HappierPressableProps['onPress'];
+    /** A secondary invocation (press and hold); when it fires, `onPress` does not. */
+    onLongPress?: HappierPressableProps['onLongPress'];
+    /** The pointer's secondary click on the web, for the same secondary invocation as a long press. */
+    onContextMenu?: HappierPressableProps['onContextMenu'];
 }> & IconButtonGlyph): React.ReactElement {
     const styles = stylesheet;
     const { theme } = useUnistyles();
@@ -182,6 +173,19 @@ export function IconButton(props: Readonly<{
     const size = props.size ?? DEFAULT_SIZE;
     const iconSize = props.iconSize ?? Math.max(12, size - 10);
     const variant = props.variant ?? 'outlined';
+    const chrome = (state: Readonly<{
+        selected: boolean; hovered: boolean; pressed: boolean; focused: boolean; disabled: boolean;
+    }>) => resolveHappierIconButtonChrome({
+        ...state, size, variant, selectedBackground: props.selectedBackground,
+        colors: {
+            background: theme.colors.surface.inset,
+            border: theme.colors.border.default,
+            hover: theme.colors.surface.selected,
+            pressed: theme.colors.surface.pressed,
+            selected: theme.colors.surface.pressed,
+            focus: theme.colors.border.focus,
+        },
+    });
     const minimumInteractiveTargetSize = Number.isFinite(props.minimumInteractiveTargetSize)
         ? Math.max(size, Math.round(props.minimumInteractiveTargetSize!))
         : null;
@@ -228,7 +232,8 @@ export function IconButton(props: Readonly<{
     const tooltipContent = props.disabled === true && props.disabledReason
         ? props.disabledReason
         : props.tooltip;
-    const hasTooltip = tooltipContent != null && tooltipContent.length > 0;
+    const richTooltipContent = props.disabled === true && props.disabledReason ? undefined : props.tooltipContent;
+    const hasTooltip = richTooltipContent != null || (tooltipContent != null && tooltipContent.length > 0);
     const tooltipAnchorRef = React.useRef<View | null>(null);
 
     return (
@@ -240,29 +245,32 @@ export function IconButton(props: Readonly<{
             disabled={props.disabled}
             selected={props.selected}
             checked={props.checked}
+            expanded={props.expanded}
+            hasPopup={props.hasPopup}
+            controlRef={props.controlRef}
+            onKeyDown={props.onKeyDown}
+            tabIndex={props.tabIndex}
             hitSlop={hitSlop}
             onPress={props.onPress}
+            onLongPress={props.onLongPress}
+            onContextMenu={props.onContextMenu}
             style={(state) => [
                 styles.pressFrame,
                 pressFrame,
-                variant === 'outlined' ? styles.frameOutlined : null,
-                props.selected === true ? styles.buttonSelected : null,
-                state.hovered ? styles.buttonHovered : null,
-                state.pressed ? styles.buttonPressed : null,
-                state.disabled ? styles.buttonDisabled : null,
+                chrome(state).frame,
             ]}
             overlay={hasTooltip ? (state) => (
-                state.hovered || state.focused ? (Platform.OS === 'web' ? (
+                (state.hovered || state.focused) && props.tooltipHidden !== true ? (Platform.OS === 'web' ? (
                     <>
                         <View ref={tooltipAnchorRef} style={{ pointerEvents: 'none', position: 'absolute', top: 0, left: 0, width: size, height: size }} />
-                        <DeferredAnchoredTooltip activationKey={`${state.hovered}:${state.focused}`} anchorRef={tooltipAnchorRef} label={tooltipContent!} testID={props.testID ? `${props.testID}-tooltip` : undefined} />
+                        <DeferredAnchoredTooltip activationKey={`${state.hovered}:${state.focused}`} anchorRef={tooltipAnchorRef} placement={props.tooltipPlacement} label={tooltipContent ?? props.accessibilityLabel} content={richTooltipContent} testID={props.testID ? `${props.testID}-tooltip` : undefined} />
                     </>
                 ) : (
                     <View style={styles.tooltipWrap}>
                         <View testID={props.testID ? `${props.testID}-tooltip` : undefined} style={styles.tooltip}>
-                            <Text style={styles.tooltipText} numberOfLines={3}>
+                            {richTooltipContent ?? <Text style={styles.tooltipText} numberOfLines={3}>
                                 {tooltipContent}
-                            </Text>
+                            </Text>}
                         </View>
                     </View>
                 )) : null
@@ -272,10 +280,7 @@ export function IconButton(props: Readonly<{
                 <View
                     testID={props.testID ? `${props.testID}-surface` : undefined}
                     style={[
-                        styles.button,
-                        { width: size, height: size, borderRadius: size / 2 },
-                        variant === 'outlined' ? styles.surfaceOutlined : null,
-                        state.focused ? styles.buttonFocused : null,
+                        chrome(state).surface,
                     ]}
                 >
                     <View

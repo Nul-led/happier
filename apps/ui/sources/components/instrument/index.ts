@@ -13,7 +13,6 @@ export { DrawnLinePath, type DrawnLinePathProps } from './charts/DrawnLinePath';
 export { RippleGrid, type RippleGridProps } from './charts/RippleGrid';
 export {
     INSTRUMENT_DURATIONS,
-    INSTRUMENT_PRESS_SCALE,
     INSTRUMENT_SHIMMER,
     INSTRUMENT_SPRINGS,
     INSTRUMENT_STAGGER,

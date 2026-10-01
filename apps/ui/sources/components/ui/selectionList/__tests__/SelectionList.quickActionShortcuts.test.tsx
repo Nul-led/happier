@@ -104,4 +104,29 @@ describe('SelectionList quick-action shortcut wiring (R14)', () => {
         });
         expect(onSelect).not.toHaveBeenCalled();
     });
+
+    it('sends Cmd/Ctrl+Enter on the focused row to onCommandSelect, and plain Enter to onSelect', async () => {
+        const onSelect = vi.fn();
+        const onCommandSelect = vi.fn();
+        const { act } = await import('react-test-renderer');
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps({ onSelect, onCommandSelect })} />);
+        const input = screen.findByTestId('sl:header:input');
+        const press = (event: Record<string, unknown>) => act(async () => {
+            input!.props.onKeyPress?.({ key: 'Enter', preventDefault: () => {}, stopPropagation: () => {}, ...event });
+        });
+
+        await press({ metaKey: true });
+        expect(onCommandSelect).toHaveBeenCalledTimes(1);
+        expect(onCommandSelect.mock.calls[0]?.[0]).toBe('create-new');
+        expect(onSelect).not.toHaveBeenCalled();
+
+        await press({ ctrlKey: true });
+        expect(onCommandSelect).toHaveBeenCalledTimes(2);
+
+        await press({});
+        expect(onSelect).toHaveBeenCalledTimes(1);
+        expect(onCommandSelect).toHaveBeenCalledTimes(2);
+    });
 });
+

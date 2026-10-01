@@ -57,9 +57,6 @@ export function staggerDelayForIndex(index: number): number {
     return capped * INSTRUMENT_STAGGER.stepMs;
 }
 
-/** Press-feedback scale (matches the design-engineering 0.96 floor). */
-export const INSTRUMENT_PRESS_SCALE = 0.96;
-
 /**
  * Streaming shimmer cadence. Amplitude/opacity are component-local; this is the
  * shared period so every streaming surface breathes in sync.

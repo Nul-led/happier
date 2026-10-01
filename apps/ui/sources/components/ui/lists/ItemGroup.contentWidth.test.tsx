@@ -13,18 +13,6 @@ const shared = vi.hoisted(() => ({
 
 installUiListsCommonModuleMocks();
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        eyebrow: () => ({
-            fontSize: 12,
-            lineHeight: 16,
-            letterSpacing: 0.8,
-            textTransform: 'uppercase',
-        }),
-    },
-}));
-
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleMock({
@@ -40,19 +28,13 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     });
 });
 
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => ({
-        getState: () => ({
-            localSettings: {
-                uiContentWidthMode: shared.contentWidthMode,
-            },
-        }),
-    }),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: any) => React.createElement('Text', props, props.children),
-}));
+vi.mock('@/sync/domains/state/storageStore', async (importOriginal) => {
+    const { createLiveStorageStoreMock, createStorageStoreModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const store = createLiveStorageStoreMock(() => ({
+        localSettings: { uiContentWidthMode: shared.contentWidthMode } as never,
+    }));
+    return createStorageStoreModuleMock({ importOriginal, overrides: { getStorage: () => store } });
+});
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {

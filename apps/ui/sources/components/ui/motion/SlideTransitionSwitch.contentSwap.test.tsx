@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Text } from 'react-native';
+import { Text, TextInput } from 'react-native';
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,14 +10,11 @@ vi.mock('react-native', async () => {
     return createReactNativeWebMock();
 });
 
-vi.mock('@/hooks/ui/useReducedMotionPreference', () => ({
-    useReducedMotionPreference: () => false,
-}));
-
 // Use a configurable spring stub so individual tests can choose whether to
 // fire the completion callback (committing the in-flight target) or not.
 const springControls = vi.hoisted(() => ({
     fireCallbackImmediately: false,
+    complete: null as ((finished?: boolean) => void) | null,
     fireTimingCallbackImmediately: false,
     deferRunOnJS: false,
     pendingRunOnJS: [] as Array<() => void>,
@@ -44,6 +41,7 @@ vi.mock('react-native-reanimated', async () => {
     );
     const cancelAnimation = () => {};
     const withSpring = <T,>(value: T, _config?: unknown, callback?: (finished?: boolean) => void) => {
+        springControls.complete = callback ?? null;
         if (springControls.fireCallbackImmediately && callback) callback(true);
         return value;
     };
@@ -71,12 +69,43 @@ vi.mock('react-native-reanimated', async () => {
     };
 });
 
+function DraftEditor() {
+    const [value, setValue] = React.useState('seed');
+    return <TextInput testID="draft-editor" value={value} onChangeText={setValue} />;
+}
+
 describe('SlideTransitionSwitch (discrete adapter)', () => {
     afterEach(() => {
         springControls.fireCallbackImmediately = false;
+        springControls.complete = null;
         springControls.fireTimingCallbackImmediately = false;
         springControls.deferRunOnJS = false;
         springControls.pendingRunOnJS = [];
+    });
+
+    it.each(['forward', 'backward'] as const)('preserves the incoming draft when a %s transition settles', async (direction) => {
+        springControls.fireCallbackImmediately = false;
+        const { SlideTransitionSwitch } = await import('./SlideTransitionSwitch');
+        const screen = await renderScreen(
+            <SlideTransitionSwitch contentKey="a" direction={direction} reducedMotion={false}>
+                <Text>Previous</Text>
+            </SlideTransitionSwitch>,
+        );
+        await screen.update(
+            <SlideTransitionSwitch contentKey="b" direction={direction} reducedMotion={false}>
+                <DraftEditor />
+            </SlideTransitionSwitch>,
+        );
+        await act(async () => {
+            screen.changeTextByTestId('draft-editor', 'unsaved edit');
+        });
+        expect(screen.findByTestId('draft-editor')?.props.value).toBe('unsaved edit');
+
+        await act(async () => {
+            springControls.complete?.(true);
+        });
+
+        expect(screen.findByTestId('draft-editor')?.props.value).toBe('unsaved edit');
     });
 
     it('mounts only the current slot when no transition is active', async () => {
@@ -250,18 +279,18 @@ describe('SlideTransitionSwitch (discrete adapter)', () => {
         expect(screen.findByTestId('step-b')).not.toBeNull();
     });
 
-    it('enables blur by default for soft preset step transitions', async () => {
+    it('enables blur by default for signature role step transitions', async () => {
         springControls.fireCallbackImmediately = false;
         springControls.fireTimingCallbackImmediately = false;
         const { SlideTransitionSwitch } = await import('./SlideTransitionSwitch');
         const screen = await renderScreen(
-            <SlideTransitionSwitch contentKey="a" direction="forward" preset="soft" testID="switch">
+            <SlideTransitionSwitch contentKey="a" direction="forward" preset="signature" testID="switch">
                 <Text testID="step-a">A</Text>
             </SlideTransitionSwitch>,
         );
 
         await screen.update(
-            <SlideTransitionSwitch contentKey="b" direction="forward" preset="soft" testID="switch">
+            <SlideTransitionSwitch contentKey="b" direction="forward" preset="signature" testID="switch">
                 <Text testID="step-b">B</Text>
             </SlideTransitionSwitch>,
         );

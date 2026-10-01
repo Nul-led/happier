@@ -60,4 +60,37 @@ describe('DiffPresentationStyleToggleButton', () => {
 
         expect(setFilesDiffPresentationStyle).toHaveBeenCalledWith('split');
     });
+
+    it('does not offer split where the pane is too narrow to draw it, and says why', async () => {
+        setFilesDiffPresentationStyle.mockClear();
+        styleSettingValue = 'unified';
+        const { DiffPresentationStyleToggleButton } = await import('./DiffPresentationStyleToggleButton');
+        const { DiffPresentationWidthProvider } = await import('./diffPresentationStyle');
+
+        const screen = await renderScreen(
+            <DiffPresentationWidthProvider widthPx={600}>
+                <DiffPresentationStyleToggleButton />
+            </DiffPresentationWidthProvider>,
+        );
+        const pressable = screen.findByProps({ accessibilityRole: 'button' });
+        await pressTestInstanceAsync(pressable, 'DiffPresentationStyleToggleButton');
+
+        expect(setFilesDiffPresentationStyle).not.toHaveBeenCalled();
+        expect(screen.findAll((node) => node.props?.accessibilityHint === 'detailsSurface.chrome.splitNeedsWiderPane').length).toBeGreaterThan(0);
+    });
+
+    it('offers split once the pane is wide enough', async () => {
+        setFilesDiffPresentationStyle.mockClear();
+        styleSettingValue = 'unified';
+        const { DiffPresentationStyleToggleButton } = await import('./DiffPresentationStyleToggleButton');
+        const { DiffPresentationWidthProvider } = await import('./diffPresentationStyle');
+
+        const screen = await renderScreen(
+            <DiffPresentationWidthProvider widthPx={1100}>
+                <DiffPresentationStyleToggleButton />
+            </DiffPresentationWidthProvider>,
+        );
+        await pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' }), 'DiffPresentationStyleToggleButton');
+        expect(setFilesDiffPresentationStyle).toHaveBeenCalledWith('split');
+    });
 });

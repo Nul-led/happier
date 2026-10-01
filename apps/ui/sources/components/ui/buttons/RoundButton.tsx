@@ -1,12 +1,15 @@
 import { HappierPressable, type HappierPressableProps } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 import { Platform, StyleProp, TextStyle, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { iOSUIKit } from 'react-native-typography';
 import { Typography } from '@/constants/Typography';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from '@/components/ui/text/Text';
 import { GradientSurface, type SurfaceGradient } from '@/components/ui/surfaces/GradientSurface';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { focusRingStyle } from '@/components/ui/interactions/interactionFeedback';
+import { usePressFeedback } from '@/components/ui/interactions/usePressFeedback';
 
 
 export type RoundButtonSize = 'large' | 'normal' | 'small';
@@ -21,9 +24,21 @@ const sizes: { [key in RoundButtonSize]: { fontSize: number, hitSlop: number, pa
     small: { fontSize: 14, hitSlop: 12, pad: Platform.OS == 'ios' ? -1 : -1 }
 }
 
-export type RoundButtonDisplay = 'default' | 'inverted';
+/**
+ * `default` is the filled primary action. `secondary` is the bordered inline action a configuration
+ * row or page header carries (it matches the page field trigger). `destructive` is the same inline
+ * action for an irreversible operation. `inverted` is a bare text button.
+ */
+export type RoundButtonDisplay = 'default' | 'secondary' | 'destructive' | 'inverted';
 
 const stylesheet = StyleSheet.create((theme) => ({
+    pill: {
+        flexGrow: 1,
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderRadius: 10,
+        overflow: 'hidden',
+    },
     loadingContainer: {
         position: 'absolute',
         top: 0,
@@ -39,6 +54,11 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingHorizontal: 16,
         paddingVertical: 8,
         borderRadius: 9999,
+    },
+    // An inline row or header action: it sits beside a label, so it is shorter than a call to action.
+    contentContainerSecondary: {
+        paddingHorizontal: 12,
+        paddingVertical: 5,
     },
     // Applied only when a mark is present, so a title-only button keeps the exact
     // single-child layout it has always had.
@@ -64,6 +84,18 @@ const stylesheet = StyleSheet.create((theme) => ({
         includeFontPadding: false,
     },
 }));
+
+type RoundButtonStyle = Exclude<HappierPressableProps['style'], (state: never) => unknown>;
+
+const TRANSPARENT_LAYOUT_BOX = { backgroundColor: 'transparent' } as const;
+
+function readBackgroundColor(style: RoundButtonStyle): string | undefined {
+    if (!style) return undefined;
+    if (Array.isArray(style)) {
+        return style.reduce<string | undefined>((current, entry) => readBackgroundColor(entry) ?? current, undefined);
+    }
+    return style.backgroundColor;
+}
 
 export const RoundButton = React.memo((props: {
     size?: RoundButtonSize,
@@ -98,7 +130,7 @@ export const RoundButton = React.memo((props: {
      * words put it, rather than the button imposing an order on every language.
      */
     trailing?: React.ReactNode,
-    style?: Exclude<HappierPressableProps['style'], (state: never) => unknown>,
+    style?: RoundButtonStyle,
     textStyle?: StyleProp<TextStyle>,
     disabled?: boolean,
     loading?: boolean,
@@ -111,6 +143,10 @@ export const RoundButton = React.memo((props: {
      * action with no explanation.
      */
     accessibilityHint?: string,
+    /** Exposes the canonical focus handle to recovery surfaces without a raw Pressable ref. */
+    controlRef?: HappierPressableProps['controlRef'],
+    /** Disclosure state for buttons that reveal inline detail. */
+    expanded?: boolean,
     onPress?: HappierPressableProps['onPress'],
     action?: () => Promise<any>
 }) => {
@@ -143,6 +179,16 @@ export const RoundButton = React.memo((props: {
             borderColor: 'transparent',
             textColor: theme.colors.button.primary.tint
         },
+        secondary: {
+            backgroundColor: theme.colors.surface.base,
+            borderColor: theme.colors.border.strong,
+            textColor: theme.colors.text.primary,
+        },
+        destructive: {
+            backgroundColor: theme.colors.surface.base,
+            borderColor: theme.colors.state.danger.border,
+            textColor: theme.colors.state.danger.foreground,
+        },
         inverted: {
             backgroundColor: 'transparent',
             borderColor: 'transparent',
@@ -150,6 +196,10 @@ export const RoundButton = React.memo((props: {
         }
     }
 
+    const pressFeedback = usePressFeedback();
+    // A caller fill (for example a destructive tone) belongs to the pill that moves,
+    // not to the static layout box behind it.
+    const callerBackgroundColor = readBackgroundColor(props.style);
     const size = sizes[props.size ?? scopedDefaultSize];
     const display = displays[props.display || 'default'];
     const titleLines = props.titleNumberOfLines ?? 1;
@@ -161,76 +211,88 @@ export const RoundButton = React.memo((props: {
             testID={props.testID}
             accessibilityLabel={props.accessibilityLabel}
             accessibilityHint={props.accessibilityHint}
+            controlRef={props.controlRef}
+            expanded={props.expanded}
             disabled={props.disabled}
             busy={props.loading}
             hitSlop={size.hitSlop}
-            style={(state) => ([
-                {
-                    borderWidth: 1,
-                    borderRadius: 10,
-                    backgroundColor: display.backgroundColor,
-                    borderColor: display.borderColor,
-                    // Declared-disabled dims; merely pending does not. A button
-                    // that fades the moment it is pressed reads as unavailable
-                    // rather than working.
-                    opacity: props.disabled ? 0.35 : (state.pressed ? 0.9 : 1),
-                    overflow: 'hidden',
-                },
-                props.style])}
+            // The pressable keeps the caller's layout and the hit area; the visible
+            // pill is the animated frame inside it, so the tactile press moves the
+            // whole fill rather than only its label.
+            // Declared-disabled dims; merely pending does not. A button that fades
+            // the moment it is pressed reads as unavailable rather than working.
+            // The touch-target floor is `HappierPressable`'s (native only); web and
+            // desktop keep their pointer density, so the button adds none of its own.
+            style={[{ opacity: props.disabled ? 0.35 : 1 }, props.style, TRANSPARENT_LAYOUT_BOX]}
+            onPressIn={pressFeedback.onPressIn}
+            onPressOut={pressFeedback.onPressOut}
             onPress={doAction}
         >
             {(state) => (
-                <View
+                <Animated.View
                     style={[
-                        styles.contentContainer,
-                        props.leading || props.trailing ? styles.contentContainerWithMark : null,
+                        styles.pill,
+                        {
+                            backgroundColor: callerBackgroundColor ?? display.backgroundColor,
+                            borderColor: display.borderColor,
+                        },
+                        focusRingStyle({ focused: state.focused, color: theme.colors.border.focus }),
+                        pressFeedback.animatedStyle,
                     ]}
                 >
-                    {display.gradient ? (
-                        <GradientSurface
-                            fallbackColor={display.backgroundColor}
-                            gradient={display.gradient}
-                            borderRadius={10}
-                            style={StyleSheet.absoluteFillObject}
-                        />
-                    ) : null}
-                    {state.busy && (
-                        <View style={styles.loadingContainer}>
-                            <ActivitySpinner color={display.textColor} size='small' />
-                        </View>
-                    )}
-                    {props.leading ? (
-                        <View style={[styles.markSlot, { opacity: state.busy ? 0 : 1 }]}>
-                            {props.leading}
-                        </View>
-                    ) : null}
-                    <Text
+                    <View
                         style={[
-                            iOSUIKit.title3,
-                            styles.text,
-                            {
-                                marginTop: size.pad,
-                                opacity: state.busy ? 0 : 1,
-                                color: display.textColor,
-                                fontSize: size.fontSize,
-                            },
-                            // A wrapped label is a paragraph inside a centred pill, so
-                            // its second line centres under the first rather than
-                            // hanging off the leading edge. Single-line buttons are
-                            // already centred by the container and are unaffected.
-                            titleLines === 1 ? null : { textAlign: 'center' as const },
-                            props.textStyle
+                            styles.contentContainer,
+                            props.leading || props.trailing ? styles.contentContainerWithMark : null,
+                            props.display === 'secondary' || props.display === 'destructive' ? styles.contentContainerSecondary : null,
                         ]}
-                        numberOfLines={titleNumberOfLines}
                     >
-                        {props.title}
-                    </Text>
-                    {props.trailing ? (
-                        <View style={[styles.markSlot, { opacity: state.busy ? 0 : 1 }]}>
-                            {props.trailing}
-                        </View>
-                    ) : null}
-                </View>
+                        {display.gradient ? (
+                            <GradientSurface
+                                fallbackColor={display.backgroundColor}
+                                gradient={display.gradient}
+                                borderRadius={10}
+                                style={StyleSheet.absoluteFillObject}
+                            />
+                        ) : null}
+                        {state.busy && (
+                            <View style={styles.loadingContainer}>
+                                <ActivitySpinner color={display.textColor} size='small' />
+                            </View>
+                        )}
+                        {props.leading ? (
+                            <View style={[styles.markSlot, { opacity: state.busy ? 0 : 1 }]}>
+                                {props.leading}
+                            </View>
+                        ) : null}
+                        <Text
+                            style={[
+                                iOSUIKit.title3,
+                                styles.text,
+                                {
+                                    marginTop: size.pad,
+                                    opacity: state.busy ? 0 : 1,
+                                    color: display.textColor,
+                                    fontSize: props.display === 'secondary' || props.display === 'destructive' ? Math.min(size.fontSize, 13) : size.fontSize,
+                                },
+                                // A wrapped label is a paragraph inside a centred pill, so
+                                // its second line centres under the first rather than
+                                // hanging off the leading edge. Single-line buttons are
+                                // already centred by the container and are unaffected.
+                                titleLines === 1 ? null : { textAlign: 'center' as const, maxWidth: '100%' as const },
+                                props.textStyle
+                            ]}
+                            numberOfLines={titleNumberOfLines}
+                        >
+                            {props.title}
+                        </Text>
+                        {props.trailing ? (
+                            <View style={[styles.markSlot, { opacity: state.busy ? 0 : 1 }]}>
+                                {props.trailing}
+                            </View>
+                        ) : null}
+                    </View>
+                </Animated.View>
             )}
         </HappierPressable>
     )

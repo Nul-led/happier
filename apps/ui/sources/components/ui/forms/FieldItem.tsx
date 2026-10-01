@@ -6,6 +6,8 @@ import { Text } from '@/components/ui/text/Text';
 
 export type FieldItemProps = Readonly<{
     label: React.ReactNode;
+    /** Lets the field name itself by this label (`accessibilityLabelledBy`). */
+    labelNativeID?: string;
     supportingText?: React.ReactNode;
     children: React.ReactNode;
     style?: StyleProp<ViewStyle>;
@@ -42,7 +44,7 @@ export const FieldItem = React.memo<FieldItemProps>((props) => {
         <View style={[styles.container, props.style]}>
             {typeof props.label === 'string'
                 ? (
-                    <Text style={[styles.label, props.labelStyle]}>
+                    <Text nativeID={props.labelNativeID} style={[styles.label, props.labelStyle]}>
                         {props.label}
                     </Text>
                 )

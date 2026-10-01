@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 
+const { IconButton } = await import('./IconButton');
+
 /**
  * L0-1 — behavioral contract for the shared `IconButton` (the promoted
  * `ServiceActionButton` pattern). Covers: a11y label, onPress dispatch,
@@ -31,7 +33,6 @@ describe('IconButton', () => {
     }
 
     it('keeps the visible control at the requested size while the press frame carries the required target', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -61,7 +62,6 @@ describe('IconButton', () => {
     });
 
     it('caps horizontal press-frame growth at half the neighbour gap so adjacent targets never overlap', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -84,7 +84,6 @@ describe('IconButton', () => {
     });
 
     it('does not grow the press frame when no minimum target is declared', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="copy" accessibilityLabel="Copy address" size={28} onPress={() => {}} />,
         );
@@ -97,7 +96,6 @@ describe('IconButton', () => {
     });
 
     it('keeps the outlined border on the visible surface and the interaction tint on the press frame', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="copy" accessibilityLabel="Copy address" onPress={() => {}} />,
         );
@@ -112,7 +110,6 @@ describe('IconButton', () => {
     });
 
     it('renders a plain control with no border and no background fill', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="copy" accessibilityLabel="Copy address" variant="plain" onPress={() => {}} />,
         );
@@ -124,7 +121,6 @@ describe('IconButton', () => {
     });
 
     it('renders the required accessibility label and fires onPress', async () => {
-        const { IconButton } = await import('./IconButton');
         const onPress = vi.fn();
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="copy" accessibilityLabel="Copy address" onPress={onPress} />,
@@ -138,7 +134,6 @@ describe('IconButton', () => {
     });
 
     it('hides the decorative icon from the accessibility tree', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="copy" accessibilityLabel="Copy address" onPress={() => {}} />,
         );
@@ -148,7 +143,6 @@ describe('IconButton', () => {
     });
 
     it('exposes explicit toggle semantics for icon-only actions', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -165,7 +159,6 @@ describe('IconButton', () => {
     });
 
     it('shows a pending spinner while an async onPress promise is unresolved, then restores the icon', async () => {
-        const { IconButton } = await import('./IconButton');
         let resolvePress: () => void = () => {};
         const pending = new Promise<void>((resolve) => { resolvePress = resolve; });
         const onPress = vi.fn(() => pending);
@@ -201,7 +194,6 @@ describe('IconButton', () => {
     });
 
     it('blocks same-tick double presses before React commits the busy state', async () => {
-        const { IconButton } = await import('./IconButton');
         let resolvePress: () => void = () => {};
         const pending = new Promise<void>((resolve) => { resolvePress = resolve; });
         const onPress = vi.fn(() => pending);
@@ -229,7 +221,6 @@ describe('IconButton', () => {
     });
 
     it('disabled blocks onPress and exposes the disabled accessibility state', async () => {
-        const { IconButton } = await import('./IconButton');
         const onPress = vi.fn();
         const screen = await renderScreen(
             <IconButton testID="icon-btn" iconName="play" accessibilityLabel="Start" disabled onPress={onPress} />,
@@ -246,7 +237,6 @@ describe('IconButton', () => {
     });
 
     it('surfaces the disabled reason as the accessibility hint', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -261,7 +251,6 @@ describe('IconButton', () => {
     });
 
     it('shows tooltip content on hover and hides it on hover out', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -285,7 +274,6 @@ describe('IconButton', () => {
     });
 
     it('prefers the disabled reason over the tooltip while disabled', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"
@@ -305,7 +293,6 @@ describe('IconButton', () => {
     });
 
     it('shows tooltip content on focus for keyboard users and hides on blur', async () => {
-        const { IconButton } = await import('./IconButton');
         const screen = await renderScreen(
             <IconButton
                 testID="icon-btn"

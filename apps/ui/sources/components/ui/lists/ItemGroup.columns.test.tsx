@@ -34,13 +34,12 @@ installUiListsCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}) },
-}));
-
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: any) => React.createElement('Text', props, props.children),
 }));
+
+// Cold source transforms belong to collection, not the first row-layout assertion's test budget.
+const { ItemGroup } = await import('./ItemGroup');
 
 const mountCounts = new Map<string, number>();
 
@@ -129,7 +128,6 @@ function readCellStyleIdentity(screen: Screen): unknown {
 }
 
 async function renderGroup(children: React.ReactNode, columns?: 1 | 2 | 3) {
-    const { ItemGroup } = await import('./ItemGroup');
     return await renderScreen(
         <ItemGroup title="Group" columns={columns}>
             {children}
@@ -252,7 +250,7 @@ describe('ItemGroup columns', () => {
         await measureGroup(screen, 1000);
         const cell = findRowCells(screen)[0]!;
         const cellStyle = flattenStyle(cell.props.style);
-        const rootStyle = flattenStyle(cell.parent?.props.style);
+        const rootStyle = flattenStyle(cell.parent?.parent?.props.style);
 
         // The grid root is `width: '100%'`. A horizontal MARGIN sits outside that
         // resolved width, so the grid would occupy 100% + 2*margin and overflow

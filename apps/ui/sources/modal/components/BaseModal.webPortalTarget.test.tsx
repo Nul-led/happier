@@ -21,11 +21,17 @@ installModalComponentCommonModuleMocks({
     },
 });
 
-vi.mock('@/utils/web/radixCjs', () => ({
-    requireRadixDismissableLayer: () => ({
-        Branch: ({ children, ...rest }: any) => React.createElement('Branch', rest, children),
-    }),
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsModuleMock } = await import('@/dev/testkit/mocks/radixCjs');
+    const radix = createRadixCjsModuleMock();
+    return {
+        ...radix,
+        requireRadixDismissableLayer: () => ({
+            ...radix.requireRadixDismissableLayer(),
+            Branch: ({ children, ...rest }: any) => React.createElement('Branch', rest, children),
+        }),
+    };
+});
 
 vi.mock('@/utils/web/reactDomCjs', () => ({
     requireReactDOM: () => ({

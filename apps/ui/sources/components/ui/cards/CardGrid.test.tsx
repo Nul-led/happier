@@ -65,7 +65,7 @@ async function renderCardGrid(columns: 1 | 2 | 3 | 4, extra: Record<string, unkn
 }
 
 function readCardIsFullWidth(screen: Screen): boolean {
-    return flattenStyle(screen.findByTestId('card-1')?.parent?.props.style).width === '100%';
+    return flattenStyle(screen.findByTestId('card-1')?.parent?.parent?.props.style).width === '100%';
 }
 
 beforeEach(() => {

@@ -4,10 +4,17 @@ import { SvgXml } from 'react-native-svg';
 import { themeIcons, type SetiTheme } from '@peoplesgrocers/seti-ui-file-icons';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { Icon } from '@/components/ui/icons/Icon';
+
 interface FileIconProps {
     fileName: string;
     size?: number;
     testID?: string;
+    /**
+     * `tile` (default): the type's own filled mark. `line`: the one file glyph in the type's tint — the
+     * quieter mark a dense tree uses (session tabs lab F1), so names read before marks.
+     */
+    appearance?: 'tile' | 'line';
 }
 
 const lightColorTheme: SetiTheme = {
@@ -42,6 +49,7 @@ export const FileIcon: React.FC<FileIconProps> = ({
     fileName, 
     size = 24, 
     testID,
+    appearance = 'tile',
 }) => {
     const { theme } = useUnistyles();
     
@@ -49,6 +57,14 @@ export const FileIcon: React.FC<FileIconProps> = ({
     const themedGetIcon = themeIcons(colorTheme);
     
     const iconData = themedGetIcon(fileName);
+
+    if (appearance === 'line') {
+        return (
+            <View testID={testID} style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name="file" size={size} color={iconData.color} />
+            </View>
+        );
+    }
     
     return (
         <View testID={testID} style={{ width: size, height: size }}>

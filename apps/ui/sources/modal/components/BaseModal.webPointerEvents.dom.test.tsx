@@ -29,11 +29,10 @@ vi.mock('@/sync/domains/state/storage', async () => {
     return createStorageModuleStub({ useLocalSetting: createUseLocalSettingMock() });
 });
 
-vi.mock('@/utils/web/radixCjs', () => ({
-    requireRadixDismissableLayer: () => ({
-        Branch: (props: React.PropsWithChildren) => props.children,
-    }),
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsRealModule } = await import('@/dev/testkit/mocks/radixCjs');
+    return await createRadixCjsRealModule();
+});
 
 vi.mock('react-native-keyboard-controller', async () => {
     const { View } = await vi.importActual<typeof import('react-native-web')>('react-native-web');

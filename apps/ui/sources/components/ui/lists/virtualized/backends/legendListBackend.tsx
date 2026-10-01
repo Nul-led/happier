@@ -38,6 +38,7 @@ function LegendListBackendInner<T>(
         keyboardShouldPersistTaps,
         keyboardDismissMode,
         maxToRenderPerBatch: _flatListMaxToRenderPerBatch,
+        disableVirtualization: _flatListDisableVirtualization,
         nativeID,
         onContentSizeChange,
         onMomentumScrollBegin,

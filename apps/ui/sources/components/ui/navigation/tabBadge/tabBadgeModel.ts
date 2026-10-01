@@ -9,10 +9,18 @@ export function formatBadgeCount(value: number, max = 99): string {
     return normalized > max ? `${max}+` : String(normalized);
 }
 
+/**
+ * The exact count, grouped for the reader's locale ("7,887"). A badge caps at 99+; every other
+ * surface that shows the same count (tooltip, pane header, tab label) shows it exactly.
+ */
+export function formatExactCount(value: number): string {
+    return new Intl.NumberFormat().format(normalizeCount(value));
+}
+
 export type ScmDiffBadgeModel = Readonly<{
     added: number;
     removed: number;
-    modifiedCount: number;
+    changedFileCount: number;
 }>;
 
 /**
@@ -26,11 +34,11 @@ export function formatScmDiffBadge(scm: ScmStatus | null | undefined): ScmDiffBa
     }
     const added = normalizeCount(scm.linesAdded);
     const removed = normalizeCount(scm.linesRemoved);
-    const modifiedCount = normalizeCount(scm.modifiedCount);
-    if (added === 0 && removed === 0 && modifiedCount === 0) {
+    const changedFileCount = normalizeCount(scm.changedFileCount);
+    if (added === 0 && removed === 0 && changedFileCount === 0) {
         return null;
     }
-    return { added, removed, modifiedCount };
+    return { added, removed, changedFileCount };
 }
 
 function normalizeCount(value: number | null | undefined): number {
@@ -44,7 +52,7 @@ export type TabBarGitBadgeMode = 'changedFiles' | 'diffLines' | 'off';
 
 export type GitTabBadge =
     | Readonly<{ kind: 'count'; value: number }>
-    | Readonly<{ kind: 'diff'; added: number; removed: number; modifiedCount: number }>;
+    | Readonly<{ kind: 'diff'; added: number; removed: number; changedFileCount: number }>;
 
 /**
  * Resolves the cockpit Git tab badge from the user's preferred mode and the
@@ -64,7 +72,7 @@ export function resolveGitTabBadge(
         return null;
     }
     if (mode === 'changedFiles' || scm?.isComplete === false) {
-        return diff.modifiedCount > 0 ? { kind: 'count', value: diff.modifiedCount } : null;
+        return diff.changedFileCount > 0 ? { kind: 'count', value: diff.changedFileCount } : null;
     }
-    return { kind: 'diff', added: diff.added, removed: diff.removed, modifiedCount: diff.modifiedCount };
+    return { kind: 'diff', added: diff.added, removed: diff.removed, changedFileCount: diff.changedFileCount };
 }

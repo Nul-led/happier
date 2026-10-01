@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { VirtualizedList } from '../VirtualizedList';
+import { CollectionList } from '../../collection/CollectionList';
 
 vi.mock('react-native', async () => vi.importActual('react-native-web'));
 
@@ -152,6 +153,7 @@ describe('VirtualizedList web DOM integration', () => {
         });
         Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
             configurable: true,
+            writable: true,
             value() {},
         });
     });
@@ -164,20 +166,14 @@ describe('VirtualizedList web DOM integration', () => {
         vi.useRealTimers();
     });
 
-    it('fills a bounded host and mounts only a virtualized window', async () => {
+    it.each(['standalone', 'collection-rail'] as const)('fills a bounded %s host and mounts only a virtualized window', async (surface) => {
         const rows = Array.from({ length: 500 }, (_value, index): Row => ({
             id: `row-${index}`,
         }));
         const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
         const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        await act(async () => {
-            root.render(
-                <div
-                    id="virtualized-list-host"
-                    style={{ display: 'flex', flexDirection: 'column', height: 400 }}
-                >
-                    <VirtualizedList
+        const list = <VirtualizedList
                         data={rows}
                         estimatedItemSize={56}
                         extraData={{ version: 1 }}
@@ -213,7 +209,20 @@ describe('VirtualizedList web DOM integration', () => {
                         )}
                         style={{ backgroundColor: 'rgb(1, 2, 3)' }}
                         webScrollHandlers={{ onWheel: () => {} }}
-                    />
+                    />;
+        await act(async () => {
+            root.render(
+                <div
+                    id="virtualized-list-host"
+                    style={{ display: 'flex', flexDirection: 'column', height: 400 }}
+                >
+                    {surface === 'collection-rail' ? (
+                        <CollectionList
+                            title="Teams"
+                            search={{ value: '', placeholder: 'Search Teams', onChangeText: () => {} }}
+                            scrollContent={list}
+                        />
+                    ) : list}
                 </div>,
             );
         });
@@ -226,6 +235,7 @@ describe('VirtualizedList web DOM integration', () => {
         expect(scrollElement).not.toBeNull();
         expect(scrollElement?.dataset.testid).toBe('virtualized-list-test');
         expect(scrollElement?.id).toBe('virtualized-list-native');
+        expect(container.querySelectorAll('[style*="overflow-y: auto"]').length).toBe(1);
         expect(window.getComputedStyle(scrollElement!).backgroundColor).toBe('rgb(1, 2, 3)');
 
         const diagnostics = [...consoleError.mock.calls, ...consoleWarn.mock.calls]
@@ -245,6 +255,42 @@ describe('VirtualizedList web DOM integration', () => {
         expect(diagnostics).not.toContain('removeClippedSubviews');
         expect(diagnostics).not.toContain('testID');
         expect(diagnostics).not.toContain('windowSize');
+    });
+
+    // The stable ref promises `scrollToIndex` on every backend. React Native's FlatList throws an
+    // invariant for an index outside its rendered window unless the caller supplies getItemLayout or
+    // onScrollToIndexFailed; the session list (flat on web) supplies neither, and a scroll-retention
+    // restore crashed the app shell ("scrollToIndex should be used in conjunction with ...").
+    it('scrolls a flat-backend list to an index outside its rendered window without a layout callback', async () => {
+        const rows = Array.from({ length: 500 }, (_value, index): Row => ({ id: `row-${index}` }));
+        const { VirtualizedList: List } = await import('../VirtualizedList');
+        const listRef = React.createRef<import('../virtualizedListTypes').VirtualizedListRef>();
+        await act(async () => {
+            root.render(
+                <div id="virtualized-list-host" style={{ display: 'flex', height: 400 }}>
+                    <List
+                        ref={listRef}
+                        backendPreference="flat"
+                        data={rows}
+                        keyExtractor={(item) => item.id}
+                        initialNumToRender={12}
+                        renderItem={({ item }) => <div data-row-height="56">{item.id}</div>}
+                    />
+                </div>,
+            );
+        });
+        await flushLegendWork();
+
+        expect(listRef.current).not.toBeNull();
+        let thrown: unknown = null;
+        await act(async () => {
+            try {
+                await listRef.current!.scrollToIndex({ index: 400, animated: false, viewPosition: 0 });
+            } catch (error) {
+                thrown = error;
+            }
+        });
+        expect(thrown).toBeNull();
     });
 
 });

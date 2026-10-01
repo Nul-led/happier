@@ -11,6 +11,8 @@ import { useGlassBlurSetting } from './useGlassBlurSetting';
 const CAPSULE_RADIUS = 999;
 /** Cast-shadow elevation tuned for the large floating bars. */
 const DEFAULT_SHADOW_LEVEL: ShadowLevel = 4;
+/** The surface fills a caller-sized frame. */
+const FILL_FRAME: ViewStyle = { flex: 1 };
 
 export type GlassPanelProps = Readonly<{
     children: React.ReactNode;
@@ -47,6 +49,13 @@ export type GlassPanelProps = Readonly<{
     maxWidth?: number;
     /** Inner layout style for the surface (padding, alignment). Do not pass an opaque background. */
     style?: StyleProp<ViewStyle>;
+    /**
+     * How the panel sizes as an item of its parent (e.g. `alignSelf` + `aspectRatio` for a capsule
+     * the parent row stretches). It applies to the outermost box, which also casts the shadow, and
+     * the glass surface fills it, so shadow and glass always share one size. Sizing passed through
+     * `style` instead would only reach the inner surface.
+     */
+    frameStyle?: StyleProp<ViewStyle>;
     testID?: string;
 }>;
 
@@ -75,6 +84,7 @@ export const GlassPanel = React.memo(function GlassPanel(props: GlassPanelProps)
                 // Cross-platform soft cast shadow (boxShadow on Android/web, native
                 // shadow* on iOS) — never Android `elevation`, which reads hard.
                 buildGlassCastShadowStyle(theme.colors.shadowLevels[shadowLevel], theme.colors.glass.castShadow, props.softShadow === true),
+                props.frameStyle,
             ]}
         >
             <GlassSurface
@@ -92,6 +102,7 @@ export const GlassPanel = React.memo(function GlassPanel(props: GlassPanelProps)
                         borderColor: theme.colors.glass.border,
                         boxShadow: props.innerShadow === false ? undefined : theme.colors.glass.innerShadow,
                     },
+                    props.frameStyle ? FILL_FRAME : null,
                     props.style,
                 ]}
             >

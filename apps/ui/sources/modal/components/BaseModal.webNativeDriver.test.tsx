@@ -43,10 +43,18 @@ installModalComponentCommonModuleMocks({
     },
 });
 
-vi.mock('@/utils/web/radixCjs', () => ({
-  requireRadixDialog: requireRadixDialogMock,
-  requireRadixDismissableLayer: requireRadixDismissableLayerMock,
-}));
+vi.mock('@/utils/web/radixCjs', async () => {
+  const { createRadixCjsModuleMock } = await import('@/dev/testkit/mocks/radixCjs');
+  const radix = createRadixCjsModuleMock();
+  return {
+    ...radix,
+    requireRadixDialog: requireRadixDialogMock,
+    requireRadixDismissableLayer: () => ({
+      ...radix.requireRadixDismissableLayer(),
+      ...requireRadixDismissableLayerMock(),
+    }),
+  };
+});
 
 vi.mock('@/modal/portal/ModalPortalTarget', () => ({
   ModalPortalTargetProvider: ({ target, children }: any) => React.createElement('ModalPortalTargetProvider', { target }, children),

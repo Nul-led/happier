@@ -193,6 +193,34 @@ describe('SelectionList (orchestrator)', () => {
         expect(measuredRoot.props.pointerEvents).toBeUndefined();
     });
 
+    it('counts body header and footer slots in the measured native popover height', async () => {
+        const { act } = await import('react-test-renderer');
+        const { SelectionList } = await import('../SelectionList');
+        const { View } = await import('react-native');
+        const screen = await renderScreen(
+            <SelectionList
+                {...defaultProps({
+                    heightBehavior: 'measuredToMaxHeight',
+                    maxHeight: 320,
+                    bodyHeader: <View testID="slot-header" />,
+                    bodyFooter: <View testID="slot-footer" />,
+                })}
+            />,
+        );
+
+        await act(async () => {
+            fireNodeLayout(screen.findByTestId('sl:headerFrame') as unknown as { props: Record<string, unknown> }, 44);
+            fireNodeLayout(screen.findByTestId('sl:measure') as unknown as { props: Record<string, unknown> }, 120);
+            fireNodeLayout(screen.findByTestId('sl:footerFrame') as unknown as { props: Record<string, unknown> }, 32);
+            fireNodeLayout(screen.findByTestId('sl:bodyHeader') as unknown as { props: Record<string, unknown> }, 30);
+            fireNodeLayout(screen.findByTestId('sl:bodyFooter') as unknown as { props: Record<string, unknown> }, 50);
+        });
+
+        // Slots scroll inside the body, so the body the popover sizes to is rows + slots.
+        const measuredRoot = screen.findByTestId('sl') as unknown as { props: Record<string, unknown> };
+        expect(flattenStyle(measuredRoot.props.style).height).toBe(276);
+    });
+
     it('caps measured native popover content at maxHeight', async () => {
         const { act } = await import('react-test-renderer');
         const { SelectionList } = await import('../SelectionList');

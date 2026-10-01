@@ -1,17 +1,21 @@
-import { HappierInfoTile } from '@happier-dev/plugin-ui/presentation';
+import { HAPPIER_STATE_SIZE_METRICS, HappierInfoTile, type HappierStateSize } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
+import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
 import { Text } from '@/components/ui/text/Text';
 
 type CenteredInfoTileProps = Readonly<{
-    icon: React.ReactNode;
+    icon?: React.ReactNode;
     title: string;
     description: React.ReactNode;
     titleTestID?: string;
     descriptionTestID?: string;
     paddingHorizontal?: number;
+    paddingVertical?: number;
+    /** The container's size step (pane, details, page, phone): measure, glyph gap and type. */
+    size?: HappierStateSize;
 }>;
 
 /**
@@ -25,20 +29,25 @@ type CenteredInfoTileProps = Readonly<{
  */
 export const CenteredInfoTile = React.memo((props: CenteredInfoTileProps) => {
     const { theme } = useUnistyles();
+    const metrics = props.size ? HAPPIER_STATE_SIZE_METRICS[props.size] : null;
 
     return (
         <HappierInfoTile
-            icon={props.icon}
+            // The glyph stands alone above the title, with room to breathe rather than touching it.
+            icon={props.icon ? <View style={{ marginBottom: metrics?.glyphGapPx ?? 12 }}>{props.icon}</View> : undefined}
             paddingHorizontal={props.paddingHorizontal}
+            paddingVertical={props.paddingVertical}
+            size={props.size}
             title={
                 <Text
                     testID={props.titleTestID}
                     style={{
-                        fontSize: 18,
+                        fontSize: metrics?.title.fontSize ?? 18,
+                        ...(metrics ? { lineHeight: metrics.title.lineHeight } : null),
                         ...Typography.default('semiBold'),
                         color: theme.colors.text.primary,
                         textAlign: 'center',
-                        marginBottom: 6,
+                        marginBottom: metrics?.bodyGapPx ?? 6,
                     }}
                 >
                     {props.title}
@@ -48,11 +57,11 @@ export const CenteredInfoTile = React.memo((props: CenteredInfoTileProps) => {
                 <Text
                     testID={props.descriptionTestID}
                     style={{
-                        fontSize: 14,
+                        fontSize: metrics?.body.fontSize ?? 14,
                         ...Typography.default(),
                         color: theme.colors.text.secondary,
                         textAlign: 'center',
-                        lineHeight: 20,
+                        lineHeight: metrics?.body.lineHeight ?? 20,
                     }}
                 >
                     {props.description}

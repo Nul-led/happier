@@ -15,6 +15,7 @@ import { useInlineDiffVirtualizationThresholds } from '@/components/ui/code/diff
 import { resolveInlineDiffVirtualizedMaxHeight } from '@/components/ui/code/diff/resolveInlineDiffVirtualizedMaxHeight';
 import { resolveInlineDiffVirtualizedViewportStyle } from '@/components/ui/code/diff/resolveInlineDiffVirtualizedViewportStyle';
 import { Icon } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const LINE_ADDED_PREFIX = '+';
 const LINE_REMOVED_PREFIX = '-';
@@ -533,7 +534,7 @@ const styles = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.elevated ?? theme.colors.surface.inset,
     },
     fileRowPressed: {
-        opacity: 0.9,
+        opacity: motionTokens.press.opacitySubtle,
     },
     fileRowFocused: {
         borderColor: theme.colors.text.link ?? theme.colors.border.default,
@@ -576,7 +577,7 @@ const styles = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.surface.elevated ?? theme.colors.surface.inset,
     },
     openFileButtonPressed: {
-        opacity: 0.85,
+        opacity: motionTokens.press.opacitySubtle,
     },
     openFileIcon: {
         color: theme.colors.text.secondary,

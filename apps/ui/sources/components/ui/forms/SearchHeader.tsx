@@ -66,18 +66,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         letterSpacing: Platform.select({ ios: -0.41, default: 0.15 }),
         color: theme.colors.input.text,
         paddingVertical: 0,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
     clearIcon: {
         marginLeft: 8,

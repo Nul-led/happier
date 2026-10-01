@@ -28,10 +28,20 @@ function projection(): PluginUiProjectionModel {
     return {
         ...EMPTY_PLUGIN_UI_PROJECTION,
         generation: 7,
+        installedPackagesById: {
+            'acme.preview': {
+                id: 'acme.preview',
+                displayName: 'Preview',
+                enabled: true,
+                source: { kind: 'localPath', locator: 'acme.preview' },
+                occurrenceId: 'occurrence-1',
+            },
+        },
         actionsById: {
             'acme.preview/open': {
                 id: 'open',
                 pluginId: 'acme.preview',
+                occurrenceId: 'occurrence-1',
                 title: 'Open',
                 scopes: ['session'],
                 surfaces: ['ui'],
@@ -291,7 +301,6 @@ describe('Session caller-hosted HTML request controller', () => {
             contributedAction: expect.objectContaining({
                 machineId: 'machine-1',
                 serverId: 'home-1',
-                expectedGeneration: '7',
                 sessionId: 'session-1',
             }),
         }));
@@ -345,7 +354,7 @@ describe('Session caller-hosted HTML request controller', () => {
             machineId: 'machine-1',
             options: expect.objectContaining({
                 callerPluginId: 'acme.preview',
-                expectedGeneration: '7',
+                expectedCallerOccurrenceId: 'occurrence-1',
                 resource: { pluginId: 'acme.preview', localId: 'status' },
                 context: { kind: 'session', sessionId: 'session-1' },
             }),

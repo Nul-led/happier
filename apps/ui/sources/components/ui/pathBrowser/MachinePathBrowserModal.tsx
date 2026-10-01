@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, Pressable, View, useWindowDimensions } from 'react-native';
+import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Modal, type CustomModalInjectedProps } from '@/modal';
@@ -31,11 +31,13 @@ import { RPC_ERROR_MESSAGES } from '@happier-dev/protocol/rpc';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
 import { FilesystemBrowserToolbarChrome, type FilesystemBrowserToolbarAction } from '@/components/ui/filesystemBrowser/FilesystemBrowserToolbarChrome';
-import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 
 import { PATH_BROWSER_CONFIRM_TEST_ID, PATH_BROWSER_CREATE_FOLDER_TEST_ID, PATH_BROWSER_MODAL_TEST_ID } from './pathBrowserTestIds';
 import { MachinePathBrowserListRow } from './MachinePathBrowserListRow';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { useServerScopedMachine } from '@/sync/store/hooks';
+import { formatPathRelativeToHome } from '@/utils/sessions/formatPathRelativeToHome';
 
 export type MachinePathBrowserModalProps = CustomModalInjectedProps & Readonly<{
     machineId: string;
@@ -59,7 +61,7 @@ export type MachinePathBrowserViewProps = Readonly<{
     includeFiles?: boolean;
     selectionMode?: 'directory' | 'file';
     /**
-     * - `modal`: renders header + footer and a self-contained card surface.
+     * - `modal`: publishes its title band, header action and footer as the shared modal card chrome.
      * - `popover`: renders only the browser body (assumes the parent popover provides the surface).
      */
     variant?: 'modal' | 'popover';
@@ -72,42 +74,13 @@ export type MachinePathBrowserViewProps = Readonly<{
      * Used by popover renderers to cap the view height.
      */
     maxHeight?: number;
-    /**
-     * When provided (typically by `CustomModal`), the view should drive modal card chrome through it
-     * instead of re-implementing its own header/footer container.
-     */
+    /** Injected by `CustomModal`: the `modal` variant publishes its card chrome through it. */
     setChrome?: CustomModalInjectedProps['setChrome'];
     onPickPath: (path: string) => void;
     onRequestClose?: () => void;
 }>;
 
 const styles = StyleSheet.create((theme) => ({
-    container: {
-        backgroundColor: theme.colors.surface.base,
-        borderRadius: 14,
-        overflow: 'hidden',
-        ...shadowLevelStyle(theme.colors.shadowLevels[4]),
-    },
-    header: {
-        paddingHorizontal: 16,
-        paddingTop: 16,
-        paddingBottom: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        borderBottomWidth: 1,
-        borderBottomColor: theme.colors.border.default,
-    },
-    title: {
-        fontSize: 16,
-        color: theme.colors.text.primary,
-        ...Typography.default('semiBold'),
-    },
-    subtitle: {
-        fontSize: 13,
-        color: theme.colors.text.secondary,
-        ...Typography.default(),
-    },
     body: {
         flex: 1,
         minHeight: 0,
@@ -120,26 +93,11 @@ const styles = StyleSheet.create((theme) => ({
         justifyContent: 'space-between',
         gap: 10,
     },
-    footerWithDivider: {
-        paddingHorizontal: 16,
-        paddingVertical: 14,
-        borderTopWidth: 1,
-        borderTopColor: theme.colors.border.default,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-    },
     selectionText: {
         flex: 1,
         fontSize: 13,
         color: theme.colors.text.secondary,
         ...Typography.default(),
-    },
-    headerActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
     },
     headerActionButton: {
         padding: 2,
@@ -303,8 +261,6 @@ function toRootEntries(machineId: string, serverId?: string | null) {
 
 export function MachinePathBrowserView(props: MachinePathBrowserViewProps): React.ReactElement {
     const { theme } = useUnistyles();
-    const insets = useChromeSafeAreaInsets();
-    const { width: windowWidth, height: windowHeight } = useWindowDimensions();
     const browserListRef = React.useRef<VirtualizedListRef | null>(null);
     const lastScrolledSelectionRef = React.useRef<string | null>(null);
     const shouldAutoScrollInitialSelectionRef = React.useRef(false);
@@ -322,7 +278,9 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
     const selectionMode = props.selectionMode ?? 'directory';
     const variant = props.variant ?? 'modal';
     const interaction = props.interaction ?? 'confirm';
-    const useCardChrome = variant === 'modal' && typeof props.setChrome === 'function';
+    // A modal browser always renders inside the shared card: its title band, actions and footer are the
+    // card chrome (`useModalCardChrome`), never a header of its own.
+    const useCardChrome = variant === 'modal';
     const enableContextMenu = variant === 'modal';
     const initialExpandedPaths = React.useMemo(() => (
         usesRootsListing
@@ -331,33 +289,24 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
     ), [initialPath, rootDirectoryPath, usesRootsListing]);
     const initialSelectionCandidates = React.useMemo(() => initialExpandedPaths.slice().reverse(), [initialExpandedPaths]);
     const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
+    const machineHomeDir = useServerScopedMachine(props.serverId, props.machineId)?.metadata?.homeDir ?? undefined;
+    // The selection is shown once: beside the confirm button when there is one, else under the title.
+    const selectedPathLabel = selectedPath ? formatPathRelativeToHome(selectedPath, machineHomeDir) : null;
+    const headerSelectedPathLabel = interaction === 'confirm' ? null : selectedPathLabel;
     const [expandedPaths, setExpandedPaths] = React.useState<string[]>(() => initialExpandedPaths);
     const shouldAutoSelectInitialPathRef = React.useRef(true);
     const [isCreatingFolder, setIsCreatingFolder] = React.useState(false);
     const contextMenuAnchorRef = React.useRef<View | null>(null);
     const [contextMenuDirectoryPath, setContextMenuDirectoryPath] = React.useState<string | null>(null);
-    const modalLayoutStyle = React.useMemo(() => {
-        if (variant !== 'modal') {
-            const maxHeight = typeof props.maxHeight === 'number' && Number.isFinite(props.maxHeight)
-                ? Math.max(240, props.maxHeight)
-                : undefined;
-            return {
-                width: '100%',
-                maxHeight,
-            } as const;
-        }
-        const horizontalMargin = 24;
-        const verticalMargin = 24;
-        const maxWidth = Math.max(280, windowWidth - horizontalMargin * 2);
-        const width = Math.min(560, maxWidth);
-        const maxHeight = Math.max(320, windowHeight - verticalMargin * 2);
-
+    const inlineLayoutStyle = React.useMemo(() => {
+        const maxHeight = typeof props.maxHeight === 'number' && Number.isFinite(props.maxHeight)
+            ? Math.max(240, props.maxHeight)
+            : undefined;
         return {
-            width,
-            maxWidth,
+            width: '100%',
             maxHeight,
         } as const;
-    }, [props.maxHeight, variant, windowHeight, windowWidth]);
+    }, [props.maxHeight]);
 
     const getCachedEntries = React.useCallback((directoryPath: string) => {
         if (usesRootsListing) {
@@ -938,7 +887,7 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
                 hitSlop={10}
                 style={({ pressed }) => ([
                     styles.headerActionButton,
-                    { opacity: (!selectedDirectoryPath || isCreatingFolder) ? 0.4 : (pressed ? 0.7 : 1) },
+                    { opacity: (!selectedDirectoryPath || isCreatingFolder) ? 0.4 : (pressed ? motionTokens.press.opacity : 1) },
                 ])}
                 accessibilityRole="button"
                 accessibilityLabel={t('files.createFolderA11y')}
@@ -955,7 +904,7 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
         return (
             <View style={styles.footer}>
                 <Text numberOfLines={1} style={styles.selectionText}>
-                    {selectedPath ?? ''}
+                    {selectedPathLabel ?? ''}
                 </Text>
                 <RoundButton title={t('common.cancel')} size="normal" display="inverted" onPress={handleClose} />
                 <RoundButton
@@ -975,6 +924,7 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
         interaction,
         rootError,
         selectedPath,
+        selectedPathLabel,
         styles.footer,
         styles.selectionText,
         useCardChrome,
@@ -984,7 +934,7 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
         title: props.title ?? t('newSession.pathPicker.enterPathTitle'),
-        subtitle: selectedPath ? selectedPath : undefined,
+        subtitle: headerSelectedPathLabel ?? undefined,
         testID: PATH_BROWSER_MODAL_TEST_ID,
         actions: chromeActions,
         footer: chromeFooter,
@@ -995,7 +945,7 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
             size: 'lg' as const,
             viewportMargin: { horizontal: 12, vertical: 12 } as const,
         },
-    }), [chromeActions, chromeFooter, props.title, selectedPath]);
+    }), [chromeActions, chromeFooter, headerSelectedPathLabel, props.title]);
 
     useModalCardChrome(chromeSetter, chrome);
 
@@ -1100,56 +1050,13 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
         return items;
     }, [collapseAll, createFolderInDirectory, expandedPaths.length, isCreatingFolder, props.onRequestClose, selectedDirectoryPath]);
 
-        const headerPaddingTop = 16 + insets.top;
-
         return (
             <View
-                {...(variant === 'modal' && !useCardChrome ? { testID: PATH_BROWSER_MODAL_TEST_ID } : {})}
                 style={[
-                    variant === 'modal' && !useCardChrome ? styles.container : null,
-                    variant === 'modal' && !useCardChrome ? modalLayoutStyle : null,
-                    variant === 'modal' && useCardChrome ? { flex: 1, minHeight: 0 } : null,
-                    variant !== 'modal' ? modalLayoutStyle : null,
-                    variant !== 'modal' ? { flex: 1, minHeight: 0 } : null,
+                    variant !== 'modal' ? inlineLayoutStyle : null,
+                    { flex: 1, minHeight: 0 },
                 ]}
             >
-            {variant === 'modal' && !useCardChrome ? (
-                <View style={[styles.header, { paddingTop: headerPaddingTop }]}>
-                    <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={styles.title}>{props.title ?? t('newSession.pathPicker.enterPathTitle')}</Text>
-                        <Text style={styles.subtitle}>{selectedPath ?? ''}</Text>
-                    </View>
-                    <View style={styles.headerActions}>
-                        <Pressable
-                            testID={PATH_BROWSER_CREATE_FOLDER_TEST_ID}
-                            onPress={() => {
-                                if (!selectedDirectoryPath) return;
-                                void createFolderInDirectory(selectedDirectoryPath);
-                            }}
-                            disabled={!selectedDirectoryPath || isCreatingFolder}
-                            hitSlop={10}
-                            style={({ pressed }) => ([
-                                styles.headerActionButton,
-                                { opacity: (!selectedDirectoryPath || isCreatingFolder) ? 0.4 : (pressed ? 0.7 : 1) },
-                            ])}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('files.createFolderA11y')}
-                        >
-                            <Icon name="folder" size={16} color={theme.colors.chrome.header.foreground} />
-                        </Pressable>
-                        <Pressable
-                            onPress={handleClose}
-                            hitSlop={10}
-                            style={({ pressed }) => ([styles.headerActionButton, { opacity: pressed ? 0.7 : 1 }])}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
-                        >
-                            <Icon name="x" size={16} color={theme.colors.chrome.header.foreground} />
-                        </Pressable>
-                    </View>
-                </View>
-            ) : null}
-
             <View style={styles.body}>
                 <FilesystemBrowserToolbarChrome
                     testID="path-browser-toolbar"
@@ -1208,21 +1115,6 @@ export function MachinePathBrowserView(props: MachinePathBrowserViewProps): Reac
                 />
             </View>
 
-            {variant === 'modal' && interaction === 'confirm' && !useCardChrome ? (
-                <View style={styles.footerWithDivider}>
-                    <Text numberOfLines={1} style={styles.selectionText}>
-                        {selectedPath ?? ''}
-                    </Text>
-                    <RoundButton title={t('common.cancel')} size="normal" display="inverted" onPress={handleClose} />
-                    <RoundButton
-                        testID={PATH_BROWSER_CONFIRM_TEST_ID}
-                        title={t('common.use')}
-                        size="normal"
-                        onPress={handleConfirm}
-                        disabled={!selectedPath || Boolean(deepSearchEnabled ? deepSearchError : rootError)}
-                    />
-                </View>
-            ) : null}
         </View>
     );
 }

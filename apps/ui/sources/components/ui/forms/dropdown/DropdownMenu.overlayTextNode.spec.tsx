@@ -2,7 +2,7 @@ import * as React from 'react';
 import renderer from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { installDropdownCommonModuleMocks } from './dropdownTestHelpers';
-import { collectUnexpectedRawTextNodes, renderScreen } from '@/dev/testkit';
+import { collectUnexpectedRawTextNodes, renderScreen, withPopoverWebGlobals } from '@/dev/testkit';
 
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,41 +46,6 @@ vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
 }));
 
-vi.mock('react-native-reanimated', () => {
-    const AnimatedView = (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('AnimatedView', props, props.children);
-    const AnimatedScrollView = (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('AnimatedScrollView', props, props.children);
-    return {
-        __esModule: true,
-        default: {
-            View: AnimatedView,
-            ScrollView: AnimatedScrollView,
-        },
-    };
-});
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}), keyHint: () => ({}) },
-}));
-
-vi.mock('@/components/ui/popover', () => ({
-    Popover: ({ children }: any) => (typeof children === 'function' ? children({ maxHeight: 320, maxWidth: 320 }) : children),
-    PopoverScope: ({ children }: any) => React.createElement(React.Fragment, null, children),
-}));
-
-vi.mock('@/components/ui/scroll/useScrollEdgeFades', () => ({
-    useScrollEdgeFades: () => ({
-        canScrollX: false,
-        canScrollY: true,
-        visibility: { top: false, bottom: true, left: false, right: false },
-        onViewportLayout: () => {},
-        onContentSizeChange: () => {},
-        onScroll: () => {},
-        onMomentumScrollEnd: () => {},
-    }),
-}));
-
 describe('DropdownMenu overlay text node guard', () => {
     it('does not emit raw period text nodes under non-Text parents when the live overlay path is rendered', async () => {
         const { DropdownMenu } = await import('./DropdownMenu');
@@ -105,6 +70,8 @@ describe('DropdownMenu overlay text node guard', () => {
             },
         ];
 
+        // The real web popover measures against `window`; the testkit owns those globals.
+        await withPopoverWebGlobals(async () => {
         let tree!: renderer.ReactTestRenderer;
         tree = (await renderScreen(<DropdownMenu
                     open={true}
@@ -124,5 +91,6 @@ describe('DropdownMenu overlay text node guard', () => {
                 />)).tree;
 
         expect(collectUnexpectedRawTextNodes(tree.toJSON())).toEqual([]);
+        });
     });
 });

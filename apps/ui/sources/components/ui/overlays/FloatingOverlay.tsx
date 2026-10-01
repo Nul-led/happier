@@ -21,7 +21,9 @@ import {
     type ThemeSurfaceChromeStyle,
 } from '@/components/ui/surfaces/resolveThemeHairlineBorderStyle';
 
-const OVERLAY_BORDER_RADIUS = 12;
+import { FLOATING_OVERLAY_METRICS } from './floatingOverlayMetrics';
+
+const OVERLAY_BORDER_RADIUS = FLOATING_OVERLAY_METRICS.radiusPx;
 
 function extractSurfaceStyle(chromeStyle: ThemeSurfaceChromeStyle) {
     return {

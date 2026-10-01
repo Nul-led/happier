@@ -41,7 +41,8 @@ describe('Switch.web', () => {
         if (!pressable) {
             throw new Error('Expected switch pressable to render');
         }
-        expect(pressable.props.accessibilityRole).toBe('switch');
+        // The shared switch owner emits the web `role` arm; either arm is the DOM role on RN Web.
+        expect(pressable.props.role ?? pressable.props.accessibilityRole).toBe('switch');
         expect(pressable.props['aria-checked']).toBe(true);
     });
 
@@ -66,7 +67,7 @@ describe('Switch.web', () => {
         const flattened = Object.assign({}, ...(Array.isArray(style) ? style : [style]).filter(Boolean));
 
         expect(pressable.props.accessibilityLabel).toBe('Fast responses');
-        expect(pressable.props.accessibilityState).toEqual({ checked: false, disabled: false });
+        expect(pressable.props.accessibilityState).toMatchObject({ checked: false, disabled: false });
         expect(flattened.minWidth ?? flattened.width).toBeGreaterThanOrEqual(44);
         expect(flattened.minHeight ?? flattened.height).toBeGreaterThanOrEqual(44);
 

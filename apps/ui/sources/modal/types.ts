@@ -75,6 +75,11 @@ export type CustomModalShowConfig<C extends CustomModalComponentType<any>> = Omi
 
 export type CustomModalChromeCardConfig = Readonly<{
     kind: 'card';
+    /**
+     * `none` renders no title band: the content is the top of the card (search, command palette).
+     * `title` stays the dialog's accessible name. Esc and the backdrop still close it.
+     */
+    header?: 'band' | 'none';
     leading?: ReactNode;
     title?: ReactNode;
     subtitle?: ReactNode;
@@ -93,6 +98,11 @@ export type CustomModalChromeCardConfig = Readonly<{
     subtitleTestID?: string;
     closeButtonTestID?: string;
     dimensions?: ModalCardDimensionOptions;
+    /**
+     * `sheet` presents the card as a bottom sheet on a phone (full width, anchored to the bottom edge,
+     * thumb reach); wider screens keep the centred card. Default: the centred card everywhere.
+     */
+    phonePresentation?: 'card' | 'sheet';
 }>;
 
 export type CustomModalChromeConfig = CustomModalChromeCardConfig;

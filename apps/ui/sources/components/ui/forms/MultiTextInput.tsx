@@ -85,6 +85,7 @@ export interface MultiTextInputProps {
     submitBehavior?: MultiTextInputSubmitBehavior;
     onSubmitEditing?: () => void;
     accessibilityLabel?: string;
+    accessibilityHint?: string;
     // Web-only: file attachments via paste or drag-and-drop.
     onFilesPasted?: (files: readonly File[]) => void;
     onFilesDropped?: (files: readonly File[]) => void;
@@ -461,6 +462,7 @@ export const MultiTextInput = React.forwardRef<MultiTextInputHandle, MultiTextIn
                 onFocus={props.onFocus}
                 onBlur={props.onBlur}
                 accessibilityLabel={props.accessibilityLabel}
+                accessibilityHint={props.accessibilityHint}
                 accessibilityRole={props.accessibilityRole}
                 accessibilityState={props.accessibilityState}
             />

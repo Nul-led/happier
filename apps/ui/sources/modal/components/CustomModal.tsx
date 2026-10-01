@@ -6,6 +6,8 @@ import {
     type CustomModalDismissReason,
 } from '../types';
 import { ModalCardFrame } from './card/ModalCardFrame';
+import { useDeviceType } from '@/utils/platform/responsive';
+import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 
 interface CustomModalProps {
     config: CustomModalConfig;
@@ -57,7 +59,8 @@ function areChromeConfigsEqual(
     if (a.kind !== b.kind) return false;
 
     if (a.kind === 'card' && b.kind === 'card') {
-        return a.title === b.title
+        return a.header === b.header
+            && a.title === b.title
             && a.subtitle === b.subtitle
             && a.leading === b.leading
             && a.actions === b.actions
@@ -68,6 +71,7 @@ function areChromeConfigsEqual(
             && a.closeButtonTestID === b.closeButtonTestID
             && a.scrollHost === b.scrollHost
             && a.bodyScroll === b.bodyScroll
+            && a.phonePresentation === b.phonePresentation
             && areDimensionOptionsEqual(
                 (a.dimensions ?? null) as Record<string, unknown> | null,
                 (b.dimensions ?? null) as Record<string, unknown> | null,
@@ -97,6 +101,7 @@ function mergeChromeConfig(
 
         return {
             kind: 'card',
+            header: override.header !== undefined ? override.header : base.header,
             leading: override.leading !== undefined ? override.leading : base.leading,
             title: override.title !== undefined ? override.title : base.title,
             subtitle: override.subtitle !== undefined ? override.subtitle : base.subtitle,
@@ -108,6 +113,7 @@ function mergeChromeConfig(
             closeButtonTestID: override.closeButtonTestID !== undefined ? override.closeButtonTestID : base.closeButtonTestID,
             scrollHost: override.scrollHost !== undefined ? override.scrollHost : base.scrollHost,
             bodyScroll: override.bodyScroll !== undefined ? override.bodyScroll : base.bodyScroll,
+            phonePresentation: override.phonePresentation !== undefined ? override.phonePresentation : base.phonePresentation,
             dimensions: mergedDimensions,
         };
     }
@@ -122,6 +128,8 @@ export function CustomModal({ config, onClose, showBackdrop = true, visible, zIn
     const [chromeOverride, setChromeOverride] = React.useState<CustomModalChromeConfig | null | undefined>(undefined);
     const effectiveChrome = chromeOverride === undefined ? config.chrome : chromeOverride;
     const chrome = effectiveChrome?.kind === 'card' ? effectiveChrome : null;
+    const deviceType = useDeviceType();
+    const insets = useChromeSafeAreaInsets();
     const accessibilityLabel = config.accessibilityLabel
         ?? (typeof chrome?.title === 'string' ? chrome.title : undefined);
 
@@ -207,6 +215,7 @@ export function CustomModal({ config, onClose, showBackdrop = true, visible, zIn
         <Component {...config.props} onClose={handleComponentClose} setChrome={setChrome} />
     ), [Component, config.props, handleComponentClose, setChrome]);
 
+    const phoneSheet = chrome?.phonePresentation === 'sheet' && deviceType === 'phone';
     return (
         <BaseModal
             visible={visible}
@@ -218,10 +227,12 @@ export function CustomModal({ config, onClose, showBackdrop = true, visible, zIn
             zIndexBase={zIndexBase}
             webPortalTarget={config.webPortalTarget ?? null}
             webPlacement={config.webPlacement}
+            placement={phoneSheet ? 'bottom' : 'center'}
             scrollHost={chrome?.scrollHost ?? 'overlay'}
         >
             {chrome ? (
                 <ModalCardFrame
+                    header={chrome.header}
                     leading={chrome.leading}
                     title={chrome.title}
                     subtitle={chrome.subtitle}
@@ -234,6 +245,8 @@ export function CustomModal({ config, onClose, showBackdrop = true, visible, zIn
                     scrollHost={chrome.scrollHost}
                     bodyScroll={chrome.bodyScroll ?? 'none'}
                     dimensions={chrome.dimensions}
+                    presentation={phoneSheet ? 'sheet' : 'card'}
+                    sheetBottomInset={phoneSheet ? insets.bottom : undefined}
                     onClose={dismissible ? handleSharedDismiss : undefined}
                 >
                     {content}

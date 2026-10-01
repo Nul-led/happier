@@ -1,9 +1,15 @@
 import * as React from 'react';
 import { useHappierNativeMinimumInteractiveTargetSize } from '@happier-dev/plugin-ui/environment';
-import { View, type StyleProp, type TextInputProps as RNTextInputProps, type ViewStyle } from 'react-native';
+import {
+    HAPPIER_FIELD_TEXT_METRICS,
+    HappierFieldTextBox,
+    resolveHappierFieldTextInputMetrics,
+    type HappierFieldTextBoxProps,
+} from '@happier-dev/plugin-ui/presentation';
+import type { StyleProp, TextInputProps as RNTextInputProps, ViewStyle } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { FIELD_BOX_METRICS, fieldBoxShapeStyle, resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
+import { FIELD_BOX_METRICS, resolveFieldBoxColors } from '@/components/ui/forms/fieldBox';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 
@@ -64,54 +70,12 @@ export const FieldTextInput = React.memo(React.forwardRef<React.ElementRef<typeo
         // box lands in the field; pointer platforms keep the page's field density.
         const nativeMinimumTargetSize = useHappierNativeMinimumInteractiveTargetSize();
         return (
-            <View style={[styles.container, props.style]}>
-                <View
-                    style={[
-                        fieldBoxShapeStyle,
-                        styles.box,
-                        props.multiline ? styles.boxMultiline : null,
-                        { borderColor: colors.borderColor, backgroundColor: colors.backgroundColor },
-                    ]}
-                >
-                    <TextInput
-                        ref={ref}
-                        testID={props.testID}
-                        value={props.value}
-                        onChangeText={props.onChangeText}
-                        placeholder={props.placeholder}
-                        placeholderTextColor={theme.colors.input.placeholder}
-                        accessibilityLabel={props.accessibilityLabel}
-                        accessibilityHint={props.error ?? props.accessibilityHint}
-                        accessibilityLabelledBy={props.accessibilityLabelledBy}
-                        accessibilityState={invalid ? { invalid: true } as never : undefined}
-                        autoCapitalize={props.autoCapitalize ?? 'none'}
-                        autoCorrect={false}
-                        autoFocus={props.autoFocus}
-                        secureTextEntry={props.secureTextEntry}
-                        keyboardType={props.keyboardType}
-                        inputMode={props.inputMode}
-                        autoComplete={props.autoComplete}
-                        textContentType={props.textContentType}
-                        returnKeyType={props.returnKeyType}
-                        onSubmitEditing={props.onSubmitEditing}
-                        onBlur={props.onBlur}
-                        maxLength={props.maxLength}
-                        // A multiline field keeps the platform default: Return inserts a newline and
-                        // keeps focus. Only a single-line field leaves on Return unless it submits.
-                        blurOnSubmit={props.multiline ? undefined : !props.onSubmitEditing}
-                        multiline={props.multiline}
-                        editable={props.editable}
-                        style={[
-                            styles.input,
-                            props.monospace ? styles.inputMono : null,
-                            props.multiline ? styles.inputMultiline : null,
-                            props.multiline && props.minLines ? { minHeight: FIELD_BOX_METRICS.lineHeightPx * props.minLines } : null,
-                            !props.multiline && nativeMinimumTargetSize !== undefined ? { minHeight: nativeMinimumTargetSize } : null,
-                            { color: colors.valueColor },
-                        ]}
-                    />
-                </View>
-                {props.error ? (
+            <HappierFieldTextBox
+                multiline={props.multiline}
+                colors={colors}
+                // App callers pass React Native layout styles; the shared box keeps its anatomy under them.
+                style={props.style as HappierFieldTextBoxProps['style']}
+                error={props.error ? (
                     <Text
                         testID={props.testID ? `${props.testID}.error` : undefined}
                         accessibilityRole="alert"
@@ -120,44 +84,65 @@ export const FieldTextInput = React.memo(React.forwardRef<React.ElementRef<typeo
                     >
                         {props.error}
                     </Text>
-                ) : null}
-            </View>
+                ) : undefined}
+            >
+                <TextInput
+                    ref={ref}
+                    testID={props.testID}
+                    value={props.value}
+                    onChangeText={props.onChangeText}
+                    placeholder={props.placeholder}
+                    placeholderTextColor={theme.colors.input.placeholder}
+                    accessibilityLabel={props.accessibilityLabel}
+                    accessibilityHint={props.error ?? props.accessibilityHint}
+                    accessibilityLabelledBy={props.accessibilityLabelledBy}
+                    accessibilityState={invalid ? { invalid: true } as never : undefined}
+                    autoCapitalize={props.autoCapitalize ?? 'none'}
+                    autoCorrect={false}
+                    autoFocus={props.autoFocus}
+                    secureTextEntry={props.secureTextEntry}
+                    keyboardType={props.keyboardType}
+                    inputMode={props.inputMode}
+                    autoComplete={props.autoComplete}
+                    textContentType={props.textContentType}
+                    returnKeyType={props.returnKeyType}
+                    onSubmitEditing={props.onSubmitEditing}
+                    onBlur={props.onBlur}
+                    maxLength={props.maxLength}
+                    // A multiline field keeps the platform default: Return inserts a newline and
+                    // keeps focus. Only a single-line field leaves on Return unless it submits.
+                    blurOnSubmit={props.multiline ? undefined : !props.onSubmitEditing}
+                    multiline={props.multiline}
+                    editable={props.editable}
+                    style={[
+                        styles.input,
+                        // The input's text box inside the field box is the shared owner's.
+                        resolveHappierFieldTextInputMetrics({
+                            multiline: props.multiline,
+                            minLines: props.minLines,
+                            nativeMinimumTargetSize,
+                        }),
+                        props.monospace ? styles.inputMono : null,
+                        { color: colors.valueColor },
+                    ]}
+                />
+            </HappierFieldTextBox>
         );
     },
 ));
 
 const stylesheet = StyleSheet.create((theme) => ({
-    container: {
-        minWidth: FIELD_BOX_METRICS.inlineMinWidthPx,
-        flexShrink: 1,
-        gap: 4,
-    },
-    box: {
-        justifyContent: 'center',
-    },
-    boxMultiline: {
-        paddingVertical: 7,
-    },
     input: {
         ...Typography.default(),
-        fontSize: FIELD_BOX_METRICS.fontSizePx,
-        lineHeight: FIELD_BOX_METRICS.lineHeightPx,
-        padding: 0,
-        margin: 0,
-        minHeight: FIELD_BOX_METRICS.lineHeightPx,
     },
     inputMono: {
         ...Typography.mono(),
         fontSize: FIELD_BOX_METRICS.fontSizePx - 0.5,
     },
-    inputMultiline: {
-        minHeight: FIELD_BOX_METRICS.lineHeightPx * 3,
-        textAlignVertical: 'top',
-    },
     error: {
         ...Typography.default(),
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: HAPPIER_FIELD_TEXT_METRICS.errorFontSizePx,
+        lineHeight: HAPPIER_FIELD_TEXT_METRICS.errorLineHeightPx,
         color: theme.colors.state.danger.foreground,
     },
 }));

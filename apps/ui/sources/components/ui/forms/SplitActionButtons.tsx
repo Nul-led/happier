@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Typography } from '@/constants/Typography';
 import { Text } from '@/components/ui/text/Text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export const SplitActionButtons = React.memo(function SplitActionButtons(props: Readonly<{
     secondaryLabel?: string;
@@ -31,7 +32,7 @@ export const SplitActionButtons = React.memo(function SplitActionButtons(props: 
                             borderRadius: 10,
                             paddingVertical: 12,
                             alignItems: 'center',
-                            opacity: pressed ? 0.85 : 1,
+                            opacity: pressed ? motionTokens.press.opacitySubtle : 1,
                         })}
                     >
                         <Text
@@ -58,7 +59,7 @@ export const SplitActionButtons = React.memo(function SplitActionButtons(props: 
                         borderRadius: 10,
                         paddingVertical: 12,
                         alignItems: 'center',
-                        opacity: props.primaryDisabled ? 0.5 : (pressed ? 0.85 : 1),
+                        opacity: props.primaryDisabled ? 0.5 : (pressed ? motionTokens.press.opacitySubtle : 1),
                     })}
                 >
                     <Text style={{ color: theme.colors.button.primary.tint, ...Typography.default('semiBold') }}>

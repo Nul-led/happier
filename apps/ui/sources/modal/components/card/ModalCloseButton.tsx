@@ -5,6 +5,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
 import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { resolveHappierFocusRingVisible } from '@happier-dev/plugin-ui/presentation';
 
 type ModalCloseButtonProps = Readonly<{
     onPress: () => void;
@@ -54,8 +56,8 @@ export function ModalCloseButton(props: ModalCloseButtonProps) {
                         minWidth: minimumInteractiveTargetSize,
                         minHeight: minimumInteractiveTargetSize,
                     },
-                    webState.focused === true ? styles.buttonFocused : null,
-                    { opacity: interactionState.pressed ? 0.7 : 1 },
+                    resolveHappierFocusRingVisible(webState.focused) ? styles.buttonFocused : null,
+                    { opacity: interactionState.pressed ? motionTokens.press.opacity : 1 },
                 ];
             }}
         >

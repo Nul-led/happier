@@ -1,5 +1,8 @@
 import * as React from "react";
 import { View } from 'react-native';
+import { Text } from '@/components/ui/text/Text';
+import { Typography } from '@/constants/Typography';
+import { resolveHappierBrandFallback } from '@happier-dev/plugin-ui/presentation';
 import { AvatarSkia } from "./AvatarSkia";
 import { AvatarGradient } from "./AvatarGradient";
 import { AvatarBrutalist } from "./AvatarBrutalist";
@@ -15,6 +18,8 @@ import {
 
 interface AvatarProps {
     id: string;
+    testID?: string;
+    accessibilityLabel?: string;
     title?: boolean;
     square?: boolean;
     size?: number;
@@ -29,6 +34,19 @@ interface AvatarProps {
 const styles = StyleSheet.create((theme) => ({
     container: {
         position: 'relative',
+    },
+    monogram: {
+        position: 'absolute',
+        inset: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    monogramText: {
+        ...Typography.default('semiBold'),
+        color: theme.colors.text.primary,
+        textShadowColor: theme.colors.surface.base,
+        textShadowRadius: 2,
+        textShadowOffset: { width: 0, height: 0 },
     },
     flavorIcon: {
         position: 'absolute',
@@ -51,7 +69,7 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 export const Avatar = React.memo((props: AvatarProps) => {
-    const { flavor, size = 48, imageUrl, thumbhash, hasUnreadMessages, unreadBadgeTestID, ...avatarProps } = props;
+    const { flavor, size = 48, imageUrl, thumbhash, hasUnreadMessages, unreadBadgeTestID, testID, accessibilityLabel, ...avatarProps } = props;
     const avatarStyle = useSetting('avatarStyle');
     const showFlavorIcons = useSetting('showFlavorIcons');
 
@@ -85,7 +103,7 @@ export const Avatar = React.memo((props: AvatarProps) => {
             const { circleSize, iconSize } = getAgentAvatarOverlaySizes(overlayAgentId ?? '', size);
 
             return (
-                <View style={[styles.container, { width: size, height: size }]}>
+                <View testID={testID} accessible={Boolean(accessibilityLabel || props.title)} accessibilityRole="image" accessibilityLabel={accessibilityLabel ?? (props.title ? props.id : undefined)} style={[styles.container, { width: size, height: size }]}>
                     {imageElement}
                     {overlayAgentId && (
                         <View style={[styles.flavorIcon, {
@@ -102,19 +120,19 @@ export const Avatar = React.memo((props: AvatarProps) => {
             );
         }
 
-        return imageElement;
+        return testID || accessibilityLabel || props.title ? (
+            <View testID={testID} accessible={Boolean(accessibilityLabel || props.title)} accessibilityRole="image" accessibilityLabel={accessibilityLabel ?? (props.title ? props.id : undefined)}>
+                {imageElement}
+            </View>
+        ) : imageElement;
     }
 
     // Original generated avatar logic
     // Determine which avatar variant to render
-    let AvatarComponent: React.ComponentType<any>;
-    if (avatarStyle === 'pixelated') {
-        AvatarComponent = AvatarSkia;
-    } else if (avatarStyle === 'brutalist') {
-        AvatarComponent = AvatarBrutalist;
-    } else {
-        AvatarComponent = AvatarGradient;
-    }
+    const artwork = avatarStyle === 'pixelated' ? <AvatarSkia {...avatarProps} size={size} />
+        : avatarStyle === 'brutalist' ? <AvatarBrutalist {...avatarProps} size={size} />
+            : <AvatarGradient {...avatarProps} size={size} />;
+    const firstGrapheme = props.title ? resolveHappierBrandFallback(props.id) : undefined;
 
     // An Agent the catalog carries no presentation for — an installed Agent, or a
     // session whose Agent is unreadable — has no mark to show. Wearing the default
@@ -122,10 +140,13 @@ export const Avatar = React.memo((props: AvatarProps) => {
     const overlayAgentId = showFlavorIcons ? agentId : null;
     const { circleSize, iconSize } = getAgentAvatarOverlaySizes(overlayAgentId ?? '', size);
 
-    if (overlayAgentId || hasUnreadMessages) {
+    if (overlayAgentId || hasUnreadMessages || props.title || testID || accessibilityLabel) {
         return (
-            <View style={[styles.container, { width: size, height: size }]}>
-                <AvatarComponent {...avatarProps} size={size} />
+            <View testID={testID} accessible={Boolean(accessibilityLabel || props.title)} accessibilityRole="image" accessibilityLabel={accessibilityLabel ?? (props.title ? props.id : undefined)} style={[styles.container, { width: size, height: size }]}>
+                {artwork}
+                {firstGrapheme ? <View style={styles.monogram} pointerEvents="none" accessible={false}>
+                    <Text testID="avatar-monogram" style={[styles.monogramText, { fontSize: size * 0.45, lineHeight: size * 0.6 }]}>{firstGrapheme}</Text>
+                </View> : null}
                 {overlayAgentId && (
                     <View style={[styles.flavorIcon, {
                         width: circleSize,
@@ -142,5 +163,5 @@ export const Avatar = React.memo((props: AvatarProps) => {
     }
 
     // Return avatar without wrapper when not showing flavor icons
-    return <AvatarComponent {...avatarProps} size={size} />;
+    return artwork;
 });

@@ -43,7 +43,7 @@ describe('SelectionListSearchHeader', () => {
         expect(onChangeText).toHaveBeenCalledWith('foo');
     });
 
-    it('exposes an explicit accessible name and a visible web focus indicator', async () => {
+    it('exposes an explicit accessible name without normal-mode web focus chrome', async () => {
         const { SelectionListSearchHeader } = await import('../SelectionListSearchHeader');
         const screen = await renderScreen(
             <SelectionListSearchHeader
@@ -68,7 +68,13 @@ describe('SelectionListSearchHeader', () => {
         await act(async () => {
             input?.props.onFocus?.({});
         });
-        expect(readWrapStyle().boxShadow).toBe('0 0 0 2px #654321');
+        expect(readWrapStyle().boxShadow).toBeUndefined();
+        const focusedInputStyle = Object.assign(
+            {},
+            ...((Array.isArray(input?.props.style) ? input.props.style.flat(Infinity) : [input?.props.style]).filter(Boolean)),
+        );
+        expect(focusedInputStyle.boxShadow).toBeUndefined();
+        expect(input?.props['data-happier-text-input']).toBe('true');
 
         await act(async () => {
             input?.props.onBlur?.({});

@@ -17,10 +17,6 @@ vi.mock('@expo/vector-icons', () => ({
     Ionicons: 'Ionicons',
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     const { createStorageModuleMock } = await import('@/dev/testkit/mocks/storage');
     return createStorageModuleMock({
@@ -35,20 +31,13 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     });
 });
 
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    getStorage: () => ({
-        getState: () => ({
-            localSettings: {
-                uiContentWidthMode: shared.contentWidthMode,
-            },
-        }),
-    }),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    TextInput: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
-        React.createElement('TextInput', props, props.children),
-}));
+vi.mock('@/sync/domains/state/storageStore', async (importOriginal) => {
+    const { createLiveStorageStoreMock, createStorageStoreModuleMock } = await import('@/dev/testkit/mocks/storage');
+    const store = createLiveStorageStoreMock(() => ({
+        localSettings: { uiContentWidthMode: shared.contentWidthMode } as never,
+    }));
+    return createStorageStoreModuleMock({ importOriginal, overrides: { getStorage: () => store } });
+});
 
 function flattenStyle(style: unknown): Record<string, unknown> {
     if (Array.isArray(style)) {

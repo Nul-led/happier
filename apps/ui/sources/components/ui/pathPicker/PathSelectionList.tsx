@@ -55,6 +55,8 @@ import {
 
 
 export type PathSelectionListFavorite = Readonly<{ path: string; label?: string }>;
+
+const NO_FOLDER_OPTION_ID = 'no-folder';
 export type PathSelectionListRecent = Readonly<{ path: string; lastUsedAt: number }>;
 
 /**
@@ -132,6 +134,11 @@ export type PathSelectionListProps = Readonly<{
      */
     maxHeight?: number;
     heightBehavior?: SelectionListHeightBehavior;
+    /**
+     * Offers "No folder" as the first row (the new-session composer). Choosing it is an intent,
+     * not a path: `onSelect` runs instead of `onCommit`. `selected` marks it when the draft has no folder.
+     */
+    noFolderOption?: Readonly<{ selected: boolean; onSelect: () => void }>;
 }>;
 
 type FavoriteAccessoryFactory = (absolutePath: string, optionTestIdPrefix: string) => React.ReactNode | undefined;
@@ -263,8 +270,11 @@ export function PathSelectionList(props: PathSelectionListProps): React.ReactEle
         isFavorite,
         onToggleFavorite,
         maxHeight,
+        noFolderOption,
     } = props;
     const ROOT_TEST_ID = 'path-selection-list';
+    const noFolderSelected = noFolderOption?.selected === true;
+    const onSelectNoFolder = noFolderOption?.onSelect;
     const modalPortalTarget = useModalPortalTarget();
 
     const [inputValue, setInputValue] = React.useState(() => resolvePathSelectionInitialInputValue({
@@ -382,13 +392,14 @@ export function PathSelectionList(props: PathSelectionListProps): React.ReactEle
     }, [machineHomeDir, recents, visibleFavoriteKeys]);
     const selectedSavedPathOptionId = React.useMemo(() => {
         if (hasUserEditedInput) return null;
+        if (noFolderSelected) return NO_FOLDER_OPTION_ID;
         return resolveSavedPathOptionId({
             path: initialValue,
             favorites: visibleFavorites,
             recents: visibleRecents,
             machineHomeDir,
         });
-    }, [hasUserEditedInput, initialValue, machineHomeDir, visibleFavorites, visibleRecents]);
+    }, [hasUserEditedInput, initialValue, machineHomeDir, noFolderSelected, visibleFavorites, visibleRecents]);
 
     // Path-domain input behavior bound to the machine's platform (NEVER the
     // local browser's platform). When `machinePlatform === 'auto'`, the
@@ -564,7 +575,19 @@ export function PathSelectionList(props: PathSelectionListProps): React.ReactEle
     );
 
     const rootStep: SelectionListStep = React.useMemo(() => {
+        const noFolderSection: ReadonlyArray<SelectionListSectionDescriptor> = onSelectNoFolder ? [{
+            kind: 'static',
+            id: 'no-folder',
+            options: [{
+                id: NO_FOLDER_OPTION_ID,
+                label: t('newSession.folder.noFolder'),
+                subtitle: t('newSession.folder.noFolderDescription'),
+                accessibilityLabel: t('newSession.folder.a11y.noFolderRow'),
+                onSelect: onSelectNoFolder,
+            }],
+        }] : [];
         const sections: ReadonlyArray<SelectionListSectionDescriptor> = [
+            ...noFolderSection,
             {
                 kind: 'dynamic',
                 id: 'in-this-folder',
@@ -643,6 +666,7 @@ export function PathSelectionList(props: PathSelectionListProps): React.ReactEle
         visibleFavorites,
         visibleRecents,
         renderFavoriteAccessoryStatic,
+        onSelectNoFolder,
         // FR4-9: the dynamic section's resolverKey reads `serverId` from the
         // current render, so make memoization depend on it too.
         serverId,

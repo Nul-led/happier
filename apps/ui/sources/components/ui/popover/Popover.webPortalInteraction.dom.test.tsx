@@ -146,8 +146,15 @@ describe('Popover web portal interaction readiness', () => {
         globalThis.requestAnimationFrame = (callback) => window.setTimeout(() => callback(0), 0);
         globalThis.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
 
+        const originalFocus = HTMLElement.prototype.focus;
+        const focusCalls: Array<FocusOptions | undefined> = [];
+
         try {
             anchor.focus();
+            HTMLElement.prototype.focus = function focus(options?: FocusOptions) {
+                focusCalls.push(options);
+                return originalFocus.call(this, options);
+            };
             await act(async () => {
                 root.render(
                     <ModalPortalTargetProvider target={portalTarget}>
@@ -174,7 +181,12 @@ describe('Popover web portal interaction readiness', () => {
             });
 
             expect(document.activeElement).toBe(portalTarget.querySelector('[data-testid="popover-first-option"]'));
+            // The popover is focused before it is measured and placed. A focus that scrolls would
+            // move the whole page to reveal the still-unplaced popover (the "UI flicker" on open).
+            expect(focusCalls.length).toBeGreaterThan(0);
+            expect(focusCalls.every((options) => options?.preventScroll === true)).toBe(true);
         } finally {
+            HTMLElement.prototype.focus = originalFocus;
             await act(async () => root.unmount());
             HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
             globalThis.requestAnimationFrame = originalRequestAnimationFrame;

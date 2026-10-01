@@ -3,6 +3,7 @@ import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDeferred, renderScreen } from '@/dev/testkit';
+import { SurfaceStateCard } from './SurfaceStateCard';
 
 const accessibilityPlatform = vi.hoisted(() => ({
     os: 'web' as 'web' | 'ios' | 'android',
@@ -34,6 +35,15 @@ vi.mock('react-native', async () => {
  * only).
  */
 describe('SurfaceStateCard', () => {
+    it('keeps a pending line recovery disabled and preserves its caller test identity', async () => {
+        const onRetry = vi.fn();
+        const screen = await renderScreen(<SurfaceStateCard testID="error" size="line" kind="error" title="Try again" action={{ testID: 'retry', label: 'Retry', onPress: onRetry, disabled: true, busy: true }} />);
+        const retry = screen.findByTestId('retry');
+        expect(retry).toBeTruthy();
+        expect(retry?.props.accessibilityState).toMatchObject({ disabled: true, busy: true });
+        await act(async () => { retry?.props.onPress?.(); });
+        expect(onRetry).not.toHaveBeenCalled();
+    });
     beforeEach(() => {
         accessibilityPlatform.os = 'web';
         announceForAccessibilityMock.mockClear();
@@ -67,6 +77,20 @@ describe('SurfaceStateCard', () => {
         );
 
         expect(screen.findAll((node) => node.props?.name === 'warning-circle')).toHaveLength(1);
+    });
+
+    it('renders a completed state with the canonical success glyph', async () => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                kind="success"
+                title="Home connected"
+                reason="Everything is ready."
+            />,
+        );
+
+        expect(screen.findAll((node) => node.props?.name === 'check-circle')).toHaveLength(1);
     });
 
     it('announces only opted-in state transitions with the requested urgency', async () => {
@@ -204,7 +228,7 @@ describe('SurfaceStateCard', () => {
         expect(onPrimary).not.toHaveBeenCalled();
     });
 
-    it('never renders the raw diagnostic code in visible text; keeps it on the testID channel', async () => {
+    it('keeps the raw diagnostic code out of the card until Details is opened, then shows it', async () => {
         const { SurfaceStateCard } = await import('./SurfaceStateCard');
         const screen = await renderScreen(
             <SurfaceStateCard
@@ -215,8 +239,34 @@ describe('SurfaceStateCard', () => {
                 diagnosticCode="webcodecs_decoder_unavailable"
             />,
         );
+        // Collapsed: the card leads with human copy; the code is only on the QA channel.
         expect(screen.getTextContent()).not.toContain('webcodecs_decoder_unavailable');
         expect(screen.findByTestId('state-card-diagnostic-webcodecs_decoder_unavailable')).toBeTruthy();
+        expect(screen.findByTestId('state-card-details-toggle')?.props.accessibilityState).toMatchObject({ expanded: false });
+
+        await act(async () => {
+            screen.pressByTestId('state-card-details-toggle');
+        });
+
+        // Opened on purpose: support and expert users can read and copy it.
+        expect(screen.findByTestId('state-card-details-toggle')?.props.accessibilityState).toMatchObject({ expanded: true });
+        expect(screen.findByTestId('state-card-details-code')?.props.selectable).toBe(true);
+        expect(screen.getTextContent()).toContain('webcodecs_decoder_unavailable');
+    });
+
+    it.each(['empty', 'success', 'loading'] as const)('offers no Details reveal on a %s card, where nothing failed', async (kind) => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                kind={kind}
+                title="Nothing here yet"
+                diagnosticCode="no_items"
+            />,
+        );
+        expect(screen.findByTestId('state-card-details-toggle')).toBeFalsy();
+        expect(screen.getTextContent()).not.toContain('no_items');
+        expect(screen.findByTestId('state-card-diagnostic-no_items')).toBeTruthy();
     });
 
     it('does not use the raw diagnostic code as an accessibility label (XS-4 inversion guard)', async () => {
@@ -232,5 +282,181 @@ describe('SurfaceStateCard', () => {
         );
         const withRawLabel = screen.findAll((node) => node.props?.accessibilityLabel === 'stream_error');
         expect(withRawLabel).toHaveLength(0);
+    });
+
+    // U8.5 craft S4: a failure or loading surface uses the empty-state anatomy — no muted card, a calm
+    // glyph in the secondary colour (the title carries the trouble), and one small secondary action.
+    it.each(['error', 'unavailable', 'warning'] as const)('renders kind=%s with the empty-state anatomy', async (kind) => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const render = (k: 'empty' | typeof kind) => renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                kind={k}
+                title="Can't reach Happier on MacBook Pro"
+                reason="It may still be starting."
+                action={{ label: 'Try again', onPress: () => {} }}
+            />,
+        );
+        const failure = await render(kind);
+        const empty = await render('empty');
+        const glyphColor = (screen: Awaited<ReturnType<typeof render>>) =>
+            screen.findAll((node) => typeof node.props?.name === 'string' && node.props?.color !== undefined)[0]?.props.color;
+
+        expect(failure.findAll((node) => node.props?.tone === 'muted')).toHaveLength(0);
+        expect(glyphColor(failure)).toBe(glyphColor(empty));
+        const button = failure.findAll((node) => node.props?.testID === 'state-card-action' && 'title' in (node.props ?? {}))[0];
+        expect(button?.props.size).toBe('small');
+        expect(button?.props.display).toBe('secondary');
+    });
+});
+
+/**
+ * Pane-states lab 0: the one state composition for panes, details and app pages — sized by its
+ * container, with the live present ("Still waiting · 6 s"), a denied state that says who can, the quiet
+ * "How it works" link, and the compact in-list line.
+ */
+describe('SurfaceStateCard pane-state composition', () => {
+    beforeEach(() => {
+        accessibilityPlatform.os = 'web';
+        vi.useRealTimers();
+    });
+
+    it('tells how long a sized loading state has been waiting once the wait is noticeable', async () => {
+        vi.useFakeTimers();
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const { SurfaceStateSizeProvider } = await import('./surfaceStateSize');
+        const screen = await renderScreen(
+            <SurfaceStateSizeProvider size="pane">
+                <SurfaceStateCard testID="state-card" kind="loading" title="Opening SettingsModal.tsx" />
+            </SurfaceStateSizeProvider>,
+        );
+        expect(screen.getTextContent()).not.toContain('Still waiting');
+
+        await act(async () => {
+            vi.advanceTimersByTime(6_000);
+        });
+
+        expect(screen.findByTestId('state-card-live')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Still waiting · 6 s');
+    });
+
+    it('a caller live line replaces the automatic wait line', async () => {
+        vi.useFakeTimers();
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                size="page"
+                kind="unavailable"
+                title="You’re offline"
+                live={{ text: 'Reconnecting · next try in 8 s', busy: true }}
+            />,
+        );
+        await act(async () => {
+            vi.advanceTimersByTime(10_000);
+        });
+        expect(screen.getTextContent()).toContain('Reconnecting · next try in 8 s');
+        expect(screen.getTextContent()).not.toContain('Still waiting');
+    });
+
+    it('a denied state says who can, with a lock glyph and no dead action', async () => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                size="pane"
+                kind="denied"
+                title="Only Leeroy can change who has access"
+                reason="Leeroy Brun owns this session. You can edit it and join its conversations."
+            />,
+        );
+        expect(screen.findAll((node) => node.props?.name === 'lock')).toHaveLength(1);
+        expect(screen.findByTestId('state-card-action')).toBeFalsy();
+        expect(screen.getTextContent()).toContain('Leeroy Brun owns this session.');
+    });
+
+    it('offers "How it works" as a quiet link after a note', async () => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const learnMore = vi.fn();
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-card"
+                size="page"
+                kind="empty"
+                title="Let agents work while you’re away"
+                action={{ label: 'New automation', onPress: () => {} }}
+                note="Runs on a machine in Personal Home."
+                learnMore={{ label: 'How it works', onPress: learnMore }}
+            />,
+        );
+        expect(screen.getTextContent()).toContain('Runs on a machine in Personal Home.');
+        await act(async () => {
+            screen.pressByTestId('state-card-learn-more');
+        });
+        expect(learnMore).toHaveBeenCalledTimes(1);
+    });
+
+    it('in a list it is one quiet line: the kind glyph, the sentence and an inline recovery', async () => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const retry = vi.fn();
+        const screen = await renderScreen(
+            <SurfaceStateCard
+                testID="state-line"
+                size="line"
+                kind="error"
+                title="Couldn’t load who has access."
+                diagnosticCode="rpc_timeout"
+                action={{ label: 'Try again', onPress: retry }}
+            />,
+        );
+        expect(screen.getTextContent()).toContain('Couldn’t load who has access.');
+        expect(screen.findAll((node) => node.props?.name === 'warning')).toHaveLength(1);
+        // A line is not a card: no Details disclosure, the code stays on the QA channel.
+        expect(screen.findByTestId('state-line-details-toggle')).toBeFalsy();
+        expect(screen.findByTestId('state-line-diagnostic-rpc_timeout')).toBeTruthy();
+        await act(async () => {
+            screen.pressByTestId('state-line-action');
+        });
+        expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('a loading line shows a spinner instead of a glyph', async () => {
+        const { SurfaceStateCard } = await import('./SurfaceStateCard');
+        const screen = await renderScreen(
+            <SurfaceStateCard testID="state-line" size="line" kind="loading" title="Connecting…" />,
+        );
+        expect(screen.findByTestId('state-line-loading-spinner')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('Connecting…');
+    });
+});
+
+describe('SurfaceFreshnessLine', () => {
+    it('keeps content honest: as of when, why, and one retry', async () => {
+        const { SurfaceFreshnessLine } = await import('./SurfaceFreshnessLine');
+        const { formatAsOfTime } = await import('@/utils/time/formatAsOfTime');
+        const retry = vi.fn();
+        const asOf = Date.now() - 60_000;
+        const screen = await renderScreen(
+            <SurfaceFreshnessLine
+                testID="fresh"
+                asOf={asOf}
+                reason="devbox isn’t answering"
+                action={{ label: 'Retry', onPress: retry }}
+            />,
+        );
+        expect(screen.getTextContent()).toContain(`As of ${formatAsOfTime(asOf)}`);
+        expect(screen.getTextContent()).toContain('devbox isn’t answering');
+        await act(async () => {
+            screen.pressByTestId('fresh-action');
+        });
+        expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a working ring while it reconnects', async () => {
+        const { SurfaceFreshnessLine } = await import('./SurfaceFreshnessLine');
+        const screen = await renderScreen(
+            <SurfaceFreshnessLine testID="fresh" reason="Reconnecting to MacBook Pro…" busy />,
+        );
+        expect(screen.findByTestId('fresh-spinner')).toBeTruthy();
     });
 });

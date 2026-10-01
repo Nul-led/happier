@@ -6,6 +6,7 @@ import { Modal } from '@/modal';
 import { storage } from '@/sync/domains/state/storage';
 import { t } from '@/text';
 import { FocusReturnProvider } from './focusReturn';
+import { KeyboardShortcutLabelsContext, NO_KEYBOARD_SHORTCUT_LABELS } from './shortcutLabels';
 import {
     buildKeyboardShortcutLabels,
     createKeyboardShortcutDispatcher,
@@ -325,7 +326,9 @@ export function KeyboardShortcutProvider(props: React.PropsWithChildren<Readonly
 
     return (
         <KeyboardShortcutRegistrationContext.Provider value={registrationContextValue}>
-            <FocusReturnProvider>{props.children}</FocusReturnProvider>
+            <KeyboardShortcutLabelsContext.Provider value={keyboardShortcutsV2Enabled === true ? shortcutLabels : NO_KEYBOARD_SHORTCUT_LABELS}>
+                <FocusReturnProvider>{props.children}</FocusReturnProvider>
+            </KeyboardShortcutLabelsContext.Provider>
         </KeyboardShortcutRegistrationContext.Provider>
     );
 }

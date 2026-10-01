@@ -1,6 +1,3 @@
-import { Session } from "@/sync/domains/state/storageTypes";
-import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
-
 function robustHash(str: string): number {
     let hash = 5381; // Better initial value
     if (str.length === 0) return hash;
@@ -21,7 +18,8 @@ function robustHash(str: string): number {
     return Math.abs(hash >>> 0);
 }
 
-export function entityColor(id: string) {
+/** A stable identity colour for an entity with no image of its own (a monogram tint). */
+export function entityColor(id: string): string {
     const colors = [
         '#cc5049', // Red
         '#d67722', // Orange
@@ -44,10 +42,5 @@ export function entityColor(id: string) {
         '#e11d48', // Rose
         '#7c2d12', // Dark Brown
     ]
-    return colors[robustHash(id) % colors.length];
-}
-
-export function entitySessionColor(session: Session) {
-    const metadata = readSessionOwnerMetadataView(session);
-    return entityColor(`${(metadata?.path || 'unknown').toLowerCase()}$${metadata?.machineId || 'unknown'}`);
+    return colors[robustHash(id) % colors.length]!;
 }

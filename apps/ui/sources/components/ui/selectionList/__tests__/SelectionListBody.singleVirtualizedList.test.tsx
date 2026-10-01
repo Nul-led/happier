@@ -75,8 +75,9 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
     it('keeps row taps handled for a direct virtualized option source while the keyboard is open', async () => {
         const options = makeOptions(3, 'direct');
         const source: SelectionListVirtualizedOptionSource = {
-            items: options.map((_, optionIndex) => ({
+            items: options.map((option, optionIndex) => ({
                 kind: 'option',
+                key: option.id,
                 optionIndex,
                 positionInSet: optionIndex + 1,
             })),
@@ -107,6 +108,58 @@ describe('SelectionListBody single virtualized-list multi-section restructure (R
 
         expect(screen.tree.root.findByType(VirtualizedList as React.ComponentType<any>).props.keyboardShouldPersistTaps)
             .toBe('handled');
+    });
+
+    it('keys a direct source row from the row itself, so the list can compare a replaced listing against the previous one', async () => {
+        // LegendList detects a data change by calling the CURRENT keyExtractor on the PREVIOUS data
+        // (`checkStructuralDataChange`). A listing that shrinks (Browse after indexing settles) must
+        // therefore still key its old rows instead of reading them through the new source.
+        const makeSource = (ids: readonly string[], stateKey: string): SelectionListVirtualizedOptionSource => {
+            const options = ids.map((id) => ({ id, label: id }));
+            const getOption = (index: number) => {
+                const option = options[index];
+                if (!option) throw new Error('source index is out of bounds');
+                return option;
+            };
+            return {
+                items: options.map((option, optionIndex) => ({
+                    kind: 'option',
+                    key: option.id,
+                    optionIndex,
+                    positionInSet: optionIndex + 1,
+                })),
+                optionCount: options.length,
+                stateKey,
+                getOption,
+                getOptionId: (index) => getOption(index).id,
+                findOptionIndexById: (id) => options.findIndex((option) => option.id === id),
+                getFirstFocusableOptionIndex: () => 0,
+                getNextFocusableOptionIndex: (current) => current,
+                isFocusableOptionIndex: (index) => index >= 0 && index < options.length,
+                getHeader: () => ({ id: 'unused' }),
+            };
+        };
+        const before = makeSource(['a', 'b', 'c'], 'v1');
+        const after = makeSource(['a'], 'v2');
+        const { VirtualizedList } = await import('@/components/ui/lists/virtualized/VirtualizedList');
+        const { SelectionList } = await import('../SelectionList');
+        const element = (source: SelectionListVirtualizedOptionSource) => (
+            <SelectionList
+                {...defaultProps({
+                    id: 'root',
+                    inputPlaceholder: 'Search',
+                    sections: [],
+                    virtualizedOptionSource: source,
+                }, { maxHeight: 300 })}
+            />
+        );
+        const screen = await renderScreen(element(before));
+        await screen.update(element(after));
+
+        const keyExtractor = screen.tree.root.findByType(VirtualizedList as React.ComponentType<any>).props.keyExtractor as
+            (item: unknown, index: number) => string;
+        expect(keyExtractor(before.items[2], 2)).toBe('c');
+        expect(keyExtractor(after.items[0], 0)).toBe('a');
     });
 
     it.each([

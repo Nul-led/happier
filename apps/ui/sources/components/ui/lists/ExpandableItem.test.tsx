@@ -3,8 +3,10 @@ import { View } from 'react-native';
 import { act } from 'react-test-renderer';
 import type { ReactTestInstance } from 'react-test-renderer';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderScreen } from '@/dev/testkit';
+// Keep this primitive suite on the canonical render helper without loading unrelated fixture domains.
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import { lightTheme } from '@/theme';
+import { ItemRevealContext } from './ItemRevealContext';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -39,6 +41,7 @@ const animationControls = vi.hoisted(() => ({
 }));
 
 vi.mock('react-native-reanimated', async () => {
+    const { createReanimatedModuleMock } = await import('@/dev/testkit/mocks/reanimated');
     const ReactModule = await import('react');
     type SharedValue<T> = { value: T };
     const useSharedValue = <T,>(initial: T): SharedValue<T> => {
@@ -64,6 +67,7 @@ vi.mock('react-native-reanimated', async () => {
         createAnimatedComponent: (component: unknown) => component,
     };
     return {
+        ...createReanimatedModuleMock(),
         __esModule: true,
         default: Animated,
         ...Animated,
@@ -129,6 +133,37 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('ExpandableItem', () => {
+    it('reveals nested controlled disclosures in the requested scope and still lets the user close them', async () => {
+        const { ExpandableItem } = await import('./ExpandableItem');
+        function Disclosure(props: { testID: string; children: React.ReactNode }) {
+            const [expanded, setExpanded] = React.useState(false);
+            return <ExpandableItem testID={props.testID} expanded={expanded} onExpandedChange={setExpanded}
+                header={(state) => <View testID={`${props.testID}.header`} {...state.headerProps} />}>
+                {props.children}
+            </ExpandableItem>;
+        }
+        const screen = await renderScreen(<ItemRevealContext.Provider value="memory.indexMode">
+            <Disclosure testID="outer"><Disclosure testID="inner"><View testID="revealed-content" /></Disclosure></Disclosure>
+        </ItemRevealContext.Provider>);
+        expect(screen.findByTestId('revealed-content')).not.toBeNull();
+        await act(async () => screen.findByTestId('inner.header')!.props.onPress());
+        expect(screen.findByTestId('inner.header')!.props.accessibilityState.expanded).toBe(false);
+        await act(async () => screen.update(<ItemRevealContext.Provider value="memory.indexMode">
+            <Disclosure testID="outer"><Disclosure testID="inner"><View testID="revealed-content" /></Disclosure></Disclosure>
+        </ItemRevealContext.Provider>));
+        expect(screen.findByTestId('inner.header')!.props.accessibilityState.expanded).toBe(false);
+    });
+
+    it('requests controlled expansion without overriding a parent that keeps its disclosure closed', async () => {
+        const { ExpandableItem } = await import('./ExpandableItem');
+        const onExpandedChange = vi.fn();
+        const screen = await renderScreen(<ItemRevealContext.Provider value="memory.indexMode">
+            <ExpandableItem expanded={false} onExpandedChange={onExpandedChange} header={() => <View />}><View testID="controlled-content" /></ExpandableItem>
+        </ItemRevealContext.Provider>);
+        expect(onExpandedChange).toHaveBeenCalledWith(true);
+        expect(screen.findByTestId('controlled-content')).toBeNull();
+    });
+
     it('renders only the header when collapsed and reveals the body when expanded', async () => {
         const { ExpandableItem } = await import('./ExpandableItem');
 

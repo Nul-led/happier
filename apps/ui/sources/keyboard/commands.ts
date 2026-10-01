@@ -176,57 +176,75 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.closeLeaf',
+        id: 'workspace.closePane',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasCloseLeaf',
         defaultBinding: { binding: 'Alt+Backspace' },
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.focusDown',
+        id: 'workspace.focusDown',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasFocusDown',
-        defaultBinding: { binding: 'Alt+ArrowDown', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Ctrl+Alt+ArrowDown', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Alt+ArrowDown', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.focusLeft',
+        id: 'workspace.focusLeft',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasFocusLeft',
-        defaultBinding: { binding: 'Alt+ArrowLeft', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Ctrl+Alt+ArrowLeft', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Alt+ArrowLeft', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.focusRight',
+        id: 'workspace.focusRight',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasFocusRight',
-        defaultBinding: { binding: 'Alt+ArrowRight', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Ctrl+Alt+ArrowRight', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Alt+ArrowRight', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.focusUp',
+        id: 'workspace.focusUp',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasFocusUp',
-        defaultBinding: { binding: 'Alt+ArrowUp', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Ctrl+Alt+ArrowUp', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Alt+ArrowUp', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.restoreMaximize',
+        id: 'workspace.restoreMaximize',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasRestoreMaximize',
-        defaultBinding: { binding: 'Escape', conflictScope: 'splitCanvas' },
+        defaultBinding: { binding: 'Escape', conflictScope: 'workspace' },
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.splitDown',
+        id: 'workspace.splitDown',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasSplitDown',
-        defaultBinding: { binding: 'Alt+Shift+ArrowDown', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Alt+Shift+Backslash', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Shift+Backslash', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.splitRight',
+        id: 'workspace.splitRight',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasSplitRight',
-        defaultBinding: { binding: 'Alt+Shift+Enter', conflictScope: 'splitCanvas' },
+        defaultBindings: [
+            { binding: 'Alt+Backslash', platforms: ['web'], conflictScope: 'workspace' },
+            { binding: 'Mod+Backslash', blockedSurfaces: ['web'], conflictScope: 'workspace' },
+        ],
         when: (context) => !context.isEditableTarget,
     },
     {
-        id: 'splitCanvas.toggleMaximize',
+        id: 'workspace.toggleMaximize',
         settingsTitleKey: 'settingsKeyboard.commands.splitCanvasToggleMaximize',
-        defaultBinding: { binding: 'Alt+M', conflictScope: 'splitCanvas' },
+        defaultBinding: { binding: 'Alt+M', conflictScope: 'workspace' },
         when: (context) => !context.isEditableTarget,
     },
     {
@@ -244,6 +262,8 @@ export const defaultKeyboardCommands: readonly KeyboardCommand[] = [
     {
         id: 'settings.open',
         settingsTitleKey: 'settingsKeyboard.commands.settingsOpen',
+        // The platform's preferences shortcut; a browser keeps it for its own preferences.
+        defaultBindings: [{ binding: 'Mod+,', blockedSurfaces: ['web'] }],
     },
     {
         id: 'transcript.message.next',

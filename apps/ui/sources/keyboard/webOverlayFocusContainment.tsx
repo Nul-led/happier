@@ -93,16 +93,29 @@ export function useWebOverlayFocusContainment(options: WebOverlayFocusContainmen
             // from the currently interactive overlay.
             if (isWithinInertSubtree(container)) return;
 
-            const eligibleReturnTarget = isEligibleFocusTarget(returnTarget)
-                ? returnTarget
-                : null;
-            const fallbackTarget = isEligibleFocusTarget(fallbackRef?.current)
-                ? fallbackRef.current
-                : null;
-            restoreFocusToBestTarget(
-                { current: eligibleReturnTarget },
-                { current: fallbackTarget },
-            );
+            const restoreReleasedFocus = () => {
+                const eligibleReturnTarget = isEligibleFocusTarget(returnTarget)
+                    ? returnTarget
+                    : null;
+                const fallbackTarget = isEligibleFocusTarget(fallbackRef?.current)
+                    ? fallbackRef.current
+                    : null;
+                restoreFocusToBestTarget(
+                    { current: eligibleReturnTarget },
+                    { current: fallbackTarget },
+                );
+            };
+            restoreReleasedFocus();
+            // This release runs inside a React commit. When the shell stays in the document (a modal
+            // animating out), React then re-focuses the element that held focus before the commit —
+            // inside this shell — undoing the release. Re-assert once the commit is done, but only
+            // while focus is still in this shell or nowhere, so an overlay that took focus meanwhile keeps it.
+            queueMicrotask(() => {
+                const focused = document.activeElement;
+                if (focused && focused !== document.body && !container.contains(focused)) return;
+                if (isWithinInertSubtree(container)) return;
+                restoreReleasedFocus();
+            });
         };
     }, [
         fallbackRef,

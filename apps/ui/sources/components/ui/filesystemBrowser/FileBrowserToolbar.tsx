@@ -3,6 +3,7 @@ import { Pressable, View, type LayoutChangeEvent, type PressableProps, type View
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { TextInput } from '@/components/ui/text/Text';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 export type FileBrowserToolbarActionLike = Readonly<{
     id: string;
@@ -115,7 +116,7 @@ export function FileBrowserToolbarIconButton({
                 {
                     borderColor: selected ? theme.colors.text.link : theme.colors.border.default,
                     backgroundColor: theme.colors.surface.base,
-                    opacity: disabled ? 0.5 : (state.pressed ? 0.75 : 1),
+                    opacity: disabled ? 0.5 : (state.pressed ? motionTokens.press.opacity : 1),
                 },
                 typeof userStyle === 'function' ? userStyle(state) : userStyle,
             ])}

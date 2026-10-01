@@ -29,27 +29,9 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
     };
 });
 
-function createRadixHostComponent(tagName: string) {
-    return (props: Record<string, unknown>) => {
-        const { children, ...rest } = props as Record<string, unknown> & { children?: React.ReactNode };
-        return React.createElement(tagName, rest, children);
-    };
-}
-
-vi.mock('@/utils/web/radixCjs', () => {
-    return {
-        requireRadixDialog: () => ({
-            Root: createRadixHostComponent('DialogRoot'),
-            Portal: createRadixHostComponent('DialogPortal'),
-            Overlay: createRadixHostComponent('DialogOverlay'),
-            Content: createRadixHostComponent('DialogContent'),
-            Title: createRadixHostComponent('DialogTitle'),
-        }),
-        requireRadixDismissableLayer: () => ({
-            Branch: createRadixHostComponent('DismissableLayerBranch'),
-            DismissableLayerBranch: createRadixHostComponent('DismissableLayerBranch'),
-        }),
-    };
+vi.mock('@/utils/web/radixCjs', async () => {
+    const { createRadixCjsModuleMock } = await import('@/dev/testkit/mocks/radixCjs');
+    return createRadixCjsModuleMock();
 });
 
 vi.mock('react-native-keyboard-controller', () => ({

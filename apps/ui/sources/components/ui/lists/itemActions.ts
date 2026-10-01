@@ -33,3 +33,6 @@ export type ItemAction = {
     destructive?: boolean;
     color?: string;
 };
+
+/** Below this layout width a row keeps only its compact actions and folds the rest into `⋯`. */
+export const ITEM_ROW_ACTIONS_COMPACT_THRESHOLD_PX = 450;

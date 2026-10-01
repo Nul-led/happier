@@ -22,6 +22,16 @@ vi.mock('./SelectableRow', async (importOriginal) => {
 });
 
 describe('ActionListSection', () => {
+    it('labels its section through the shared popover section-header owner, in the title\'s own case', async () => {
+        const { ActionListSection } = await import('./ActionListSection');
+        const { SelectionListSectionHeader } = await import('@/components/ui/selectionList/SelectionListSectionHeader');
+        const screen = await renderScreen(
+            <ActionListSection title="Homes" actions={[{ id: 'a', label: 'A' }]} />,
+        );
+        const header = screen.tree.root.findByType(SelectionListSectionHeader);
+        expect(header.props.title).toBe('Homes');
+    });
+
     it('wraps string icons so they do not render as raw text nodes under <View>', async () => {
         const { ActionListSection } = await import('./ActionListSection');
 
@@ -104,6 +114,33 @@ describe('ActionListSection', () => {
         }));
     });
 
+    it('draws menu rows across the full content width at the shared inset, with a fill highlight and no outline', async () => {
+        const { ActionListSection } = await import('./ActionListSection');
+        const { MENU_ROW_METRICS } = await import('./itemDensityMetrics');
+        const { flattenTestStyle } = await import('@/dev/testkit/harness/popoverHarness');
+
+        const screen = await renderScreen(
+            <ActionListSection
+                actions={[
+                    { id: 'current', testID: 'row-current', label: 'All sources', selected: true, onPress: () => {} },
+                    { id: 'other', testID: 'row-other', label: 'Community npm', onPress: () => {} },
+                ]}
+            />,
+        );
+
+        const rowStyle = (testID: string) => flattenTestStyle(screen.findByTestId(testID)?.props.style);
+        for (const testID of ['row-current', 'row-other']) {
+            const style = rowStyle(testID);
+            expect(style.alignSelf).toBe('stretch');
+            expect(style.marginHorizontal).toBe(MENU_ROW_METRICS.insetPx);
+            expect(style.borderRadius).toBe(MENU_ROW_METRICS.radiusPx);
+            expect(style.borderWidth).toBe(0);
+        }
+        // The current choice is a fill; the other row has none.
+        expect(rowStyle('row-current').backgroundColor).not.toBe('transparent');
+        expect(rowStyle('row-other').backgroundColor).toBe('transparent');
+    });
+
     it('keeps an authored action accessibility label when it differs from the visible label', async () => {
         const { ActionListSection } = await import('./ActionListSection');
         const action: ActionListItem = {
@@ -121,7 +158,7 @@ describe('ActionListSection', () => {
         }));
     });
 
-    it('exposes applied menu choices as pressed buttons on web and native accessibility trees', async () => {
+    it('exposes applied menu choices with platform-correct button selection semantics', async () => {
         const { ActionListSection } = await import('./ActionListSection');
 
         const screen = await renderScreen(
@@ -138,12 +175,29 @@ describe('ActionListSection', () => {
         const compact = screen.findByTestId('choice-compact');
         const wide = screen.findByTestId('choice-wide');
         const plain = screen.findByTestId('plain-action');
-        expect(compact?.props.role).toBe('button');
-        expect(compact?.props['aria-pressed']).toBe(true);
+        expect(compact?.props.role ?? compact?.props.accessibilityRole).toBe('button');
+        expect(compact?.props['aria-pressed'] ?? compact?.props.accessibilityState?.selected).toBe(true);
         expect(compact?.props.accessibilityState).toMatchObject({ selected: true });
-        expect(wide?.props['aria-pressed']).toBe(false);
+        expect(wide?.props['aria-pressed'] ?? wide?.props.accessibilityState?.selected).toBe(false);
         expect(wide?.props.accessibilityState).toMatchObject({ selected: false });
         expect(plain?.props).not.toHaveProperty('aria-pressed');
         expect(plain?.props.accessibilityState).toBeUndefined();
+    });
+
+    it('preserves hook order when an initially empty section gains and loses actions', async () => {
+        const { ActionListSection } = await import('./ActionListSection');
+        const action: ActionListItem = {
+            id: 'late-action',
+            testID: 'late-action',
+            label: 'Loaded action',
+            onPress: () => {},
+        };
+
+        const screen = await renderScreen(<ActionListSection actions={[]} />);
+
+        await expect(screen.update(<ActionListSection actions={[action]} />)).resolves.toBeUndefined();
+        expect(screen.findByTestId('late-action')).toBeTruthy();
+        await expect(screen.update(<ActionListSection actions={[]} />)).resolves.toBeUndefined();
+        expect(screen.findByTestId('late-action')).toBeNull();
     });
 });

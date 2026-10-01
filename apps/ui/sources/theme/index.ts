@@ -125,6 +125,10 @@ export const lightTheme = {
             // edge without competing with the content inside it. Introduced for the sidebar/content
             // seam and shared by the quiet toolbar buttons rather than re-typed as a literal.
             subtle: 'rgba(0, 0, 0, 0.062)',
+            // About half the weight of `subtle`: the content-width separator between groups of one
+            // section's rows (a pause inside the section), so it never competes with the section's
+            // own full-width hairline (`subtle`) above it.
+            faint: 'rgba(0, 0, 0, 0.034)',
         },
         effect: {
             surfaceHighlight: 'transparent',
@@ -449,6 +453,7 @@ export const darkTheme = {
             focus: '#9EB9FF',
             modal: 'rgba(255,255,255,0.064)',
             subtle: 'rgba(255,255,255,0.040)',
+            faint: 'rgba(255,255,255,0.024)',
         },
         effect: {
             surfaceHighlight: 'transparent',

@@ -4,7 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { KeyboardAwareModalFrame } from '@/components/ui/keyboardAvoidance';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
 import { OverlayPortalHost, OverlayPortalProvider } from '@/components/ui/popover';
-import { requireRadixDismissableLayer } from '@/utils/web/radixCjs';
+import { requireRadixDismissableLayer, requireRadixFocusScope } from '@/utils/web/radixCjs';
 import { requireReactDOM } from '@/utils/web/reactDomCjs';
 import { ModalPortalTargetProvider, useModalPortalTarget } from '@/modal/portal/ModalPortalTarget';
 import type { ModalPortalTarget } from '@/modal/portal/ModalPortalTarget';
@@ -22,6 +22,7 @@ import {
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { useWebOverlayFocusContainment } from '@/keyboard/webOverlayFocusContainment';
 import { type FocusReturnRef, useRestoreFocusToTrigger } from '@/keyboard/focusReturn';
+import { visuallyHiddenDomStyle } from '@/components/ui/accessibility/visuallyHiddenStyle';
 
 const BASE_MODAL_FOCUS_RETURN = { kind: 'activation-time' } as const;
 
@@ -142,6 +143,8 @@ interface BaseModalProps {
     showBackdrop?: boolean;
     zIndexBase?: number;
     webPlacement?: 'auto' | 'top';
+    /** `bottom` anchors the content to the bottom edge (a phone sheet) on every platform. */
+    placement?: 'center' | 'bottom';
     /** The overlay scrolls by default; bounded modal bodies may own their one scroll region. */
     scrollHost?: 'overlay' | 'body';
     webPortalTarget?: ModalPortalTarget;
@@ -157,6 +160,7 @@ export function BaseModal({
     showBackdrop = true,
     zIndexBase,
     webPlacement = 'auto',
+    placement = 'center',
     scrollHost = 'overlay',
     webPortalTarget = null,
     focusReturnRef,
@@ -169,6 +173,7 @@ export function BaseModal({
     const [modalPortalTarget, setModalPortalTarget] = React.useState<HTMLElement | null>(null);
     const modalPortalHostRef = React.useRef<HTMLDivElement | null>(null);
     const radixDismissableLayer = React.useMemo(() => (isWeb ? requireRadixDismissableLayer() : null), []);
+    const radixFocusScope = React.useMemo(() => (isWeb ? requireRadixFocusScope() : null), []);
     const webContentShellRef = React.useRef<HTMLDivElement | null>(null);
     const modalMotionPreset = React.useMemo(
         () => resolveOverlayMotionPreset({ kind: 'modal' }),
@@ -275,7 +280,20 @@ export function BaseModal({
             return document.body ?? null;
         })();
 
-        const { Branch: DismissableLayerBranch } = radixDismissableLayer!;
+        const { Branch: DismissableLayerBranch, Root: DismissableLayer } = radixDismissableLayer!;
+        const { Root: FocusScope } = radixFocusScope!;
+        // Route modals (Expo Router's web modal, e.g. Settings) are Radix dialogs. Joining the same
+        // Radix stacks makes this dialog the topmost overlay while it is shown: its layer is the
+        // highest, so Escape reaches only it (it closes through its own handler below, hence no
+        // `onDismiss`), and its focus scope pauses the route modal's focus trap, which would otherwise
+        // pull focus back out of it. Focus placement and return stay with the containment hook.
+        const focusEntryIntoShell = (event: Event) => {
+            event.preventDefault();
+            webContentShellRef.current?.focus({ preventScroll: true });
+        };
+        const leaveFocusReturnToContainment = (event: Event) => {
+            event.preventDefault();
+        };
 
         const overlayStyle: React.CSSProperties = {
             position: 'fixed',
@@ -313,18 +331,6 @@ export function BaseModal({
             overflowY: scrollHost === 'overlay' ? 'auto' : 'hidden',
         };
 
-        const visuallyHiddenStyle: React.CSSProperties = {
-            position: 'absolute',
-            width: 1,
-            height: 1,
-            padding: 0,
-            margin: -1,
-            overflow: 'hidden',
-            clip: 'rect(0, 0, 0, 0)',
-            whiteSpace: 'nowrap',
-            borderWidth: 0,
-        };
-
         const portalHostStyle: React.CSSProperties = {
             position: 'absolute',
             top: 0,
@@ -342,10 +348,11 @@ export function BaseModal({
             minHeight: '100%',
             display: 'flex',
             flexDirection: 'column',
-            justifyContent: webPlacement === 'top' ? 'flex-start' : 'center',
-            alignItems: 'center',
+            justifyContent: placement === 'bottom' ? 'flex-end' : webPlacement === 'top' ? 'flex-start' : 'center',
+            alignItems: placement === 'bottom' ? 'stretch' : 'center',
             paddingTop: webPlacement === 'top' ? Math.max(insets.top, topPlacementGap) : insets.top,
-            paddingBottom: webPlacement === 'top' ? Math.max(insets.bottom, topPlacementGap) : insets.bottom,
+            // A bottom sheet reaches the edge; it pads the safe area inside itself.
+            paddingBottom: placement === 'bottom' ? 0 : webPlacement === 'top' ? Math.max(insets.bottom, topPlacementGap) : insets.bottom,
             paddingLeft: insets.left,
             paddingRight: insets.right,
             boxSizing: 'border-box',
@@ -377,6 +384,12 @@ export function BaseModal({
                     />
                 ) : null}
                 <DismissableLayerBranch style={{ display: 'contents' }}>
+                    <DismissableLayer asChild>
+                    <FocusScope
+                        asChild
+                        onMountAutoFocus={focusEntryIntoShell}
+                        onUnmountAutoFocus={leaveFocusReturnToContainment}
+                    >
                     <div
                         ref={webContentShellRef}
                         role="dialog"
@@ -398,7 +411,7 @@ export function BaseModal({
                             onClose();
                         }}
                     >
-                        <div style={visuallyHiddenStyle}>{modalAccessibilityLabel}</div>
+                        <div style={visuallyHiddenDomStyle}>{modalAccessibilityLabel}</div>
                         {/* Host for web portals (e.g. popovers) that must live inside the dialog subtree. */}
                         <div
                             data-happy-modal-portal-host=""
@@ -412,6 +425,7 @@ export function BaseModal({
                                     pointerEvents={interactivePointerEvents.nativePointerEvents}
                                     style={[
                                         styles.container,
+                        placement === 'bottom' ? styles.containerBottom : null,
                                         autoPlacementContainerStyle,
                                         interactivePointerEvents.webStyle,
                                     ]}
@@ -440,6 +454,8 @@ export function BaseModal({
                             </ModalBoundaryProvider>
                         </ModalPortalTargetProvider>
                     </div>
+                    </FocusScope>
+                    </DismissableLayer>
                 </DismissableLayerBranch>
             </>
         );
@@ -480,10 +496,11 @@ export function BaseModal({
                 <KeyboardAwareModalFrame
                     style={[
                         styles.container,
+                        placement === 'bottom' ? styles.containerBottom : null,
                         {
                             paddingTop: insets.top,
                             paddingRight: insets.right,
-                            paddingBottom: insets.bottom,
+                            paddingBottom: placement === 'bottom' ? 0 : insets.bottom,
                             paddingLeft: insets.left,
                         },
                     ]}
@@ -561,6 +578,10 @@ const styles = StyleSheet.create(() => ({
           // On web, ensure modal can receive pointer events when body has pointer-events: none
           ...Platform.select({ web: { pointerEvents: 'auto' as const } })
       },
+    containerBottom: {
+        justifyContent: 'flex-end',
+        alignItems: 'stretch',
+    },
     backdrop: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: 'transparent',

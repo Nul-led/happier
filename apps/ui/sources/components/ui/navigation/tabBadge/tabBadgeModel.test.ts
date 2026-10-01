@@ -2,14 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { ScmStatus } from '@/sync/domains/state/storageTypes';
 
-import { formatBadgeCount, formatScmDiffBadge, resolveGitTabBadge } from './tabBadgeModel';
+import { formatBadgeCount, formatExactCount, formatScmDiffBadge, resolveGitTabBadge } from './tabBadgeModel';
 
 function makeScmStatus(overrides: Partial<ScmStatus>): ScmStatus {
     return {
         branch: 'main',
         isDirty: false,
-        modifiedCount: 0,
-        untrackedCount: 0,
+        changedFileCount: 0,
         includedCount: 0,
         lastUpdatedAt: 0,
         includedLinesAdded: 0,
@@ -40,6 +39,14 @@ describe('formatBadgeCount', () => {
     });
 });
 
+describe('formatExactCount', () => {
+    it('shows the exact count where the badge would cap it', () => {
+        expect(formatExactCount(7887)).toBe(new Intl.NumberFormat().format(7887));
+        expect(formatBadgeCount(7887)).toBe('99+');
+        expect(formatExactCount(-1)).toBe('0');
+    });
+});
+
 describe('formatScmDiffBadge', () => {
     it('returns null for missing status', () => {
         expect(formatScmDiffBadge(null)).toBeNull();
@@ -53,30 +60,30 @@ describe('formatScmDiffBadge', () => {
     it('surfaces added/removed lines and modified file count', () => {
         expect(formatScmDiffBadge(makeScmStatus({
             isDirty: true,
-            modifiedCount: 3,
+            changedFileCount: 3,
             linesAdded: 42,
             linesRemoved: 8,
-        }))).toEqual({ added: 42, removed: 8, modifiedCount: 3 });
+        }))).toEqual({ added: 42, removed: 8, changedFileCount: 3 });
     });
 
     it('surfaces a badge when only the file count is known', () => {
         expect(formatScmDiffBadge(makeScmStatus({
             isDirty: true,
-            modifiedCount: 2,
-        }))).toEqual({ added: 0, removed: 0, modifiedCount: 2 });
+            changedFileCount: 2,
+        }))).toEqual({ added: 0, removed: 0, changedFileCount: 2 });
     });
 
     it('floors and clamps malformed counts', () => {
         expect(formatScmDiffBadge(makeScmStatus({
             linesAdded: 5.9,
             linesRemoved: -3,
-            modifiedCount: 1,
-        }))).toEqual({ added: 5, removed: 0, modifiedCount: 1 });
+            changedFileCount: 1,
+        }))).toEqual({ added: 5, removed: 0, changedFileCount: 1 });
     });
 });
 
 describe('resolveGitTabBadge', () => {
-    const dirty = makeScmStatus({ isDirty: true, modifiedCount: 3, linesAdded: 42, linesRemoved: 8 });
+    const dirty = makeScmStatus({ isDirty: true, changedFileCount: 3, linesAdded: 42, linesRemoved: 8 });
 
     it('hides the badge when mode is off', () => {
         expect(resolveGitTabBadge('off', dirty)).toBeNull();
@@ -92,12 +99,12 @@ describe('resolveGitTabBadge', () => {
     });
 
     it('shows the added/removed line chip in diffLines mode', () => {
-        expect(resolveGitTabBadge('diffLines', dirty)).toEqual({ kind: 'diff', added: 42, removed: 8, modifiedCount: 3 });
+        expect(resolveGitTabBadge('diffLines', dirty)).toEqual({ kind: 'diff', added: 42, removed: 8, changedFileCount: 3 });
     });
 
     it('omits the changed-files count when only line changes are known (no file count)', () => {
-        const linesOnly = makeScmStatus({ isDirty: true, modifiedCount: 0, linesAdded: 5, linesRemoved: 1 });
+        const linesOnly = makeScmStatus({ isDirty: true, changedFileCount: 0, linesAdded: 5, linesRemoved: 1 });
         expect(resolveGitTabBadge('changedFiles', linesOnly)).toBeNull();
-        expect(resolveGitTabBadge('diffLines', linesOnly)).toEqual({ kind: 'diff', added: 5, removed: 1, modifiedCount: 0 });
+        expect(resolveGitTabBadge('diffLines', linesOnly)).toEqual({ kind: 'diff', added: 5, removed: 1, changedFileCount: 0 });
     });
 });

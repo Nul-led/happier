@@ -25,6 +25,8 @@ export type FilesystemBrowserListProps = Readonly<{
     loadingLabel: string;
     inlineRetryLabel: string;
     listHeaderTestID?: string;
+    /** Drawn after the last row, in the same scroll (the Git pane's timeline under its tree). */
+    listFooter?: React.ReactElement | null;
     renderRow: (input: FilesystemBrowserRowRenderInput) => React.ReactElement;
     retryRoot: () => void | Promise<void>;
     contentContainerStyle?: StyleProp<ViewStyle>;

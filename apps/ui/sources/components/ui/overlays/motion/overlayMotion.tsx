@@ -5,7 +5,8 @@ import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreferenc
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { resolveOverlayPointerEvents } from '../resolveOverlayPointerEvents';
 
-export type OverlayMotionKind = 'popover' | 'modal';
+/** `panel`: a surface sliding in from the edge it stands on, over what is there (the rail's column peek). */
+export type OverlayMotionKind = 'popover' | 'modal' | 'panel';
 export type OverlayMotionDirection = 'top' | 'bottom' | 'left' | 'right' | 'center';
 
 export type OverlayMotionPreset = Readonly<{
@@ -15,6 +16,8 @@ export type OverlayMotionPreset = Readonly<{
     fromScale: number;
     fromTranslateX: number;
     fromTranslateY: number;
+    /** Under reduced motion: `0` changes at once; otherwise the overlay only fades, over this long. */
+    reducedMotionFadeMs: number;
 }>;
 
 export function resolveOverlayMotionDirectionFromPlacement(placement: string): OverlayMotionDirection {
@@ -31,9 +34,25 @@ export function resolveOverlayMotionDirectionFromPlacement(placement: string): O
 
 export function resolveOverlayMotionPreset(params: Readonly<{
     kind: OverlayMotionKind;
+    /** Where the overlay stands relative to its source; it arrives from the source's side. */
     direction?: OverlayMotionDirection;
+    /** `panel` only: how far it travels in, usually its own size along `direction`. */
+    travelPx?: number;
 }>): OverlayMotionPreset {
     const direction = params.direction ?? 'center';
+
+    if (params.kind === 'panel') {
+        const travel = params.travelPx ?? 0;
+        return {
+            enterMs: motionTokens.overlay.panel.enterMs,
+            exitMs: motionTokens.overlay.panel.exitMs,
+            fromOpacity: 1,
+            fromScale: 1,
+            fromTranslateX: direction === 'left' ? travel : direction === 'right' ? -travel : 0,
+            fromTranslateY: direction === 'top' ? travel : direction === 'bottom' ? -travel : 0,
+            reducedMotionFadeMs: motionTokens.overlay.panel.reducedMotionFadeMs,
+        };
+    }
 
     if (params.kind === 'modal') {
         return {
@@ -43,6 +62,7 @@ export function resolveOverlayMotionPreset(params: Readonly<{
             fromScale: motionTokens.overlay.modal.fromScale,
             fromTranslateX: 0,
             fromTranslateY: motionTokens.overlay.modal.fromTranslateY,
+            reducedMotionFadeMs: motionTokens.durationMs.instant,
         };
     }
 
@@ -65,6 +85,7 @@ export function resolveOverlayMotionPreset(params: Readonly<{
                 : direction === 'bottom'
                     ? -fromDistance
                     : 0,
+        reducedMotionFadeMs: motionTokens.durationMs.instant,
     };
 }
 
@@ -133,17 +154,19 @@ export function useOverlayMotionAnimation(params: Readonly<{
 }> {
     const reducedMotion = useReducedMotionPreference();
     const progress = React.useRef(new Animated.Value(0)).current;
+    const reducedMs = params.preset.reducedMotionFadeMs;
 
+    // Each change animates from where the overlay is now, so a reversal mid-way turns around in place.
     React.useLayoutEffect(() => {
         Animated.timing(progress, {
             toValue: params.visible ? 1 : 0,
             duration: reducedMotion
-                ? motionTokens.durationMs.instant
+                ? reducedMs
                 : (params.visible ? params.preset.enterMs : params.preset.exitMs),
             easing: motionTokens.easing.standard,
             useNativeDriver: Platform.OS !== 'web',
         }).start();
-    }, [params.preset.enterMs, params.preset.exitMs, params.visible, progress, reducedMotion]);
+    }, [params.preset.enterMs, params.preset.exitMs, params.visible, progress, reducedMotion, reducedMs]);
 
     const opacity = progress.interpolate({
         inputRange: [0, 1],
@@ -163,10 +186,13 @@ export function useOverlayMotionAnimation(params: Readonly<{
     });
 
     const omitTransform = params.disableTransformOnWeb === true && Platform.OS === 'web';
+    const fadeOnly = reducedMotion && reducedMs > 0;
     return {
-        exitMs: reducedMotion ? motionTokens.durationMs.instant : params.preset.exitMs,
+        exitMs: reducedMotion ? reducedMs : params.preset.exitMs,
         progress,
-        style: omitTransform
+        style: fadeOnly
+            ? { opacity: progress }
+            : omitTransform
             ? { opacity }
             : {
                 opacity,
@@ -174,6 +200,74 @@ export function useOverlayMotionAnimation(params: Readonly<{
             },
     };
 }
+
+type OverlayPanelMotionParams = Readonly<{
+    visible: boolean;
+    preset: OverlayMotionPreset;
+    /** The panel's element (a web `HTMLElement`); the web motion animates it directly. */
+    elementRef: React.RefObject<unknown>;
+}>;
+
+type OverlayPanelMotion = Readonly<{ exitMs: number; style: StyleProp<ViewStyle> }>;
+
+/** Where a panel rests: in place when shown, one travel out (or transparent, when it only fades) when not. */
+function panelRestingFrame(preset: OverlayMotionPreset, shown: boolean, fadeOnly: boolean): Record<string, string | number> {
+    if (fadeOnly) return { opacity: shown ? 1 : 0 };
+    return { transform: shown ? 'none' : `translate(${preset.fromTranslateX}px, ${preset.fromTranslateY}px)` };
+}
+
+/**
+ * The web runs a panel's motion as a Web Animation on its element, which the browser composites off
+ * the main thread: a panel that mounts heavy content (the rail's column peek) keeps its pace while that
+ * content renders, where the Animated path stalled (lanes/shell-polish.md: a 220 ms slide took ~900 ms
+ * on the dev build). Each change starts from where the panel is, so a reversal turns around in place;
+ * the element's own style holds the resting state.
+ */
+function useWebOverlayPanelMotion(params: OverlayPanelMotionParams): OverlayPanelMotion {
+    const reducedMotion = useReducedMotionPreference();
+    const fadeOnly = reducedMotion && params.preset.reducedMotionFadeMs > 0;
+    const presetRef = React.useRef(params.preset);
+    presetRef.current = params.preset;
+    const animationRef = React.useRef<Animation | null>(null);
+    React.useLayoutEffect(() => {
+        const element = params.elementRef.current as HTMLElement | null;
+        if (!element || typeof element.animate !== 'function') return;
+        const preset = presetRef.current;
+        const previous = animationRef.current;
+        const property = fadeOnly ? 'opacity' : 'transform';
+        const turning = previous?.playState === 'running' && (previous.effect as KeyframeEffect | null)?.target === element;
+        const from = turning
+            ? { [property]: getComputedStyle(element)[property] }
+            : panelRestingFrame(preset, !params.visible, fadeOnly);
+        previous?.cancel();
+        animationRef.current = null;
+        const duration = reducedMotion ? preset.reducedMotionFadeMs : (params.visible ? preset.enterMs : preset.exitMs);
+        if (duration <= 0) return;
+        animationRef.current = element.animate(
+            [from, panelRestingFrame(preset, params.visible, fadeOnly)],
+            { duration, easing: motionTokens.easingCss.standard },
+        );
+    }, [fadeOnly, params.elementRef, params.visible, reducedMotion]);
+    React.useEffect(() => () => animationRef.current?.cancel(), []);
+    const { fromTranslateX, fromTranslateY } = params.preset;
+    const style = React.useMemo<ViewStyle>(() => {
+        if (fadeOnly) return { opacity: params.visible ? 1 : 0 };
+        return params.visible ? {} : { transform: [{ translateX: fromTranslateX }, { translateY: fromTranslateY }] };
+    }, [fadeOnly, fromTranslateX, fromTranslateY, params.visible]);
+    return { exitMs: reducedMotion ? params.preset.reducedMotionFadeMs : params.preset.exitMs, style };
+}
+
+function useNativeOverlayPanelMotion(params: OverlayPanelMotionParams): OverlayPanelMotion {
+    return useOverlayMotionAnimation({ visible: params.visible, preset: params.preset });
+}
+
+/**
+ * Motion for a `panel` overlay (`resolveOverlayMotionPreset({ kind: 'panel' })`): spread `style` on the
+ * panel's element (an `Animated.View`), give it `elementRef`, and keep it mounted for `exitMs` after it
+ * hides (`useOverlayPresence`).
+ */
+export const useOverlayPanelMotion: (params: OverlayPanelMotionParams) => OverlayPanelMotion =
+    Platform.OS === 'web' ? useWebOverlayPanelMotion : useNativeOverlayPanelMotion;
 
 export function OverlayMotionFrame(props: Readonly<{
     visible: boolean;

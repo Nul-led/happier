@@ -21,6 +21,17 @@ import type { StyleProp, TextStyle } from 'react-native';
  * author never produces one, so unwrapping them is an app concern that plugs
  * back into the shared traversal through its entry-transform seam.
  */
+/** The app's text-size steps (Settings → Appearance's slider; the embed's Compact | Default | Large). */
+export const UI_FONT_SCALE_PRESETS = {
+    xxsmall: 0.8,
+    xsmall: 0.85,
+    small: 0.93,
+    default: 1,
+    large: 1.1,
+    xlarge: 1.2,
+    xxlarge: 1.3,
+} as const;
+
 const UNISTYLES_SECRET_KEY_PREFIX = 'unistyles_';
 
 function wrapUnistylesSecret(secret: any, uiFontScale: number): any {

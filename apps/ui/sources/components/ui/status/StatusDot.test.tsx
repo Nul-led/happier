@@ -103,6 +103,64 @@ describe('StatusDot', () => {
         hostViewedState.value = true;
     });
 
+    it('draws its halo as a concentric ring twice the dot size, in the halo colour', async () => {
+        const { StatusDot } = await import('./StatusDot');
+        const screen = await renderScreen(React.createElement(StatusDot, {
+            color: 'green',
+            halo: 'palegreen',
+            size: 8,
+            testID: 'status-dot',
+        }));
+
+        const halo = flattenStyle(screen.findByTestId('status-dot-halo')?.props.style);
+        expect(halo.backgroundColor).toBe('palegreen');
+        expect(halo.width).toBe(16);
+        expect(halo.height).toBe(16);
+        expect(halo.borderRadius).toBe(8);
+        // The dot itself keeps its own colour and size inside the ring.
+        const dot = flattenStyle(screen.findByTestId('status-dot')?.props.style);
+        expect(dot.backgroundColor).toBe('green');
+        expect(dot.width).toBe(8);
+    });
+
+    it('draws no halo wrapper when no halo is asked for', async () => {
+        const { StatusDot } = await import('./StatusDot');
+        const screen = await renderScreen(React.createElement(StatusDot, {
+            color: 'green',
+            size: 8,
+            testID: 'status-dot',
+        }));
+
+        expect(screen.findByTestId('status-dot-halo')).toBeNull();
+    });
+
+    it('stops pulsing inside a retained pane that is not being presented', async () => {
+        const { StatusDot } = await import('./StatusDot');
+        const { PluginSurfaceFocusEligibilityProvider } = await import('@/components/ui/presentation/PluginSurfaceFocusEligibility');
+        const screen = await renderScreen(
+            <PluginSurfaceFocusEligibilityProvider active={false}>
+                <StatusDot color="red" isPulsing size={10} testID="status-dot" />
+            </PluginSurfaceFocusEligibilityProvider>,
+        );
+
+        const style = flattenStyle(screen.findByTestId('status-dot')?.props.style);
+        expect(style.backgroundColor).toBe('red');
+        expect(style.animationName).toBeUndefined();
+    });
+
+    it('keeps pulsing inside a presented pane', async () => {
+        const { StatusDot } = await import('./StatusDot');
+        const { PluginSurfaceFocusEligibilityProvider } = await import('@/components/ui/presentation/PluginSurfaceFocusEligibility');
+        const screen = await renderScreen(
+            <PluginSurfaceFocusEligibilityProvider active={true}>
+                <StatusDot color="red" isPulsing size={10} testID="status-dot" />
+            </PluginSurfaceFocusEligibilityProvider>,
+        );
+
+        const style = flattenStyle(screen.findByTestId('status-dot')?.props.style);
+        expect(style.animationName).toBe('happierStatusDotPulse');
+    });
+
     it('does not subscribe to host visibility on the static path', async () => {
         hostViewedState.reads = 0;
         const { StatusDot } = await import('./StatusDot');

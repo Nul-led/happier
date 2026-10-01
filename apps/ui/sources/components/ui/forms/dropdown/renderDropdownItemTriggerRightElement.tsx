@@ -1,3 +1,4 @@
+import { HappierFieldBoxTrigger, resolveHappierFieldBoxLabel } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 import { View } from 'react-native';
 
@@ -8,7 +9,6 @@ import {
 } from '@/components/ui/lists/itemDensityMetrics';
 import { Text } from '@/components/ui/text/Text';
 import { Icon } from '@/components/ui/icons/Icon';
-import { FIELD_BOX_METRICS, fieldBoxShapeStyle } from '@/components/ui/forms/fieldBox';
 import { t } from '@/text';
 
 
@@ -30,6 +30,8 @@ export function renderDropdownItemTriggerRightElement(params: Readonly<{
     placeholder?: string;
     /** Colour of the placeholder beside a bare chevron (the field supplies its own). */
     placeholderColor?: string;
+    /** Field only: a mark before the value (the selected agent's brand mark in a toolbar select). */
+    leading?: React.ReactNode;
 }>) {
     const resolvedDensity = params.detailDensity ?? 'comfortable';
     const chevron = (
@@ -42,32 +44,19 @@ export function renderDropdownItemTriggerRightElement(params: Readonly<{
     const detailTextStyle = ITEM_TITLE_TEXT_METRICS[resolvedDensity];
 
     if (params.field) {
+        // The field box is shared presentation (a plugin page-row select draws the same one); the
+        // value text stays on core's Text adapter so the UI font-scale setting applies to it.
+        const label = resolveHappierFieldBoxLabel({
+            value: params.detail,
+            placeholder: params.placeholder || t('common.choose'),
+            colors: params.field,
+        });
         return (
-            <View
-                style={[fieldBoxShapeStyle, {
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                    minWidth: 132,
-                    maxWidth: 280,
-                    borderColor: params.field.borderColor,
-                    backgroundColor: params.field.backgroundColor,
-                }]}
-            >
-                <Text
-                    style={{
-                        flex: 1,
-                        // An empty field says it is waiting for a choice rather than showing a blank box.
-                        color: params.detail ? params.field.valueColor : params.field.placeholderColor,
-                        fontSize: FIELD_BOX_METRICS.fontSizePx,
-                        lineHeight: FIELD_BOX_METRICS.lineHeightPx,
-                    }}
-                    numberOfLines={1}
-                >
-                    {params.detail || params.placeholder || t('common.choose')}
+            <HappierFieldBoxTrigger colors={params.field} leading={params.leading} trailing={chevron}>
+                <Text style={label.style} numberOfLines={1}>
+                    {label.text}
                 </Text>
-                {chevron}
-            </View>
+            </HappierFieldBoxTrigger>
         );
     }
 

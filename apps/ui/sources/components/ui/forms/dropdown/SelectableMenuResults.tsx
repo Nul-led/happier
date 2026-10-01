@@ -10,6 +10,7 @@ import type { SelectableMenuCategory, SelectableMenuItem } from './selectableMen
 import { Text } from '@/components/ui/text/Text';
 import { Eyebrow } from '@/components/ui/text/Eyebrow';
 import type { ScrollItemLayoutHandler } from '@/components/ui/scroll/useScrollRectIntoView';
+import { MENU_ROW_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 
 type RowFrameStyle = React.ComponentProps<typeof View>['style'];
 
@@ -179,9 +180,17 @@ function SelectableMenuRowFrame(props: {
     );
 }
 
+/**
+ * The row frame is a plain element on the web: it lays its row out as a View would (a flex column
+ * that stretches its child), or the row, a <button>, shrinks to its label and its highlight covers
+ * only part of the menu. Plain objects, because the web frame is not a React Native view.
+ */
+const ROW_FRAME_STYLE = { display: 'flex', flexDirection: 'column', alignItems: 'stretch', width: '100%' } as const;
+const SUBMENU_ANCHOR_FRAME_STYLE = { ...ROW_FRAME_STYLE, position: 'relative' } as const;
+
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
-        paddingVertical: 0,
+        paddingVertical: MENU_ROW_METRICS.insetPx,
     },
     emptyContainer: {
         padding: 48,
@@ -199,16 +208,12 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingBottom: 8,
         color: theme.colors.input.placeholder,
     },
-    rowFrame: {
-        width: '100%',
-    },
     itemRowPressable: {
-        width: '100%',
+        alignSelf: 'stretch',
+        marginHorizontal: MENU_ROW_METRICS.insetPx,
+        borderRadius: MENU_ROW_METRICS.radiusPx,
     },
-    submenuAnchorFrame: {
-        width: '100%',
-        position: 'relative',
-    },
+
     submenuAnchor: {
         position: 'absolute',
         top: 0,
@@ -348,6 +353,7 @@ export function SelectableMenuResults(props: {
                     ) : (
                         <SelectableRow
                             variant={props.rowVariant}
+                            presentation="menu"
                             selected={isSelected}
                             disabled={item.disabled}
                             left={item.left}
@@ -400,7 +406,7 @@ export function SelectableMenuResults(props: {
                             key={item.id}
                             testID={rowFrameTestID}
                             rowAnchorRef={rowAnchorRef}
-                            style={item.hasSubmenu ? styles.submenuAnchorFrame : styles.rowFrame}
+                            style={item.hasSubmenu ? SUBMENU_ANCHOR_FRAME_STYLE : ROW_FRAME_STYLE}
                             onMouseDownCapture={handleOptionMouseDownCapture}
                             onKeyDown={Platform.OS === 'web' ? props.onKeyDown : undefined}
                             onPointerEnter={rowFramePointerEnter}

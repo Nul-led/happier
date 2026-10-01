@@ -3,13 +3,51 @@ import { Animated, Platform, View, type StyleProp, type ViewStyle } from 'react-
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { StepTransitionDirection } from '@/components/ui/motion/resolveStepTransitionDirection';
-import { softSlideTransitionTokens } from '@/components/ui/motion/softSlideTransitionTokens';
+import {
+    slideTransitionTokens,
+    type SlideTransitionRole,
+    type SlideTransitionRoleTokens,
+} from '@/components/ui/motion/slideTransitionTokens';
 
 type SoftSlideTransitionLayer = Readonly<{
     children: React.ReactNode;
     direction: StepTransitionDirection;
     key: string | number;
 }>;
+
+type SoftSlideLayers = Readonly<{
+    current: SoftSlideTransitionLayer;
+    exit: SoftSlideTransitionLayer | null;
+}>;
+
+/** Keep keyed slide wrappers in the same sibling list while their visual role changes. */
+function useSoftSlideLayers(props: SoftSlideTransitionFrameProps) {
+    const [stored, setStored] = React.useState<SoftSlideLayers>(() => ({
+        current: { key: props.transitionKey, children: props.children, direction: props.direction },
+        exit: null,
+    }));
+    let layers = stored;
+    if (stored.current.key !== props.transitionKey) {
+        layers = {
+            current: { key: props.transitionKey, children: props.children, direction: props.direction },
+            exit: { ...stored.current, direction: props.direction },
+        };
+        setStored(layers);
+    } else if (stored.current.children !== props.children) {
+        layers = { ...stored, current: { ...stored.current, children: props.children } };
+        setStored(layers);
+    }
+    const completeExit = React.useCallback((currentKey: string | number) => {
+        setStored((previous) => previous.current.key === currentKey && previous.exit
+            ? { ...previous, exit: null }
+            : previous);
+    }, []);
+    return { layers, completeExit };
+}
+
+function layerReactKey(key: string | number): string {
+    return `${typeof key}:${key}`;
+}
 
 export type SoftSlideTransitionFrameProps = Readonly<{
     children: React.ReactNode;
@@ -19,10 +57,11 @@ export type SoftSlideTransitionFrameProps = Readonly<{
     style?: StyleProp<ViewStyle>;
     testID?: string;
     transitionKey: string | number;
+    /** Defaults to `'signature'`; `StepTransitionFrame` owns the `'routine'` step body. */
+    preset?: SlideTransitionRole;
 }>;
 
 const USE_NATIVE_DRIVER = Platform.OS !== 'web';
-const REDUCED_MOTION_CROSSFADE_MS = 180;
 
 type WebSlidePhase = 'idle' | 'prepare' | 'animate';
 
@@ -44,15 +83,15 @@ const stylesheet = StyleSheet.create({
     },
 });
 
-function enterOffset(direction: StepTransitionDirection): number {
-    if (direction === 'forward') return softSlideTransitionTokens.translatePx;
-    if (direction === 'backward') return -softSlideTransitionTokens.translatePx;
+function enterOffset(direction: StepTransitionDirection, translatePx: number): number {
+    if (direction === 'forward') return translatePx;
+    if (direction === 'backward') return -translatePx;
     return 0;
 }
 
-function exitOffset(direction: StepTransitionDirection): number {
-    if (direction === 'forward') return -softSlideTransitionTokens.translatePx;
-    if (direction === 'backward') return softSlideTransitionTokens.translatePx;
+function exitOffset(direction: StepTransitionDirection, translatePx: number): number {
+    if (direction === 'forward') return -translatePx;
+    if (direction === 'backward') return translatePx;
     return 0;
 }
 
@@ -67,16 +106,20 @@ type NativeBlurViewProps = Readonly<{
 let cachedNativeBlurView: React.ComponentType<NativeBlurViewProps> | null = null;
 let pendingNativeBlurView: Promise<React.ComponentType<NativeBlurViewProps> | null> | null = null;
 
-function cssTransitionStyle(phase: 'enter' | 'exit', reducedMotion: boolean): StyleProp<ViewStyle> {
+function cssTransitionStyle(
+    phase: 'enter' | 'exit',
+    reducedMotion: boolean,
+    roleTokens: SlideTransitionRoleTokens,
+): StyleProp<ViewStyle> {
     return {
         transitionDelay: '0ms',
         transitionDuration: `${reducedMotion
-            ? REDUCED_MOTION_CROSSFADE_MS
+            ? roleTokens.reducedMotionDurationMs
             : phase === 'enter'
-                ? softSlideTransitionTokens.durationMs.enter
-                : softSlideTransitionTokens.durationMs.exit}ms`,
+                ? roleTokens.timed.durationMs.enter
+                : roleTokens.timed.durationMs.exit}ms`,
         transitionProperty: 'opacity, transform, filter',
-        transitionTimingFunction: softSlideTransitionTokens.easingCss,
+        transitionTimingFunction: roleTokens.timed.easingCss,
         willChange: 'opacity, transform, filter',
     } as unknown as StyleProp<ViewStyle>;
 }
@@ -90,12 +133,14 @@ export function SoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
 
 function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
     const styles = stylesheet;
+    const roleTokens = slideTransitionTokens[props.preset ?? 'signature'];
+    const transitionTokens = roleTokens.timed;
     const lastKeyRef = React.useRef(props.transitionKey);
-    const lastChildrenRef = React.useRef(props.children);
+    const { layers, completeExit } = useSoftSlideLayers(props);
     const timeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
     const frameRef = React.useRef<ReturnType<typeof setTimeout> | number | null>(null);
     const [phase, setPhase] = React.useState<WebSlidePhase>('idle');
-    const [exitLayer, setExitLayer] = React.useState<SoftSlideTransitionLayer | null>(null);
+    const exitLayer = layers.exit;
 
     React.useEffect(() => {
         return () => {
@@ -112,24 +157,15 @@ function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
 
     React.useLayoutEffect(() => {
         if (lastKeyRef.current === props.transitionKey) {
-            lastChildrenRef.current = props.children;
             return;
         }
-
-        const outgoingLayer: SoftSlideTransitionLayer = {
-            children: lastChildrenRef.current,
-            direction: props.direction,
-            key: lastKeyRef.current,
-        };
         lastKeyRef.current = props.transitionKey;
-        lastChildrenRef.current = props.children;
 
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
             timeoutRef.current = null;
         }
 
-        setExitLayer(outgoingLayer);
         setPhase('prepare');
 
         const scheduleFrame = (callback: () => void) => {
@@ -150,15 +186,19 @@ function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
 
         timeoutRef.current = setTimeout(() => {
             timeoutRef.current = null;
-            setExitLayer(null);
+            completeExit(props.transitionKey);
             setPhase('idle');
-        }, props.reducedMotion ? REDUCED_MOTION_CROSSFADE_MS : softSlideTransitionTokens.durationMs.enter);
-    }, [props.children, props.direction, props.reducedMotion, props.transitionKey]);
+        }, props.reducedMotion ? roleTokens.reducedMotionDurationMs : transitionTokens.durationMs.enter);
+    }, [completeExit, props.direction, props.reducedMotion, props.transitionKey, roleTokens]);
 
-    const currentOffset = !props.reducedMotion && phase === 'prepare' ? enterOffset(props.direction) : 0;
-    const exitOffsetX = !props.reducedMotion && exitLayer && phase === 'animate' ? exitOffset(exitLayer.direction) : 0;
-    const currentBlur = !props.reducedMotion && phase === 'prepare' ? softSlideTransitionTokens.blurPx : 0;
-    const exitBlur = !props.reducedMotion && exitLayer && phase === 'animate' ? softSlideTransitionTokens.blurPx : 0;
+    const currentOffset = !props.reducedMotion && phase === 'prepare'
+        ? enterOffset(props.direction, transitionTokens.translatePx)
+        : 0;
+    const exitOffsetX = !props.reducedMotion && exitLayer && phase === 'animate'
+        ? exitOffset(exitLayer.direction, transitionTokens.translatePx)
+        : 0;
+    const currentBlur = !props.reducedMotion && phase === 'prepare' ? transitionTokens.blurPx : 0;
+    const exitBlur = !props.reducedMotion && exitLayer && phase === 'animate' ? transitionTokens.blurPx : 0;
     const currentOpacity = phase === 'prepare' ? 0 : 1;
     const exitOpacity = exitLayer && phase === 'animate' ? 0 : 1;
 
@@ -166,13 +206,14 @@ function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
         <View style={[styles.container, props.style]} testID={props.testID}>
             {exitLayer ? (
                 <View
+                    key={layerReactKey(exitLayer.key)}
                     pointerEvents="none"
                     aria-hidden={true}
                     accessibilityElementsHidden={true}
                     importantForAccessibility="no-hide-descendants"
                     style={[
                         styles.exitLayer,
-                        cssTransitionStyle('exit', props.reducedMotion),
+                        cssTransitionStyle('exit', props.reducedMotion, roleTokens),
                         {
                             opacity: exitOpacity,
                             filter: `blur(${exitBlur}px)`,
@@ -185,10 +226,11 @@ function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
                 </View>
             ) : null}
             <View
+                key={layerReactKey(layers.current.key)}
                 style={[
                     styles.currentLayer,
                     props.contentStyle,
-                    cssTransitionStyle('enter', props.reducedMotion),
+                    cssTransitionStyle('enter', props.reducedMotion, roleTokens),
                     {
                         opacity: currentOpacity,
                         filter: `blur(${currentBlur}px)`,
@@ -197,13 +239,14 @@ function WebSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
                 ]}
                 testID={props.testID ? `${props.testID}-current-layer` : undefined}
             >
-                {props.children}
+                {layers.current.children}
             </View>
         </View>
     );
 }
 
 function NativeSlideBlurOverlay(props: Readonly<{
+    intensity: number;
     opacity: Animated.AnimatedInterpolation<string | number>;
 }>): React.ReactElement | null {
     const styles = stylesheet;
@@ -217,7 +260,7 @@ function NativeSlideBlurOverlay(props: Readonly<{
         >
             <NativeBlurView
                 experimentalBlurMethod={Platform.OS === 'android' ? 'dimezisBlurView' : undefined}
-                intensity={softSlideTransitionTokens.nativeBlurIntensity}
+                intensity={props.intensity}
                 style={styles.blurFill}
                 tint="default"
             />
@@ -262,13 +305,15 @@ function useNativeBlurViewComponent(): React.ComponentType<NativeBlurViewProps> 
 
 function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
     const styles = stylesheet;
+    const roleTokens = slideTransitionTokens[props.preset ?? 'signature'];
+    const transitionTokens = roleTokens.timed;
     const enterProgress = React.useRef(new Animated.Value(1)).current;
     const exitProgress = React.useRef(new Animated.Value(0)).current;
     const lastKeyRef = React.useRef(props.transitionKey);
-    const lastChildrenRef = React.useRef(props.children);
+    const { layers, completeExit } = useSoftSlideLayers(props);
     const transitionRunRef = React.useRef(0);
     const timeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [exitLayer, setExitLayer] = React.useState<SoftSlideTransitionLayer | null>(null);
+    const exitLayer = layers.exit;
 
     React.useEffect(() => {
         return () => {
@@ -281,17 +326,9 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
 
     React.useLayoutEffect(() => {
         if (lastKeyRef.current === props.transitionKey) {
-            lastChildrenRef.current = props.children;
             return;
         }
-
-        const outgoingLayer: SoftSlideTransitionLayer = {
-            children: lastChildrenRef.current,
-            direction: props.direction,
-            key: lastKeyRef.current,
-        };
         lastKeyRef.current = props.transitionKey;
-        lastChildrenRef.current = props.children;
 
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
@@ -300,21 +337,20 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
 
         enterProgress.setValue(0);
         exitProgress.setValue(0);
-        setExitLayer(outgoingLayer);
         transitionRunRef.current += 1;
         const transitionRun = transitionRunRef.current;
 
         Animated.parallel([
             Animated.timing(enterProgress, {
                 toValue: 1,
-                duration: props.reducedMotion ? REDUCED_MOTION_CROSSFADE_MS : softSlideTransitionTokens.durationMs.enter,
-                easing: softSlideTransitionTokens.easing,
+                duration: props.reducedMotion ? roleTokens.reducedMotionDurationMs : transitionTokens.durationMs.enter,
+                easing: transitionTokens.easing,
                 useNativeDriver: USE_NATIVE_DRIVER,
             }),
             Animated.timing(exitProgress, {
                 toValue: 1,
-                duration: props.reducedMotion ? REDUCED_MOTION_CROSSFADE_MS : softSlideTransitionTokens.durationMs.exit,
-                easing: softSlideTransitionTokens.easingExit,
+                duration: props.reducedMotion ? roleTokens.reducedMotionDurationMs : transitionTokens.durationMs.exit,
+                easing: transitionTokens.easingExit,
                 useNativeDriver: USE_NATIVE_DRIVER,
             }),
         ]).start();
@@ -322,26 +358,27 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
         timeoutRef.current = setTimeout(() => {
             timeoutRef.current = null;
             if (transitionRun === transitionRunRef.current) {
-                setExitLayer(null);
+                completeExit(props.transitionKey);
             }
-        }, props.reducedMotion ? REDUCED_MOTION_CROSSFADE_MS : softSlideTransitionTokens.durationMs.enter);
+        }, props.reducedMotion ? roleTokens.reducedMotionDurationMs : transitionTokens.durationMs.enter);
     }, [
         enterProgress,
         exitProgress,
-        props.children,
+        completeExit,
         props.direction,
         props.reducedMotion,
         props.transitionKey,
+        roleTokens,
     ]);
 
     const enterTranslateX = enterProgress.interpolate({
         inputRange: [0, 1],
-        outputRange: [props.reducedMotion ? 0 : enterOffset(props.direction), 0],
+        outputRange: [props.reducedMotion ? 0 : enterOffset(props.direction, transitionTokens.translatePx), 0],
     });
     const exitTranslateX = exitLayer
         ? exitProgress.interpolate({
             inputRange: [0, 1],
-            outputRange: [0, props.reducedMotion ? 0 : exitOffset(exitLayer.direction)],
+            outputRange: [0, props.reducedMotion ? 0 : exitOffset(exitLayer.direction, transitionTokens.translatePx)],
         })
         : 0;
 
@@ -349,6 +386,7 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
         <View style={[styles.container, props.style]} testID={props.testID}>
             {exitLayer ? (
                 <Animated.View
+                    key={layerReactKey(exitLayer.key)}
                     pointerEvents="none"
                     aria-hidden={true}
                     accessibilityElementsHidden={true}
@@ -366,8 +404,9 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
                     testID={props.testID ? `${props.testID}-exit-layer` : undefined}
                 >
                     {exitLayer.children}
-                    {props.reducedMotion ? null : (
+                    {props.reducedMotion || transitionTokens.nativeBlurIntensity === 0 ? null : (
                         <NativeSlideBlurOverlay
+                            intensity={transitionTokens.nativeBlurIntensity}
                             opacity={exitProgress.interpolate({
                                 inputRange: [0, 1],
                                 outputRange: [0, 1],
@@ -377,6 +416,7 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
                 </Animated.View>
             ) : null}
             <Animated.View
+                key={layerReactKey(layers.current.key)}
                 style={[
                     styles.currentLayer,
                     props.contentStyle,
@@ -387,9 +427,10 @@ function NativeSoftSlideTransitionFrame(props: SoftSlideTransitionFrameProps) {
                 ]}
                 testID={props.testID ? `${props.testID}-current-layer` : undefined}
             >
-                {props.children}
-                {props.reducedMotion ? null : (
+                {layers.current.children}
+                {props.reducedMotion || transitionTokens.nativeBlurIntensity === 0 ? null : (
                     <NativeSlideBlurOverlay
+                        intensity={transitionTokens.nativeBlurIntensity}
                         opacity={enterProgress.interpolate({
                             inputRange: [0, 1],
                             outputRange: [1, 0],

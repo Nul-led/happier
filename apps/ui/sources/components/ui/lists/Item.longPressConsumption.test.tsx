@@ -95,28 +95,6 @@ vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroupSelectionContext: React.createContext(null),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroupRowPosition', () => ({
-    useItemGroupRowPosition: () => 'middle',
-}));
-
-vi.mock('@/components/ui/lists/itemGroupRowCorners', () => ({
-    getItemGroupRowCornerRadii: () => ({}),
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-}));
-
 describe('Item (long press)', () => {
     beforeEach(() => {
         platformState.os = 'web';

@@ -31,9 +31,7 @@ vi.mock('@/components/ui/rendering/normalizeNodeForView', () => ({
     normalizeNodeForView: (node: unknown) => node,
 }));
 
-vi.mock('@/components/ui/lists/useResolvedItemDensity', () => ({
-    useResolvedItemDensity: () => 'comfortable',
-}));
+// Row density is the real owner (`useResolvedItemDensity`): it is internal logic, not a boundary.
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroupSelectionContext: React.createContext(null),
@@ -159,14 +157,33 @@ describe('Item web testID forwarding', () => {
         expect(row?.props['aria-selected']).toBeUndefined();
     });
 
-    it('exposes checked radio semantics and activates a radio row with Space without swallowing the event', async () => {
+    it.each([false, true])('announces the current route on the actual row activation target (external accessory: %s)', async (externalAccessory) => {
+        const { Item } = await import('./Item');
+        const screen = await renderScreen(<Item
+            testID="provider-current-connection"
+            title="Work provider"
+            selected
+            accessibilityCurrent="page"
+            onPress={() => {}}
+            rightElement={externalAccessory ? <Pressable accessibilityLabel="Enable provider" /> : undefined}
+            rightElementOutsidePressable={externalAccessory}
+        />);
+
+        const row = screen.findByTestId('provider-current-connection');
+        expect(row?.props['aria-current']).toBe('page');
+        expect(row?.props['aria-selected']).toBeUndefined();
+        expect(row?.props.onPress).toEqual(expect.any(Function));
+        const accessory = screen.findAllByType(Pressable).find((entry) => entry.props.accessibilityLabel === 'Enable provider');
+        expect(accessory?.props['aria-current']).toBeUndefined();
+    });
+
+    it('exposes checked radio semantics from accessibilityRole and activates with Space', async () => {
         const { Item } = await import('./Item');
         const onPress = vi.fn();
         const screen = await renderScreen(<Item
                     testID="voice-provider-openai"
                     title="OpenAI"
                     accessibilityRole="radio"
-                    webRole="radio"
                     selected
                     onPress={onPress}
                 />);
@@ -183,14 +200,13 @@ describe('Item web testID forwarding', () => {
         expect(onPress).toHaveBeenCalledTimes(1);
     });
 
-    it('exposes checked checkbox semantics and activates a checkbox row with Space', async () => {
+    it('exposes checked checkbox semantics from accessibilityRole and activates with Space', async () => {
         const { Item } = await import('./Item');
         const onPress = vi.fn();
         const screen = await renderScreen(<Item
                     testID="home-group-member-b"
                     title="Home B"
                     accessibilityRole="checkbox"
-                    webRole="checkbox"
                     selected
                     onPress={onPress}
                 />);
@@ -203,6 +219,19 @@ describe('Item web testID forwarding', () => {
         row?.props.onKeyDown?.({ key: ' ', preventDefault });
         expect(preventDefault).toHaveBeenCalledTimes(1);
         expect(onPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an explicit web role ahead of inferred row semantics', async () => {
+        const { Item } = await import('./Item');
+        const screen = await renderScreen(<Item
+            testID="explicit-web-option"
+            title="Choose a version"
+            accessibilityRole="button"
+            webRole="option"
+            onPress={() => {}}
+        />);
+
+        expect(screen.findByTestId('explicit-web-option')?.props.role).toBe('option');
     });
 
     it('preserves named checked and disabled semantics for a visible unavailable radio option', async () => {
@@ -225,6 +254,23 @@ describe('Item web testID forwarding', () => {
         expect(row?.props['aria-disabled']).toBe(true);
         expect(row?.props.onPress).toBeUndefined();
         expect(row?.props.tabIndex).toBe(-1);
+    });
+
+    it('keeps a passive disabled choice named and checked when only the native role is supplied', async () => {
+        const { Item } = await import('./Item');
+        const screen = await renderScreen(<Item
+            testID="unavailable-target"
+            title="Unavailable target"
+            accessibilityRole="checkbox"
+            accessibilityChecked={false}
+            disabled
+        />);
+
+        const row = screen.findByTestId('unavailable-target');
+        expect(row?.props.role).toBe('checkbox');
+        expect(row?.props['aria-checked']).toBe(false);
+        expect(row?.props['aria-disabled']).toBe(true);
+        expect(row?.props.onPress).toBeUndefined();
     });
 
     it('exposes loading on the row while keeping its visual spinner out of accessibility traversal', async () => {

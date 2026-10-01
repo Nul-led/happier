@@ -95,6 +95,8 @@ export type SelectionListKeyboardNavParams = SelectionListRovingFocusParams & Re
     /** The roving-focus owner, created by the caller so it can be read earlier in the render. */
     focus: SelectionListRovingFocusApi;
     onActivate: (optionId: string) => void;
+    /** Cmd/Ctrl+Enter on the focused row; absent: it activates like Enter. */
+    onCommandActivate?: (optionId: string) => void;
     canPopStep: boolean;
     onPopStep: () => void;
     onClearInput: () => void;
@@ -482,6 +484,7 @@ export function useSelectionListKeyboardNav(
         virtualizedOptionSource,
         focus,
         onActivate,
+        onCommandActivate,
         canPopStep,
         onPopStep,
         inputValue,
@@ -698,7 +701,8 @@ export function useSelectionListKeyboardNav(
                     optionId !== undefined
                     && (inputMode !== 'value' || hasExplicitRowFocus)
                 ) {
-                    onActivate(optionId);
+                    if (onCommandActivate && isCmdOrCtrl(event)) onCommandActivate(optionId);
+                    else onActivate(optionId);
                     return consume(event);
                 }
                 if (inputMode === 'value' && onCommitInputValue) {
@@ -742,6 +746,7 @@ export function useSelectionListKeyboardNav(
         virtualizedOptionSource,
         focusedIndex,
         onActivate,
+        onCommandActivate,
         handleEscape,
         quickActionShortcuts,
         isComposing,

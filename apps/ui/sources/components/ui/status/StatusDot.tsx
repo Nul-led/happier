@@ -1,6 +1,7 @@
 import { HappierStatusDot, type HappierStatusDotProps } from '@happier-dev/plugin-ui/presentation';
 import * as React from 'react';
 
+import { useLayoutPresentationActive } from '@/components/ui/presentation/PluginSurfaceFocusEligibility';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { useHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
 
@@ -26,12 +27,11 @@ export type StatusDotProps = Omit<HappierStatusDotProps, 'reducedMotion'>;
  * host Happier actually ships. So the fact is injected through the existing
  * `animationEnabled` seam instead — no new prop, no second owner.
  */
-export const StatusDot = React.memo((props: StatusDotProps) => {
-    if (!props.isPulsing || props.animationEnabled === false) {
-        return <HappierStatusDot {...props} />;
-    }
-    return <MotionAwareStatusDot {...props} />;
-});
+export const StatusDot = React.memo((props: StatusDotProps) => (
+    !props.isPulsing || props.animationEnabled === false
+        ? <HappierStatusDot {...props} />
+        : <MotionAwareStatusDot {...props} />
+));
 
 StatusDot.displayName = 'StatusDot';
 
@@ -39,11 +39,14 @@ function MotionAwareStatusDot(props: StatusDotProps) {
     const reducedMotion = useReducedMotionPreference();
     // One host watch for the whole app, not one subscription per dot.
     const hostActivelyViewed = useHostActivelyViewed();
+    // A retained pane that is hidden (a closed right-sidebar tab) keeps its rows mounted; the
+    // pulse is presentation, so it stops with the pane (F-PLAN-22) and resumes when it is shown.
+    const presented = useLayoutPresentationActive();
 
     return (
         <HappierStatusDot
             {...props}
-            animationEnabled={hostActivelyViewed}
+            animationEnabled={hostActivelyViewed && presented}
             reducedMotion={reducedMotion}
         />
     );

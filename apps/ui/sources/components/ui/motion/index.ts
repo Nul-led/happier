@@ -1,5 +1,4 @@
-export { motionTokens } from './motionTokens';
-export { stepTransitionTokens, type StepTransitionTokens } from './stepTransitionTokens';
+export { motionTokens, resolveInPlaceMorphTiming, type InPlaceMorphTiming } from './motionTokens';
 export {
     resolveStepTransitionDirection,
     type StepTransitionDirection,
@@ -13,14 +12,13 @@ export {
     SoftSlideTransitionFrame,
     type SoftSlideTransitionFrameProps,
 } from './SoftSlideTransitionFrame';
-export { softSlideTransitionTokens } from './softSlideTransitionTokens';
 export { SlideTransitionFrame } from './SlideTransitionFrame';
 export { SlideTransitionSwitch } from './SlideTransitionSwitch';
-export { slideTransitionTokens } from './slideTransitionTokens';
+export { slideTransitionTokens, type SlideTransitionRoleTokens } from './slideTransitionTokens';
 export type {
     SlideLayerRole,
     SlideTransitionDirection,
     SlideTransitionFrameProps,
-    SlideTransitionPreset,
+    SlideTransitionRole,
     SlideTransitionSwitchProps,
 } from './_types';

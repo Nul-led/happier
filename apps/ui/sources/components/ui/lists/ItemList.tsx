@@ -6,6 +6,8 @@ import { useScrollViewWheelScrollTo } from '@/components/ui/scroll/useScrollView
 import { PopoverScrollSourceProvider } from '@/components/ui/popover';
 import { useSessionCockpitBottomChromeHeight } from '@/components/workspaceCockpit/session/SessionCockpitChromeRegistry';
 import { KeyboardAwareScrollView } from '@/components/ui/keyboardAvoidance/KeyboardAwareScrollView';
+import { ListPresentationProvider, PageColumnProvider, type ListPresentation } from './listPresentation';
+import type { PageColumn } from '@/components/ui/layout/contentWidthMode';
 
 const BASE_CONTENT_PADDING_BOTTOM = Platform.select({ ios: 34, default: 16 }) ?? 16;
 
@@ -14,6 +16,13 @@ export interface ItemListProps extends ScrollViewProps {
     style?: StyleProp<ViewStyle>;
     containerStyle?: StyleProp<ViewStyle>;
     insetGrouped?: boolean;
+    /**
+     * `page` makes this list a configuration page: paper background, and every `ItemGroup`/`Item` below
+     * it uses the page anatomy. Defaults to the compact `grouped` look.
+     */
+    presentation?: ListPresentation;
+    /** A page's column: the reading measure (default), or `wide` for a grid or dashboard page. */
+    pageColumn?: PageColumn;
     onWheel?: (event: unknown) => void;
     /** Use the shared native keyboard owner for forms with focusable fields. */
     keyboardAware?: boolean;
@@ -59,6 +68,8 @@ export const ItemList = React.memo(React.forwardRef<ScrollView, ItemListProps>((
         style,
         containerStyle,
         insetGrouped = true,
+        presentation = 'grouped',
+        pageColumn = 'reading',
         onWheel,
         keyboardAware = false,
         ...scrollViewProps
@@ -70,7 +81,9 @@ export const ItemList = React.memo(React.forwardRef<ScrollView, ItemListProps>((
     const installWebModalWheelFix = isWeb && isInsideModalBoundary && rawOnWheel == null;
 
     // Override background for non-inset grouped lists on iOS
-    const backgroundColor = (isIOS && !insetGrouped) ? theme.colors.surface.base : theme.colors.background.canvas;
+    const backgroundColor = presentation === 'page' || (isIOS && !insetGrouped)
+        ? theme.colors.surface.base
+        : theme.colors.background.canvas;
 
     const { onScroll, ...restScrollViewProps } = scrollViewProps;
 
@@ -115,7 +128,11 @@ export const ItemList = React.memo(React.forwardRef<ScrollView, ItemListProps>((
 
     return (
         <PopoverScrollSourceProvider scrollSourceRef={internalRef}>
-            {scrollContent}
+            <ListPresentationProvider value={presentation}>
+                <PageColumnProvider value={pageColumn}>
+                    {scrollContent}
+                </PageColumnProvider>
+            </ListPresentationProvider>
         </PopoverScrollSourceProvider>
     );
 }));

@@ -13,6 +13,8 @@ import type { DateTimePickerPopoverProps } from './DateTimePickerPopover';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const DAY_SIZE = 44;
+export function isDateTimePickerPopoverAvailable(): boolean { return true; }
+
 const TIME_OPTION_HEIGHT = 44;
 const TIME_OPTION_GAP = 2;
 const TIME_OPTION_PITCH = TIME_OPTION_HEIGHT + TIME_OPTION_GAP;

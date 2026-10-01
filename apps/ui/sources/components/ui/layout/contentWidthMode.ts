@@ -19,3 +19,17 @@ export function resolveContentMaxWidthForMode(mode: unknown): number {
     if (normalizedMode === 'full') return Number.POSITIVE_INFINITY;
     return CONTENT_WIDTH_PX_BY_MODE[normalizedMode];
 }
+
+/**
+ * How wide a configuration page's column may grow. `reading` (every page by default) is a reading
+ * measure, so sheets do not stretch into long rows on a wide window; `wide` is for a page whose body
+ * is a grid or a dashboard. The column holds the sheets and their 16px inset on each side, so its
+ * sheets are the approved lab's 760px / 1000px page less its 44px sides. The content-width preference
+ * can only narrow it (`useLayoutMaxWidth`).
+ */
+export type PageColumn = 'reading' | 'wide';
+
+export const PAGE_COLUMN_MAX_WIDTH_PX = {
+    reading: 704,
+    wide: 944,
+} as const satisfies Record<PageColumn, number>;

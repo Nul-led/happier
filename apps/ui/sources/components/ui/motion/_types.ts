@@ -1,10 +1,11 @@
 /**
- * Shared types for the unified slide transition primitives (Phase 1A — Lane L).
+ * Shared types for the spring slide-transition engine.
  *
- * Three components share one animation pipeline:
+ * Two components share one animation pipeline:
  *   - `SlideTransitionFrame`  (low-level renderer; previous/current/next slots + progress)
- *   - `SlideTransitionSwitch` (discrete adapter — SelectionList / step-driven UIs)
- *   - `StoryDeckSlideTransition` (carousel adapter — StoryDeck / onboarding / release notes)
+ *   - `SlideTransitionSwitch` (discrete adapter — SelectionList / step-driven UIs / tour panes)
+ *
+ * Roles ('signature' | 'routine') come from `slideTransitionTokens`.
  *
  * The contract: caller drives a `progress: SharedValue<number>` in -1..1 (adapters own
  * the signal; the low-level frame consumes it). Same visual whether triggered by tap,
@@ -15,9 +16,9 @@ import type * as React from 'react';
 import type { StyleProp, ViewStyle } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 
-import type { SlideTransitionPreset } from './slideTransitionTokens';
+import type { SlideTransitionRole } from './slideTransitionTokens';
 
-export type { SlideTransitionPreset } from './slideTransitionTokens';
+export type { SlideTransitionRole } from './slideTransitionTokens';
 export type { SlideLayerRole } from './resolveSlideLayerStyle';
 
 export type SlideTransitionDirection = 'forward' | 'backward' | 'replace';
@@ -29,6 +30,10 @@ export type SlideTransitionFrameProps = Readonly<{
     previous?: React.ReactNode;
     /** Rendered when present; positioned at +distance at progress=0. */
     next?: React.ReactNode;
+    /** Stable content identities preserve mounted state when a layer changes role. */
+    currentKey?: React.Key;
+    previousKey?: React.Key;
+    nextKey?: React.Key;
     /**
      * Caller-driven progress in -1..1. Adapters own this signal.
      *  - progress = 0 → only `current` visible at center
@@ -38,8 +43,8 @@ export type SlideTransitionFrameProps = Readonly<{
     progress: SharedValue<number>;
     /** Render the progress-tied blur layer; defaults set by the adapters (true for StoryDeck, false for SelectionList). */
     blur?: boolean;
-    /** Preset controls translation distance, blur peak, and spring config the adapters use. */
-    preset?: SlideTransitionPreset;
+    /** Role controls translation distance, blur peak, and spring config the adapters use. Defaults to 'signature'. */
+    preset?: SlideTransitionRole;
     /** Optional override; defaults via `useReducedMotionPreference()` inside adapters. */
     reducedMotion?: boolean;
     style?: StyleProp<ViewStyle>;
@@ -53,30 +58,10 @@ export type SlideTransitionSwitchProps = Readonly<{
     direction: SlideTransitionDirection;
     /** Plain children — the CURRENT content for `contentKey`. Caller does NOT pass a render function. */
     children: React.ReactNode;
-    /** Defaults to false (popover-friendly). */
+    /** Defaults to true for 'signature', false for 'routine' (popover-friendly). */
     blur?: boolean;
-    /** Defaults to 'compact'. */
-    preset?: SlideTransitionPreset;
-    /** Optional override; defaults via `useReducedMotionPreference()`. */
-    reducedMotion?: boolean;
-    style?: StyleProp<ViewStyle>;
-    testID?: string;
-}>;
-
-export type StoryDeckSlideTransitionRole = 'previous' | 'current' | 'next';
-
-export type StoryDeckSlideTransitionProps = Readonly<{
-    activeIndex: number;
-    itemCount: number;
-    renderItem: (index: number, role: StoryDeckSlideTransitionRole) => React.ReactNode;
-    onCommitNext: () => void;
-    onCommitPrevious: () => void;
-    /** Fraction of pageWidth required to commit a card change on release; default 0.4. */
-    gestureThresholdRatio?: number;
-    /** Defaults to true (premium signature for full-screen carousels). */
-    blur?: boolean;
-    /** Defaults to 'soft'. */
-    preset?: SlideTransitionPreset;
+    /** Defaults to 'routine'. */
+    preset?: SlideTransitionRole;
     /** Optional override; defaults via `useReducedMotionPreference()`. */
     reducedMotion?: boolean;
     style?: StyleProp<ViewStyle>;

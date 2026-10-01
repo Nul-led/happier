@@ -8,3 +8,7 @@ export function requireRadixDismissableLayer() {
     return require('@radix-ui/react-dismissable-layer') as typeof import('@radix-ui/react-dismissable-layer');
 }
 
+
+export function requireRadixFocusScope() {
+    return require('@radix-ui/react-focus-scope') as typeof import('@radix-ui/react-focus-scope');
+}

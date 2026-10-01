@@ -17,7 +17,7 @@ const popoverCapture = vi.hoisted(() => ({
 vi.mock('@/sync/domains/plugins/availability/bundledAppExactArtifactSource', () => ({
     createBundledPluginUiAppExactArtifactSource: () => Object.freeze({
         kind: 'appExact' as const,
-        readFile: vi.fn(async () => null),
+        fetch: vi.fn(async () => null),
     }),
 }));
 vi.mock('@/sync/domains/plugins/availability/reader', () => ({

@@ -4,7 +4,9 @@
 
 Decide each before building: first load, populated, refreshing, empty, partial, offline or
 unreachable scope, error with recovery, permission missing, and success. Loading and error of a whole
-surface use `SurfaceStateCard`; empty uses `EmptyState`; inside a page they are rows and banners.
+surface use `SurfaceStateCard` (sized by its container: pane, details, page, phone); empty uses `EmptyState`;
+inside a list a section's state is `SurfaceStateCard size="line"` (the section title stays); stale content keeps
+its rows at full strength under one `SurfaceFreshnessLine`.
 
 ## Empty is designed, not left over
 
@@ -55,8 +57,9 @@ A page that "jiggles" when it opens is broken, not unpolished.
 
 - On open, focus lands on the most useful field (settings: search), never on a structural element
   such as a resize handle. Source order matches visual and keyboard order.
-- Focus rings use `border.focus` and appear for keyboard use only (`:focus-visible` on web, owned by
-  `HappierPressable`); a mouse press never leaves a ring. Containers (popovers, sheets) never paint a
+- Focus rings use `border.focus` and appear for keyboard use only (`:focus-visible` on web, decided by
+  `isHappierFocusVisible` and applied by `HappierPressable`; `theme.css` drops the browser's own ring
+  for pointer focus); a mouse press never leaves a ring. Containers (popovers, sheets) never paint a
   focus outline around themselves.
 
 ## Motion

@@ -17,10 +17,11 @@ import { Platform, Pressable, View, type ViewProps } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
+import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { SlideTransitionSwitch } from '@/components/ui/motion/SlideTransitionSwitch';
 
 import { activateSelectionListRow } from './SelectionListRowActivation';
-import { SelectionListOptionPresentationContext } from './SelectionListOptionPresentationContext';
+import { SelectionListOptionPresentationContext, SelectionListSelectedMarkContext } from './SelectionListOptionPresentationContext';
 import { SelectionListOptionTabBehaviorContext } from './SelectionListOptionTabBehaviorContext';
 import {
     SELECTION_LIST_CARD_ACCESSORY_BOX_PX,
@@ -54,6 +55,18 @@ import { SelectionListScrollIntoViewContext } from './SelectionListScrollIntoVie
 import { selectionListTestId } from './_shared';
 import type { SectionRenderPlan } from './SelectionListRenderPlan';
 import type { SelectionListOption, SelectionListStep } from './_types';
+
+const selectedMarkStyles = StyleSheet.create(() => ({
+    mark: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    accessoryWithMark: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+}));
 
 type WebHoverablePressableState = Readonly<{
     pressed: boolean;
@@ -177,6 +190,7 @@ export function PlanOptionRow(props: Readonly<{
         ? undefined
         : props.option.renderAccessibilityLabel?.() ?? props.option.accessibilityLabel;
     const subtitleContent = renderSelectionListAccessory(props.option.subtitleContent);
+    const subtitleLeading = renderSelectionListAccessory(props.option.subtitleLeading);
     const icon = renderSelectionListAccessory(props.option.icon);
     const rightAccessory = renderSelectionListAccessory(props.option.rightAccessory);
     // Per-option controls belong to the SELECTED row only, and are resolved
@@ -311,13 +325,46 @@ export function PlanOptionRow(props: Readonly<{
     // (see SELECTION_LIST_CARD_ACCESSORY_BOX_PX) so a long title cannot run
     // underneath it.
     const cardAccessory = isCard ? rightAccessory : undefined;
+    // The picker anatomy marks the ONE current choice of a single-choice list with a trailing check
+    // after any accessory the option brings (the body publishes whether this list wants it). Custom
+    // `content` rows draw their own tree, so they are left alone.
+    const rowMark = React.useContext(SelectionListSelectedMarkContext);
+    const marksRow = !isCard
+        && props.option.content === undefined
+        && (rowMark === 'check' ? props.isSelected : rowMark === 'enter' ? props.isFocused : false);
+    const selectedMark = marksRow ? (
+        <View
+            testID={props.measureMode === true
+                ? undefined
+                : selectionListTestId(
+                    props.rootTestID,
+                    props.stepId,
+                    rowMark === 'enter' ? 'option-enter-mark' : 'option-selected-mark',
+                    props.option.id,
+                )}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={selectedMarkStyles.mark}
+        >
+            {rowMark === 'enter'
+                ? <Icon name="arrow-elbow-down-left" size={ICON_SIZE.sm} color={theme.colors.text.tertiary} />
+                : <Icon name="check" size={ICON_SIZE.sm} color={theme.colors.text.primary} />}
+        </View>
+    ) : null;
+    const rowRightAccessory = selectedMark === null
+        ? rightAccessory
+        : rightAccessory === undefined
+            ? selectedMark
+            : <View style={selectedMarkStyles.accessoryWithMark}>{rightAccessory}{selectedMark}</View>;
     const itemRightElement = isCard
         ? (rightAccessory === undefined ? undefined : <View style={cardStyles.accessoryReserve} />)
-        : rightAccessory;
+        : rowRightAccessory;
     // Spread rather than passed as `style={isCard ? … : undefined}` so a flush
     // row carries NO style prop at all and `Item` resolves the user's density
     // setting exactly as it does for every other list in the app.
-    const cardItemInsetProps = isCard ? { style: cardStyles.itemInset } : {};
+    // A card's description may take two lines (a model card: name, then one or two lines of what it
+    // is for), as in the engine picker's grid; flush rows keep `Item`'s one-line default.
+    const cardItemInsetProps = isCard ? { style: cardStyles.itemInset, subtitleLines: 2 } : {};
     // The overlay carries no role of its own: it is part of the option, and the
     // option's cell (this wrapper at two columns, the node inside it at one)
     // already owns it. Giving it a cell of its own was how the single-column
@@ -363,6 +410,7 @@ export function PlanOptionRow(props: Readonly<{
                 <Item
                     title={optionLabel}
                     subtitle={subtitleContent ?? props.option.subtitle}
+                    subtitleLeading={subtitleLeading}
                     titleEllipsizeMode={props.option.labelEllipsizeMode}
                     subtitleEllipsizeMode={props.option.subtitleEllipsizeMode}
                     icon={icon}
@@ -424,6 +472,7 @@ export function PlanOptionRow(props: Readonly<{
             testID={optionTestId}
             title={optionLabel}
             subtitle={subtitleContent ?? props.option.subtitle}
+            subtitleLeading={subtitleLeading}
             titleEllipsizeMode={props.option.labelEllipsizeMode}
             subtitleEllipsizeMode={props.option.subtitleEllipsizeMode}
             icon={icon}
@@ -575,7 +624,7 @@ export function PlanAnimatedSuccessRows(props: RenderPlanRowsProps & {
             contentKey={props.transitionKey}
             direction={direction}
             blur={false}
-            preset="compact"
+            preset="routine"
             testID={selectionListTestId(props.sectionTestId, 'transition')}
         >
             <PlanSuccessRows
@@ -631,7 +680,7 @@ export function VirtualizedTransitionShell(props: Readonly<{
             contentKey={props.transitionKey}
             direction={direction}
             blur={false}
-            preset="compact"
+            preset="routine"
             testID={selectionListTestId(props.sectionTestId, 'transition')}
         >
             {props.children}

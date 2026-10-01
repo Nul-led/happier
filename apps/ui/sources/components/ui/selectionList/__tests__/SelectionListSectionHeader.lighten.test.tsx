@@ -12,25 +12,24 @@ vi.mock('react-native', async () => {
  * R13 — Premium UI gaps round 2 (Fix 4): the R6 section header was still too
  * heavy for the command-bar aesthetic — 0.5pt letter-spacing + a 1pt
  * full-width top border made it read like a settings group header. The final
- * contract keeps app-wide uppercase section labels while avoiding heavy style
- * chrome:
- *   - Uppercase title text without letter-spacing
+ * contract avoids heavy style chrome:
+ *   - Sentence-case title text (U8.5 craft S1: no uppercase eyebrows) without letter-spacing
  *   - No letter-spacing on the title
  *   - No full-width border (the border, if present at all, is inset)
  *   - Smaller font (~11px on web)
- *   - More muted color (theme.colors.text.tertiary)
+ *   - Secondary text color (theme.colors.text.secondary)
  *
  * The R6 contract (testID, count rendering) MUST still hold.
  */
 describe('SelectionListSectionHeader — R13 lightening', () => {
-    it('renders uppercase title text without letter-spacing', async () => {
+    it('renders the title in its own (sentence) case without letter-spacing', async () => {
         const { SelectionListSectionHeader } = await import('../SelectionListSectionHeader');
         const screen = await renderScreen(
-            <SelectionListSectionHeader testID="hdr" title="Favorites" />,
+            <SelectionListSectionHeader testID="hdr" title="Recent sessions" />,
         );
         const text = screen.getTextContent();
-        expect(text).toContain('FAVORITES');
-        expect(text).not.toContain('Favorites');
+        expect(text).toContain('Recent sessions');
+        expect(text).not.toContain('RECENT SESSIONS');
         // Walk the rendered tree to find any Text descendant that might carry
         // the offending styles.
         const root = screen.findByTestId('hdr');
@@ -95,7 +94,7 @@ describe('SelectionListSectionHeader — R13 lightening', () => {
         );
         expect(screen.findByTestId('hdr')).not.toBeNull();
         const text = screen.getTextContent();
-        expect(text).toContain('FAVORITES');
+        expect(text).toContain('Favorites');
         expect(text).toContain('3');
     });
 

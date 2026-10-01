@@ -26,10 +26,6 @@ vi.mock('@/components/ui/layout/layout', () => ({
     useLayoutMaxWidth: () => 850,
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}), eyebrow: () => ({}) },
-}));
-
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: any) => React.createElement('Text', props, props.children),
 }));

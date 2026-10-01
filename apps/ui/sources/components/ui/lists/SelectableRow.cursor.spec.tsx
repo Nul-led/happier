@@ -49,6 +49,34 @@ describe('SelectableRow (web cursor)', () => {
     expect(root?.props?.accessibilityLabel).toBe('Row. More context');
   });
 
+  it('keeps a row with no action out of the tab order and unannounced as a button', async () => {
+    const { SelectableRow } = await import('./SelectableRow');
+
+    const screen = await renderScreen(
+        <SelectableRow testID="selectable-row-inert" title="Your account" subtitle="Signed in to this Home" />,
+    );
+    const root = screen.findAll((node) => (
+        node.props?.testID === 'selectable-row-inert' && typeof node.props?.style === 'function'
+    ))[0];
+    expect(root).toBeTruthy();
+    expect(root?.props?.role).toBeUndefined();
+    expect(root?.props?.focusable).toBe(false);
+  });
+
+  it('lays the subtitle out the same way with or without a leading status mark', async () => {
+    const { SelectableRow } = await import('./SelectableRow');
+    const subtitleLine = async (subtitleLeading?: React.ReactNode) => {
+        const screen = await renderScreen(
+            <SelectableRow title="Row" subtitle="Line" subtitleLeading={subtitleLeading} onPress={() => {}} />,
+        );
+        const text = screen.findAll((node) => node.props?.children === 'Line' && typeof node.type !== 'string')[0];
+        return flattenStyle(text?.parent?.props?.style);
+    };
+    const plain = await subtitleLine();
+    const marked = await subtitleLine(<Dot />);
+    expect(plain).toEqual(marked);
+  });
+
   it('uses a not-allowed cursor when disabled', async () => {
     const { SelectableRow } = await import('./SelectableRow');
 
@@ -66,3 +94,12 @@ describe('SelectableRow (web cursor)', () => {
     expect(styles.some((s: any) => s && typeof s === 'object' && s.cursor === 'not-allowed')).toBe(true);
   });
 });
+
+function Dot() {
+    return null;
+}
+
+function flattenStyle(style: unknown): Record<string, unknown> {
+    const list = Array.isArray(style) ? style.flat(Infinity) : [style];
+    return Object.assign({}, ...list.filter((entry) => entry && typeof entry === 'object'));
+}

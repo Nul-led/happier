@@ -17,7 +17,8 @@ import type {
  * *into* a folder is easy even on short folder headers — the top/bottom quarters
  * stay reorder edges. Leaf rows keep strict thirds (the default): their middle
  * band is a no-op (leaves can't be parents), so widening it would only grow a
- * "blocked" dead zone.
+ * "blocked" dead zone — unless a domain rule adopts the leaf (`canAdoptLeaf`),
+ * which makes its middle a real nest target again.
  */
 const CONTAINER_NEST_BAND_RATIO = 0.5;
 
@@ -58,7 +59,9 @@ function resolveRowInstruction(params: ResolveTreeInstructionParams, target: Tre
     if (target.id === params.source.id) return blocked('same-position', target.id);
     if (params.source.excludedDescendantIds.has(target.id)) return blocked('descendant-cycle', target.id);
 
-    const canHaveChildren = canTreeRowHaveChildren(target);
+    const isContainer = canTreeRowHaveChildren(target);
+    const adoptsLeaf = !isContainer && params.rules.canAdoptLeaf?.(params.source, target) === true;
+    const canHaveChildren = isContainer || adoptsLeaf;
     const verticalThird = classifyVerticalThird(
         target.bounds,
         params.pointer!,
@@ -90,11 +93,13 @@ function resolveRowInstruction(params: ResolveTreeInstructionParams, target: Tre
 
     if (!canHaveChildren) return blocked('leaf-cannot-be-parent', target.id);
     const depth = computeNestInstructionDepth({ ...target, depth: target.depth + 1 });
-    if (typeof params.rules.maxDepth === 'number' && depth > params.rules.maxDepth) {
-        return blocked('max-depth-exceeded', target.id);
-    }
-    if (!params.rules.canNestInto(params.source, target.id)) {
-        return blocked('workspace-scope-mismatch', target.id);
+    if (!adoptsLeaf) {
+        if (typeof params.rules.maxDepth === 'number' && depth > params.rules.maxDepth) {
+            return blocked('max-depth-exceeded', target.id);
+        }
+        if (!params.rules.canNestInto(params.source, target.id)) {
+            return blocked('workspace-scope-mismatch', target.id);
+        }
     }
     return result({
         kind: 'nest-into',

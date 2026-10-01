@@ -100,3 +100,32 @@ describe('OverlayMotionFrame', () => {
         expect(pointerEventsFromStyle(frame.props.style)).toBeUndefined();
     });
 });
+
+describe('panel motion', () => {
+    it('slides in its own width from the side it stands on, and fades in place under reduced motion', async () => {
+        const { resolveOverlayMotionPreset, useOverlayMotionAnimation } = await import('./overlayMotion');
+        const preset = resolveOverlayMotionPreset({ kind: 'panel', direction: 'right', travelPx: 320 });
+        let style: any = null;
+        function Probe() {
+            style = useOverlayMotionAnimation({ visible: true, preset }).style;
+            return null;
+        }
+
+        timingSpy.mockClear();
+        await renderScreen(<Probe />);
+        expect(timingSpy).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ toValue: 1, duration: motionTokens.overlay.panel.enterMs }));
+        const translateX = style.transform.find((entry: Record<string, unknown>) => 'translateX' in entry).translateX;
+        expect(translateX.config.outputRange).toEqual([-320, 0]);
+        expect(style.opacity.config.outputRange).toEqual([1, 1]);
+
+        timingSpy.mockClear();
+        reduceMotionSpy.mockReturnValue(true);
+        try {
+            await renderScreen(<Probe />);
+            expect(timingSpy).toHaveBeenLastCalledWith(expect.any(Object), expect.objectContaining({ toValue: 1, duration: motionTokens.overlay.panel.reducedMotionFadeMs }));
+            expect(style.transform).toBeUndefined();
+        } finally {
+            reduceMotionSpy.mockReturnValue(false);
+        }
+    });
+});

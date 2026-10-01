@@ -1,35 +1,13 @@
 import * as React from 'react';
-import { View } from 'react-native';
 
-import { Typography } from '@/constants/Typography';
+import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { t } from '@/text';
-import { Text } from '@/components/ui/text/Text';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 
-export const PaneLoadingFallback = React.memo((props: Readonly<{
-    color: string;
-    paddingTop?: number;
-    paddingHorizontal?: number;
-    showTypographyMetrics?: boolean;
-}>) => {
-    const textStyle = props.showTypographyMetrics === false
-        ? undefined
-        : Typography.default();
-
-    return (
-        <View
-            style={{
-                flex: 1,
-                alignItems: 'center',
-                justifyContent: 'center',
-                paddingTop: props.paddingTop ?? 24,
-                paddingHorizontal: props.paddingHorizontal ?? 16,
-            }}
-        >
-            <ActivitySpinner size="small" color={props.color} />
-            <Text style={{ marginTop: 10, fontSize: 12, color: props.color, ...textStyle }}>
-                {t('common.loading')}
-            </Text>
-        </View>
-    );
-});
+/**
+ * A pane, cockpit or details surface whose code or first data has not arrived yet (a `Suspense`
+ * fallback). It is the shared state composition's loading state, so it takes its container's size and,
+ * when the wait runs long, says so ("Still waiting · 12 s") instead of spinning silently.
+ */
+export const PaneLoadingFallback = React.memo((props: Readonly<{ testID?: string }>) => (
+    <SurfaceStateCard testID={props.testID} kind="loading" title={t('common.loading')} accessibilitySemantics="status" />
+));

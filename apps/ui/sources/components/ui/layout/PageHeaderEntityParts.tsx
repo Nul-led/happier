@@ -20,6 +20,8 @@ export type PageHeaderMenuAction = Readonly<{
     destructive?: boolean;
     /** The operation is running: the row shows progress and cannot be chosen again. */
     loading?: boolean;
+    /** A policy the menu toggles ("Link new sessions automatically"): shows its current state as a check. */
+    checked?: boolean;
     onSelect: () => void | Promise<void>;
 }>;
 
@@ -38,6 +40,8 @@ export function PageHeaderMarkTile(props: Readonly<{
     testID?: string;
     size?: 'page' | 'row';
     appearance?: 'mark' | 'glyph';
+    /** An identity tint for the tile's fill (a monogram's deterministic colour); defaults to the inset surface. */
+    fill?: string;
 }>) {
     const row = props.size === 'row';
     const glyph = props.appearance === 'glyph';
@@ -47,6 +51,7 @@ export function PageHeaderMarkTile(props: Readonly<{
             style={[
                 glyph ? stylesheet.glyph : stylesheet.markTile,
                 row ? (glyph ? stylesheet.glyphRow : stylesheet.markTileRow) : null,
+                !glyph && props.fill ? { backgroundColor: props.fill } : null,
             ]}
         >
             {props.children}
@@ -63,16 +68,29 @@ export const PageHeaderMenu = React.memo(function PageHeaderMenu(props: Readonly
     testID?: string;
     /** Overrides the trigger's test id (kept for pages with an established one). */
     triggerTestID?: string;
+    /**
+     * Settings search asked the page for one of this menu's entries: the menu opens so the entry is in
+     * view. The page wraps the menu in that setting's `SettingAnchor`, which marks the trigger.
+     */
+    openRequested?: boolean;
 }>) {
     const { theme } = useUnistyles();
-    const [open, setOpen] = React.useState(false);
+    const [open, setOpen] = React.useState(props.openRequested === true);
+    React.useEffect(() => {
+        if (props.openRequested) setOpen(true);
+    }, [props.openRequested]);
     const items = React.useMemo((): ReadonlyArray<DropdownMenuItem> => props.actions.map((action) => ({
         id: action.id,
         title: action.title,
         ...(action.testID ? { testID: action.testID } : {}),
         ...(action.disabled || action.loading ? { disabled: true } : {}),
         ...(action.destructive ? { destructive: true } : {}),
-        ...(action.loading ? { rightElement: <ActivitySpinner size="small" color={theme.colors.text.secondary} /> } : {}),
+        ...(action.checked === undefined ? {} : { checked: action.checked }),
+        ...(action.loading
+            ? { rightElement: <ActivitySpinner size="small" color={theme.colors.text.secondary} /> }
+            : action.checked
+                ? { rightElement: <Icon name="check" size={16} color={theme.colors.text.secondary} /> }
+                : {}),
     })), [props.actions, theme.colors.text.secondary]);
     return (
         <DropdownMenu

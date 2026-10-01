@@ -13,6 +13,7 @@ import type {
     MarkdownEditorController,
     MarkdownSelectionState,
 } from '@/components/ui/markdown/editor/markdownEditorTypes';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * Phase-1 formatting toolbar for the rich markdown editor (Lane C / C2).
@@ -232,7 +233,7 @@ function MarkdownEditorToolbarInner(props: MarkdownEditorToolbarProps): React.Re
                         borderColor: active
                             ? theme.colors.state.active.border
                             : theme.colors.border.default,
-                        opacity: pressed ? 0.7 : 1,
+                        opacity: pressed ? motionTokens.press.opacity : 1,
                     },
                 ]}
             >
@@ -285,7 +286,7 @@ function MarkdownEditorToolbarInner(props: MarkdownEditorToolbarProps): React.Re
                             {
                                 backgroundColor: theme.colors.surface.base,
                                 borderColor: theme.colors.border.default,
-                                opacity: pressed ? 0.7 : 1,
+                                opacity: pressed ? motionTokens.press.opacity : 1,
                             },
                         ]}
                     >
@@ -302,7 +303,7 @@ function MarkdownEditorToolbarInner(props: MarkdownEditorToolbarProps): React.Re
                             {
                                 backgroundColor: theme.colors.surface.base,
                                 borderColor: theme.colors.border.default,
-                                opacity: pressed ? 0.7 : 1,
+                                opacity: pressed ? motionTokens.press.opacity : 1,
                             },
                         ]}
                     >

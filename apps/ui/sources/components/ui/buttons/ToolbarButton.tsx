@@ -5,6 +5,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The canonical small labelled action for pane toolbars and surface headers.
@@ -77,6 +78,9 @@ const stylesheet = StyleSheet.create((theme) => ({
         borderWidth: 0,
         backgroundColor: theme.colors.button.primary.background,
     },
+    primaryPressed: {
+        opacity: motionTokens.press.opacity,
+    },
     primaryLabel: {
         color: theme.colors.button.primary.tint,
     },
@@ -122,8 +126,9 @@ export const ToolbarButton = React.memo((props: ToolbarButtonProps) => {
                 props.size === 'md' ? styles.md : null,
                 isPrimary ? styles.primary : null,
                 props.active ? styles.active : null,
-                hovered && !props.disabled ? styles.hovered : null,
-                pressed && !props.disabled ? styles.pressed : null,
+                // A primary keeps its fill under the pointer; the quiet fills are for the quiet tones.
+                hovered && !props.disabled && !isPrimary ? styles.hovered : null,
+                pressed && !props.disabled ? (isPrimary ? styles.primaryPressed : styles.pressed) : null,
                 props.disabled ? styles.disabled : null,
                 props.style,
             ]}

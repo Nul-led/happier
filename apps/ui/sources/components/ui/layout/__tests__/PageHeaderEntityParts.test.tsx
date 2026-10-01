@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable } from 'react-native';
+import { Image, Pressable } from 'react-native';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +14,7 @@ installSettingsViewCommonModuleMocks();
 
 // The menu is exercised through the real shared DropdownMenu / SelectableRow path; only platform
 // boundaries are mocked (by the common helper above).
-const { PageHeaderMenu } = await import('@/components/ui/layout/PageHeaderEntityParts');
+const { PageHeaderMarkTile, PageHeaderMenu } = await import('@/components/ui/layout/PageHeaderEntityParts');
 const { SelectableRow } = await import('@/components/ui/lists/SelectableRow');
 const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
 const { OverlayPortalProvider, OverlayPortalHost } = await import('@/components/ui/popover/OverlayPortal');
@@ -42,6 +42,24 @@ function findRow(screen: Awaited<ReturnType<typeof renderScreen>>, title: string
     return screen.findAllByType(SelectableRow as never)
         .find((node) => node.props.title === title) ?? null;
 }
+
+describe('PageHeaderMarkTile', () => {
+    it('keeps page and row artwork visible without a backing or clipping', async () => {
+        for (const size of ['page', 'row'] as const) {
+            const screen = await renderScreen(
+                <PageHeaderMarkTile testID="entity-mark" size={size}>
+                    <Image testID="entity-artwork" accessibilityLabel="Agent" source={{ uri: 'agent.png' }} />
+                </PageHeaderMarkTile>,
+            );
+            const style = flattenTestStyle(screen.findByTestId('entity-mark')?.props.style);
+            expect(style.backgroundColor).toBeUndefined();
+            expect(style.borderWidth).toBeUndefined();
+            expect(style.overflow).not.toBe('hidden');
+            expect(screen.findByTestId('entity-artwork')?.props.accessibilityLabel).toBe('Agent');
+            await screen.unmount();
+        }
+    });
+});
 
 describe('PageHeaderMenu', () => {
     let restoreGlobals: (() => void) | null = null;
@@ -89,6 +107,39 @@ describe('PageHeaderMenu', () => {
         expect(clearRow!.props.disabled).toBe(true);
         expect(clearRow!.findAllByType(ActivitySpinner)).toHaveLength(1);
         expect(deleteRow!.findAllByType(ActivitySpinner)).toHaveLength(0);
+    });
+});
+
+describe('PageHeaderMenu: reached from search', () => {
+    let restoreGlobals: (() => void) | null = null;
+    beforeEach(() => {
+        restoreGlobals = withPopoverWebGlobals();
+    });
+    afterEach(() => {
+        restoreGlobals?.();
+        restoreGlobals = null;
+    });
+
+    it('opens itself when search asks for one of its entries, and stays closed otherwise', async () => {
+        const render = (openRequested: boolean) => (
+            <OverlayPortalProvider>
+            <PageHeaderMenu
+                testID="entity-menu"
+                openRequested={openRequested}
+                actions={[{ id: 'create', title: 'Create a Personal Home', onSelect: () => {} }]}
+            />
+            <OverlayPortalHost />
+            </OverlayPortalProvider>
+        );
+        const closed = await renderScreen(render(false), measuredHostNodes);
+        await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+        expect(findRow(closed, 'Create a Personal Home')).toBeNull();
+        await closed.unmount();
+
+        const requested = await renderScreen(render(true), measuredHostNodes);
+        await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+        expect(findRow(requested, 'Create a Personal Home')).not.toBeNull();
+        await requested.unmount();
     });
 });
 

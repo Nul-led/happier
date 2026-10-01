@@ -36,7 +36,7 @@ import {
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 
 import { SlideTransitionFrame } from './SlideTransitionFrame';
-import { slideTransitionTokens, type SlideTransitionPreset } from './slideTransitionTokens';
+import { slideTransitionTokens, type SlideTransitionRole } from './slideTransitionTokens';
 import type { SlideTransitionDirection, SlideTransitionSwitchProps } from './_types';
 
 type InFlightTarget = Readonly<{
@@ -49,8 +49,8 @@ type InFlightTarget = Readonly<{
 export function SlideTransitionSwitch(props: SlideTransitionSwitchProps): React.ReactElement {
     const preferredReducedMotion = useReducedMotionPreference();
     const effectiveReducedMotion = props.reducedMotion ?? preferredReducedMotion;
-    const resolvedPreset: SlideTransitionPreset = props.preset ?? 'compact';
-    const resolvedBlur = props.blur ?? resolvedPreset === 'soft';
+    const resolvedPreset: SlideTransitionRole = props.preset ?? 'routine';
+    const resolvedBlur = props.blur ?? resolvedPreset === 'signature';
     const presetTokens = slideTransitionTokens[resolvedPreset];
 
     const displayedChildrenRef = React.useRef<React.ReactNode>(props.children);
@@ -180,7 +180,7 @@ export function SlideTransitionSwitch(props: SlideTransitionSwitchProps): React.
         };
         progress.value = effectiveReducedMotion
             ? withTiming(target, { duration: presetTokens.reducedMotionDurationMs }, commitWhenFinished)
-            : withSpring(target, presetTokens.spring, commitWhenFinished);
+            : withSpring(target, presetTokens.spring.config, commitWhenFinished);
     }, [
         props.contentKey,
         props.direction,
@@ -189,7 +189,7 @@ export function SlideTransitionSwitch(props: SlideTransitionSwitchProps): React.
         effectiveReducedMotion,
         commitDisplayed,
         commitInFlightTarget,
-        presetTokens.spring,
+        presetTokens.spring.config,
         progress,
     ]);
 
@@ -201,8 +201,11 @@ export function SlideTransitionSwitch(props: SlideTransitionSwitchProps): React.
     return (
         <SlideTransitionFrame
             current={currentSlot}
+            currentKey={displayedKey}
             next={incomingSlotForward}
+            nextKey={props.contentKey}
             previous={incomingSlotBackward}
+            previousKey={props.contentKey}
             progress={progress}
             blur={resolvedBlur}
             preset={resolvedPreset}

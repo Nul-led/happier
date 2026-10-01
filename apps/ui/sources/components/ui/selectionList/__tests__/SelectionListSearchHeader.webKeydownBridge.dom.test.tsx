@@ -58,6 +58,7 @@ vi.mock('react-native-reanimated', () => {
         useAnimatedStyle: (factory: () => unknown) => factory(),
         useSharedValue: (value: unknown) => ({ value }),
         withTiming: (value: unknown) => value,
+        Easing: { bezier: () => (value: number) => value, linear: (value: number) => value },
     };
 });
 

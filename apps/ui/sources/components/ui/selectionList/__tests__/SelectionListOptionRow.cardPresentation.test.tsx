@@ -239,6 +239,14 @@ describe('optionPresentation card — content inset', () => {
         expect(SELECTION_LIST_CARD_CONTENT_INSET_PX).toBe(SELECTION_LIST_CARD_INSET_PX);
     });
 
+    it('lets a card description wrap to two lines (a model card: name, then one or two lines)', async () => {
+        await renderRow({ presentation: 'card', isSelected: false });
+        expect(itemProps.current?.subtitleLines).toBe(2);
+
+        await renderRow({ presentation: 'row', isSelected: false });
+        expect(itemProps.current?.subtitleLines).toBeUndefined();
+    });
+
     it('leaves the flush row on the density inset it has always had', async () => {
         await renderRow({ presentation: 'row', isSelected: false });
         // Not an empty style object — no style prop at all, so `Item` resolves

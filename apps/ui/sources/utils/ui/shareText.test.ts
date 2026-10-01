@@ -19,13 +19,7 @@ vi.mock('react-native', () => ({
 const { isTextSharingAvailable, shareTextSafe } = await import('./shareText');
 
 function setWebShare(implementation: ((data: { text?: string }) => Promise<void>) | null): void {
-    const navigator = (globalThis as { navigator?: Record<string, unknown> }).navigator;
-    if (!navigator) {
-        (globalThis as { navigator?: unknown }).navigator = implementation ? { share: implementation } : {};
-        return;
-    }
-    if (implementation) navigator.share = implementation;
-    else delete navigator.share;
+    vi.stubGlobal('navigator', implementation ? { share: implementation } : {});
 }
 
 afterEach(() => {
@@ -33,7 +27,7 @@ afterEach(() => {
     shareExportMock.current = true;
     dismissedActionMock.current = 'dismissedAction';
     platformOsMock.current = 'ios';
-    setWebShare(null);
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
 });
 

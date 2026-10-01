@@ -29,16 +29,26 @@ export function resolveItemTitleMaxLines(hasSubtitle: boolean): number {
 }
 
 /**
+ * A status subtitle — one led by a status mark (`subtitleLeading`: a presence or trouble dot) — says
+ * something the reader must be able to read whole ("Happier 0.2.10 on this machine · 0.2.12
+ * available"), so it wraps to this many lines instead of being cut. A plain description stays on one
+ * line, which keeps long index lists compact.
+ */
+export const ITEM_STATUS_SUBTITLE_MAX_LINES = 2;
+
+/**
  * The clamp for one painted subtitle string. `null` means the box grows with its content.
  *
- * An explicit `subtitleLines` wins, with `0` (or less) meaning "auto/multiline". Otherwise a
- * subtitle carrying a hard line break paints unbounded and one without is a single line.
+ * An explicit `subtitleLines` wins, with `0` (or less) meaning "auto/multiline". Otherwise a status
+ * subtitle takes up to {@link ITEM_STATUS_SUBTITLE_MAX_LINES}, a subtitle carrying a hard line break
+ * paints unbounded, and any other is a single line.
  */
 export function resolveItemSubtitleMaxLines(
-    params: Readonly<{ text: string; subtitleLines: number | undefined }>,
+    params: Readonly<{ text: string; subtitleLines: number | undefined; status?: boolean }>,
 ): number | null {
     if (params.subtitleLines !== undefined) {
         return params.subtitleLines <= 0 ? null : params.subtitleLines;
     }
+    if (params.status === true) return ITEM_STATUS_SUBTITLE_MAX_LINES;
     return params.text.indexOf('\n') === -1 ? 1 : null;
 }

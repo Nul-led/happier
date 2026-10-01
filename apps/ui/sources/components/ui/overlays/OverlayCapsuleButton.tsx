@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { GlassPanel } from '@/components/ui/glass/GlassPanel';
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 /**
  * The small floating capsule control that sits beside a bottom-anchored overlay surface — the
@@ -46,7 +47,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     pressed: {
-        opacity: 0.92,
+        opacity: motionTokens.press.opacitySubtle,
     },
 });
 

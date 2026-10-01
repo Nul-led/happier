@@ -166,16 +166,22 @@ describe('SelectableMenuResults', () => {
             screen.findByTestId('dropdown-option-short:scroll-frame'),
             screen.findByTestId('dropdown-option-long:scroll-frame'),
         ];
-        expect(frames.every((frame) => frame?.props.style?.width === '100%')).toBe(true);
-        expect(screen.findAllByType('Item').every((item) => (
-            Array.isArray(item.props.pressableStyle)
-            && item.props.pressableStyle.some((style: unknown) => (
-                style !== null
-                && typeof style === 'object'
-                && 'width' in style
-                && style.width === '100%'
-            ))
+        // The web frame is a plain element: it must stretch its row as a View would, or a <button>
+        // row shrinks to its label and its highlight covers part of the menu.
+        expect(frames.every((frame) => (
+            frame?.props.style?.width === '100%'
+            && frame?.props.style?.display === 'flex'
+            && frame?.props.style?.flexDirection === 'column'
+            && frame?.props.style?.alignItems === 'stretch'
         ))).toBe(true);
+        // Each row then spans the content width at the shared menu inset, concentric with the surface.
+        const { MENU_ROW_METRICS } = await import('@/components/ui/lists/itemDensityMetrics');
+        expect(screen.findAllByType('Item').every((item) => {
+            const style = Object.assign({}, ...[item.props.pressableStyle].flat(Infinity).filter(Boolean));
+            return style.alignSelf === 'stretch'
+                && style.marginHorizontal === MENU_ROW_METRICS.insetPx
+                && style.borderRadius === MENU_ROW_METRICS.radiusPx;
+        })).toBe(true);
     });
 
     it('registers row layouts for the dropdown scroll owner', async () => {

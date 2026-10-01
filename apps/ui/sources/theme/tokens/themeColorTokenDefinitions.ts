@@ -77,7 +77,7 @@ export const EDITABLE_THEME_COLOR_TOKEN_DEFINITIONS = [
     defineEditableThemeColorToken({ id: 'border.default', path: ['border', 'default'], group: 'border', label: 'Default border', description: 'Standard separators and divider lines.', valueKind: 'color' }),
     defineEditableThemeColorToken({ id: 'border.surface', path: ['border', 'surface'], group: 'border', label: 'Surface border', description: 'Outer stroke for cards, popovers, dropdowns, composer panels, and other bounded surfaces.', valueKind: 'color' }),
     defineEditableThemeColorToken({ id: 'border.strong', path: ['border', 'strong'], group: 'border', label: 'Strong border', description: 'Higher-emphasis outline for elevated or selected surface boundaries. Not the keyboard focus ring — that is border.focus.', valueKind: 'color' }),
-    defineEditableThemeColorToken({ id: 'border.focus', path: ['border', 'focus'], group: 'border', label: 'Focus ring', description: 'Keyboard focus-visible ring for every focusable control. Must stay legible against the surfaces a control sits on.', valueKind: 'color', contrastPairs: focusIndicatorContrast }),
+    defineEditableThemeColorToken({ id: 'border.focus', path: ['border', 'focus'], group: 'border', label: 'Focus ring', description: 'Keyboard focus-visible ring for controls without an editable-text caret. Must stay legible against the surfaces a control sits on.', valueKind: 'color', contrastPairs: focusIndicatorContrast }),
     defineEditableThemeColorToken({ id: 'border.modal', path: ['border', 'modal'], group: 'border', label: 'Modal border', description: 'Border color for modal card and dialog chrome surfaces.', valueKind: 'color' }),
     defineEditableThemeColorToken({ id: 'effect.surfaceHighlight', path: ['effect', 'surfaceHighlight'], group: 'effect', label: 'Surface highlight', description: 'Surface chrome accent for bounded cards, popovers, and composer surfaces.', valueKind: 'color' }),
     defineEditableThemeColorToken({ id: 'chrome.header.background', path: ['chrome', 'header', 'background'], group: 'chrome', label: 'Header background', description: 'Navigation and screen header background color.', valueKind: 'color' }),
@@ -256,6 +256,7 @@ export const THEME_COLOR_TOKEN_CLASSIFICATIONS = [
     { path: ['diff', 'outline'], status: 'internal', reason: 'Diff outline is an internal renderer detail rather than a V1 public token.' },
     { path: ['diff', 'success'], status: 'derived', reason: 'Diff success summary color follows state success semantics.' },
 
+    { path: ['border', 'faint'], status: 'internal', reason: 'About half the weight of border.subtle: the content-width separator between groups of one section\'s rows. An internal chrome detail, like border.subtle, and absent from the theme-profile border palette.' },
     { path: ['border', 'subtle'], status: 'internal', reason: 'Half-weight seam hairline for pane edges and quiet toolbar controls; an internal chrome detail rather than a V1 public border token, and deliberately absent from the theme-profile border palette.' },
 
     { path: ['feed', 'card', 'background'], status: 'derived', reason: 'Tool feed card surface derived from surface.elevated so private transcript chrome follows active theme profiles.' },

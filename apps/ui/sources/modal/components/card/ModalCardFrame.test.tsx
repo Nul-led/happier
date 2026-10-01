@@ -49,6 +49,28 @@ installModalComponentCommonModuleMocks({
 });
 
 describe('ModalCardFrame', () => {
+    it('gives a phone card’s title the full row and moves wide header actions beneath it', async () => {
+        windowState.width = 390;
+        windowState.height = 844;
+        try {
+            const { renderScreen } = await import('@/dev/testkit');
+            const { ModalCardFrame } = await import('./ModalCardFrame');
+            const screen = await renderScreen(React.createElement(ModalCardFrame, {
+                children: React.createElement('Child'),
+                title: 'Let Claude use a window',
+                subtitle: 'Claude sees and acts only in what you choose.',
+                actions: React.createElement('MachineChip'),
+                onClose: vi.fn(),
+                testID: 'modal-card-frame',
+            }));
+            const row = screen.findByTestId('modal-card-header-actions-row');
+            expect(row?.findAllByType('MachineChip' as never)).toHaveLength(1);
+        } finally {
+            windowState.width = 1024;
+            windowState.height = 768;
+        }
+    });
+
     it('keeps modal shadows outside the clipped rounded card surface', async () => {
         const { renderScreen } = await import('@/dev/testkit');
         const { ModalCardFrame } = await import('./ModalCardFrame');
@@ -136,6 +158,28 @@ describe('ModalCardFrame', () => {
         }
         await closeButton.props.onPress();
         expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders no title band for a headerless card (search, palette) while keeping its content', async () => {
+        const { renderScreen } = await import('@/dev/testkit');
+        const { ModalCardFrame } = await import('./ModalCardFrame');
+
+        const screen = await renderScreen(
+            React.createElement(
+                ModalCardFrame,
+                {
+                    children: React.createElement('Child', { testID: 'modal-card-child' }),
+                    title: 'Search',
+                    header: 'none',
+                    onClose: vi.fn(),
+                    testID: 'modal-card-frame',
+                },
+            ),
+        );
+
+        expect(screen.findByTestId('modal-card-header')).toBeNull();
+        expect(screen.findByTestId('modal-card-close')).toBeNull();
+        expect(screen.findByTestId('modal-card-child')).toBeTruthy();
     });
 
     it('renders a leading header slot when provided', async () => {

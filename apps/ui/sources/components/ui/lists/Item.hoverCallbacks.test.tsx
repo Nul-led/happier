@@ -13,9 +13,7 @@ vi.mock('@/components/ui/rendering/normalizeNodeForView', () => ({
     normalizeNodeForView: (node: unknown) => node,
 }));
 
-vi.mock('@/components/ui/lists/useResolvedItemDensity', () => ({
-    useResolvedItemDensity: () => 'comfortable',
-}));
+// Row density is the real owner (`useResolvedItemDensity`): internal logic, not a boundary.
 
 vi.mock('@/components/ui/lists/ItemGroup', () => ({
     ItemGroupSelectionContext: React.createContext(null),

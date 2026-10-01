@@ -41,23 +41,6 @@ installUiListsCommonModuleMocks({
 
 vi.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn(async () => {}) }));
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        rowMeta: () => ({}),
-    },
-}));
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroupSelectionContext: React.createContext(null),
-}));
-vi.mock('@/components/ui/lists/ItemGroupRowPosition', () => ({
-    useItemGroupRowPosition: () => 'middle',
-}));
-vi.mock('@/components/ui/lists/itemGroupRowCorners', () => ({
-    getItemGroupRowCornerRadii: () => ({}),
-}));
-vi.mock('@/components/ui/text/Text', () => ({ Text: 'Text' }));
-
 /**
  * A row that owns a secondary native gesture (Inbox mark-read is the current
  * consumer) needs that action announced on the row itself, because the row is

@@ -5,7 +5,8 @@ import {
 } from '@/utils/platform/viewportClass';
 import { useLocalSetting } from '@/sync/domains/state/storage';
 import { getStorage } from '@/sync/domains/state/storageStore';
-import { resolveContentMaxWidthForMode } from './contentWidthMode';
+import { PAGE_COLUMN_MAX_WIDTH_PX, resolveContentMaxWidthForMode } from './contentWidthMode';
+import { useListPresentation, usePageColumn } from '@/components/ui/lists/listPresentation';
 
 function readPreferredContentWidthMode(): unknown {
     return getStorage().getState().localSettings.uiContentWidthMode;
@@ -35,9 +36,19 @@ export const layout = {
     },
 };
 
+/**
+ * The content column's width. On a configuration page it is also capped by the page's column
+ * (`PageColumn`), so every page shares the reading measure whatever the content-width preference.
+ * Floating surfaces reset to grouped presentation and keep the plain content width.
+ */
 export function useLayoutMaxWidth(): number {
     const preferredContentWidthMode = useLocalSetting('uiContentWidthMode');
-    return resolveConstrainedMaxWidth({ variant: 'content', preferredContentWidthMode });
+    const presentation = useListPresentation();
+    const pageColumn = usePageColumn();
+    const contentMaxWidth = resolveConstrainedMaxWidth({ variant: 'content', preferredContentWidthMode });
+    return presentation === 'page'
+        ? Math.min(contentMaxWidth, PAGE_COLUMN_MAX_WIDTH_PX[pageColumn])
+        : contentMaxWidth;
 }
 
 /**

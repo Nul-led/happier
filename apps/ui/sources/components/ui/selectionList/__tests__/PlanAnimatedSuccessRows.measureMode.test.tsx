@@ -28,7 +28,7 @@ describe('PlanAnimatedSuccessRows measure-mode forwarding', () => {
                 plan={plan}
                 rootTestID="sl"
                 stepId="root"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 focusedOptionId={null}
                 onSelect={() => {}}
                 onPushStep={() => {}}
@@ -48,7 +48,7 @@ describe('PlanAnimatedSuccessRows measure-mode forwarding', () => {
                 plan={plan}
                 rootTestID="sl"
                 stepId="root"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 focusedOptionId={null}
                 onSelect={() => {}}
                 onPushStep={() => {}}

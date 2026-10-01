@@ -7,6 +7,7 @@ import { MENU_ROW_METRICS } from '@/components/ui/lists/itemDensityMetrics';
 import { Text } from '@/components/ui/text/Text';
 import { buildActionRowAccessibilityLabel } from './actionRowAccessibility';
 import { ICON_LABEL_OPTICAL_NUDGE_STYLE } from '@/components/ui/icons/iconOpticalAlignment';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 
 /**
@@ -33,6 +34,8 @@ export type SelectableRowProps = Readonly<{
     titleLeading?: React.ReactNode;
     titleAccessory?: React.ReactNode;
     subtitle?: React.ReactNode;
+    /** A status mark drawn before the subtitle on its line (a dot, a warning glyph), as `Item` does. */
+    subtitleLeading?: React.ReactNode;
     left?: React.ReactNode;
     right?: React.ReactNode;
     /** Renders the right accessory beside, rather than inside, the row activation target. */
@@ -50,6 +53,12 @@ export type SelectableRowProps = Readonly<{
     destructive?: boolean;
 
     variant?: SelectableRowVariant;
+    /**
+     * `menu`: a row of a floating menu (dropdown, action list). Whatever the variant's density, it
+     * spans the menu's content width at the shared inset and radius (`MENU_ROW_METRICS`), and its
+     * highlight is a fill, never an outline.
+     */
+    presentation?: 'menu';
     onPress?: () => void;
     onHover?: () => void;
     onMouseDownCapture?: (event: unknown) => void;
@@ -118,6 +127,17 @@ const stylesheet = StyleSheet.create((theme) => ({
     rowDisabled: {
         opacity: 0.5,
     },
+    rowMenu: {
+        alignSelf: 'stretch',
+        marginHorizontal: MENU_ROW_METRICS.insetPx,
+        marginVertical: 0,
+        paddingHorizontal: MENU_ROW_METRICS.paddingHorizontalPx,
+        borderRadius: MENU_ROW_METRICS.radiusPx,
+        borderWidth: 0,
+    },
+    rowMenuSelected: {
+        backgroundColor: theme.colors.surface.selected,
+    },
     left: {
         marginRight: 12,
         alignItems: 'center',
@@ -159,10 +179,17 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     subtitle: {
         ...Typography.default(),
-        marginTop: 2,
+        flexShrink: 1,
         color: theme.colors.text.secondary,
         fontSize: Platform.select({ ios: 13, default: 13 }),
         lineHeight: 18,
+    },
+    subtitleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: MENU_ROW_METRICS.subtitleGapPx,
+        minWidth: 0,
     },
     subtitleSelectable: {
         color: theme.colors.text.secondary,
@@ -191,6 +218,7 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
     const [isHovered, setIsHovered] = React.useState(false);
 
     const variant: SelectableRowVariant = props.variant ?? 'default';
+    const isMenu = props.presentation === 'menu';
     const selected = Boolean(props.selected);
     const disabled = Boolean(props.disabled);
     const allowChildInteractionWhenDisabled = Boolean(props.allowChildInteractionWhenDisabled);
@@ -234,6 +262,7 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
     const rightAccessory = React.useMemo(() => normalizeNodeForView(props.right ?? null), [props.right]);
     const titleAccessory = React.useMemo(() => normalizeNodeForView(props.titleAccessory ?? null), [props.titleAccessory]);
     const titleLeading = React.useMemo(() => normalizeNodeForView(props.titleLeading ?? null), [props.titleLeading]);
+    const subtitleLeading = React.useMemo(() => normalizeNodeForView(props.subtitleLeading ?? null), [props.subtitleLeading]);
     const accessoryTitleAlignmentStyle = props.subtitle ? styles.accessoryTitleAligned : null;
     const explicitWebRole = props.webRole ?? (props.accessibilityRole === 'radio' ? 'radio' : undefined);
     const webRole = Platform.OS === 'web' && props.onPress && (!disabled || explicitWebRole)
@@ -266,9 +295,10 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
             ? (variant === 'selectable' ? styles.rowSelectableHovered : styles.rowHovered)
             : null,
         selected
-            ? styles.rowSelected
+            ? (isMenu ? styles.rowMenuSelected : styles.rowSelected)
             : null,
         disabled ? styles.rowDisabled : null,
+        isMenu ? styles.rowMenu : null,
         props.containerStyle,
     ]);
     const content = (includeRightAccessory: boolean) => (
@@ -293,10 +323,15 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
                         {props.title}
                     </Text>
                 )}
+                {/* One subtitle line, with or without a leading status mark, so every row's title →
+                    subtitle gap is the same (`MENU_ROW_METRICS.subtitleGapPx`). */}
                 {props.subtitle ? (
-                    <Text style={[styles.subtitle, subtitleVariantStyle, props.subtitleStyle]} numberOfLines={2}>
-                        {props.subtitle}
-                    </Text>
+                    <View style={styles.subtitleRow}>
+                        {subtitleLeading}
+                        <Text style={[styles.subtitle, subtitleVariantStyle, props.subtitleStyle]} numberOfLines={2}>
+                            {props.subtitle}
+                        </Text>
+                    </View>
                 ) : null}
             </View>
 
@@ -327,6 +362,8 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
             : undefined),
         ...(Platform.OS === 'web' && props.tabIndex !== undefined ? { tabIndex: props.tabIndex } : undefined),
         pointerEvents: disabled && allowChildInteractionWhenDisabled ? 'box-none' : 'auto',
+        // A row with no action is content, not a control: never a tab stop that does nothing.
+        ...(props.onPress ? undefined : { focusable: false }),
         ...pressableProps,
     };
 
@@ -335,11 +372,13 @@ export const SelectableRow = React.forwardRef<React.ElementRef<typeof Pressable>
             <View style={rowStyle(false)}>
                 <Pressable
                     {...semanticProps}
-                    style={({ pressed }) => [styles.splitPressable, pressed && !disabled ? { opacity: 0.72 } : null]}
+                    style={({ pressed }) => [styles.splitPressable, pressed && !disabled ? { opacity: motionTokens.press.opacity } : null]}
                 >
                     {content(false)}
                 </Pressable>
-                <View style={[styles.right, accessoryTitleAlignmentStyle]}>
+                {/* A trailing control (an inline action) centres on the row, like the lab's Retry and
+                    Sign in; accessories that read with the title stay title-aligned. */}
+                <View style={styles.right}>
                     {rightAccessory}
                 </View>
             </View>

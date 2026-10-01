@@ -16,61 +16,112 @@ export type HostedFrameFailure =
     | 'ready_timeout'
     | 'unexpected_navigation';
 
+export type HostedFrameRetirementReason = HostedFrameFailure | 'reload' | 'replaced' | 'retired' | 'unmount';
+
+type HostedFrameLifecycleState = Readonly<{
+    lifetimeKey: string;
+    attempt: number;
+    loaded: boolean;
+    ready: boolean;
+    failure: HostedFrameFailure | null;
+}>;
+
 /** One source-neutral frame attempt lifecycle shared by installed and caller adapters. */
 export function useHostedFrameLifecycle(input: Readonly<{
     lifetimeKey: string;
     readyRequired: boolean;
     readyTimeoutMs?: number | null;
     onReadyTimeout?: () => void;
-    onRetireAttempt?: () => void;
+    onRetireAttempt?: (reason: HostedFrameRetirementReason) => void;
 }>) {
-    const [attempt, setAttempt] = React.useState(0);
-    const [loaded, setLoaded] = React.useState(false);
-    const [ready, setReady] = React.useState(false);
-    const [failure, setFailure] = React.useState<HostedFrameFailure | null>(null);
+    const [state, setState] = React.useState<HostedFrameLifecycleState>(() => ({
+        lifetimeKey: input.lifetimeKey,
+        attempt: 0,
+        loaded: false,
+        ready: false,
+        failure: null,
+    }));
     const onReadyTimeoutRef = React.useRef(input.onReadyTimeout);
     const onRetireAttemptRef = React.useRef(input.onRetireAttempt);
     onReadyTimeoutRef.current = input.onReadyTimeout;
     onRetireAttemptRef.current = input.onRetireAttempt;
-    const lifetimeKeyRef = React.useRef(input.lifetimeKey);
+    const renderedState = state.lifetimeKey === input.lifetimeKey
+        ? state
+        : { lifetimeKey: input.lifetimeKey, attempt: 0, loaded: false, ready: false, failure: null };
+    if (renderedState !== state) setState(renderedState);
+    const attemptKey = `${renderedState.lifetimeKey}\u001f${renderedState.attempt}`;
+    const activeAttemptKeyRef = React.useRef(attemptKey);
+    activeAttemptKeyRef.current = attemptKey;
+    const retiredAttemptKeyRef = React.useRef<string | null>(null);
+    const retireAttempt = React.useCallback((key: string, reason: HostedFrameRetirementReason) => {
+        if (retiredAttemptKeyRef.current === key) return false;
+        retiredAttemptKeyRef.current = key;
+        onRetireAttemptRef.current?.(reason);
+        return true;
+    }, []);
+    const retireIfCurrent = React.useCallback((key: string, reason: HostedFrameRetirementReason) => (
+        activeAttemptKeyRef.current === key && retireAttempt(key, reason)
+    ), [retireAttempt]);
+    const committedAttemptKeyRef = React.useRef(attemptKey);
 
     React.useLayoutEffect(() => {
-        if (lifetimeKeyRef.current === input.lifetimeKey) return;
-        lifetimeKeyRef.current = input.lifetimeKey;
-        onRetireAttemptRef.current?.();
-        setAttempt(0);
-        setLoaded(false);
-        setReady(false);
-        setFailure(null);
-    }, [input.lifetimeKey]);
+        const previousAttemptKey = committedAttemptKeyRef.current;
+        committedAttemptKeyRef.current = attemptKey;
+        if (previousAttemptKey !== attemptKey) retireAttempt(previousAttemptKey, 'replaced');
+    }, [attemptKey, retireAttempt]);
+
+    React.useLayoutEffect(() => () => {
+        const key = activeAttemptKeyRef.current;
+        if (retiredAttemptKeyRef.current === key) return;
+        retiredAttemptKeyRef.current = key;
+        onRetireAttemptRef.current?.('unmount');
+    }, []);
 
     const fail = React.useCallback((reason: HostedFrameFailure) => {
-        onRetireAttemptRef.current?.();
-        setFailure((current) => current ?? reason);
-    }, []);
+        if (!retireIfCurrent(attemptKey, reason)) return;
+        setState((current) => current.lifetimeKey === renderedState.lifetimeKey && current.attempt === renderedState.attempt
+            ? { ...current, failure: current.failure ?? reason }
+            : current);
+    }, [attemptKey, renderedState.attempt, renderedState.lifetimeKey, retireIfCurrent]);
     const reload = React.useCallback(() => {
-        onRetireAttemptRef.current?.();
-        setLoaded(false);
-        setReady(false);
-        setFailure(null);
-        setAttempt((current) => current + 1);
-    }, []);
-    const markLoaded = React.useCallback(() => setLoaded(true), []);
+        if (activeAttemptKeyRef.current !== attemptKey) return;
+        retireIfCurrent(attemptKey, 'reload');
+        setState((current) => current.lifetimeKey === renderedState.lifetimeKey && current.attempt === renderedState.attempt
+            ? { ...current, attempt: current.attempt + 1, loaded: false, ready: false, failure: null }
+            : current);
+    }, [attemptKey, renderedState.attempt, renderedState.lifetimeKey, retireIfCurrent]);
+    const retire = React.useCallback(() => {
+        retireAttempt(attemptKey, 'retired');
+    }, [attemptKey, retireAttempt]);
+    const markLoaded = React.useCallback(() => {
+        setState((current) => current.lifetimeKey === renderedState.lifetimeKey && current.attempt === renderedState.attempt
+            && current.failure === null ? { ...current, loaded: true } : current);
+    }, [renderedState.attempt, renderedState.lifetimeKey]);
     const markReady = React.useCallback(() => {
-        setReady(true);
-        setFailure(null);
-    }, []);
+        setState((current) => current.lifetimeKey === renderedState.lifetimeKey && current.attempt === renderedState.attempt
+            && current.failure === null ? { ...current, ready: true } : current);
+    }, [renderedState.attempt, renderedState.lifetimeKey]);
 
     React.useEffect(() => {
-        if (!loaded || ready || failure || !input.readyRequired || input.readyTimeoutMs === null) return;
+        if (!renderedState.loaded || renderedState.ready || renderedState.failure || !input.readyRequired || input.readyTimeoutMs === null) return;
         return scheduleHostedFrameReadyTimeout({
             timeoutMs: input.readyTimeoutMs ?? undefined,
             onTimeout: () => {
-            onReadyTimeoutRef.current?.();
-            fail('ready_timeout');
+                onReadyTimeoutRef.current?.();
+                fail('ready_timeout');
             },
         });
-    }, [fail, failure, input.readyRequired, input.readyTimeoutMs, loaded, ready]);
+    }, [fail, input.readyRequired, input.readyTimeoutMs, renderedState.failure, renderedState.loaded, renderedState.ready]);
 
-    return Object.freeze({ attempt, failure, fail, reload, markLoaded, markReady });
+    return Object.freeze({
+        attempt: renderedState.attempt,
+        loaded: renderedState.loaded,
+        ready: renderedState.ready,
+        failure: renderedState.failure,
+        fail,
+        reload,
+        retire,
+        markLoaded,
+        markReady,
+    });
 }

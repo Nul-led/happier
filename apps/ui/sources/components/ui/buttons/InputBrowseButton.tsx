@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Pressable } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 const styles = StyleSheet.create((theme) => ({
     button: {
@@ -37,7 +38,7 @@ export function InputBrowseButton(props: Readonly<{
             hitSlop={10}
             style={({ pressed }) => [
                 styles.button,
-                { opacity: props.disabled ? 0.45 : pressed ? 0.8 : 1 },
+                { opacity: props.disabled ? 0.45 : pressed ? motionTokens.press.opacitySubtle : 1 },
             ]}
         >
             <Icon

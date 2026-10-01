@@ -14,12 +14,14 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
     flattenItemGroupElementChildren,
     withItemGroupDividers,
+    withItemGroupSheetRows,
     type ItemGroupVirtualizedSegment,
 } from './ItemGroup.dividers';
 import { ItemGroupRowPositionProvider } from './ItemGroupRowPosition';
 import { countSelectableItems } from './ItemGroup.selectableCount';
 import { Eyebrow } from '@/components/ui/text/Eyebrow';
 import { resolveThemeSurfaceChromeStyle } from '@/components/ui/surfaces/resolveThemeHairlineBorderStyle';
+import { projectPluginUiHostPalette } from '@/components/plugins/surfaces/pluginUiThemeProjection';
 import { ItemGroupColumns } from './ItemGroupColumns';
 import {
     ITEM_GROUP_COLUMN_GAP_PX,
@@ -32,9 +34,18 @@ import {
     ITEM_GROUP_HEADER_NO_TITLE_PADDING_TOP_PX,
 } from './itemGroupSpacing';
 import { Text } from '@/components/ui/text/Text';
+import { useListPresentation } from './listPresentation';
+import { PAGE_LIST_METRICS } from './pageListMetrics';
+import { SectionItemDensityProvider, type ResolvedItemDensity } from './useResolvedItemDensity';
+import { SectionLeadingColumnProvider } from './sectionLeadingColumn';
 import {
     HappierItemGroupBehavior,
     HappierItemGroupSelectionContext,
+    HappierPageSectionHeader,
+    HappierPageSheet,
+    type HappierPageSectionHeaderProps,
+    type HappierPageSheetProps,
+    happierPageTextMetrics,
     resolveHappierItemGroupConstraints,
 } from '@happier-dev/plugin-ui/presentation';
 
@@ -45,6 +56,23 @@ export { HappierItemGroupSelectionContext as ItemGroupSelectionContext } from '@
 
 export interface ItemGroupProps {
     title?: string | React.ReactNode;
+    /**
+     * What this section is about, read before its rows. Page presentation renders it under the
+     * section title; grouped presentation (menus, pickers, sheets) renders it as the footer.
+     */
+    description?: string;
+    /** A compact section-level action (e.g. "Check now", "Add"), aligned with the section title. */
+    action?: React.ReactNode;
+    /**
+     * A short live fact read with the title and set beside it ("Machines ● 2 online · ● 1 offline").
+     * Page sections only; it never replaces the description.
+     */
+    titleAccessory?: React.ReactNode;
+    /**
+     * An identity mark set before a page section title (a lead Session's agent mark, a run's glyph),
+     * for sections that are about one thing. Page sections only.
+     */
+    titleLeading?: React.ReactNode;
     footer?: string;
     children: React.ReactNode;
     accessibilityRole?: 'radiogroup';
@@ -72,6 +100,19 @@ export interface ItemGroupProps {
      * dealt across columns). Both combinations throw rather than render wrong.
      */
     columns?: 1 | 2 | 3 | 4;
+    /**
+     * `sheet` (default) draws the shared card. `none` lays the children out on the page with the same
+     * insets and no card, for a section whose content is its own surface (action tiles, a button row).
+     */
+    surface?: 'sheet' | 'none';
+    /**
+     * The density of every row in this section. Row height follows content: a long index-style list of
+     * single-line rows (shortcuts, languages) is `compact`; leave it unset for rows that carry a
+     * description or a control beneath. On a configuration page `compact` asks for the list shape of
+     * the user's list-density preference (`resolvePageRowMetrics`), so the preference still reaches it;
+     * elsewhere it replaces the preference.
+     */
+    density?: ResolvedItemDensity;
     /**
      * Performance: when you already know how many selectable rows are inside the group,
      * pass this to avoid walking the full React children tree on every render.
@@ -112,16 +153,27 @@ const stylesheet = StyleSheet.create((theme) => {
         headerNoTitle: {
             paddingTop: Platform.select(ITEM_GROUP_HEADER_NO_TITLE_PADDING_TOP_PX),
         },
+        // On a page every block — a titled section, an untitled sheet, a banner, a button row — starts
+        // one section gap below what precedes it (the page header included), so the header → first
+        // block distance is the same whatever the first block is.
+        pageHeaderNoTitle: {
+            paddingTop: PAGE_LIST_METRICS.sectionGapPx,
+        },
+        // U8.5 craft S2: grouped section titles (menus, pickers, sheets) are sentence case in the
+        // secondary colour, medium weight — never an uppercase eyebrow.
         headerText: {
-            ...Typography.default('regular'),
+            ...Typography.default('medium'),
             color: theme.colors.text.secondary,
-            fontSize: Platform.select({ ios: 13, default: 14 }),
-            lineHeight: Platform.select({ ios: 18, default: 20 }),
-            letterSpacing: -0.08,
-            textTransform: 'uppercase'
+            fontSize: 13,
+            lineHeight: 18,
+            letterSpacing: 0,
+            textTransform: 'none',
         },
         contentContainerOuter: {
             ...cardChrome,
+            marginHorizontal: Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX),
+        },
+        contentContainerBare: {
             marginHorizontal: Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX),
         },
         contentContainerInner: {
@@ -166,6 +218,31 @@ const stylesheet = StyleSheet.create((theme) => {
             borderBottomRightRadius: 0,
             borderBottomWidth: 0,
         },
+        pageTitle: {
+            ...Typography.default('bold'),
+            ...happierPageTextMetrics('sectionTitle'),
+            color: theme.colors.text.primary,
+        },
+        pageTitleRow: {
+            flexDirection: 'row',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            columnGap: 10,
+            rowGap: 2,
+        },
+        pageDescription: {
+            ...Typography.default('regular'),
+            ...happierPageTextMetrics('sectionDescription'),
+            color: theme.colors.text.secondary,
+            marginTop: 2,
+        },
+        // A page section's sheet sits on the same content margin as the grouped card; its look is the
+        // shared page sheet's (`HappierPageSheet`).
+        pageSheet: {
+            marginHorizontal: Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX),
+            // IMPORTANT: allow popovers to overflow the sheet (as the grouped card does).
+            overflow: 'visible',
+        },
         footer: {
             paddingTop: Platform.select({ ios: 6, default: 8 }),
             paddingBottom: Platform.select({ ios: 8, default: 16 }),
@@ -193,9 +270,21 @@ const ItemGroupSharedCardBody = React.memo(function ItemGroupSharedCardBody(prop
     virtualizedSegment?: ItemGroupVirtualizedSegment;
     containerStyle?: StyleProp<ViewStyle>;
     clipContent?: boolean;
+    bare?: boolean;
 }>) {
     const styles = stylesheet;
     const { virtualizedSegment } = props;
+    if (props.bare) {
+        return (
+            <View
+                accessibilityLabel={props.accessibilityLabel}
+                aria-label={Platform.OS === 'web' ? props.accessibilityLabel : undefined}
+                style={[styles.contentContainerBare, props.containerStyle]}
+            >
+                {props.children}
+            </View>
+        );
+    }
     return (
         <View
             accessibilityRole={Platform.OS === 'web' ? undefined : props.accessibilityRole}
@@ -226,6 +315,53 @@ const ItemGroupSharedCardBody = React.memo(function ItemGroupSharedCardBody(prop
             ]}>
                 {withItemGroupDividers(props.children, virtualizedSegment)}
             </View>
+        </View>
+    );
+});
+
+/**
+ * A page section's body: its rows on the shared page sheet (`HappierPageSheet`, on the host palette),
+ * the object plugin page sections draw too. The sheet decides the hairlines, gives its rows the sheet
+ * anatomy (row inset, divider colour) and lays out `HappierPageSheetGroup`s; this adds the group's
+ * accessible container, each row's position, and the joins of a virtualized section's chunks.
+ */
+const ItemGroupPageSheetBody = React.memo(function ItemGroupPageSheetBody(props: Readonly<{
+    children: React.ReactNode;
+    accessibilityRole?: 'radiogroup';
+    accessibilityLabel?: string;
+    virtualizedSegment?: ItemGroupVirtualizedSegment;
+    containerStyle?: StyleProp<ViewStyle>;
+    clipContent?: boolean;
+}>) {
+    const { theme } = useUnistyles();
+    const styles = stylesheet;
+    const { virtualizedSegment } = props;
+    const colors = React.useMemo(() => ({
+        ...projectPluginUiHostPalette(theme),
+        // Core Settings already drew border.default row hairlines. Preserve their appearance while
+        // handing drawing authority to the shared sheet, rather than changing the public palette.
+        rowDivider: theme.colors.border.default,
+    }), [theme]);
+    return (
+        <View
+            accessibilityRole={Platform.OS === 'web' ? undefined : props.accessibilityRole}
+            accessibilityLabel={props.accessibilityLabel}
+            aria-label={Platform.OS === 'web' ? props.accessibilityLabel : undefined}
+            role={Platform.OS === 'web' ? props.accessibilityRole : undefined}
+        >
+            <HappierPageSheet
+                colors={colors}
+                // App callers pass React Native layout styles; the shared sheet keeps its own look under them.
+                style={[
+                    styles.pageSheet,
+                    props.clipContent ? styles.contentContainerInnerClipped : undefined,
+                    virtualizedSegment?.first === false ? styles.virtualizedSurfaceContinuesBefore : undefined,
+                    virtualizedSegment?.last === false ? styles.virtualizedSurfaceContinuesAfter : undefined,
+                    props.containerStyle,
+                ] as HappierPageSheetProps['style']}
+            >
+                {withItemGroupSheetRows(props.children, virtualizedSegment)}
+            </HappierPageSheet>
         </View>
     );
 });
@@ -394,8 +530,14 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
     const styles = stylesheet;
     const maxWidth = useLayoutMaxWidth();
 
+    const presentation = useListPresentation();
+    const isPage = presentation === 'page';
     const {
         title,
+        description,
+        action,
+        titleAccessory,
+        titleLeading,
         footer,
         children,
         accessibilityRole,
@@ -411,6 +553,8 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
         virtualizedSegment,
         columns,
         clipContent = false,
+        surface = 'sheet',
+        density,
     } = props;
 
     const wantsColumns = (columns ?? 1) > 1;
@@ -435,7 +579,27 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
         <View style={[styles.wrapper, style]}>
             <View style={[styles.container, constrainToContentWidth ? { maxWidth } : undefined]}>
                 {/* Header */}
-                {title ? (
+                {isPage && (title || description || footer || action) ? (
+                    <HappierPageSectionHeader
+                        title={(titleAccessory || titleLeading) && typeof title === 'string' ? (
+                            <View style={styles.pageTitleRow}>
+                                {titleLeading}
+                                <Text accessibilityRole="header" style={[styles.pageTitle, titleStyle]}>{title}</Text>
+                                {titleAccessory}
+                            </View>
+                        ) : title}
+                        description={description ?? footer}
+                        action={action ?? undefined}
+                        insetPx={(Platform.select(ITEM_GROUP_CONTENT_MARGIN_HORIZONTAL_PX) ?? 12) + PAGE_LIST_METRICS.headingOpticalInsetPx}
+                        renderText={(input) => input.role === 'sectionTitle'
+                            ? <Text accessibilityRole="header" style={[styles.pageTitle, titleStyle]}>{input.text}</Text>
+                            : <Text style={[styles.pageDescription, footerTextStyle]}>{input.text}</Text>}
+                        // App callers pass React Native layout styles; the shared header keeps its own anatomy under them.
+                        style={headerStyle as HappierPageSectionHeaderProps['style']}
+                    />
+                ) : isPage ? (
+                    virtualizedSegment?.first !== false ? <View style={styles.pageHeaderNoTitle} /> : null
+                ) : title ? (
                     <View style={[styles.header, headerStyle]}>
                         {typeof title === 'string' ? (
                             <Eyebrow style={[styles.headerText, titleStyle]}>
@@ -450,39 +614,55 @@ export const ItemGroup = React.memo<ItemGroupProps>((props) => {
                     <View style={styles.headerNoTitle} />
                 ) : null}
 
-                {/* Content Container */}
-                <HappierItemGroupBehavior
-                    accessibilityRole={accessibilityRole}
-                    accessibilityLabel={accessibilityLabel}
-                    selectableItemCount={selectableItemCount}
-                    renderContent={(projectedChildren) => wantsColumns ? (
-                        <ItemGroupColumnedBody
-                            columns={columns ?? 1}
-                            accessibilityLabel={accessibilityLabel}
-                            containerStyle={containerStyle}
-                        >
-                            {projectedChildren}
-                        </ItemGroupColumnedBody>
-                    ) : (
-                        <ItemGroupSharedCardBody
-                            accessibilityRole={accessibilityRole}
-                            accessibilityLabel={accessibilityLabel}
-                            virtualizedSegment={virtualizedSegment}
-                            containerStyle={containerStyle}
-                            clipContent={clipContent}
-                        >
-                            {projectedChildren}
-                        </ItemGroupSharedCardBody>
-                    )}
-                >
-                    {children}
-                </HappierItemGroupBehavior>
+                {/* Content Container. A page section decides its rows' leading column once; only page
+                    rows register with it (see `sectionLeadingColumn.tsx`). */}
+                <SectionLeadingColumnProvider>
+                <SectionItemDensityProvider value={density}>
+                    <HappierItemGroupBehavior
+                        accessibilityRole={accessibilityRole}
+                        accessibilityLabel={accessibilityLabel}
+                        selectableItemCount={selectableItemCount}
+                        renderContent={(projectedChildren) => wantsColumns ? (
+                            <ItemGroupColumnedBody
+                                columns={columns ?? 1}
+                                accessibilityLabel={accessibilityLabel}
+                                containerStyle={containerStyle}
+                            >
+                                {projectedChildren}
+                            </ItemGroupColumnedBody>
+                        ) : isPage && surface === 'sheet' ? (
+                            <ItemGroupPageSheetBody
+                                accessibilityRole={accessibilityRole}
+                                accessibilityLabel={accessibilityLabel}
+                                virtualizedSegment={virtualizedSegment}
+                                containerStyle={containerStyle}
+                                clipContent={clipContent}
+                            >
+                                {projectedChildren}
+                            </ItemGroupPageSheetBody>
+                        ) : (
+                            <ItemGroupSharedCardBody
+                                accessibilityRole={accessibilityRole}
+                                accessibilityLabel={accessibilityLabel}
+                                virtualizedSegment={virtualizedSegment}
+                                containerStyle={containerStyle}
+                                clipContent={clipContent}
+                                bare={surface === 'none'}
+                            >
+                                {projectedChildren}
+                            </ItemGroupSharedCardBody>
+                        )}
+                    >
+                        {children}
+                    </HappierItemGroupBehavior>
+                </SectionItemDensityProvider>
+                </SectionLeadingColumnProvider>
 
-                {/* Footer */}
-                {footer && (
+                {/* Footer (grouped presentation only; a page reads it as the section description) */}
+                {!isPage && (description ?? footer) && (
                     <View style={[styles.footer, footerStyle]}>
                         <Text style={[styles.footerText, footerTextStyle]}>
-                            {footer}
+                            {description ?? footer}
                         </Text>
                     </View>
                 )}

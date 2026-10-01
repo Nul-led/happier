@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Platform, View } from 'react-native';
+import { Platform, View, type LayoutChangeEvent } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { GlassPanel } from '@/components/ui/glass/GlassPanel';
@@ -61,12 +61,13 @@ const styles = StyleSheet.create({
         alignSelf: 'stretch',
         paddingHorizontal: ACCESSORY_EDGE_INSET,
     },
-    // A mirror of the accessory's footprint on the leading edge. Sized the same way it is (square,
-    // stretched to the row height) rather than by a flex weight, so the two edges stay equal at
-    // every tab-bar size WITHOUT measuring anything — which is what keeps the bar centred on the
-    // SCREEN instead of centred in the space the accessory leaves over. Flexible side cells clip
-    // the accessory on a narrow phone, because a full tab row leaves each side less than its width.
-    accessoryLeadingSpacer: {
+    // The accessory's square footprint, mirrored on the leading edge so the bar stays centred on
+    // the SCREEN instead of in the space the accessory leaves over. Both are as wide as the bar is
+    // tall (a flex weight would clip the accessory on a narrow phone). Until the bar has been laid
+    // out once, `aspectRatio` stands in: Yoga resolves it from the stretched row height, but web
+    // does not (the row's height is not definite there, so it drew the mirror 0px wide and the
+    // accessory at its content width). The measured width then makes it exact on every platform.
+    accessoryFootprintUnmeasured: {
         aspectRatio: 1,
     },
     accessoryRowBar: {
@@ -100,6 +101,13 @@ export type FloatingTabBarSurfaceProps = Readonly<{
 
 export const FloatingTabBarSurface = React.memo(function FloatingTabBarSurface(props: FloatingTabBarSurfaceProps) {
     const bottomPadding = resolveFloatingTabBarBottomPadding(props.bottomInset, Platform.OS === 'ios');
+    // The bar's height, read from its cell only when there is an accessory to size by it.
+    const [barHeightPx, setBarHeightPx] = React.useState<number | null>(null);
+    const handleBarCellLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const height = Math.round(event.nativeEvent.layout.height);
+        if (height > 0) setBarHeightPx((current) => (current === height ? current : height));
+    }, []);
+    const accessoryFootprint = barHeightPx ? { width: barHeightPx } : styles.accessoryFootprintUnmeasured;
 
     const bar = (
         <GlassPanel
@@ -124,11 +132,13 @@ export const FloatingTabBarSurface = React.memo(function FloatingTabBarSurface(p
                 // Centring the row as a whole pushes the bar left by half the accessory; the bar is
                 // the thing the eye centres on, not the row.
                 <View style={styles.accessoryRow}>
-                    <View pointerEvents="none" style={styles.accessoryLeadingSpacer} />
-                    <View style={styles.accessoryRowBar}>
+                    <View pointerEvents="none" style={accessoryFootprint} />
+                    <View style={styles.accessoryRowBar} onLayout={handleBarCellLayout}>
                         {bar}
                     </View>
-                    {props.trailingAccessory}
+                    <View style={accessoryFootprint}>
+                        {props.trailingAccessory}
+                    </View>
                 </View>
             )}
         </View>

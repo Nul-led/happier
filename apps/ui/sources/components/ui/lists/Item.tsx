@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { View, Pressable, StyleProp, ViewStyle, TextStyle, Platform, type AccessibilityRole, type TextProps, type ViewProps } from 'react-native';
+import { View, Pressable, StyleProp, ViewStyle, TextStyle, Platform, type AccessibilityRole, type TextProps, type ViewProps, type LayoutChangeEvent } from 'react-native';
 import { Typography } from '@/constants/Typography';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -20,7 +20,7 @@ import {
     WEB_START_ELLIPSIS_CONTAINER_TEXT_STYLE,
     WEB_START_ELLIPSIS_CONTENT_TEXT_STYLE,
 } from '@/components/ui/text/webStartEllipsisTextStyles';
-import { useResolvedItemDensity } from '@/components/ui/lists/useResolvedItemDensity';
+import { useItemDensityInputs } from '@/components/ui/lists/useResolvedItemDensity';
 import { SafeIonicons } from '@/components/ui/icons/SafeIonicons';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
@@ -34,28 +34,52 @@ import {
     ITEM_SUBTITLE_TEXT_METRICS,
     ITEM_TITLE_TEXT_METRICS,
 } from '@/components/ui/lists/itemDensityMetrics';
+import {
+    isTouchPrimaryPointer,
+    resolvePageRowDensityInput,
+    resolvePageRowMetrics,
+    type PageRowMetrics,
+} from './pageRowMetrics';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { buildActionRowAccessibilityLabel } from './actionRowAccessibility';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ICON_LABEL_OPTICAL_NUDGE_STYLE } from '@/components/ui/icons/iconOpticalAlignment';
+import { useListPresentation } from './listPresentation';
+import { PAGE_LIST_METRICS } from './pageListMetrics';
+import { useSectionLeadingColumn } from './sectionLeadingColumn';
 import {
     resolveHappierItemBehavior,
     HappierDivider,
     useHappierItemGroupItemBehavior,
+    useHappierPageSection,
 } from '@happier-dev/plugin-ui/presentation';
 
-function resizeItemIconForDensity(icon: React.ReactNode, iconSize: number): React.ReactNode {
+function resizeItemIconForDensity(icon: React.ReactNode, iconSize: number, color?: string): React.ReactNode {
     if (!React.isValidElement(icon) || icon.type === React.Fragment) {
         return icon;
     }
 
     return React.cloneElement(icon, {
         size: iconSize,
+        ...(color ? { color } : null),
     } as Record<string, unknown>);
 }
 
 type ItemTextEllipsizeMode = NonNullable<TextProps['ellipsizeMode']>;
+
+const WEB_MIDDLE_ELLIPSIS_ROW_STYLE = { display: 'flex', flexDirection: 'row', overflow: 'hidden', minWidth: 0 } as const;
+const WEB_MIDDLE_ELLIPSIS_HEAD_STYLE = { flexShrink: 1, minWidth: 0 } as const;
+const WEB_MIDDLE_ELLIPSIS_TAIL_STYLE = { flexShrink: 0 } as const;
+
+/** Where a middle ellipsis keeps the end: a path's last segment, otherwise the last two fifths. */
+function splitForWebMiddleEllipsis(value: string): Readonly<{ head: string; tail: string }> | null {
+    const slash = value.lastIndexOf('/');
+    if (slash > 0 && slash < value.length - 1) return { head: value.slice(0, slash), tail: value.slice(slash) };
+    if (value.length < 8) return null;
+    const cut = Math.ceil(value.length * 0.6);
+    return { head: value.slice(0, cut), tail: value.slice(cut) };
+}
 
 export interface ItemProps {
     testID?: string;
@@ -65,6 +89,10 @@ export interface ItemProps {
     subtitle?: React.ReactNode;
     subtitleTestID?: string;
     subtitleAccessory?: React.ReactNode;
+    /** An inline mark after a string title, such as a "Beta" badge. */
+    titleAccessory?: React.ReactNode;
+    /** An inline mark before a string subtitle, such as a status dot that flags trouble. */
+    subtitleLeading?: React.ReactNode;
     /** Override the primitive title line allowance; defaults to one with a subtitle, two otherwise. */
     titleLines?: number;
     subtitleLines?: number; // set 0 or undefined for auto/multiline
@@ -99,6 +127,8 @@ export interface ItemProps {
     accessibilityRole?: AccessibilityRole;
     /** Overrides the checked state without changing the visual keyboard highlight. */
     accessibilityChecked?: boolean;
+    /** Announces the active navigation destination without changing the row role. */
+    accessibilityCurrent?: React.AriaAttributes['aria-current'];
     accessibilityLabel?: string;
     accessibilityHint?: string;
     accessibilityLiveRegion?: ViewProps['accessibilityLiveRegion'];
@@ -115,6 +145,8 @@ export interface ItemProps {
     accessibilityLevel?: number;
     webKeyShortcuts?: string;
     onFocus?: () => void;
+    /** The row (or a control inside it) lost focus: pairs with `onFocus` for focus-within reveals. */
+    onBlur?: () => void;
     onKeyDown?: (event: { key?: string; nativeEvent?: { key?: string }; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; preventDefault?: () => void; target?: unknown; currentTarget?: unknown; defaultPrevented?: boolean }) => void;
     /** Web DOM id used by composite widgets such as listbox/aria-activedescendant. */
     webId?: string;
@@ -154,6 +186,13 @@ export interface ItemProps {
      * invalid nested-button markup on React Native Web.
      */
     rightElementOutsidePressable?: boolean;
+    /**
+     * Where the right accessory sits on a configuration page. `inline` (default) keeps it beside the
+     * label; `stacked` always places it under the label at full width (visual pickers, text areas);
+     * `adaptive` moves it under the label only when the row is too narrow for both (segmented controls,
+     * field selects). Outside page presentation the accessory is always inline.
+     */
+    accessoryLayout?: 'inline' | 'stacked' | 'adaptive';
     showDivider?: boolean;
     dividerInset?: number;
     pressableStyle?: StyleProp<ViewStyle>;
@@ -170,6 +209,48 @@ export interface ItemProps {
  */
 const MENU_ROW_HEIGHT_STYLE = { minHeight: MENU_ROW_METRICS.minHeightPx } as const;
 const MENU_ROW_PADDING_STYLE = { paddingVertical: MENU_ROW_METRICS.paddingVerticalPx } as const;
+
+type PageRowStyles = Readonly<{
+    box: Readonly<{ minHeight: number }>;
+    padding: Readonly<{ paddingVertical: number }>;
+    title: Readonly<Record<string, unknown>>;
+    subtitle: Readonly<Record<string, unknown>>;
+    detail: Readonly<Record<string, unknown>>;
+    accessoryBleed: Readonly<{ marginVertical: number }>;
+}>;
+
+const pageRowStylesByMetrics = new WeakMap<PageRowMetrics, PageRowStyles>();
+
+const sheetRowInsetStyles = new Map<number, Readonly<{ paddingHorizontal: number }>>();
+
+/** A sheet row's horizontal inset, one stable style object per inset. */
+function resolveSheetRowInsetStyle(insetPx: number): Readonly<{ paddingHorizontal: number }> {
+    const cached = sheetRowInsetStyles.get(insetPx);
+    if (cached) return cached;
+    const style = { paddingHorizontal: insetPx };
+    sheetRowInsetStyles.set(insetPx, style);
+    return style;
+}
+
+/** A page row's density styles, built once per resolved metrics object so style arrays stay stable. */
+function resolvePageRowStyles(metrics: PageRowMetrics): PageRowStyles {
+    const cached = pageRowStylesByMetrics.get(metrics);
+    if (cached) return cached;
+    const styles: PageRowStyles = {
+        box: { minHeight: metrics.minHeightPx },
+        padding: { paddingVertical: metrics.paddingVerticalPx },
+        title: { ...metrics.title, ...Typography.default('medium') },
+        subtitle: { ...metrics.subtitle },
+        // A value summary reads at the title's size, in the regular face.
+        detail: { ...metrics.title },
+        // A trailing control's box may use the row's padding band: a switch's 44px focus and hit box
+        // around its 22px track then no longer adds to the row, which keeps the height its text sets.
+        // A control taller than text plus padding still grows the row; nothing is clipped.
+        accessoryBleed: { marginVertical: -metrics.paddingVerticalPx },
+    };
+    pageRowStylesByMetrics.set(metrics, styles);
+    return styles;
+}
 
 const stylesheet = StyleSheet.create((theme, runtime) => ({
     container: {
@@ -268,6 +349,25 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     titleDestructive: {
         color: theme.colors.state.danger.foreground,
     },
+    inlineMarkRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        minWidth: 0,
+    },
+    subtitleMarkRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 6,
+        minWidth: 0,
+    },
+    subtitleMarkSlot: {
+        justifyContent: 'center',
+    },
+    inlineMarkText: {
+        flexShrink: 1,
+        minWidth: 0,
+    },
     subtitle: {
         ...Typography.default('regular'),
         color: theme.colors.text.secondary,
@@ -302,6 +402,21 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
         alignItems: 'center',
         flex: 1,
     },
+    // Stacked split row: the label pressable and the control below it share the row's vertical
+    // padding (top on the label, bottom on the control) and the page gap between them.
+    splitPressableStacked: {
+        flexGrow: 0,
+        flexShrink: 0,
+        flexBasis: 'auto',
+    },
+    splitPressableInnerStacked: {
+        flexGrow: 0,
+        flexBasis: 'auto',
+        paddingBottom: 0,
+    },
+    splitRightSectionStacked: {
+        paddingTop: 0,
+    },
     detail: {
         ...Typography.default('regular'),
         color: theme.colors.text.secondary,
@@ -317,9 +432,31 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
     detailTight: {
         ...ITEM_TITLE_TEXT_METRICS.tight,
     },
+    // The colour is the divider's own prop (`HappierDivider`): a background here would override it.
     divider: {
         height: Platform.select({ ios: 0.33, default: 0 }),
-        backgroundColor: theme.colors.border.default,
+    },
+    // Configuration-page anatomy (see listPresentation.tsx / pageListMetrics.ts). The row's box and
+    // type come from its density (`resolvePageRowMetrics`); only what does not vary lives here.
+    pageContainer: {
+        paddingHorizontal: PAGE_LIST_METRICS.rowPaddingHorizontalPx,
+    },
+    pageContainerStacked: {
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        gap: 10,
+    },
+    pageDivider: {
+        height: StyleSheet.hairlineWidth,
+    },
+    rightSectionStacked: {
+        maxWidth: '100%',
+        marginLeft: 0,
+        alignSelf: 'stretch',
+        // A stacked control spans the row: in a horizontal section it would shrink to its narrowest
+        // width, and a wrapping tile row would then break onto one tile per line.
+        flexDirection: 'column',
+        alignItems: 'stretch',
     },
     pressablePressed: {
         backgroundColor: theme.colors.surface.pressed,
@@ -346,6 +483,8 @@ export const Item = React.memo<ItemProps>((props) => {
         subtitle,
         subtitleTestID,
         subtitleAccessory,
+        titleAccessory,
+        subtitleLeading,
         titleLines,
         subtitleLines,
         detail,
@@ -366,6 +505,7 @@ export const Item = React.memo<ItemProps>((props) => {
         onHoverOut,
         accessibilityRole,
         accessibilityChecked,
+        accessibilityCurrent,
         accessibilityLabel,
         accessibilityHint,
         accessibilityLiveRegion,
@@ -377,6 +517,7 @@ export const Item = React.memo<ItemProps>((props) => {
         accessibilityLevel,
         webKeyShortcuts,
         onFocus,
+        onBlur,
         onKeyDown,
         webId,
         accessibilityPositionInSet,
@@ -397,6 +538,7 @@ export const Item = React.memo<ItemProps>((props) => {
         showChevron = true,
         keepChevronWithRightElement = false,
         rightElementOutsidePressable = false,
+        accessoryLayout = 'inline',
         showDivider = true,
         dividerInset = isIOS ? 15 : 16,
         pressableStyle,
@@ -508,7 +650,10 @@ export const Item = React.memo<ItemProps>((props) => {
     const isRadioRole = accessibilityRole === 'radio' || webRole === 'radio';
     const isCheckboxRole = accessibilityRole === 'checkbox' || webRole === 'checkbox';
     const inferredInteractiveWebRole = isWeb
-        ? (webRole ?? (!rightElement || rightElementOutsidePressable ? 'button' : undefined))
+        ? (webRole ?? (isRadioRole ? 'radio' : isCheckboxRole ? 'checkbox' : (!rightElement || rightElementOutsidePressable ? 'button' : undefined)))
+        : undefined;
+    const passiveWebRole = isWeb
+        ? (webRole ?? (isRadioRole ? 'radio' : isCheckboxRole ? 'checkbox' : undefined))
         : undefined;
     const groupItem = useHappierItemGroupItemBehavior({
         role: isRadioRole ? 'radio' : inferredInteractiveWebRole === 'option' ? 'option' : 'button',
@@ -551,7 +696,8 @@ export const Item = React.memo<ItemProps>((props) => {
         groupItem,
     ]);
 
-    const requestedDensity = useResolvedItemDensity(density);
+    const densityInputs = useItemDensityInputs(density);
+    const requestedDensity = densityInputs.resolved;
     const sharedItemBehavior = resolveHappierItemBehavior({
         role: isRadioRole ? 'radio' : inferredInteractiveWebRole === 'option' ? 'option' : 'button',
         selected,
@@ -589,18 +735,55 @@ export const Item = React.memo<ItemProps>((props) => {
     const isTight = resolvedDensity === 'tight';
     const hasSubtitleContent = Boolean(subtitle || subtitleAccessory);
     const isMenuRow = rowRole === 'menu';
-    const containerPadding = isMenuRow
+    const listPresentation = useListPresentation();
+    const isPageRow = listPresentation === 'page' && !isMenuRow;
+    // A page row is drawn at the user's density; a section's `compact` asks for its list shape.
+    const pageRowMetrics = isPageRow
+        ? resolvePageRowMetrics({
+            ...resolvePageRowDensityInput({
+                preferred: densityInputs.preferred,
+                requested: resolvedDensity,
+                requestedExplicitly: densityInputs.requested,
+            }),
+            touch: isTouchPrimaryPointer(),
+        })
+        : null;
+    const pageRowStyles = pageRowMetrics ? resolvePageRowStyles(pageRowMetrics) : null;
+    const [isNarrowRow, setIsNarrowRow] = React.useState(false);
+    const measuresRowWidth = isPageRow && accessoryLayout === 'adaptive';
+    const handleRowLayout = React.useCallback((event: LayoutChangeEvent) => {
+        const widthPx = event.nativeEvent.layout.width;
+        if (!Number.isFinite(widthPx) || widthPx <= 0) return;
+        const next = widthPx < PAGE_LIST_METRICS.rowStackBelowWidthPx;
+        setIsNarrowRow((current) => (current === next ? current : next));
+    }, []);
+    const stackAccessory = isPageRow
+        && rightElement != null
+        && (accessoryLayout === 'stacked' || (accessoryLayout === 'adaptive' && isNarrowRow));
+    // On a shared page-section sheet (`HappierPageSheet`: a page section, or a flat section in a pane)
+    // the row follows the sheet's policy: its row inset, so its text lines up with the sheet's
+    // sub-headings and the list around it, and its hairline. A menu row keeps the menu anatomy.
+    const pageSheetContext = useHappierPageSection();
+    const pageSheet = isMenuRow ? null : pageSheetContext;
+    const pageSheetInsetStyle = pageSheet ? resolveSheetRowInsetStyle(pageSheet.rowInsetPx) : null;
+    const pageContainerStyle = pageRowStyles || pageSheetInsetStyle
+        ? [pageRowStyles ? styles.pageContainer : null, pageRowStyles?.box ?? null, pageSheetInsetStyle]
+        : null;
+    const stackedContainerStyle = stackAccessory ? styles.pageContainerStacked : null;
+    const containerPadding = pageRowStyles
+        ? pageRowStyles.padding
+        : isMenuRow
         ? MENU_ROW_PADDING_STYLE
         : hasSubtitleContent
             ? (isTight ? styles.containerWithSubtitleTight : isCompact ? styles.containerWithSubtitleCompact : isCozy ? styles.containerWithSubtitleCozy : styles.containerWithSubtitle)
             : (isTight ? styles.containerWithoutSubtitleTight : isCompact ? styles.containerWithoutSubtitleCompact : isCozy ? styles.containerWithoutSubtitleCozy : styles.containerWithoutSubtitle);
     const containerCore = isTight
-        ? [styles.container, styles.containerTight, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
+        ? [styles.container, styles.containerTight, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
         : isCompact
-            ? [styles.container, styles.containerCompact, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
+            ? [styles.container, styles.containerCompact, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
             : isCozy
-                ? [styles.container, styles.containerCozy, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null]
-            : [styles.container, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null];
+                ? [styles.container, styles.containerCozy, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle]
+            : [styles.container, isMenuRow ? MENU_ROW_HEIGHT_STYLE : null, pageContainerStyle, stackedContainerStyle];
     const iconBoxSizeOverride = iconBoxSize != null
         ? { width: iconBoxSize, height: iconBoxSize }
         : null;
@@ -612,7 +795,9 @@ export const Item = React.memo<ItemProps>((props) => {
     // produces a column of icons that step up and down. Uniform beats locally-perfect here.
     const resolvedIconGlyphSize = isMenuRow
         ? MENU_ROW_METRICS.iconGlyphSizePx
-        : ITEM_ICON_GLYPH_SIZE[resolvedIconDensity];
+        : pageRowMetrics
+            ? pageRowMetrics.iconGlyphPx
+            : ITEM_ICON_GLYPH_SIZE[resolvedIconDensity];
     // The container must not clip a glyph that is now taller than the nominal box.
     const resolvedIconBoxSize = isMenuRow
         ? MENU_ROW_METRICS.iconBoxSizePx
@@ -626,20 +811,47 @@ export const Item = React.memo<ItemProps>((props) => {
         : null;
     // `iconBoxSizeOverride` stays last: a call site that reserved room for an oversized leading
     // element (a capacity gauge, an avatar) means it whatever surface the row belongs to.
+    // A leading mark (avatar, brand identity, facepile) is often larger than
+    // the density's glyph box. Centred in the fixed box it would overhang toward the sheet edge and
+    // crowd the title, so the box grows to the mark instead; the density size stays its minimum.
+    // Every page row's leading column is one fixed width (a glyph sits centred in it; a larger identity
+    // mark grows it), so the titles of a section share one edge.
+    const pageLeadingColumnStyle = isPageRow
+        ? {
+            width: PAGE_LIST_METRICS.rowLeadingColumnPx,
+            height: 'auto',
+            minHeight: PAGE_LIST_METRICS.rowLeadingColumnPx,
+            marginRight: PAGE_LIST_METRICS.rowLeadingGapPx,
+        } as const
+        : null;
+    const leadingMarkFitStyle = leftElement != null && iconBoxSize == null
+        ? { width: 'auto', height: 'auto', minWidth: isPageRow ? PAGE_LIST_METRICS.rowLeadingColumnPx : resolvedIconBoxSize, minHeight: isPageRow ? PAGE_LIST_METRICS.rowLeadingColumnPx : resolvedIconBoxSize } as const
+        : null;
     const iconContainerStyle = isTight
-        ? [styles.iconContainer, styles.iconContainerTight, menuIconBoxStyle, iconBoxSizeOverride]
+        ? [styles.iconContainer, styles.iconContainerTight, menuIconBoxStyle, pageLeadingColumnStyle, leadingMarkFitStyle, iconBoxSizeOverride]
         : isCompact
-            ? [styles.iconContainer, styles.iconContainerCompact, menuIconBoxStyle, iconBoxSizeOverride]
+            ? [styles.iconContainer, styles.iconContainerCompact, menuIconBoxStyle, pageLeadingColumnStyle, leadingMarkFitStyle, iconBoxSizeOverride]
             : isCozy
-                ? [styles.iconContainer, styles.iconContainerCozy, menuIconBoxStyle, iconBoxSizeOverride]
-            : [styles.iconContainer, menuIconBoxStyle, iconBoxSizeOverride];
+                ? [styles.iconContainer, styles.iconContainerCozy, menuIconBoxStyle, pageLeadingColumnStyle, leadingMarkFitStyle, iconBoxSizeOverride]
+            : [styles.iconContainer, menuIconBoxStyle, pageLeadingColumnStyle, leadingMarkFitStyle, iconBoxSizeOverride];
     const resolvedIconMarginRight = isMenuRow
         ? MENU_ROW_METRICS.iconMarginRightPx
         : ITEM_ICON_MARGIN_RIGHT[resolvedIconDensity];
-    const sizedIcon = React.useMemo(() => resizeItemIconForDensity(icon, resolvedIconGlyphSize), [icon, resolvedIconGlyphSize]);
-    const titleSizeStyle = isTight ? styles.titleTight : isCompact ? styles.titleCompact : isCozy ? styles.titleCozy : null;
-    const subtitleSizeStyle = isTight ? styles.subtitleTight : isCompact ? styles.subtitleCompact : isCozy ? styles.subtitleCozy : null;
-    const detailSizeStyle = isTight ? styles.detailTight : isCompact ? styles.detailCompact : isCozy ? styles.detailCozy : null;
+    // A page navigation row's glyph is a landmark, not a status: one family, one size and the
+    // secondary text colour, whatever tint the call site passed. Identity marks (`leftElement`) and
+    // status glyphs on non-navigation rows keep their own colour.
+    const pageNavigationIconColor = isPageRow && showAccessory ? theme.colors.text.secondary : undefined;
+    const sizedIcon = React.useMemo(
+        () => resizeItemIconForDensity(icon, resolvedIconGlyphSize, pageNavigationIconColor),
+        [icon, pageNavigationIconColor, resolvedIconGlyphSize],
+    );
+    const titleSizeStyle = pageRowStyles
+        ? pageRowStyles.title
+        : isTight ? styles.titleTight : isCompact ? styles.titleCompact : isCozy ? styles.titleCozy : null;
+    const subtitleSizeStyle = pageRowStyles
+        ? pageRowStyles.subtitle
+        : isTight ? styles.subtitleTight : isCompact ? styles.subtitleCompact : isCozy ? styles.subtitleCozy : null;
+    const detailSizeStyle = pageRowStyles ? pageRowStyles.detail : isTight ? styles.detailTight : isCompact ? styles.detailCompact : isCozy ? styles.detailCozy : null;
 
     const [isHovered, setIsHovered] = React.useState(false);
     React.useEffect(() => {
@@ -647,6 +859,8 @@ export const Item = React.memo<ItemProps>((props) => {
         if (disabled || loading) setIsHovered(false);
     }, [disabled, loading]);
 
+    // A page section reserves the leading column for all its rows when any row has an icon or mark.
+    const reservesLeadingColumn = useSectionLeadingColumn(isPageRow && (icon != null || leftElement != null));
     const leftAccessory = React.useMemo(() => {
         const candidate = (isHovered ? leftElementWhenHovered : null) ?? leftElement ?? sizedIcon ?? null;
         return normalizeNodeForView(candidate);
@@ -684,12 +898,16 @@ export const Item = React.memo<ItemProps>((props) => {
         );
     }, [chevronSize, showAccessory, theme.colors.text.secondary]);
 
+    // A sheet row's hairline is the sheet's: its divider colour, full width. A page row outside a sheet
+    // (a bare or columned section) draws the same page hairline in the page divider colour.
+    const flatDividerColor = pageSheet?.rowDividerColor ?? (isPageRow ? theme.colors.border.subtle : null);
     const dividerNode = sharedItemBehavior.dividerVisible ? (
         <HappierDivider
-            color={theme.colors.border.default}
+            color={flatDividerColor ?? theme.colors.border.default}
             style={[
                 styles.divider,
-                {
+                flatDividerColor !== null ? styles.pageDivider : null,
+                flatDividerColor !== null ? { marginLeft: 0 } : {
                     marginLeft: (isAndroid || isWeb)
                         ? 0
                         : (dividerInset + (icon || leftElement ? (16 + (iconBoxSize ?? resolvedIconBoxSize) + resolvedIconMarginRight) : 16))
@@ -707,6 +925,19 @@ export const Item = React.memo<ItemProps>((props) => {
     }>) => {
         const value = String(params.value);
         const useWebStartEllipsis = isWeb && params.ellipsizeMode === 'head';
+        // The web draws only a tail ellipsis, so a one-line middle ellipsis is two runs: the head
+        // shrinks with its own ellipsis and the end (a path's last segment) stays whole.
+        const webMiddle = isWeb && params.ellipsizeMode === 'middle' && params.numberOfLines === 1
+            ? splitForWebMiddleEllipsis(value)
+            : null;
+        if (webMiddle) {
+            return (
+                <Text testID={params.testID} style={[params.style, WEB_MIDDLE_ELLIPSIS_ROW_STYLE]}>
+                    <Text style={WEB_MIDDLE_ELLIPSIS_HEAD_STYLE} numberOfLines={1} ellipsizeMode="tail">{webMiddle.head}</Text>
+                    <Text style={WEB_MIDDLE_ELLIPSIS_TAIL_STYLE} numberOfLines={1}>{webMiddle.tail}</Text>
+                </Text>
+            );
+        }
         return (
             <Text
                 testID={params.testID}
@@ -729,15 +960,31 @@ export const Item = React.memo<ItemProps>((props) => {
         return (
         <>
             {/* Left Section */}
-            {leftAccessory ? (
-                <View style={iconContainerStyle}>
+            {leftAccessory || (isPageRow && reservesLeadingColumn) ? (
+                <View
+                    style={iconContainerStyle}
+                    // An empty reserved column is layout only.
+                    {...(leftAccessory ? null : { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' as const })}
+                >
                     {leftAccessory}
                 </View>
             ) : null}
 
             {/* Center Section */}
             <View style={styles.centerContent}>
-                {typeof title === 'string' || typeof title === 'number' ? (
+                {(typeof title === 'string' || typeof title === 'number') && titleAccessory ? (
+                    <View style={styles.inlineMarkRow}>
+                        <View style={styles.inlineMarkText}>
+                            {renderPrimitiveText({
+                                value: title,
+                                style: [styles.title, titleSizeStyle, titleColor, titleStyle],
+                                numberOfLines: 1,
+                                ellipsizeMode: titleEllipsizeMode,
+                            })}
+                        </View>
+                        {titleAccessory}
+                    </View>
+                ) : typeof title === 'string' || typeof title === 'number' ? (
                     renderPrimitiveText({
                         value: title,
                         style: [styles.title, titleSizeStyle, titleColor, titleStyle],
@@ -783,7 +1030,33 @@ export const Item = React.memo<ItemProps>((props) => {
                     }
 
                     // Allow multiline when requested or when content contains line breaks
-                    const effectiveLines = resolveItemSubtitleMaxLines({ text: subtitle, subtitleLines }) ?? undefined;
+                    const effectiveLines = resolveItemSubtitleMaxLines({
+                        text: subtitle,
+                        subtitleLines,
+                        status: subtitleLeading != null,
+                    }) ?? undefined;
+
+                    if (subtitleLeading) {
+                        // The mark sits in a slot one subtitle line tall at the top of the text, so a
+                        // status that wraps keeps its dot beside the first line.
+                        const markSlotHeight = pageRowMetrics?.subtitle.lineHeight ?? ITEM_SUBTITLE_TEXT_METRICS[resolvedIconDensity].lineHeight;
+                        return (
+                            <View style={styles.subtitleMarkRow}>
+                                <View style={[styles.subtitleMarkSlot, { height: markSlotHeight }]}>
+                                    {subtitleLeading}
+                                </View>
+                                <View style={styles.inlineMarkText}>
+                                    {renderPrimitiveText({
+                                        value: subtitle,
+                                        testID: subtitleTestID,
+                                        style: [styles.subtitle, subtitleSizeStyle, subtitleStyle],
+                                        numberOfLines: effectiveLines,
+                                        ellipsizeMode: subtitleEllipsizeMode,
+                                    })}
+                                </View>
+                            </View>
+                        );
+                    }
 
                     return renderPrimitiveText({
                         value: subtitle,
@@ -801,7 +1074,7 @@ export const Item = React.memo<ItemProps>((props) => {
             </View>
 
             {/* Right Section */}
-            <View style={styles.rightSection}>
+            <View style={[styles.rightSection, stackAccessory ? styles.rightSectionStacked : pageRowStyles?.accessoryBleed]}>
                 {copyFeedback.isCopied() ? (
                     <CopiedPill visible testID="item-copy-feedback" />
                 ) : detail ? (
@@ -836,23 +1109,33 @@ export const Item = React.memo<ItemProps>((props) => {
     }, [
         chevronAccessory,
         copyFeedback,
+        stackAccessory,
         detail,
         detailTestID,
         detailSizeStyle,
         detailStyle,
         iconContainerStyle,
+        isPageRow,
         leftAccessory,
         loading,
+        pageRowMetrics,
+        pageRowStyles,
         renderPrimitiveText,
+        resolvedIconDensity,
+        reservesLeadingColumn,
         rightAccessory,
         showAccessory,
         subtitle,
         subtitleAccessoryNode,
+        subtitleLeading,
+        titleAccessory,
         subtitleEllipsizeMode,
         subtitleLines,
         subtitleSizeStyle,
         styles.centerContent,
         styles.detail,
+        styles.inlineMarkRow,
+        styles.inlineMarkText,
         styles.rightSection,
         styles.subtitle,
         style,
@@ -867,7 +1150,7 @@ export const Item = React.memo<ItemProps>((props) => {
 
     const content = React.useMemo(() => (
         <>
-            <View style={[containerCore, containerPadding, style]}>
+            <View style={[containerCore, containerPadding, style]} onLayout={measuresRowWidth ? handleRowLayout : undefined}>
                 {renderRowContent()}
             </View>
 
@@ -877,6 +1160,8 @@ export const Item = React.memo<ItemProps>((props) => {
         containerCore,
         containerPadding,
         dividerNode,
+        handleRowLayout,
+        measuresRowWidth,
         renderRowContent,
         style,
     ]);
@@ -965,7 +1250,7 @@ export const Item = React.memo<ItemProps>((props) => {
     if (splitRightElementOutsidePressable) {
         return (
             <>
-                <View style={[containerCore, style, resolveInteractiveRowStyle(isSplitPrimaryPressed)]}>
+                <View style={[containerCore, style, resolveInteractiveRowStyle(isSplitPrimaryPressed)]} onLayout={measuresRowWidth ? handleRowLayout : undefined}>
                     <Pressable
                         ref={assignPressableRef}
                         testID={testID}
@@ -998,6 +1283,7 @@ export const Item = React.memo<ItemProps>((props) => {
                         onMouseDownCapture={isWeb ? (onMouseDownCapture as any) : undefined}
                         onContextMenu={isWeb ? (onContextMenu as any) : undefined}
                         onFocus={onFocus}
+                        onBlur={onBlur}
                         {...(isWeb ? { 'aria-level': accessibilityLevel, 'aria-keyshortcuts': webKeyShortcuts } : undefined)}
                         onKeyDown={isWeb ? (event: Parameters<NonNullable<ItemProps['onKeyDown']>>[0]) => {
                             onKeyDown?.(event);
@@ -1013,25 +1299,31 @@ export const Item = React.memo<ItemProps>((props) => {
                         aria-label={resolvedAccessibilityLabel}
                         aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
                         accessibilityState={interactiveAccessibilityState}
+                        aria-current={isWeb ? accessibilityCurrent : undefined}
                         aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
                         aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
                         aria-expanded={accessibilityExpanded}
                         aria-disabled={disabled || loading ? true : undefined}
                         tabIndex={interactiveTabIndex as 0 | -1 | undefined}
                         disabled={disabled || loading}
-                        style={styles.splitPressable}
+                        style={[styles.splitPressable, stackAccessory ? styles.splitPressableStacked : null]}
                         android_ripple={(isAndroid || isWeb) ? {
                             color: theme.colors.surface.ripple,
                             borderless: false,
                             foreground: true
                         } : undefined}
                     >
-                        <View style={[styles.splitPressableInner, containerPadding]}>
+                        <View style={[styles.splitPressableInner, containerPadding, stackAccessory ? styles.splitPressableInnerStacked : null]}>
                             {renderRowContent({ includeRightAccessory: false })}
                         </View>
                     </Pressable>
                     <View
-                        style={styles.rightSection}
+                        style={[
+                            styles.rightSection,
+                            // A stacked control sits under the label exactly as it does on an ordinary
+                            // row: full width, no inset, and above the row's bottom padding.
+                            stackAccessory ? [styles.rightSectionStacked, containerPadding, styles.splitRightSectionStacked] : null,
+                        ]}
                         pointerEvents={sharedItemBehavior.secondaryActionsEnabled ? 'auto' : 'none'}
                         accessibilityElementsHidden={!sharedItemBehavior.secondaryActionsEnabled}
                         importantForAccessibility={sharedItemBehavior.secondaryActionsEnabled ? 'auto' : 'no-hide-descendants'}
@@ -1077,6 +1369,7 @@ export const Item = React.memo<ItemProps>((props) => {
                 onMouseDownCapture={isWeb ? (onMouseDownCapture as any) : undefined}
                 onContextMenu={isWeb ? (onContextMenu as any) : undefined}
                 onFocus={onFocus}
+                onBlur={onBlur}
                         {...(isWeb ? { 'aria-level': accessibilityLevel, 'aria-keyshortcuts': webKeyShortcuts } : undefined)}
                         onKeyDown={isWeb ? (event: Parameters<NonNullable<ItemProps['onKeyDown']>>[0]) => {
                             onKeyDown?.(event);
@@ -1092,6 +1385,7 @@ export const Item = React.memo<ItemProps>((props) => {
                 aria-label={resolvedAccessibilityLabel}
                 aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
                 accessibilityState={interactiveAccessibilityState}
+                aria-current={isWeb ? accessibilityCurrent : undefined}
                 aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
                 aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
                 aria-expanded={accessibilityExpanded}
@@ -1115,22 +1409,31 @@ export const Item = React.memo<ItemProps>((props) => {
             testID={testID}
             {...webTestIdProps}
             {...webOptionIdentityProps}
-            {...(isWeb && webRole ? { role: webRole } : undefined)}
+            {...(passiveWebRole ? { role: passiveWebRole } : undefined)}
             accessibilityRole={isWeb ? undefined : accessibilityRole}
-            accessibilityLabel={accessibilityLabel ?? (webRole ? generatedAccessibilityLabel : undefined)}
+            accessibilityLabel={accessibilityLabel ?? (passiveWebRole ? generatedAccessibilityLabel : undefined)}
             accessibilityHint={accessibilityHint}
             accessibilityLiveRegion={accessibilityLiveRegion}
             accessibilityActions={accessibilityActions}
             onAccessibilityAction={onAccessibilityAction}
-            aria-label={accessibilityLabel ?? (webRole ? generatedAccessibilityLabel : undefined)}
+            aria-label={accessibilityLabel ?? (passiveWebRole ? generatedAccessibilityLabel : undefined)}
             aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
             accessibilityState={interactiveAccessibilityState}
+            aria-current={isWeb ? accessibilityCurrent : undefined}
             aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
             aria-checked={isRadioRole || isCheckboxRole ? accessibilityChecked ?? selected === true : undefined}
             aria-expanded={accessibilityExpanded}
             aria-disabled={disabled || loading ? true : undefined}
             tabIndex={isWeb && webRole && (disabled || loading) ? -1 : undefined}
-            style={[{ opacity: disabled ? 0.5 : 1 }, pressableStyle]}
+            // A selected choice keeps its mark while it cannot be pressed (read-only, or its owner is
+            // unavailable), exactly as the pressable row draws it.
+            style={showSelectedBackground
+                ? [
+                    { backgroundColor: theme.colors.surface.selected, opacity: disabled ? 0.5 : 1 },
+                    getItemGroupRowCornerRadii({ hasBackground: true, position: rowPosition, radius: groupCornerRadius }),
+                    pressableStyle,
+                ]
+                : [{ opacity: disabled ? 0.5 : 1 }, pressableStyle]}
         >
             {content}
         </View>

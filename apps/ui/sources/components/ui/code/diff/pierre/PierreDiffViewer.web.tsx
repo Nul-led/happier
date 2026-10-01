@@ -1,3 +1,4 @@
+import { useEffectiveDiffPresentation } from '../diffPresentationStyle';
 import * as React from 'react';
 import { PierreDiffScrollAnchor } from './PierreDiffScrollAnchor.web';
 import { useUnistyles } from 'react-native-unistyles';
@@ -413,7 +414,9 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
     const intraLineDiffEnabledSetting = useSetting('filesDiffIntraLineWordDiffEnabled');
     const intraLineDiffMaxPatchLinesSetting = useSetting('filesDiffIntraLineWordDiffMaxPatchLines');
     const intraLineDiffMaxLineLengthSetting = useSetting('filesDiffIntraLineWordDiffMaxLineLength');
-    const diffPresentationStyleSetting = useSetting('filesDiffPresentationStyle');
+    // The one split rule (`diffPresentationStyle`): the preference, drawn unified where the
+    // enclosing Details group is too narrow for two readable sides.
+    const effectiveDiffPresentation = useEffectiveDiffPresentation();
 
     const tokenizeMaxLineLength = typeof tokenizeMaxLineLengthSetting === 'number'
         ? tokenizeMaxLineLengthSetting
@@ -429,9 +432,7 @@ export const PierreDiffViewer = React.memo<DiffViewerProps>((props) => {
         : (settingsDefaults.filesDiffIntraLineWordDiffMaxLineLength as number);
     const diffStyle = props.presentationStyleOverride === 'unified' || props.presentationStyleOverride === 'split'
         ? props.presentationStyleOverride
-        : diffPresentationStyleSetting === 'unified' || diffPresentationStyleSetting === 'split'
-            ? diffPresentationStyleSetting
-            : (settingsDefaults.filesDiffPresentationStyle === 'split' ? 'split' : 'unified');
+        : effectiveDiffPresentation.style;
 
     ensureHappierPierreThemeRegistered({ isDark, colors: theme.colors });
     const pierreThemeIds = resolveHappierPierreThemeIds({ isDark, colors: theme.colors });

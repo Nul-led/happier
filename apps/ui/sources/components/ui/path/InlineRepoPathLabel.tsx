@@ -26,7 +26,47 @@ export type InlineRepoPathLabelProps = Readonly<{
      * middle-ellipsized once it alone needs the entire row.
      */
     preferNameOverPath?: boolean;
+    /**
+     * `inline` (default): `folder/` then the name on one line. `stacked`: the name first, its folder
+     * beneath (head-truncated, so the meaningful end stays) — the Git change row (session-tabs G1).
+     * `nameFirst`: the name, then its folder after it on the same line (the compact changed-file row).
+     */
+    layout?: 'inline' | 'stacked' | 'nameFirst';
+    /**
+     * The other paths in the same list. When one shares this file's name, the name line is prefixed
+     * with the nearest folders that tell them apart (`attack-conclusion/SKILL.md`), the way editor
+     * tabs do. Passing only the paths that share the name is enough.
+     */
+    siblingPaths?: readonly string[];
+    /** The folder line for a file at the repository root (the repository's name). Stacked only. */
+    rootLabel?: string | null;
+    /** Replaces the folder line (a rename's "was …"). Stacked only. */
+    detail?: string | null;
 }>;
+
+function splitDir(dir: string | null): string[] {
+    return dir ? dir.split(PATH_SEPARATOR).filter(Boolean) : [];
+}
+
+/**
+ * The shortest run of trailing folders that tells `fullPath` apart from every sibling with the same
+ * file name ('' when the name is already unique, or when no folder can separate them).
+ */
+export function resolveDistinguishingFolderPrefix(fullPath: string, siblingPaths: readonly string[]): string {
+    const own = normalizeRepoPathParts({ fullPath });
+    const ownDir = splitDir(own.dir);
+    const rivals = siblingPaths
+        .map((path) => normalizeRepoPathParts({ fullPath: path }))
+        .filter((parts) => parts.name === own.name && (parts.dir ?? '') !== (own.dir ?? ''))
+        .map((parts) => splitDir(parts.dir));
+    if (rivals.length === 0 || ownDir.length === 0) return '';
+    const tail = (segments: readonly string[], count: number) => segments.slice(Math.max(0, segments.length - count)).join(PATH_SEPARATOR);
+    for (let count = 1; count <= ownDir.length; count += 1) {
+        const candidate = tail(ownDir, count);
+        if (rivals.every((dir) => tail(dir, count) !== candidate)) return candidate;
+    }
+    return own.dir ?? '';
+}
 
 export const InlineRepoPathLabel = React.memo(function InlineRepoPathLabel(props: InlineRepoPathLabelProps) {
     const { dir, name } = React.useMemo(() => {
@@ -38,30 +78,34 @@ export const InlineRepoPathLabel = React.memo(function InlineRepoPathLabel(props
     }, [props.fileName, props.filePath, props.fullPath]);
 
     const isWeb = Platform.OS === 'web';
+    const stacked = props.layout === 'stacked';
     const dirLabel = dir ? `${dir}${PATH_SEPARATOR}` : null;
+    const disambiguation = React.useMemo(() => {
+        if (props.layout === 'inline' || props.layout === undefined || !props.siblingPaths || props.siblingPaths.length === 0) return '';
+        return resolveDistinguishingFolderPrefix(dir ? `${dir}${PATH_SEPARATOR}${name}` : name, props.siblingPaths);
+    }, [dir, name, props.layout, props.siblingPaths]);
     const containerStyle = React.useMemo<StyleProp<ViewStyle>>(() => {
         return [
-            {
-                flex: 1,
-                minWidth: 0,
-                flexDirection: 'row' as const,
-                alignItems: 'baseline' as const,
-            } satisfies ViewStyle,
+            stacked
+                ? ({ flex: 1, minWidth: 0, flexDirection: 'column' as const, justifyContent: 'center' as const } satisfies ViewStyle)
+                : ({
+                    flex: 1,
+                    minWidth: 0,
+                    flexDirection: 'row' as const,
+                    alignItems: 'baseline' as const,
+                } satisfies ViewStyle),
             props.style,
         ];
-    }, [props.style]);
+    }, [props.style, stacked]);
     const pathStyle = React.useMemo<StyleProp<TextStyle>>(() => {
         return [
-            {
-                flex: 1,
-                minWidth: 0,
-            },
+            stacked ? { minWidth: 0 } : { flex: 1, minWidth: 0 },
             isWeb
-                ? [WEB_START_ELLIPSIS_CONTAINER_TEXT_STYLE, { textAlign: 'right' } satisfies TextStyle]
-                : { textAlign: 'right' } satisfies TextStyle,
+                ? [WEB_START_ELLIPSIS_CONTAINER_TEXT_STYLE, { textAlign: stacked ? 'left' : 'right' } satisfies TextStyle]
+                : { textAlign: stacked ? 'left' : 'right' } satisfies TextStyle,
             props.pathTextStyle,
         ];
-    }, [isWeb, props.pathTextStyle]);
+    }, [isWeb, props.pathTextStyle, stacked]);
     const effectiveNameMaxWidth = props.preferNameOverPath ? '100%' : (props.nameMaxWidth ?? null);
     const nameStyle = React.useMemo<StyleProp<TextStyle>>(() => {
         return [
@@ -72,6 +116,53 @@ export const InlineRepoPathLabel = React.memo(function InlineRepoPathLabel(props
             props.nameTextStyle,
         ];
     }, [effectiveNameMaxWidth, props.nameTextStyle]);
+
+    if (props.layout === 'nameFirst') {
+        return (
+            <View style={[{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 6 }, props.style]}>
+                <Text testID="repo-path-label-name" numberOfLines={1} ellipsizeMode="middle" style={[{ flexShrink: 0, maxWidth: '100%' }, props.nameTextStyle]}>
+                    {disambiguation ? <Text style={props.pathTextStyle}>{`${disambiguation}${PATH_SEPARATOR}`}</Text> : null}
+                    {`${name}${props.nameSuffix ?? ''}`}
+                </Text>
+                {(props.detail ?? dir) ? (
+                    <Text
+                        testID="repo-path-label-folder"
+                        numberOfLines={1}
+                        ellipsizeMode={isWeb ? undefined : 'head'}
+                        style={[{ flex: 1, minWidth: 0 }, isWeb ? WEB_START_ELLIPSIS_CONTAINER_TEXT_STYLE : null, props.pathTextStyle]}
+                    >
+                        {isWeb ? <Text style={WEB_START_ELLIPSIS_CONTENT_TEXT_STYLE}>{props.detail ?? dir}</Text> : (props.detail ?? dir)}
+                    </Text>
+                ) : null}
+            </View>
+        );
+    }
+
+    if (stacked) {
+        const folderLine = props.detail ?? dir ?? props.rootLabel ?? null;
+        return (
+            <View style={containerStyle}>
+                <Text testID="repo-path-label-name" numberOfLines={1} ellipsizeMode="middle" style={props.nameTextStyle}>
+                    {disambiguation ? (
+                        <Text style={props.pathTextStyle}>{`${disambiguation}${PATH_SEPARATOR}`}</Text>
+                    ) : null}
+                    {`${name}${props.nameSuffix ?? ''}`}
+                </Text>
+                {folderLine ? (
+                    <Text
+                        testID="repo-path-label-folder"
+                        numberOfLines={1}
+                        ellipsizeMode={isWeb ? undefined : 'head'}
+                        style={pathStyle}
+                    >
+                        {isWeb ? (
+                            <Text style={WEB_START_ELLIPSIS_CONTENT_TEXT_STYLE}>{folderLine}</Text>
+                        ) : folderLine}
+                    </Text>
+                ) : null}
+            </View>
+        );
+    }
 
     return (
         <View style={containerStyle}>

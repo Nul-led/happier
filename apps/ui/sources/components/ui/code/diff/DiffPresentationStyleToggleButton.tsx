@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Platform } from 'react-native';
 
 import { useSettingMutable } from '@/sync/domains/state/storage';
-import { settingsDefaults } from '@/sync/domains/settings/settings';
+import { normalizeDiffPresentationPreference, useDiffSplitFits } from './diffPresentationStyle';
 import { t } from '@/text';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
@@ -15,10 +15,12 @@ export type DiffPresentationStyleToggleButtonProps = Readonly<{
 export const DiffPresentationStyleToggleButton = React.memo<DiffPresentationStyleToggleButtonProps>((props) => {
     const [styleSetting, setStyleSetting] = useSettingMutable('filesDiffPresentationStyle');
 
-    const effectiveStyle = styleSetting === 'unified' || styleSetting === 'split'
-        ? styleSetting
-        : (settingsDefaults.filesDiffPresentationStyle === 'split' ? 'split' : 'unified');
-    const disabled = props.disabled === true;
+    // The container's split rule (`DIFF_SPLIT_MIN_WIDTH_PX`): where split cannot be drawn the diff is
+    // unified, so the toggle shows unified and says why instead of offering a choice that does nothing.
+    const splitFits = useDiffSplitFits();
+    const splitTooNarrow = splitFits === false;
+    const effectiveStyle = splitTooNarrow ? 'unified' : normalizeDiffPresentationPreference(styleSetting);
+    const disabled = props.disabled === true || splitTooNarrow;
     const iconSize = typeof props.size === 'number' ? props.size : 18;
 
     const accessibilityLabel = t(
@@ -36,6 +38,7 @@ export const DiffPresentationStyleToggleButton = React.memo<DiffPresentationStyl
         <IconButton
             onPress={toggle}
             disabled={disabled}
+            disabledReason={splitTooNarrow ? t('detailsSurface.chrome.splitNeedsWiderPane') : undefined}
             accessibilityRole="button"
             accessibilityLabel={accessibilityLabel}
             tooltip={accessibilityLabel}

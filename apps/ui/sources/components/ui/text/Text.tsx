@@ -136,8 +136,20 @@ export const TextInput = React.memo(
                     out.push({ fontSize: 16 });
                 }
             }
+            if (Platform.OS === 'web') {
+                const webResetStyle = {
+                    outlineStyle: 'solid',
+                    outlineWidth: 0,
+                    outlineColor: 'transparent',
+                } satisfies TextStyle;
+                out.push(webResetStyle);
+            }
             return out;
         }, [defaultStyle, scaledStyle]);
+
+        const webAccessibilityProps = Platform.OS === 'web'
+            ? { 'data-happier-text-input': 'true' }
+            : {};
 
         return (
             <RNTextInput
@@ -146,6 +158,7 @@ export const TextInput = React.memo(
                 accessibilityLabel={accessibilityLabel}
                 testID={testID}
                 {...restProps}
+                {...webAccessibilityProps}
             />
         );
     })

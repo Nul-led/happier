@@ -465,6 +465,19 @@ describe('MultiTextInput', () => {
         expect(input.props['aria-label']).toBe('Message');
     });
 
+    it('marks the raw web textarea for the shared forced-colors focus cue without normal focus chrome', async () => {
+        const { MultiTextInput } = await import('./MultiTextInput.web');
+        const tree = (await renderScreen(React.createElement(MultiTextInput as unknown as React.ComponentType<Record<string, unknown>>, {
+            value: '',
+            onChangeText: () => {},
+        }))).tree;
+        const input = tree.findByType('textarea' as any);
+
+        expect(input.props['data-happier-text-input']).toBe('true');
+        expect(input.props.style.outline).toBe('none');
+        expect(input.props.style.boxShadow).toBeUndefined();
+    });
+
     it('uses the caller textStyle font size as the scaled web textarea base', async () => {
         localSettingState.uiFontScale = 1.25;
 

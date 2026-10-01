@@ -2,6 +2,7 @@ import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import {
+    flattenTestStyle,
     collectUnexpectedRawTextNodes,
     findTestInstanceByTypeContainingText,
     findTestInstanceByTypeWithProps,
@@ -80,24 +81,6 @@ vi.mock('@expo/vector-icons', () => ({
 
 vi.mock('expo-clipboard', () => ({
     setStringAsync: vi.fn(async () => {}),
-}));
-
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-    },
-}));
-
-vi.mock('@/components/ui/lists/ItemGroup', () => ({
-    ItemGroupSelectionContext: React.createContext(null),
-}));
-
-vi.mock('@/components/ui/lists/ItemGroupRowPosition', () => ({
-    useItemGroupRowPosition: () => 'middle',
-}));
-
-vi.mock('@/components/ui/lists/itemGroupRowCorners', () => ({
-    getItemGroupRowCornerRadii: () => ({}),
 }));
 
 describe('Item', () => {
@@ -250,10 +233,8 @@ describe('Item', () => {
         const detailNode = findTestInstanceByTypeWithProps(screen, 'Text', { children: 'Detail' });
         expect(detailNode).toBeTruthy();
 
-        const style = detailNode!.props?.style;
-        const styles = Array.isArray(style) ? style : [style];
-        const marginRight = styles.reduce((acc: number, s: any) => (s && typeof s === 'object' && typeof s.marginRight === 'number' ? s.marginRight : acc), 0);
-        expect(marginRight).toBeGreaterThan(0);
+        // The real `Text` nests the caller's style array under its base style.
+        expect(flattenTestStyle(detailNode!.props?.style).marginRight).toBeGreaterThan(0);
     });
 
     it('uses a not-allowed cursor on web when disabled', async () => {

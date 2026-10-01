@@ -82,4 +82,20 @@ describe('SelectionList inputPlacement', () => {
         expect(screen.findByTestId('sl:root:option:alpha')).not.toBeNull();
         expect(screen.findByTestId('sl:root:option:beta')).toBeNull();
     });
+
+    // B1 phone: filter chips that do not fit beside the field sit on their own row beneath it, part
+    // of the header (so they stay on screen in every state), above the results.
+    it('renders an input accessory row beneath the field and above the results', async () => {
+        const { SelectionList } = await import('../SelectionList');
+        const screen = await renderScreen(<SelectionList {...defaultProps({
+            inputAccessoryRow: React.createElement('ChipRow', { testID: 'chip-row' }),
+        })} />);
+        const header = screen.findByTestId('sl:headerFrame');
+        expect(header?.findAll((node) => node.props?.testID === 'chip-row').length).toBeGreaterThan(0);
+        const content = screen.findByTestId('sl:content');
+        expect(content?.findAll((node) => node.props?.testID === 'chip-row')).toHaveLength(0);
+        const headerChildren = header!.findAll((node) => node.props?.testID === 'sl:header' || node.props?.testID === 'chip-row')
+            .map((node) => String(node.props.testID));
+        expect(headerChildren.indexOf('sl:header')).toBeLessThan(headerChildren.indexOf('chip-row'));
+    });
 });

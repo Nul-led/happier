@@ -55,6 +55,13 @@ export type TreeDropRules = Readonly<{
     canNestInto: (source: TreeDragSource, targetId: string) => boolean;
     canReorderAround: (source: TreeDragSource, target: TreeRow, parentId: string | null) => boolean;
     canMoveToRoot?: (source: TreeDragSource, dropZone: TreeContainerDropZone) => boolean;
+    /**
+     * Lets a leaf row take the source as a child through a domain relationship that is not
+     * structural containment (a Session put under a lead Session). An adopted leaf gets the wide
+     * nest band and resolves `nest-into` on itself; `maxDepth` and `canNestInto` govern structural
+     * containers only, so this rule owns every limit of the relationship it grants.
+     */
+    canAdoptLeaf?: (source: TreeDragSource, target: TreeRow) => boolean;
     maxDepth?: number;
 }>;
 

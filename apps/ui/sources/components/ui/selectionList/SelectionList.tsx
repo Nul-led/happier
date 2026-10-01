@@ -1,6 +1,5 @@
 import * as React from 'react';
 import {
-    AccessibilityInfo,
     Platform,
     type LayoutChangeEvent,
     TextInput as RNTextInput,
@@ -10,9 +9,9 @@ import {
 } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { PoliteAccessibilityStatus } from '@/components/ui/accessibility/PoliteAccessibilityStatus';
 import { resolveItemGroupColumnCountForWidth } from '@/components/ui/lists/itemGroupColumnLayout';
 import { SlideTransitionSwitch } from '@/components/ui/motion/SlideTransitionSwitch';
-import { Text } from '@/components/ui/text/Text';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { t } from '@/text';
 
@@ -58,8 +57,18 @@ import {
 import { useSelectionListMeasuredPopoverHeight } from './useSelectionListMeasuredPopoverHeight';
 import { useSelectionListStepStack } from './useSelectionListStepStack';
 import { useHardwareKeyboard } from './useHardwareKeyboard';
+import { ListPresentationProvider } from '@/components/ui/lists/listPresentation';
+import { isHappierPageRowNarrow } from '@happier-dev/plugin-ui/presentation';
+import { SelectionListFilterChips } from './SelectionListFilterChips';
 
 const stylesheet = StyleSheet.create((theme) => ({
+    // Filter chips, then the consumer's own trailing controls, inside the search field's suffix slot.
+    inputSuffixWithFilters: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        flexShrink: 1,
+    },
     container: {
         backgroundColor: theme.colors.surface.base,
         flexDirection: 'column',
@@ -93,12 +102,6 @@ const stylesheet = StyleSheet.create((theme) => ({
         flexShrink: 1,
         flexBasis: 'auto',
     },
-    statusAnnouncement: {
-        position: 'absolute',
-        width: 1,
-        height: 1,
-        overflow: 'hidden',
-    },
 }));
 
 /**
@@ -113,7 +116,6 @@ type SelectionListStatusAnnouncement = Readonly<{
 }>;
 
 const IS_WEB = Platform.OS === 'web';
-const IS_IOS = Platform.OS === 'ios';
 const STABILIZED_HEIGHT_SHRINK_DELAY_MS = 180;
 /** Section id for the synthetic, filter-bypassing `buildInputRow` row. */
 const SELECTION_LIST_INPUT_ROW_SECTION_ID = 'selection-list:input-row';
@@ -341,6 +343,8 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     const detectedKeyboard = useHardwareKeyboard();
     const detectedReducedMotion = useReducedMotionPreference();
     const keyboardHintsEnabled = props.keyboardHintsEnabled ?? detectedKeyboard;
+    // ↵ is a key: without a hardware keyboard a command row shows no mark at all.
+    const rowSelectionMark = props.selectionMark === 'enter' && !keyboardHintsEnabled ? 'none' : props.selectionMark;
 
     const isInputControlled = props.inputValue !== undefined;
     const [uncontrolledInputValue, setUncontrolledInputValue] = React.useState<string>('');
@@ -462,14 +466,6 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         dynamicSectionStates,
         renderPlan,
     );
-    React.useEffect(() => {
-        if (!IS_IOS || statusAnnouncement === null) return;
-        try {
-            AccessibilityInfo.announceForAccessibility(statusAnnouncement.message);
-        } catch {
-            // Accessibility announcements are best effort on native platforms.
-        }
-    }, [statusAnnouncement]);
 
     // FR4-2 — see `isFocusableSectionPlan` above for why stale option-bearing
     // sections still contribute focusable rows.
@@ -519,6 +515,18 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         },
         [findOptionById, stack.pushStep, props.onSelect, requestInputAttention],
     );
+
+    const onCommandSelect = props.onCommandSelect;
+    const handleCommandActivate = React.useMemo(() => (onCommandSelect ? (optionId: string) => {
+        const option = findOptionById(optionId);
+        if (!option) return;
+        activateSelectionListRow({
+            option,
+            onSelect: onCommandSelect,
+            onPushStep: stack.pushStep,
+            onRequiresInput: requestInputAttention,
+        });
+    } : undefined), [findOptionById, onCommandSelect, requestInputAttention, stack.pushStep]);
 
     const handleClearInput = React.useCallback(() => {
         setInputValue('');
@@ -763,6 +771,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         ...(virtualizedOptionSource === undefined ? {} : { virtualizedOptionSource }),
         focus,
         onActivate: handleActivate,
+        ...(handleCommandActivate ? { onCommandActivate: handleCommandActivate } : {}),
         canPopStep: stack.canPop,
         onPopStep: stack.popStep,
         inputValue,
@@ -880,7 +889,15 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     // actually got, so it measures for BOTH consumers: the columns variant
     // (width) and stabilized height (height). Each half is independently
     // guarded — the callback is attached whenever either one wants it.
+    // Filters sit beside the field until the list is too narrow for both (the page row owner's stack
+    // width); then they take a row of their own beneath it. Wide until the first measurement.
+    const hasFilters = (props.filters?.length ?? 0) > 0;
+    const [filtersNarrow, setFiltersNarrow] = React.useState(false);
     const handleContainerLayout = React.useCallback((event: LayoutChangeEvent) => {
+        if (hasFilters) {
+            const narrow = isHappierPageRowNarrow(event.nativeEvent.layout.width);
+            setFiltersNarrow((current) => (current === narrow ? current : narrow));
+        }
         if (columns !== undefined) {
             const measuredWidth = event.nativeEvent.layout.width;
             if (Number.isFinite(measuredWidth) && measuredWidth > 0) {
@@ -908,6 +925,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     }, [
         clearStabilizedHeightTimer,
         columns,
+        hasFilters,
         props.maxHeight,
         resolveColumnCountForWidth,
         scheduleStabilizedHeightRelease,
@@ -945,10 +963,26 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         clearStabilizedHeightTimer();
     }, [clearStabilizedHeightTimer]);
     const measureNativeHeight = props.heightBehavior === 'measuredToMaxHeight';
+    // `inputPlacement="body"`: the canonical input scrolls with the rows, after the body header (the
+    // 0.2 engine pane, where title, notice, search and models are one scrolling pane). Same node, same
+    // query, ref and combobox wiring; only its position moves.
+    const inputInBody = props.inputPlacement === 'body' && props.contentState === undefined;
+    // The body slots render only in the live body, so their heights are added to the measured one.
+    const [bodySlotHeights, setBodySlotHeights] = React.useState({ header: 0, footer: 0 });
+    const handleBodySlotLayout = React.useCallback((slot: 'header' | 'footer', height: number) => {
+        if (!Number.isFinite(height) || height < 0) return;
+        setBodySlotHeights((current) => (
+            Math.abs(current[slot] - height) <= 1 ? current : { ...current, [slot]: height }
+        ));
+    }, []);
+    const bodySlotsHeight = (props.bodyHeader != null || inputInBody ? bodySlotHeights.header : 0)
+        + (props.bodyFooter != null ? bodySlotHeights.footer : 0);
     const measuredPopoverHeight = useSelectionListMeasuredPopoverHeight({
         enabled: measureNativeHeight,
         maxHeight: props.maxHeight,
-        headerExpected: showSearchHeader,
+        bodyExtraHeight: bodySlotsHeight,
+        // An input seated in the body is measured as part of the body header slot.
+        headerExpected: showSearchHeader && !inputInBody,
         footerExpected: keyboardHintsEnabled,
         shrinkDelayMs: STABILIZED_HEIGHT_SHRINK_DELAY_MS,
     });
@@ -995,7 +1029,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
      * toward it before the real one arrived.
      */
     const measuredCurrentStepBodyHeight = measuredBody !== null && measuredBody.stepId === currentStep.id
-        ? measuredBody.height
+        ? measuredBody.height + bodySlotsHeight
         : undefined;
     const fixedMaxHeight = props.heightBehavior === 'fixedToMaxHeight'
         && typeof props.maxHeight === 'number'
@@ -1048,33 +1082,6 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
         })
         : undefined;
 
-    const listBody = (
-        <SelectionListBody
-            step={currentStep}
-            rootTestID={resolvedTestId}
-            selectedOptionIds={selectedOptionIds}
-            multiselectable={selection.kind === 'multiple'}
-            plan={renderPlan}
-            virtualizedOptionSource={virtualizedOptionSource}
-            focusedOptionId={focusedOptionId}
-            focusedOptionIndex={virtualizedOptionSource === undefined ? undefined : focus.focusedIndex}
-            scrollTargetOptionId={props.activeScrollOptionId ?? focusedOptionId ?? selectedOptionId}
-            listboxId={listboxId}
-            accessibilityLabel={props.listAccessibilityLabel}
-            onSelect={props.onSelect}
-            onPushStep={handlePushStep}
-            showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
-            pagination={props.pagination}
-            columnCount={columnCount}
-            columnGapPx={columns?.columnGapPx}
-            declaresColumns={columns !== undefined}
-            optionPresentation={props.optionPresentation}
-            a11yPattern={popupA11yPattern}
-        />
-    );
-    const body = props.contentState !== undefined ? (
-        <View style={styles.content}>{props.contentState}</View>
-    ) : listBody;
 
     // FR3-1 / FR3-8 — identity-free measure mirror. An explicit
     // `mode='measure'` SelectionListBody, so the hidden measure subtree never
@@ -1102,6 +1109,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
             columnGapPx={columns?.columnGapPx}
             declaresColumns={columns !== undefined}
             optionPresentation={props.optionPresentation}
+            selectionMark={rowSelectionMark}
             a11yPattern={popupA11yPattern}
         />
     );
@@ -1167,7 +1175,12 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                 ghostSuffix={autocomplete.ghostSuffix}
                 inputValueEllipsizeMode={props.inputValueEllipsizeMode}
                 inputPrefix={props.inputPrefix}
-                inputSuffix={props.inputSuffix}
+                inputSuffix={hasFilters && !filtersNarrow ? (
+                    <View style={styles.inputSuffixWithFilters}>
+                        <SelectionListFilterChips filters={props.filters!} placement="inline" />
+                        {props.inputSuffix ?? null}
+                    </View>
+                ) : props.inputSuffix}
                 inputRef={searchInputRef}
                 onCaretAtEndChange={setCaretAtEnd}
                 onIsComposingChange={setIsComposing}
@@ -1176,8 +1189,48 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                 activeDescendantId={activeDescendantId}
                 attentionNonce={inputAttentionNonce}
             />
+            {hasFilters && filtersNarrow ? (
+                <SelectionListFilterChips
+                    filters={props.filters!}
+                    placement="row"
+                    testID={selectionListTestId(resolvedTestId, 'filters-row')}
+                />
+            ) : null}
+            {props.inputAccessoryRow ?? null}
         </View>
     ) : null;
+
+    const listBody = (
+        <SelectionListBody
+            step={currentStep}
+            rootTestID={resolvedTestId}
+            selectedOptionIds={selectedOptionIds}
+            multiselectable={selection.kind === 'multiple'}
+            plan={renderPlan}
+            virtualizedOptionSource={virtualizedOptionSource}
+            focusedOptionId={focusedOptionId}
+            focusedOptionIndex={virtualizedOptionSource === undefined ? undefined : focus.focusedIndex}
+            scrollTargetOptionId={props.activeScrollOptionId ?? focusedOptionId ?? selectedOptionId}
+            listboxId={listboxId}
+            accessibilityLabel={props.listAccessibilityLabel}
+            onSelect={props.onSelect}
+            onPushStep={handlePushStep}
+            showsVerticalScrollIndicator={props.showsVerticalScrollIndicator === true}
+            pagination={props.pagination}
+            columnCount={columnCount}
+            columnGapPx={columns?.columnGapPx}
+            declaresColumns={columns !== undefined}
+            optionPresentation={props.optionPresentation}
+            selectionMark={rowSelectionMark}
+            a11yPattern={popupA11yPattern}
+            bodyHeader={inputInBody ? <>{props.bodyHeader}{searchHeaderZone}</> : props.bodyHeader}
+            bodyFooter={props.bodyFooter}
+            onBodySlotLayout={handleBodySlotLayout}
+        />
+    );
+    const body = props.contentState !== undefined ? (
+        <View style={styles.content}>{props.contentState}</View>
+    ) : listBody;
 
     const contentZone = (
             <View
@@ -1206,7 +1259,7 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                             contentKey={currentStep.id}
                             direction={direction}
                             blur={false}
-                            preset="compact"
+                            preset="routine"
                             testID={selectionListTestId(resolvedTestId, 'transition')}
                         >
                             {body}
@@ -1236,13 +1289,16 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
     const seatInputAtBottom = props.inputPlacement === 'bottom';
 
     return (
+        // A picker keeps its own look wherever it is placed: inline under a page list it resets to the
+        // grouped anatomy exactly as `FloatingOverlay` does for popovers (I1).
+        <ListPresentationProvider value="grouped">
         <SelectionListInputAttentionContext.Provider value={requestInputAttention}>
         <SelectionListOptionTabBehaviorContext.Provider value={showSearchHeader ? 'input-owned' : 'roving'}>
         <View
             testID={resolvedTestId}
             style={containerStyle}
             pointerEvents={measuredPopoverHeight.hidden ? 'none' : undefined}
-            onLayout={stabilizeHeight || columns !== undefined ? handleContainerLayout : undefined}
+            onLayout={stabilizeHeight || columns !== undefined || hasFilters ? handleContainerLayout : undefined}
             {...headerlessKeyHandler}
         >
             {renderMeasureHost ? (
@@ -1254,30 +1310,18 @@ export function SelectionList(props: SelectionListProps): React.ReactElement {
                     {measureBody}
                 </SelectionListMeasureHost>
             ) : null}
-            {statusAnnouncement !== null && !IS_IOS ? (
-                <View
-                    key={statusAnnouncement.eventId}
-                    testID={selectionListTestId(resolvedTestId, 'status')}
-                    style={styles.statusAnnouncement}
-                    accessible
-                    accessibilityLabel={statusAnnouncement.message}
-                    accessibilityLiveRegion="polite"
-                    pointerEvents="none"
-                    {...({
-                        role: 'status',
-                        'aria-live': 'polite',
-                        'aria-atomic': true,
-                    } as Record<string, unknown>)}
-                >
-                    <Text>{statusAnnouncement.message}</Text>
-                </View>
-            ) : null}
-            {seatInputAtBottom ? null : searchHeaderZone}
+            <PoliteAccessibilityStatus
+                announcement={statusAnnouncement?.message ?? ''}
+                transitionKey={String(statusAnnouncement?.eventId ?? 'idle')}
+                statusTestID={selectionListTestId(resolvedTestId, 'status')}
+            />
+            {seatInputAtBottom || inputInBody ? null : searchHeaderZone}
             {contentZone}
             {footerZone}
             {seatInputAtBottom ? searchHeaderZone : null}
         </View>
         </SelectionListOptionTabBehaviorContext.Provider>
         </SelectionListInputAttentionContext.Provider>
+        </ListPresentationProvider>
     );
 }

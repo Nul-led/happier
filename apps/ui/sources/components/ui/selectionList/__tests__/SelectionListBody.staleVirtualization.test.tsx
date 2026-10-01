@@ -89,7 +89,7 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
             <SelectionListBody
                 step={STEP}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"
@@ -119,7 +119,7 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
             <SelectionListBody
                 step={STEP}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"
@@ -154,7 +154,7 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
             <SelectionListBody
                 step={STEP}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"
@@ -183,7 +183,7 @@ describe('SelectionListBody stale dynamic virtualization (FR4-3)', () => {
             <SelectionListBody
                 step={STEP}
                 rootTestID="sl"
-                selectedOptionId={null}
+                selectedOptionIds={new Set<string>()}
                 plan={plan}
                 focusedOptionId={null}
                 listboxId="sl:listbox"

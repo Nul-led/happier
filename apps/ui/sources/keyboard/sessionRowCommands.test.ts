@@ -20,6 +20,17 @@ describe('session row keyboard commands', () => {
         })).toBe(false);
     });
 
+    it('keeps the workspace split-down shortcut distinct from session row movement', () => {
+        const commands = new Map(defaultKeyboardCommands.map((command) => [command.id, command]));
+
+        expect(commands.get('workspace.splitDown')?.defaultBindings).toEqual(expect.arrayContaining([
+            expect.objectContaining({ binding: 'Alt+Shift+Backslash', platforms: ['web'] }),
+            expect.objectContaining({ binding: 'Mod+Shift+Backslash', blockedSurfaces: ['web'] }),
+        ]));
+        expect([...commands.keys()]).not.toContain('splitCanvas.splitDown');
+        expect(commands.get('sessions.row.moveDown')?.defaultBinding).toMatchObject({ binding: 'Alt+Shift+ArrowDown' });
+    });
+
     it('registers session-list selection commands with an isolated conflict scope', () => {
         const commands = new Map(defaultKeyboardCommands.map((command) => [command.id, command]));
 

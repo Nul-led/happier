@@ -27,7 +27,7 @@ it('keeps a live caller frame connected across an equivalent parent render', asy
     const render = () => <HostedHtmlSurfaceAdapter
         sessionId="session-a" title="same title" recordRevision="revision-a"
         approvalSubject="same-source" source={source} requestedCapabilities={requestedCapabilities}
-        surfaceContext={{ kind: 'sessionWidget', sessionId: 'session-a', itemId: 'item-a', recordRevision: 'revision-a' }}
+        surfaceContext={{ kind: 'widget', sessionId: 'session-a', itemId: 'item-a', recordRevision: 'revision-a' }}
         runtime={runtime} testID="probe-html"
     />;
     const screen = await renderScreen(render());
@@ -57,7 +57,7 @@ it('bootstraps caller HTML with the canonical host environment before reveal', a
         sessionId="session-a" title="environment" recordRevision="revision-a"
         approvalSubject="environment-source" source={{ kind: 'html', html: '<main>environment</main>' }}
         requestedCapabilities={{ hostMethods: ['context', 'watchContext'] }}
-        surfaceContext={{ kind: 'sessionWidget', sessionId: 'session-a', itemId: 'item-a', recordRevision: 'revision-a' }}
+        surfaceContext={{ kind: 'widget', sessionId: 'session-a', itemId: 'item-a', recordRevision: 'revision-a' }}
         runtime={runtime} testID="environment-html"
     />);
     const frame = observations.frames.at(-1)!;
@@ -92,6 +92,6 @@ it('bootstraps caller HTML with the canonical host environment before reveal', a
         safeAreaInsets: expect.objectContaining({ top: expect.any(Number) }),
         theme: expect.any(Object),
     });
-    expect(surface).toMatchObject({ context: { kind: 'sessionWidget', itemId: 'item-a' } });
+    expect(surface).toMatchObject({ context: { kind: 'widget', itemId: 'item-a' } });
     detach();
 });

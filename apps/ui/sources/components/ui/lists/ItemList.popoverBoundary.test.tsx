@@ -7,19 +7,6 @@ import { installUiListsCommonModuleMocks } from './uiListsTestHelpers';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 installUiListsCommonModuleMocks();
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
-vi.mock('@/components/ui/layout/layout', () => ({
-    layout: { maxWidth: 1024 },
-    useLayoutMaxWidth: () => 1024,
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: (props: any) => React.createElement('Text', props, props.children),
-}));
-
 describe('ItemList + ItemGroup popover boundary', () => {
     it('does not provide a popover boundary by default (popover should clamp to the screen/window, not the list/group)', async () => {
         const { ItemList } = await import('./ItemList');

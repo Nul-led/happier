@@ -22,40 +22,6 @@ installDropdownCommonModuleMocks({
     },
 });
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: { default: () => ({}) },
-}));
-
-vi.mock('@/components/ui/lists/SelectableRow', () => {
-    const React = require('react');
-    return {
-        SelectableRow: (props: any) => React.createElement('SelectableRow', props, props.children),
-    };
-});
-
-vi.mock('@/components/ui/lists/Item', () => {
-    const React = require('react');
-    return {
-        Item: (props: any) => React.createElement('Item', props, props.children),
-    };
-});
-
-vi.mock('@/components/ui/lists/ItemGroup', () => {
-    const React = require('react');
-    return {
-        ItemGroupSelectionContext: {
-            Provider: (props: any) => React.createElement('ItemGroupSelectionContextProvider', props, props.children),
-        },
-    };
-});
-
-vi.mock('@/components/ui/lists/ItemGroupRowPosition', () => {
-    const React = require('react');
-    return {
-        ItemGroupRowPositionBoundary: (props: any) => React.createElement('ItemGroupRowPositionBoundary', props, props.children),
-    };
-});
-
 describe('SelectableMenuResults (web)', () => {
     beforeEach(() => {
         scrollIntoViewSpy.mockClear();

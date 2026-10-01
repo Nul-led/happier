@@ -12,9 +12,29 @@ import {
 import { flushHookEffects, invokeTestInstanceHandler, renderScreen } from '@/dev/testkit';
 import { createCapturingLegendListMock } from '@/dev/testkit/mocks/legendList';
 import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
+import type { CustomModalChromeCardConfig, CustomModalInjectedProps } from '@/modal/types';
 
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+/**
+ * Hosts the card chrome a modal browser publishes, as `CustomModal` does: the band's action, the
+ * body, then the footer. The browser never draws a header of its own.
+ */
+function ChromeHost(props: Readonly<{ children: React.ReactElement<CustomModalInjectedProps> }>) {
+    const [chrome, setChrome] = React.useState<CustomModalChromeCardConfig | null>(null);
+    return React.createElement(
+        'ChromeHost',
+        { testID: chrome?.testID, title: chrome?.title, subtitle: chrome?.subtitle },
+        chrome?.actions,
+        React.cloneElement(props.children, { setChrome }),
+        chrome?.footer,
+    );
+}
+
+function renderInModalChrome(element: React.ReactElement<CustomModalInjectedProps>) {
+    return renderScreen(React.createElement(ChromeHost, null, element));
+}
 
 async function waitForTestId(screen: ReturnType<typeof renderScreen> extends Promise<infer Result> ? Result : never, testID: string) {
     for (let index = 0; index < 8; index += 1) {
@@ -177,6 +197,10 @@ vi.mock('@/sync/store/hooks', () => ({
         if (key === 'uiFontScale') return 1;
         return null;
     },
+    // The browsed machine's store record: only its home directory is read, to show paths relative to it.
+    useServerScopedMachine: (_serverId: string | null | undefined, machineId: string) => (
+        machineId === 'machine-1' ? { id: 'machine-1', metadata: { homeDir: '/Users/leeroy' } } : null
+    ),
 }));
 
 vi.mock('@/components/ui/popover', () => ({
@@ -235,7 +259,7 @@ describe('MachinePathBrowserModal', () => {
         const onClose = vi.fn();
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={onResolve}
                     onClose={onClose}
@@ -283,7 +307,7 @@ describe('MachinePathBrowserModal', () => {
             } as never);
             const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-            const screen = await renderScreen(<MachinePathBrowserModal
+            const screen = await renderInModalChrome(<MachinePathBrowserModal
                         machineId="machine-1"
                         onResolve={vi.fn()}
                         onClose={vi.fn()}
@@ -417,7 +441,7 @@ describe('MachinePathBrowserModal', () => {
             paths: ['leeroy/.ssh/config'],
         });
 
-        const screen = await renderScreen(
+        const screen = await renderInModalChrome(
             <MachinePathBrowserView
                 machineId="machine-1"
                 includeFiles={false}
@@ -473,7 +497,7 @@ describe('MachinePathBrowserModal', () => {
             exitCode: 1,
         });
 
-        const screen = await renderScreen(
+        const screen = await renderInModalChrome(
             <MachinePathBrowserView
                 machineId="machine-1"
                 includeFiles={false}
@@ -509,7 +533,7 @@ describe('MachinePathBrowserModal', () => {
     it('renders nested directories when expanding a child folder', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
@@ -537,7 +561,7 @@ describe('MachinePathBrowserModal', () => {
     it('does not rerender unchanged ancestor rows when expanding a descendant directory', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
@@ -559,7 +583,7 @@ describe('MachinePathBrowserModal', () => {
     it('stops web toggle events from bubbling to the row while expanding the directory', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
@@ -596,7 +620,7 @@ describe('MachinePathBrowserModal', () => {
         const onResolve = vi.fn();
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     initialPath="/Users/leeroy"
                     onResolve={onResolve}
@@ -623,12 +647,45 @@ describe('MachinePathBrowserModal', () => {
         expect(onResolve).toHaveBeenCalledWith('/Users/leeroy');
     });
 
+    it('shows the selected path once, relative to the machine home', async () => {
+        const { MachinePathBrowserModal, MachinePathBrowserView } = await import('./MachinePathBrowserModal');
+
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
+                    machineId="machine-1"
+                    initialPath="/Users/leeroy"
+                    onResolve={vi.fn()}
+                    onClose={vi.fn()}
+                />);
+        let confirmButton = await waitForTestId(screen, PATH_BROWSER_CONFIRM_TEST_ID);
+        for (let index = 0; index < 8 && confirmButton?.props?.disabled !== false; index += 1) {
+            await flushHookEffects({ cycles: 1, turns: 1 });
+            confirmButton = screen.findByTestId(PATH_BROWSER_CONFIRM_TEST_ID);
+        }
+        const textsShowingSelection = screen.findAll((node) => (node.type as string) === 'Text'
+            && (node.props.children === '~' || node.props.children === '/Users/leeroy'));
+        expect(textsShowingSelection.map((node) => node.props.children)).toEqual(['~']);
+
+        let chrome: { subtitle?: unknown } | null = null;
+        await renderScreen(<MachinePathBrowserView
+                    machineId="machine-1"
+                    initialPath="/Users/leeroy"
+                    variant="modal"
+                    interaction="confirm"
+                    setChrome={(next: unknown) => { chrome = next as { subtitle?: unknown }; }}
+                    onPickPath={vi.fn()}
+                    onRequestClose={vi.fn()}
+                />);
+        for (let index = 0; index < 8; index += 1) await flushHookEffects({ cycles: 1, turns: 1 });
+        // The confirm footer carries the selection, so the title band does not repeat it.
+        expect(chrome).toEqual(expect.objectContaining({ subtitle: undefined }));
+    });
+
     it('shows the initial path chain while the root listing is still pending', async () => {
         listMachineFileBrowserRootsMock.mockImplementationOnce(async () => await new Promise(() => {}));
 
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     initialPath="/Users/leeroy"
                     onResolve={vi.fn()}
@@ -642,7 +699,7 @@ describe('MachinePathBrowserModal', () => {
     it('scrolls the preselected directory into view once its ancestor chain has loaded', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     initialPath="/Users/leeroy"
                     onResolve={vi.fn()}
@@ -668,7 +725,7 @@ describe('MachinePathBrowserModal', () => {
     it('starts with no selection when the initial path cannot be resolved inside the loaded tree', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     initialPath="/Missing/Folder"
                     onResolve={vi.fn()}
@@ -702,7 +759,7 @@ describe('MachinePathBrowserModal', () => {
 
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
@@ -719,28 +776,17 @@ describe('MachinePathBrowserModal', () => {
         expect(titledInfoRows[0]?.props?.title).toBe('newSession.pathPicker.truncatedDirectoryInfo:1');
     });
 
-    it('constrains the modal card to the viewport and lets the browser body shrink for internal scrolling', async () => {
+    it('lets the browser body shrink inside the shared card and keeps the footer buttons at normal size', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
                     machineId="machine-1"
                     onResolve={vi.fn()}
                     onClose={vi.fn()}
                 />);
 
-        const modal = screen.findByTestId(PATH_BROWSER_MODAL_TEST_ID);
-        expect(modal).toBeTruthy();
-        if (!modal) {
-            return;
-        }
-        const modalStyle = Array.isArray(modal.props.style)
-            ? Object.assign({}, ...modal.props.style)
-            : modal.props.style;
-
-        expect(modalStyle).toEqual(expect.objectContaining({
-            maxHeight: 852,
-            width: 560,
-        }));
+        // The card is the shared chrome's: the browser names it and publishes no container of its own.
+        expect(screen.findByTestId(PATH_BROWSER_MODAL_TEST_ID)?.type).toBe('ChromeHost');
 
         const body = screen.findAll((node) => {
             return node.props?.style
@@ -790,7 +836,7 @@ describe('MachinePathBrowserModal', () => {
         modalPromptMock.mockResolvedValueOnce('new-folder');
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
             machineId="machine-1"
             onResolve={vi.fn()}
             onClose={vi.fn()}
@@ -816,7 +862,7 @@ describe('MachinePathBrowserModal', () => {
         modalPromptMock.mockResolvedValueOnce('child');
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
             machineId="machine-1"
             selectionMode="file"
             includeFiles={true}
@@ -857,7 +903,7 @@ describe('MachinePathBrowserModal', () => {
     it('uses context-menu semantics instead of row long-press on web to avoid delayed tap selection', async () => {
         const { MachinePathBrowserModal } = await import('./MachinePathBrowserModal');
 
-        const screen = await renderScreen(<MachinePathBrowserModal
+        const screen = await renderInModalChrome(<MachinePathBrowserModal
             machineId="machine-1"
             onResolve={vi.fn()}
             onClose={vi.fn()}

@@ -89,4 +89,47 @@ describe('InlineRepoPathLabel', () => {
         // preferNameOverPath lifts the basename cap so the path yields first.
         expect(flattenStyle(nameLabel.props.style)).toMatchObject({ maxWidth: '100%' });
     });
+
+    // Session-tabs lab G1: the Git change row reads name first with its folder beneath, and two files
+    // with the same name are told apart by their nearest distinguishing folder, the way editor tabs do.
+    function textOf(node: { props: { children?: unknown } }): string {
+        const children = node.props.children;
+        if (typeof children === 'string') return children;
+        if (Array.isArray(children)) return children.map((child) => (typeof child === 'string' ? child : child?.props ? textOf(child) : '')).join('');
+        if (children && typeof children === 'object' && 'props' in (children as object)) return textOf(children as never);
+        return '';
+    }
+
+    it('stacks the name over its folder and prefixes duplicate names with their nearest distinguishing folder', async () => {
+        const { InlineRepoPathLabel } = await import('./InlineRepoPathLabel');
+
+        const screen = await renderScreen(
+            <InlineRepoPathLabel
+                layout="stacked"
+                fullPath=".agents/skills/attack-conclusion/SKILL.md"
+                siblingPaths={['.agents/skills/happier-testing/SKILL.md', 'docs/attack-conclusion/SKILL.md']}
+            />,
+        );
+
+        const name = screen.findByTestId('repo-path-label-name');
+        const folder = screen.findByTestId('repo-path-label-folder');
+        // "attack-conclusion" alone would not tell it from docs/attack-conclusion: one more folder is needed.
+        expect(textOf(name as never)).toBe('skills/attack-conclusion/SKILL.md');
+        expect(textOf(folder as never)).toBe('.agents/skills/attack-conclusion');
+    });
+
+    it('keeps a unique name bare, and names the repository for a root file', async () => {
+        const { InlineRepoPathLabel } = await import('./InlineRepoPathLabel');
+
+        const unique = await renderScreen(
+            <InlineRepoPathLabel layout="stacked" fullPath="apps/ui/settings.tsx" siblingPaths={[]} />,
+        );
+        expect(textOf(unique.findByTestId('repo-path-label-name') as never)).toBe('settings.tsx');
+
+        const root = await renderScreen(
+            <InlineRepoPathLabel layout="stacked" fullPath="AGENTS.md" rootLabel="happier" siblingPaths={['docs/AGENTS.md']} />,
+        );
+        expect(textOf(root.findByTestId('repo-path-label-name') as never)).toBe('AGENTS.md');
+        expect(textOf(root.findByTestId('repo-path-label-folder') as never)).toBe('happier');
+    });
 });

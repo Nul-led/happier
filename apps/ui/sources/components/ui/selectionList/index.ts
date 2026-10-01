@@ -11,6 +11,8 @@ export {
     type SelectionListColumnsLayout,
     type SelectionListDynamicSection,
     type SelectionListDynamicSectionResolveResult,
+    type SelectionListFilter,
+    type SelectionListFilterOption,
     type SelectionListHeightBehavior,
     type SelectionListInputBehavior,
     type SelectionListInputMode,
@@ -33,8 +35,9 @@ export {
     type SelectionListVirtualizedOptionSourceItem,
 } from './_types';
 
-export { SELECTION_LIST_LARGE_POPOVER_SIZE } from './_constants';
+export { SELECTION_LIST_CARD_COLUMN_GAP_PX, SELECTION_LIST_LARGE_POPOVER_SIZE } from './_constants';
 export { SelectionList } from './SelectionList';
+export { SelectionListFilterChip } from './SelectionListFilterChips';
 export { SelectionListScreen, type SelectionListScreenProps } from './SelectionListScreen';
 export {
     createDefaultDynamicSectionCache,

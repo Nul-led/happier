@@ -1,5 +1,6 @@
 import * as React from 'react';
-import { View } from 'react-native';
+import { TextInput, View } from 'react-native';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
@@ -22,6 +23,34 @@ function flattenStyle(style: unknown): Record<string, unknown> {
 }
 
 describe('SoftSlideTransitionFrame', () => {
+    it('keeps the outgoing slide state and mount while it exits', async () => {
+        const { SoftSlideTransitionFrame } = await import('./SoftSlideTransitionFrame');
+        const mounts: string[] = [];
+        function StatefulSlide(props: Readonly<{ name: string }>) {
+            const [value, setValue] = React.useState('initial');
+            React.useEffect(() => {
+                mounts.push(`mount:${props.name}`);
+                return () => { mounts.push(`unmount:${props.name}`); };
+            }, [props.name]);
+            return <TextInput testID={`slide-${props.name}`} value={value} onChangeText={setValue} />;
+        }
+        const frame = (key: string) => <SoftSlideTransitionFrame
+            direction="forward" reducedMotion testID="soft" transitionKey={key}
+        ><StatefulSlide name={key} /></SoftSlideTransitionFrame>;
+        const screen = await renderScreen(frame('one'));
+        await act(async () => {
+            screen.findByTestId('slide-one')?.props.onChangeText('changed');
+        });
+        await screen.update(frame('two'));
+        expect(screen.findByTestId('slide-one')?.props.value).toBe('changed');
+        expect(mounts).toEqual(['mount:one', 'mount:two']);
+        await act(async () => {
+            screen.findByTestId('slide-two')?.props.onChangeText('second');
+        });
+        await screen.update(frame('three'));
+        expect(screen.findByTestId('slide-two')?.props.value).toBe('second');
+        expect(mounts).toEqual(['mount:one', 'mount:two', 'unmount:one', 'mount:three']);
+    });
     it('lets a bounded consumer make the current slide fill the available viewport', async () => {
         const { SoftSlideTransitionFrame } = await import('./SoftSlideTransitionFrame');
         const screen = await renderScreen(
@@ -134,5 +163,27 @@ describe('SoftSlideTransitionFrame', () => {
         expect(currentStyle.filter).toBe('blur(0px)');
         expect(exitStyle.transform).toEqual([{ translateX: 0 }]);
         expect(exitStyle.filter).toBe('blur(0px)');
+    });
+
+    it('crossfades each role for its own reduced-motion duration', async () => {
+        const { SoftSlideTransitionFrame } = await import('./SoftSlideTransitionFrame');
+        const { slideTransitionTokens } = await import('./slideTransitionTokens');
+        for (const preset of ['signature', 'routine'] as const) {
+            const screen = await renderScreen(
+                <SoftSlideTransitionFrame direction="replace" preset={preset} reducedMotion testID="soft" transitionKey="one">
+                    <View testID="slide-one" />
+                </SoftSlideTransitionFrame>,
+            );
+            await screen.update(
+                <SoftSlideTransitionFrame direction="forward" preset={preset} reducedMotion testID="soft" transitionKey="two">
+                    <View testID="slide-two" />
+                </SoftSlideTransitionFrame>,
+            );
+
+            const expected = `${slideTransitionTokens[preset].reducedMotionDurationMs}ms`;
+            expect(flattenStyle(screen.findByTestId('soft-current-layer')?.props.style).transitionDuration).toBe(expected);
+            expect(flattenStyle(screen.findByTestId('soft-exit-layer')?.props.style).transitionDuration).toBe(expected);
+            await screen.unmount();
+        }
     });
 });
