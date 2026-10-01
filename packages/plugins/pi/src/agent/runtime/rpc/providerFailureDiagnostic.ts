@@ -5,6 +5,8 @@ import {
 import { classifyProviderLimitEvidence } from '@happier-dev/plugin-sdk/first-party/connected-accounts';
 
 const PI_PROVIDER_TOKEN_PATTERN = /\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b/gu;
+const HAPPIER_BROKER_BRIDGE_RETRYABLE_STATUS_PATTERN =
+  /\bhappier_broker_bridge_status_5\d\d\b/iu;
 const SAFE_PROVIDER_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 const SAFE_PROVIDER_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,255}$/u;
 
@@ -111,6 +113,12 @@ function hasProviderTimeoutEvidence(...values: Array<string | null>): boolean {
   return values.some((value) => value !== null && /\b(?:timeout|timed out|etimedout)\b/iu.test(value));
 }
 
+function hasRetryableHappierBrokerBridgeEvidence(...values: Array<string | null>): boolean {
+  return values.some((value) => (
+    value !== null && HAPPIER_BROKER_BRIDGE_RETRYABLE_STATUS_PATTERN.test(value)
+  ));
+}
+
 function parseProviderError(value: string): Readonly<Record<string, unknown>> | null {
   if (value.length > 10_000) return null;
   const jsonStart = value.indexOf('{');
@@ -136,6 +144,7 @@ function isRetryablePiProviderFailure(params: Readonly<{
 }>): boolean {
   const limitEvidence = classifyProviderLimitEvidence(params.evidence);
   return hasProviderTimeoutEvidence(params.code, params.message)
+    || hasRetryableHappierBrokerBridgeEvidence(params.code, params.message)
     || limitEvidence.piRetryable === true
     || (
       limitEvidence.confidence === 'high'

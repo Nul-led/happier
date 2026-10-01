@@ -39,6 +39,24 @@ describe('readPiProviderFailureDiagnostic', () => {
     });
   });
 
+  it.each([
+    ['happier_broker_bridge_status_500', true],
+    ['happier_broker_bridge_status_401', false],
+  ] as const)('classifies internal Connected Service broker status %s with retryable=%s', (
+    brokerStatus,
+    piRetryable,
+  ) => {
+    expect(readPiProviderFailureDiagnostic({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        provider: 'openai-codex',
+        stopReason: 'error',
+        errorMessage: `OAuth refresh failed for openai-codex: ${brokerStatus}`,
+      },
+    })).toMatchObject({ piRetryable });
+  });
+
   it('redacts secrets in nested Pi turn_failed diagnostics', () => {
     const diagnostic = readPiProviderFailureDiagnostic({
       type: 'turn_failed',
