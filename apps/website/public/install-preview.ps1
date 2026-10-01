@@ -521,10 +521,7 @@ function Write-InstallerStage {
     [Parameter(Mandatory = $true)] [string] $Name
   )
 
-  if ((Test-InstallerRichHeaderAvailable) -and -not $env:NO_COLOR) {
-    Write-Host ("[{0}]" -f $Name) -ForegroundColor White
-    return
-  }
+  # The terminal's own foreground stays readable on dark and light backgrounds.
   Write-Host ("[{0}]" -f $Name)
 }
 
