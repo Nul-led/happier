@@ -1448,7 +1448,7 @@ export function createPiExternalSessionsContribution(params: Readonly<{
         }
         await retireCandidateScan(scan);
         return failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Pi external-session listing failed.',
           true,
         );
@@ -1484,7 +1484,7 @@ export function createPiExternalSessionsContribution(params: Readonly<{
           return failed('source_invalid', error.message, true);
         }
         return failed(
-          'agent_unavailable',
+          'agent_error',
           error instanceof Error ? error.message : 'Pi external-session identity resolution failed.',
           true,
         );

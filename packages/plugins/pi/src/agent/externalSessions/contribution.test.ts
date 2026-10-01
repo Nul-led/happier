@@ -1,5 +1,6 @@
 import {
   appendFile,
+  chmod,
   mkdir,
   mkdtemp,
   opendir,
@@ -339,6 +340,33 @@ describe('Pi pure External Sessions contribution leaf', () => {
       maxItems: 50,
     })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
   });
+
+  // POSIX permissions only: Windows and root ignore the mode bits this uses.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'reports an unreadable session file as an Agent fault rather than an unavailable Agent',
+    async () => {
+      const { agentDir, sessionRoot } = await createAgentDir();
+      const filePath = await createSessionFile({
+        sessionRoot,
+        sessionId: 'unreadable-pi',
+        createdAt: '2026-08-16T10:00:00.000Z',
+        title: 'Unreadable Pi',
+      });
+      const contribution = createPiExternalSessionsContribution({
+        env: { PI_CODING_AGENT_DIR: agentDir },
+      });
+      await chmod(filePath, 0o000);
+      try {
+        await expect(contribution.listCandidates({
+          ...invocation(),
+          source: { kind: 'piAgentDir', agentDir },
+          maxItems: 10,
+        })).resolves.toMatchObject({ ok: false, code: 'agent_error' });
+      } finally {
+        await chmod(filePath, 0o600);
+      }
+    },
+  );
 
   it('lists only the explicitly configured source when ambient Pi storage points elsewhere', async () => {
     const configured = await createAgentDir();
