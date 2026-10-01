@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 export type UseSearchError = 'searchFailed';
+export type SearchRequestContext = Readonly<{ isCurrent: () => boolean }>;
 
 /**
  * Production-ready search hook with automatic debouncing, caching, and retry logic.
  * 
  * Features:
- * - Prevents parallel queries by skipping new requests while one is in progress
+ * - Ignores superseded responses when the query changes or is retried
  * - Permanent in-memory cache for the lifetime of the component
  * - Automatic retry on errors with exponential backoff
  * - 300ms debounce to reduce API calls
@@ -18,8 +19,8 @@ export type UseSearchError = 'searchFailed';
  */
 export function useSearch<T>(
     query: string,
-    searchFn: (query: string) => Promise<T[]>
-): { results: T[]; isSearching: boolean; error: UseSearchError | null } {
+    searchFn: (query: string, context: SearchRequestContext) => Promise<T[]>
+): { results: T[]; isSearching: boolean; error: UseSearchError | null; retry: () => void } {
     const [results, setResults] = useState<T[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [error, setError] = useState<UseSearchError | null>(null);
@@ -42,6 +43,7 @@ export function useSearch<T>(
         }
         
         const requestId = ++requestIdRef.current;
+        const isCurrent = () => requestIdRef.current === requestId;
         setIsSearching(true);
         setError(null);
         
@@ -58,7 +60,8 @@ export function useSearch<T>(
                 }
                 attempt++;
             try {
-                const searchResults = await searchFn(searchQuery);
+                const searchResults = await searchFn(searchQuery, { isCurrent });
+                if (!isCurrent()) return;
                 
                 // Cache the results
                 cacheRef.current.set(searchQuery, searchResults);
@@ -69,6 +72,7 @@ export function useSearch<T>(
                 return; // Success
                 
             } catch (error) {
+                if (!isCurrent()) return;
                 if (attempt >= maxAttempts) {
                     setResults([]);
                     setError('searchFailed');
@@ -88,6 +92,9 @@ export function useSearch<T>(
     
     // Effect to handle debounced search
     useEffect(() => {
+        // Invalidate the previous request before returning cached data or waiting
+        // for the next debounce, including when the query was cleared.
+        requestIdRef.current++;
         // Clear previous timeout
         if (timeoutRef.current) {
             clearTimeout(timeoutRef.current);
@@ -121,11 +128,19 @@ export function useSearch<T>(
         
         // Cleanup
         return () => {
+            requestIdRef.current++;
             if (timeoutRef.current) {
                 clearTimeout(timeoutRef.current);
             }
         };
     }, [query, performSearch]);
     
-    return { results, isSearching, error };
+    const retry = useCallback(() => {
+        if (!query.trim()) return;
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        cacheRef.current.delete(query);
+        void performSearch(query);
+    }, [performSearch, query]);
+
+    return { results, isSearching, error, retry };
 }
