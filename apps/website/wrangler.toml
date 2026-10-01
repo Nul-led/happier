@@ -36,6 +36,13 @@ preview_urls = true
 pattern = "happier.dev"
 custom_domain = true
 
+# The curated catalog has its own source identity. Route only its exact public
+# path through this Worker: the marketplace hostname must not expose a second
+# copy of the marketing site. DNS activation remains a release prerequisite.
+[[routes]]
+pattern = "marketplace.happier.dev/catalog.json"
+zone_name = "happier.dev"
+
 [assets]
 directory = "./dist/"
 binding = "ASSETS"

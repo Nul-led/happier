@@ -425,6 +425,8 @@ jobs:
           test -f apps/website/dist/_redirects
           test -f apps/website/dist/robots.txt
           test -f apps/website/dist/sitemap.xml
+          test -f apps/website/dist/catalog.json
+          node -e "const fs=require('fs');const snapshot=JSON.parse(fs.readFileSync('apps/website/dist/catalog.json','utf8'));if(snapshot?.source?.sourceUrl!=='https://marketplace.happier.dev/catalog.json'||snapshot?.source?.kind!=='curated')throw new Error('catalog source identity mismatch');if(!Array.isArray(snapshot.entries))throw new Error('catalog entries missing');console.log('catalog entries:',snapshot.entries.length);"
       - name: Publish to Cloudflare
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -445,3 +447,17 @@ jobs:
           RELEASE_SHA: ${{ needs.apply_bump.outputs.release_sha }}
         run: |
           echo "Published apps/website/dist to Cloudflare ($DEPLOY_ENVIRONMENT) from $RELEASE_SHA." >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify the production curated catalog
+        if: inputs.environment == 'production'
+        working-directory: apps/website
+        run: |
+          set -euo pipefail
+          headers="$(mktemp)"
+          live="$(mktemp)"
+          trap 'rm -f "$headers" "$live"' EXIT
+          curl --fail --silent --show-error --max-redirs 0 \
+            --dump-header "$headers" \
+            --output "$live" \
+            https://marketplace.happier.dev/catalog.json
+          grep -Eiq '^content-type:[[:space:]]*application/json([;[:space:]]|$)' "$headers"
+          cmp --silent dist/catalog.json "$live"

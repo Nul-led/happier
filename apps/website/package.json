@@ -7,8 +7,9 @@
   "scripts": {
     "tsc": "node ../../scripts/workspaces/runTypeScriptCli.mjs",
     "generate:plugin-manifest-schema": "node scripts/generate-plugin-manifest-schema.mjs",
-    "prebuild": "yarn -s generate:plugin-manifest-schema && yarn -s i18n:extract && yarn -s optimize:images",
-    "predev": "yarn -s generate:plugin-manifest-schema",
+    "generate:marketplace-catalog": "node scripts/generate-marketplace-catalog.mjs",
+    "prebuild": "yarn -s generate:plugin-manifest-schema && yarn -s generate:marketplace-catalog && yarn -s i18n:extract && yarn -s optimize:images",
+    "predev": "yarn -s generate:plugin-manifest-schema && yarn -s generate:marketplace-catalog",
     "dev": "vite",
     "build": "yarn -s build:server && yarn -s i18n:slice && node ../../scripts/workspaces/runTypeScriptCli.mjs --noEmit && yarn -s build:client && yarn -s build:server && yarn -s prune:source-images && yarn -s prerender && yarn -s assert:crawlable && yarn -s assert:locale-links && yarn -s assert:perf",
     "build:client": "vite build",

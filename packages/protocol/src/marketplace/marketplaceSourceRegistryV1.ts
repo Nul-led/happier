@@ -78,6 +78,7 @@ export type MarketplaceSourceRegistryMutationV1 = z.infer<typeof MarketplaceSour
 
 export const DEFAULT_CURATED_MARKETPLACE_SOURCE_TITLE = 'Happier curated marketplace';
 export const DEFAULT_CURATED_MARKETPLACE_SOURCE_DESCRIPTION = 'Official curated source';
+export const DEFAULT_CURATED_MARKETPLACE_SOURCE_URL = 'https://marketplace.happier.dev/catalog.json';
 
 export type MarketplaceSourceRecordInputV1 = Readonly<{
   sourceUrl: string;

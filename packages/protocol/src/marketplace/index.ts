@@ -29,6 +29,7 @@ export {
   resolvePreferredMarketplaceSource,
   DEFAULT_CURATED_MARKETPLACE_SOURCE_DESCRIPTION,
   DEFAULT_CURATED_MARKETPLACE_SOURCE_TITLE,
+  DEFAULT_CURATED_MARKETPLACE_SOURCE_URL,
   type MarketplaceSourceOriginV1,
   type MarketplaceSourceRecordInputV1,
   type MarketplaceSourceRegistryV1,
