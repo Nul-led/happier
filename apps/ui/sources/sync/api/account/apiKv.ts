@@ -1,7 +1,7 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { backoff } from '@/utils/timing/time';
 import { HappyError } from '@/utils/errors/errors';
-import { serverFetch } from '@/sync/http/client';
+import { serverFetch, type ServerFetch } from '@/sync/http/client';
 
 //
 // Types
@@ -17,6 +17,7 @@ export interface KvListParams {
     prefix?: string;
     limit?: number;
     retry?: 'default' | 'none';
+    request?: ServerFetch;
 }
 
 export interface KvListResponse {
@@ -70,14 +71,15 @@ export type KvMutateResponse = KvMutateSuccessResponse | KvMutateErrorResponse;
  */
 export async function kvGet(
     credentials: AuthCredentials,
-    key: string
+    key: string,
+    options: Pick<KvListParams, 'request' | 'retry'> = {},
 ): Promise<KvItem | null> {
-    return await backoff(async () => {
-        const response = await serverFetch(`/v1/kv/${encodeURIComponent(key)}`, {
+    const run = async () => {
+        const response = await (options.request ?? serverFetch)(`/v1/kv/${encodeURIComponent(key)}`, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`
             }
-        }, { includeAuth: false });
+        }, { includeAuth: false, ...(options.retry ? { retry: options.retry } : {}) });
 
         if (response.status === 404) {
             return null;
@@ -99,7 +101,8 @@ export async function kvGet(
 
         const data = await response.json() as KvItem;
         return data;
-    });
+    };
+    return options.retry === 'none' ? await run() : await backoff(run);
 }
 
 /**
@@ -122,7 +125,8 @@ export async function kvList(
         : '/v1/kv';
 
     const run = async () => {
-        const response = await serverFetch(url, {
+        const request = params.request ?? serverFetch;
+        const response = await request(url, {
             headers: {
                 'Authorization': `Bearer ${credentials.token}`
             }
@@ -204,7 +208,8 @@ export async function kvBulkGet(
  */
 export async function kvMutate(
     credentials: AuthCredentials,
-    mutations: KvMutation[]
+    mutations: KvMutation[],
+    options: Pick<KvListParams, 'request' | 'retry'> = {},
 ): Promise<KvMutateResponse> {
     if (mutations.length === 0) {
         return { success: true, results: [] };
@@ -214,15 +219,15 @@ export async function kvMutate(
         throw new Error('Cannot mutate more than 100 keys at once');
     }
 
-    return await backoff(async () => {
-        const response = await serverFetch('/v1/kv', {
+    const run = async () => {
+        const response = await (options.request ?? serverFetch)('/v1/kv', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${credentials.token}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({ mutations })
-        }, { includeAuth: false });
+        }, { includeAuth: false, ...(options.retry ? { retry: options.retry } : {}) });
 
         if (response.status === 409) {
             const data = await response.json() as KvMutateErrorResponse;
@@ -245,7 +250,8 @@ export async function kvMutate(
 
         const data = await response.json() as KvMutateSuccessResponse;
         return data;
-    });
+    };
+    return options.retry === 'none' ? await run() : await backoff(run);
 }
 
 //

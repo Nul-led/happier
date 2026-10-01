@@ -11,6 +11,21 @@ import {
 } from './base64StoredJsonContent';
 
 describe('accountStoredJsonContent', () => {
+    it('rejects content from the other Account mode before decryption or disclosure', async () => {
+        const encryption = { decryptRaw: vi.fn(async () => ({ private: true })) };
+        await expect(decodeAccountStoredJsonContent({
+            encoded: encodeBase64StoredJsonContentEnvelope({ t: 'plain', v: { private: true } }),
+            encryption,
+            expectedMode: 'e2ee',
+        })).rejects.toMatchObject({ code: 'account_stored_json_mode_mismatch' });
+        await expect(decodeAccountStoredJsonContent({
+            encoded: 'released-ciphertext',
+            encryption,
+            expectedMode: 'plain',
+        })).rejects.toMatchObject({ code: 'account_stored_json_mode_mismatch' });
+        expect(encryption.decryptRaw).not.toHaveBeenCalled();
+    });
+
     it('stores plaintext account data without consulting account encryption material', async () => {
         const encryption = {
             encryptRaw: vi.fn(),

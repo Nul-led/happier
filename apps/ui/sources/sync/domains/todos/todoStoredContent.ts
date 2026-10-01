@@ -2,12 +2,10 @@ import { z } from 'zod';
 
 import {
     AccountStoredJsonContentEncryptionMaterialUnavailableError,
+    AccountStoredJsonContentModeMismatchError,
     decodeAccountStoredJsonContent,
     encodeAccountStoredJsonContent,
 } from '@/sync/encryption/accountStoredJsonContent';
-import {
-    decodeBase64StoredJsonContentEnvelope,
-} from '@/sync/encryption/base64StoredJsonContent';
 
 export const TODO_PREFIX = 'todo.';
 export const TODO_INDEX_KEY = 'todo.index';
@@ -125,20 +123,12 @@ export async function decodeTodoStoredContent(params: Readonly<{
     expectedMode: 'plain' | 'e2ee';
     encryption: Pick<RawAccountEncryption, 'decryptRaw'> | null;
 }>): Promise<DecodedTodoStoredContent> {
-    const envelope = decodeBase64StoredJsonContentEnvelope(params.encoded);
-    const storedMode = envelope?.t === 'plain' ? 'plain' : 'e2ee';
-    if (storedMode !== params.expectedMode) {
-        throw new TodoStoredContentUnavailableError(
-            params.key,
-            'account_mode_mismatch',
-        );
-    }
-
     let value: unknown;
     try {
         value = await decodeAccountStoredJsonContent({
             encoded: params.encoded,
             encryption: params.encryption,
+            expectedMode: params.expectedMode,
         });
     } catch (error) {
         if (isTodoStoredContentUnavailableError(error)) {
@@ -146,7 +136,9 @@ export async function decodeTodoStoredContent(params: Readonly<{
         }
         throw new TodoStoredContentUnavailableError(
             params.key,
-            error instanceof AccountStoredJsonContentEncryptionMaterialUnavailableError
+            error instanceof AccountStoredJsonContentModeMismatchError
+                ? 'account_mode_mismatch'
+                : error instanceof AccountStoredJsonContentEncryptionMaterialUnavailableError
                 ? 'encryption_material_unavailable'
                 : 'content_unreadable',
             error,

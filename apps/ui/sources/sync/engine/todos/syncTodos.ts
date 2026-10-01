@@ -1,4 +1,5 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { ServerFetch } from '@/sync/http/client';
 import { log } from '@/log';
 import { storage } from '@/sync/domains/state/storage';
 import {
@@ -15,13 +16,20 @@ type RawEncryption = {
     decryptRaw: (value: string) => Promise<unknown>;
 };
 
-export async function fetchTodos(params: { credentials: AuthCredentials; shouldContinue?: () => boolean }): Promise<void> {
+export async function fetchTodos(params: {
+    credentials: AuthCredentials;
+    request?: ServerFetch;
+    shouldContinue?: () => boolean;
+}): Promise<void> {
     const { credentials } = params;
     const shouldContinue = params.shouldContinue ?? (() => true);
     if (!shouldContinue()) return;
 
     log.log('📝 Fetching todos...');
-    const todoState = await fetchTodosDomain(credentials, { retry: 'none' });
+    const todoState = await fetchTodosDomain(credentials, {
+        retry: 'none',
+        request: params.request,
+    });
     if (!shouldContinue()) return;
     storage.getState().applyTodos(todoState);
     log.log('📝 Todos loaded');

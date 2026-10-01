@@ -1,12 +1,5 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { isDataKeyAuthCredentials } from '@/auth/storage/tokenStorage';
-import {
-    createAccountScopedCryptoMaterialSnapshotV1,
-    convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1,
-} from '@happier-dev/protocol';
-import { decodeBase64 } from '@/encryption/base64';
 import { storage } from '@/sync/domains/state/storage';
-import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import {
     kvGet,
     kvList,
@@ -14,11 +7,9 @@ import {
     kvSet,
     type KvMutation,
 } from '@/sync/api/account/apiKv';
+import type { ServerFetch } from '@/sync/http/client';
 import { randomUUID } from '@/platform/randomUUID';
 import { AsyncLock } from '@/utils/system/lock';
-import {
-    fetchAccountEncryptionCurrentness,
-} from '@/sync/api/account/apiAccountEncryptionMode';
 import {
     requireCurrentAccountStoredContentServerCompatibility,
 } from '@/sync/api/capabilities/accountStoredContentCompatibility';
@@ -33,8 +24,10 @@ import {
     type TodoItem,
 } from './todoStoredContent';
 import {
-    resolveAccountScopedCryptoMaterialFromCredentials,
-} from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
+    resolveAccountStorageContext,
+    isRawAccountStorageEncryption,
+    type AccountStorageContext,
+} from '@/sync/encryption/accountStorageContext';
 
 export type { TodoIndex, TodoItem } from './todoStoredContent';
 
@@ -63,46 +56,17 @@ function getTodoKey(id: string): string {
     return `${TODO_PREFIX}${id}`;
 }
 
-type TodoRawDecryption = Readonly<{
-    decryptRaw: (value: string) => Promise<unknown>;
-}>;
-
-type TodoRawEncryption = TodoRawDecryption & Readonly<{
-    encryptRaw: (value: unknown) => Promise<string>;
-}>;
-
-export type TodoAccountStorageContext = Readonly<{
-    mode: 'plain' | 'e2ee';
-    encryption: TodoRawDecryption | null;
-}>;
-
-function readAccountEncryption(): TodoRawEncryption | null {
-    const sync = getSyncSingleton() as Readonly<{
-        encryption?: {
-            encryptRaw: (value: unknown) => Promise<string>;
-            decryptRaw: (value: string) => Promise<unknown>;
-        } | null;
-    }>;
-    return sync.encryption ?? null;
-}
-
-function isTodoRawEncryption(
-    value: TodoRawDecryption | null,
-): value is TodoRawEncryption {
-    return value !== null && 'encryptRaw' in value;
-}
+export type TodoAccountStorageContext = AccountStorageContext;
 
 export async function resolveTodoAccountStorageContext(
     credentials: AuthCredentials,
     options: Readonly<{
         encryption?: TodoAccountStorageContext['encryption'];
+        request?: ServerFetch;
     }> = {},
 ): Promise<TodoAccountStorageContext> {
-    let currentness: Awaited<
-        ReturnType<typeof fetchAccountEncryptionCurrentness>
-    >;
     try {
-        currentness = await fetchAccountEncryptionCurrentness(credentials);
+        return await resolveAccountStorageContext(credentials, options);
     } catch (error) {
         throw new TodoStoredContentUnavailableError(
             TODO_INDEX_KEY,
@@ -110,51 +74,6 @@ export async function resolveTodoAccountStorageContext(
             error,
         );
     }
-    const encryption = options.encryption === undefined
-        ? readAccountEncryption()
-        : options.encryption;
-    if (currentness.mode === 'plain') {
-        return { mode: 'plain', encryption };
-    }
-
-    if (!encryption || !currentness.contentKeyFingerprint) {
-        throw new TodoStoredContentUnavailableError(
-            TODO_INDEX_KEY,
-            'account_currentness_unavailable',
-        );
-    }
-    try {
-        const material = resolveAccountScopedCryptoMaterialFromCredentials(
-            credentials,
-        );
-        const snapshot = createAccountScopedCryptoMaterialSnapshotV1({
-            accountEncryptionMode: 'e2ee',
-            material,
-            ...(isDataKeyAuthCredentials(credentials)
-                ? {
-                    dataKeyPublicKey: decodeBase64(
-                        credentials.encryption.publicKey,
-                        'base64',
-                    ),
-                }
-                : {}),
-        });
-        if (
-            convertContentPublicKeyFingerprintToAccountEncryptionMigrateKeyFingerprintV1(
-                snapshot.contentPublicKeyFingerprint,
-            )
-                !== currentness.contentKeyFingerprint
-        ) {
-            throw new Error('Account content-key fingerprint mismatch');
-        }
-    } catch (error) {
-        throw new TodoStoredContentUnavailableError(
-            TODO_INDEX_KEY,
-            'account_currentness_unavailable',
-            error,
-        );
-    }
-    return { mode: 'e2ee', encryption };
 }
 
 async function createTodoDataEncoder(
@@ -163,7 +82,7 @@ async function createTodoDataEncoder(
     if (context.mode === 'plain') {
         await requireCurrentAccountStoredContentServerCompatibility();
     }
-    const encryption = isTodoRawEncryption(context.encryption)
+    const encryption = isRawAccountStorageEncryption(context.encryption)
         ? context.encryption
         : null;
     return async (key, data) =>
@@ -235,14 +154,15 @@ function handleTodoMutationFailure(
  */
 export async function fetchTodos(
     credentials: AuthCredentials,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: Readonly<{ retry?: 'default' | 'none'; request?: ServerFetch }> = {},
 ): Promise<TodoState> {
-    const context = await resolveTodoAccountStorageContext(credentials);
+    const context = await resolveTodoAccountStorageContext(credentials, { request: opts.request });
     // Fetch all KV items with todo prefix
     const response = await kvList(credentials, {
         prefix: TODO_PREFIX,
         limit: 1000,  // Should be enough for todos
         ...(opts.retry ? { retry: opts.retry } : {}),
+        ...(opts.request ? { request: opts.request } : {}),
     });
 
     const state: TodoState = {

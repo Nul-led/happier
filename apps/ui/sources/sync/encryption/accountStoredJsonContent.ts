@@ -18,6 +18,14 @@ export class AccountStoredJsonContentEncryptionMaterialUnavailableError extends 
     }
 }
 
+export class AccountStoredJsonContentModeMismatchError extends Error {
+    readonly code = 'account_stored_json_mode_mismatch';
+    constructor() {
+        super('Stored Account content does not match its authoritative encryption mode');
+        this.name = 'AccountStoredJsonContentModeMismatchError';
+    }
+}
+
 export async function encodeAccountStoredJsonContent(params: Readonly<{
     mode: 'plain' | 'e2ee';
     value: unknown;
@@ -40,8 +48,13 @@ export async function encodeAccountStoredJsonContent(params: Readonly<{
 export async function decodeAccountStoredJsonContent(params: Readonly<{
     encoded: string;
     encryption: Pick<RawAccountEncryption, 'decryptRaw'> | null;
+    expectedMode?: 'plain' | 'e2ee';
 }>): Promise<unknown> {
     const envelope = decodeBase64StoredJsonContentEnvelope(params.encoded);
+    const storedMode = envelope?.t === 'plain' ? 'plain' : 'e2ee';
+    if (params.expectedMode !== undefined && storedMode !== params.expectedMode) {
+        throw new AccountStoredJsonContentModeMismatchError();
+    }
 
     if (envelope?.t === 'plain') {
         return envelope.v;
