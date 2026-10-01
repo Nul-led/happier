@@ -1,6 +1,6 @@
 declare module '*.plan.mjs' {
   export type ExtendedDbProvider = 'postgres' | 'mysql';
-  export type ExtendedDbMode = 'e2e' | 'contract' | 'extended';
+  export type ExtendedDbMode = 'e2e' | 'contract' | 'extended' | 'session-system-record-upgrade';
 
   export type DbContainerPlan = {
     db: ExtendedDbProvider;
@@ -12,7 +12,18 @@ declare module '*.plan.mjs' {
   };
 
   export type ExtendedDbCommandStep = {
-    kind: 'e2e' | 'migrate' | 'contract';
+    kind:
+      | 'prebuild-cli-shared'
+      | 'prebuild-cli'
+      | 'e2e'
+      | 'migrate'
+      | 'contract'
+      | 'mysql-voice-identity-upgrade-contract'
+      | 'session-system-record-upgrade-seed'
+      | 'session-system-record-migrate-first'
+      | 'session-system-record-migrate-second'
+      | 'session-system-record-upgrade-verify'
+      | 'session-system-record-board-contract';
     command: string;
     args: string[];
     env: Record<string, string>;
@@ -26,5 +37,6 @@ declare module '*.plan.mjs' {
     db: ExtendedDbProvider;
     mode: ExtendedDbMode;
     databaseUrl: string;
+    contractFile?: string;
   }): ExtendedDbCommandStep[];
 }

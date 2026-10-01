@@ -96,6 +96,7 @@ function createExecutionRunBridgeWithRun(): ExecutionRunHostBridgeContract {
     getStructuredMeta: () => null,
     getLatestToolResult: () => null,
     waitForTerminal: async () => unusedExecutionRunBridgeMethod(),
+    waitForInputTurn: async () => unusedExecutionRunBridgeMethod(),
     getPublic: (runId: string) => (runId === RUN_ID ? run : null),
     listPublic: () => [run],
     listPublicForRequest: () => [run],
@@ -110,6 +111,7 @@ function createExecutionRunBridgeWithRun(): ExecutionRunHostBridgeContract {
     cancelTurnStream: async () => unusedExecutionRunBridgeMethod(),
     stop: async () => unusedExecutionRunBridgeMethod(),
     respondToPermissionRequest: async () => unusedExecutionRunBridgeMethod(),
+    completePermissionRequest: async () => unusedExecutionRunBridgeMethod(),
     applyAction: async () => unusedExecutionRunBridgeMethod(),
   };
 }

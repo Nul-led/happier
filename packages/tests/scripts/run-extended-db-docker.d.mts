@@ -1,4 +1,4 @@
-export type ExtendedDbMode = 'e2e' | 'contract' | 'extended';
+export type ExtendedDbMode = 'e2e' | 'contract' | 'extended' | 'session-system-record-upgrade';
 export type ExtendedDbName = 'postgres' | 'mysql';
 
 export interface ExtendedDbArgs {
@@ -7,6 +7,7 @@ export interface ExtendedDbArgs {
   keep?: boolean;
   db?: ExtendedDbName;
   name?: string;
+  'contract-file'?: string;
 }
 
 export function parseArgs(argv: string[]): ExtendedDbArgs;
