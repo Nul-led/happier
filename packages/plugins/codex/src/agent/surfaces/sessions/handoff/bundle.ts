@@ -9,7 +9,8 @@ import {
   buildCodexAgentRuntimeDescriptor,
   readExactCodexProviderSessionId,
 } from '../../../../protocol/runtimeDescriptorV1.js';
-import { parseCodexSessionMetaLine } from '../../../rollout/discovery/indexData.js';
+import { isMatchingCodexRolloutIdentity, parseCodexRolloutFilename, parseCodexSessionMetaLine } from '../../../rollout/discovery/indexData.js';
+import { readCodexPaginatedHistoryBase } from '../../../rollout/discovery/historyBase.js';
 import {
   CodexExternalSessionHandoffSourceSchema,
   type CodexExternalSessionHandoffSource,
@@ -99,6 +100,8 @@ export class CodexSessionHandoffBundleValidationError extends Error {
 
 export type ValidatedCodexSessionHandoffFile = Readonly<{
   relativePath: string;
+  /** Only a referenced ancestor may reuse a destination with matching prefix and later records. */
+  isHistoryBase?: true;
 }> & (
   | Readonly<{ content: Buffer; contentFile?: never }>
   | Readonly<{ contentFile: CodexHandoffBundleFile; content?: never }>
@@ -201,7 +204,7 @@ export async function validateCodexSessionHandoffFiles(
   bundle: Pick<CodexSessionHandoffBundle, 'remoteSessionId' | 'files'>,
 ): Promise<readonly ValidatedCodexSessionHandoffFile[]> {
   let hasRootRollout = false;
-  const validatedFiles = await Promise.all(bundle.files.map(async (file) => {
+  const entries = await Promise.all(bundle.files.map(async (file) => {
     const relativePath = normalizeCodexHandoffBundleRelativePath(file.relativePath);
     assertCanonicalCodexHandoffRolloutPath(relativePath);
     const content = file.contentBase64
@@ -220,15 +223,55 @@ export async function validateCodexSessionHandoffFiles(
       firstLine = await readCodexHandoffSessionMetaLineFromFile(contentFile);
       validatedFile = { relativePath, contentFile };
     }
+    return { validatedFile, firstLine, metadata: firstLine ? parseCodexSessionMetaLine(firstLine) : null };
+  }));
+  const family = new Set(entries.filter((entry) => {
+    const sessionId = readExactCodexProviderSessionId(entry.metadata?.id);
+    const rootId = readExactCodexProviderSessionId(entry.metadata?.session_id);
+    return (rootId ?? sessionId) === bundle.remoteSessionId;
+  }));
+  const dependencies = new Set<typeof entries[number]>();
+  const visited = new Set<typeof entries[number]>();
+  const visiting = new Set<typeof entries[number]>();
+  const visit = (entry: typeof entries[number]): void => {
+    if (visiting.has(entry)) invalidCodexHandoffBundle('Cyclic Codex history base');
+    if (visited.has(entry)) return;
+    visiting.add(entry);
+    let base: ReturnType<typeof readCodexPaginatedHistoryBase>;
+    try {
+      base = readCodexPaginatedHistoryBase(entry.metadata);
+    } catch (error) {
+      invalidCodexHandoffBundle(error instanceof Error ? error.message : 'Invalid Codex history base');
+    }
+    if (base) {
+      const candidates = entries.filter((candidate) => isMatchingCodexRolloutIdentity(
+        parseCodexRolloutFilename(candidate.validatedFile.relativePath)?.sessionId, base.rolloutId,
+      ));
+      if (candidates.length !== 1) invalidCodexHandoffBundle(`Missing or ambiguous Codex history base rollout: ${base.rolloutId}`);
+      const ancestor = candidates[0];
+      if (!readExactCodexProviderSessionId(ancestor.metadata?.id)) {
+        invalidCodexHandoffBundle(`Codex history base has no native session metadata: ${base.rolloutId}`);
+      }
+      const size = ancestor.validatedFile.content?.length ?? ancestor.validatedFile.contentFile!.sizeBytes;
+      if (ancestor.metadata?.history_mode !== 'paginated' || size < base.endByteOffset) {
+        invalidCodexHandoffBundle(`Incomplete or non-paginated Codex history base: ${base.rolloutId}`);
+      }
+      dependencies.add(ancestor);
+      visit(ancestor);
+    }
+    visiting.delete(entry);
+    visited.add(entry);
+  };
+  for (const entry of family) visit(entry);
+  const validatedFiles = entries.map((entry): ValidatedCodexSessionHandoffFile => {
+    if (!family.has(entry) && dependencies.has(entry)) return { ...entry.validatedFile, isHistoryBase: true };
     if (classifyCodexHandoffRolloutLine({
       remoteSessionId: bundle.remoteSessionId,
-      relativePath,
-      firstLine,
-    }) === 'root') {
-      hasRootRollout = true;
-    }
-    return validatedFile;
-  }));
+      relativePath: entry.validatedFile.relativePath,
+      firstLine: entry.firstLine,
+    }) === 'root') hasRootRollout = true;
+    return entry.validatedFile;
+  });
   if (!hasRootRollout) {
     invalidCodexHandoffBundle(
       `Codex handoff bundle has no root rollout for ${bundle.remoteSessionId}`,

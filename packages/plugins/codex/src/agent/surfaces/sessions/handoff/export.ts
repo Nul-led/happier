@@ -10,7 +10,9 @@ import {
   buildCodexAgentRuntimeDescriptor,
   readCanonicalCodexAgentRuntimeDescriptorV1,
 } from '../../../../protocol/runtimeDescriptorV1.js';
-import { collectCodexRootSessionRolloutFiles } from '../../../rollout/discovery/sessionsForHome.js';
+import { collectCodexRootSessionRolloutFiles, collectCodexSessionRolloutFiles, type CodexRolloutFile } from '../../../rollout/discovery/sessionsForHome.js';
+import { isMatchingCodexRolloutIdentity, parseCodexRolloutFilename, readCodexSessionMetaFromRollout } from '../../../rollout/discovery/indexData.js';
+import { readCodexPaginatedHistoryBase } from '../../../rollout/discovery/historyBase.js';
 import { homes } from '../../../rollout/discovery/sessionsForHomes.js';
 import {
   normalizeCodexHandoffBundleRelativePath,
@@ -97,6 +99,46 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
     : new Error('Codex handoff export was cancelled');
 }
 
+async function collectHandoffFiles(
+  codexHome: string,
+  rollouts: readonly CodexRolloutFile[],
+  signal: AbortSignal | undefined,
+): Promise<CodexSessionHandoffBundle['files']> {
+  const files = new Map<string, CodexSessionHandoffBundle['files'][number]>();
+  const visiting = new Set<string>();
+  const visit = async (rollout: CodexRolloutFile, prefixBytes?: number): Promise<void> => {
+    throwIfAborted(signal);
+    if (visiting.has(rollout.filePath)) throw new Error(`Cyclic Codex history base: ${rollout.fileRelPath}`);
+    const metadata = await readCodexSessionMetaFromRollout(rollout.filePath, { signal });
+    throwIfAborted(signal);
+    if (prefixBytes !== undefined && metadata?.history_mode !== 'paginated') {
+      throw new Error(`Codex history base is not paginated: ${rollout.fileRelPath}`);
+    }
+    const fileSize = (await stat(rollout.filePath)).size;
+    throwIfAborted(signal);
+    const sizeBytes = prefixBytes ?? fileSize;
+    if (sizeBytes > fileSize) throw new Error(`Incomplete Codex history base: ${rollout.fileRelPath}`);
+    const existing = files.get(rollout.filePath);
+    if (existing?.contentFile && existing.contentFile.sizeBytes >= sizeBytes) return;
+    visiting.add(rollout.filePath);
+    const base = readCodexPaginatedHistoryBase(metadata);
+    if (base) {
+      const candidates = (await collectCodexSessionRolloutFiles({ codexHome, remoteSessionId: base.rolloutId, signal })).filter((file) =>
+        isMatchingCodexRolloutIdentity(parseCodexRolloutFilename(file.filePath)?.sessionId, base.rolloutId));
+      throwIfAborted(signal);
+      if (candidates.length !== 1) throw new Error(`Missing or ambiguous Codex history base rollout: ${base.rolloutId}`);
+      await visit(candidates[0], base.endByteOffset);
+    }
+    files.set(rollout.filePath, {
+      relativePath: normalizeCodexHandoffBundleRelativePath(rollout.fileRelPath),
+      contentFile: { t: 'happier.handoff.file.v1', filePath: rollout.filePath, offsetBytes: 0, sizeBytes },
+    });
+    visiting.delete(rollout.filePath);
+  };
+  for (const rollout of rollouts) await visit(rollout);
+  return [...files.values()];
+}
+
 export async function exportCodexSessionBundle(params: Readonly<{
   metadata: HandoffExportSessionMetadata;
   remoteSessionId: string;
@@ -125,6 +167,7 @@ export async function exportCodexSessionBundle(params: Readonly<{
     throw new Error(`No Codex home resolved for the linked source of ${params.remoteSessionId}`);
   }
   let rollouts = [] as Awaited<ReturnType<typeof collectCodexRootSessionRolloutFiles>>;
+  let selectedHome = candidateHomes[0];
   for (const codexHome of candidateHomes) {
     throwIfAborted(params.signal);
     rollouts = await collectCodexRootSessionRolloutFiles({
@@ -132,29 +175,17 @@ export async function exportCodexSessionBundle(params: Readonly<{
       remoteSessionId: params.remoteSessionId,
     });
     throwIfAborted(params.signal);
-    if (rollouts.length > 0) break;
+    if (rollouts.length > 0) {
+      selectedHome = codexHome;
+      break;
+    }
   }
 
   if (rollouts.length === 0) {
     throw new Error(`No Codex rollout files found for ${params.remoteSessionId} in its authoritative Codex home`);
   }
 
-  const files = await Promise.all(
-    rollouts.map(async (rollout) => {
-      throwIfAborted(params.signal);
-      const sourceStats = await stat(rollout.filePath);
-      throwIfAborted(params.signal);
-      return {
-        relativePath: normalizeCodexHandoffBundleRelativePath(rollout.fileRelPath),
-        contentFile: {
-          t: 'happier.handoff.file.v1' as const,
-          filePath: rollout.filePath,
-          offsetBytes: 0,
-          sizeBytes: sourceStats.size,
-        },
-      };
-    }),
-  );
+  const files = await collectHandoffFiles(selectedHome, rollouts, params.signal);
   throwIfAborted(params.signal);
 
   return {

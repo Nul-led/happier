@@ -28,6 +28,82 @@ function nativeRolloutContent(params: Readonly<{
 }
 
 describe('codex session handoff bundle', () => {
+  it('transfers the paginated history base chain, including archived ancestors', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-lineage-'));
+    const targetHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-lineage-target-'));
+    const rollouts = [
+      { id: 'root', dir: 'archived_sessions', base: null },
+      { id: 'parent', dir: 'sessions', base: 'root' },
+      { id: 'child', dir: 'sessions', base: 'parent' },
+    ];
+    const prefixes = new Map<string, Buffer>();
+    for (const rollout of rollouts) {
+      const dir = join(codexHome, rollout.dir, '2026', '03', '08');
+      await mkdir(dir, { recursive: true });
+      // Codex 0.159.2 HistoryPosition references a rollout, independently of forked_from_id.
+      const prefix = Buffer.from(JSON.stringify({
+        type: 'session_meta', payload: {
+          id: rollout.id, session_id: rollout.id, history_mode: 'paginated', forked_from_id: 'unneeded-legacy-fork',
+          history_base: rollout.base ? { thread_id: rollout.base, end_ordinal_exclusive: 1, end_byte_offset: prefixes.get(rollout.base)!.length } : null,
+        },
+      }) + '\n');
+      prefixes.set(rollout.id, prefix);
+      await writeFile(join(dir, `rollout-2026-03-08T10-00-00-${rollout.id}.jsonl`), Buffer.concat([
+        prefix, ...(rollout.id === 'child' ? [] : [Buffer.from('{"later":"outside the inherited prefix"}\n')]),
+      ]));
+    }
+    const bundle = await exportCodexSessionBundle({
+      metadata: {}, remoteSessionId: 'child', env: { CODEX_HOME: codexHome }, activeServerDir: '/active-server',
+    });
+    expect(bundle.files.map((file) => file.relativePath).sort()).toEqual([
+      'archived_sessions/2026/03/08/rollout-2026-03-08T10-00-00-root.jsonl',
+      'sessions/2026/03/08/rollout-2026-03-08T10-00-00-child.jsonl',
+      'sessions/2026/03/08/rollout-2026-03-08T10-00-00-parent.jsonl',
+    ]);
+    await importCodexSessionBundle({ bundle, targetPath: '/target', env: { CODEX_HOME: targetHome } });
+    for (const file of bundle.files) {
+      const id = file.relativePath.match(/-([a-z]+)\.jsonl$/)![1];
+      expect(await readFile(join(targetHome, file.relativePath))).toEqual(prefixes.get(id));
+    }
+    const rootPath = join(targetHome, bundle.files.find((file) => file.relativePath.includes('-root.jsonl'))!.relativePath);
+    const longerRoot = Buffer.concat([prefixes.get('root')!, Buffer.from('{"later":"destination history"}\n')]);
+    await writeFile(rootPath, longerRoot);
+    await importCodexSessionBundle({ bundle, targetPath: '/target', env: { CODEX_HOME: targetHome } });
+    expect(await readFile(rootPath)).toEqual(longerRoot);
+  });
+
+  it('fails export when a paginated history base is missing', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-missing-base-'));
+    const dir = join(codexHome, 'sessions', '2026', '03', '08');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'rollout-2026-03-08T10-00-00-child.jsonl'), JSON.stringify({
+      type: 'session_meta', payload: {
+        id: 'child', history_mode: 'paginated',
+        history_base: { thread_id: 'missing', end_ordinal_exclusive: 1, end_byte_offset: 1 },
+      },
+    }) + '\n');
+    await expect(exportCodexSessionBundle({
+      metadata: {}, remoteSessionId: 'child', env: { CODEX_HOME: codexHome }, activeServerDir: '/active-server',
+    })).rejects.toThrow(/history base/i);
+  });
+
+  it('rejects a referenced ancestor without native session identity before creating CODEX_HOME', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-codex-handoff-invalid-ancestor-'));
+    const codexHome = join(root, 'target');
+    const parent = Buffer.from(JSON.stringify({ type: 'session_meta', payload: { history_mode: 'paginated' } }) + '\n');
+    const child = Buffer.from(JSON.stringify({ type: 'session_meta', payload: {
+      id: 'child', session_id: 'child', history_mode: 'paginated',
+      history_base: { thread_id: 'parent', end_ordinal_exclusive: 1, end_byte_offset: parent.length },
+    } }) + '\n');
+    await expect(importCodexSessionBundle({
+      bundle: { agentId: 'codex', remoteSessionId: 'child', files: [
+        { relativePath: 'sessions/2026/03/08/rollout-2026-03-08T10-00-00-child.jsonl', contentBase64: child.toString('base64') },
+        { relativePath: 'sessions/2026/03/08/rollout-2026-03-08T10-00-00-parent.jsonl', contentBase64: parent.toString('base64') },
+      ] }, targetPath: '/target', env: { CODEX_HOME: codexHome },
+    })).rejects.toThrow(/native session metadata/i);
+    await expect(access(codexHome)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('encodes source-native rollout paths as portable bundle paths', () => {
     expect(normalizeCodexHandoffBundleRelativePath(
       'sessions\\2026\\03\\08\\rollout-portable.jsonl',

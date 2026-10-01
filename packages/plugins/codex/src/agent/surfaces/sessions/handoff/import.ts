@@ -161,14 +161,15 @@ async function contentsEqual(
 
 async function contentEqualsFile(file: ValidatedCodexSessionHandoffFile, path: string): Promise<boolean> {
   const entry = await lstat(path);
-  if (!entry.isFile() || entry.size !== contentSize(file)) return false;
+  const size = contentSize(file);
+  if (!entry.isFile() || (file.isHistoryBase ? entry.size < size : entry.size !== size)) return false;
   const target = await open(path, 'r');
   try {
     return await withContentReader(file, async (readContentChunk) => {
       const sourceBuffer = Buffer.allocUnsafe(HANDOFF_COPY_CHUNK_BYTES);
       const targetBuffer = Buffer.allocUnsafe(HANDOFF_COPY_CHUNK_BYTES);
-      for (let offset = 0; offset < entry.size; offset += HANDOFF_COPY_CHUNK_BYTES) {
-        const requested = Math.min(HANDOFF_COPY_CHUNK_BYTES, entry.size - offset);
+      for (let offset = 0; offset < size; offset += HANDOFF_COPY_CHUNK_BYTES) {
+        const requested = Math.min(HANDOFF_COPY_CHUNK_BYTES, size - offset);
         const [sourceBytes, targetRead] = await Promise.all([
           readContentChunk(offset, sourceBuffer),
           target.read(targetBuffer, 0, requested, offset),
