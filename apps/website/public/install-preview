@@ -253,6 +253,8 @@ installer_animate_step() {
   local step_pid="$2"
   local started="$3"
   local frame_index=0
+  # Ctrl-C reaches only the installer (background jobs ignore SIGINT), so stop the step with it.
+  trap 'kill "${step_pid}" 2>/dev/null || true; printf "\n" >&2; exit 130' INT
   while kill -0 "${step_pid}" 2>/dev/null; do
     local frame="${INSTALLER_SPINNER_FRAMES[$((frame_index % ${#INSTALLER_SPINNER_FRAMES[@]}))]}"
     printf '\r\033[2K%s %s' "${COLOR_GOLD}${frame}${COLOR_RESET}" "${label}" >&2
@@ -262,6 +264,7 @@ installer_animate_step() {
 
   local status=0
   wait "${step_pid}" || status=$?
+  trap - INT
   if [[ "${status}" -eq 0 ]]; then
     printf '\r\033[2K%s %s%s\n' "$(installer_step_success_symbol)" "${label}" "$(installer_step_elapsed "${started}")" >&2
   else
