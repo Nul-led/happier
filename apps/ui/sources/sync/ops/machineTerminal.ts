@@ -3,6 +3,8 @@ import {
     DaemonTerminalCloseResponseSchema,
     DaemonTerminalEnsureRequestSchema,
     DaemonTerminalEnsureResponseSchema,
+    DaemonTerminalListRequestV1Schema,
+    DaemonTerminalListResponseV1Schema,
     DaemonTerminalInputRequestSchema,
     DaemonTerminalInputResponseSchema,
     DaemonTerminalResizeRequestSchema,
@@ -24,6 +26,8 @@ import {
     type DaemonTerminalCloseResponse,
     type DaemonTerminalEnsureRequest,
     type DaemonTerminalEnsureResponse,
+    type DaemonTerminalListRequestV1,
+    type DaemonTerminalListResponseV1,
     type DaemonTerminalInputRequest,
     type DaemonTerminalInputResponse,
     type DaemonTerminalResizeRequest,
@@ -43,14 +47,40 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
+import { isRpcMethodNotAvailableError } from '@/sync/runtime/rpcErrors';
 
 type MachineTerminalOpts = Readonly<{
     serverId?: string | null;
     timeoutMs?: number | null;
+    signal?: AbortSignal;
 }>;
 
 function throwUnsupportedResponse(method: string): never {
     throw new Error(`Unsupported response from machine RPC (${method})`);
+}
+
+/** Null means this daemon lacks listing; operational failures retain their real result. */
+export async function machineTerminalList(
+    machineId: string,
+    opts?: MachineTerminalOpts,
+): Promise<DaemonTerminalListResponseV1 | null> {
+    let response: unknown;
+    try {
+        response = await machineRpcWithServerScope<unknown, DaemonTerminalListRequestV1>({
+            machineId,
+            serverId: opts?.serverId,
+            timeoutMs: opts?.timeoutMs ?? undefined,
+            method: RPC_METHODS.DAEMON_TERMINAL_LIST,
+            payload: DaemonTerminalListRequestV1Schema.parse({}),
+            ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
+    } catch (error) {
+        if (isRpcMethodNotAvailableError(error)) return null;
+        throw error;
+    }
+    const parsed = DaemonTerminalListResponseV1Schema.safeParse(response);
+    if (!parsed.success) throwUnsupportedResponse(RPC_METHODS.DAEMON_TERMINAL_LIST);
+    return parsed.data;
 }
 
 export async function machineTerminalEnsure(
@@ -65,6 +95,7 @@ export async function machineTerminalEnsure(
         timeoutMs: opts?.timeoutMs ?? undefined,
         method: RPC_METHODS.DAEMON_TERMINAL_ENSURE,
         payload,
+        ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     const parsed = DaemonTerminalEnsureResponseSchema.safeParse(response);
     if (!parsed.success) {
@@ -213,6 +244,7 @@ export async function machineTerminalClose(
         timeoutMs: opts?.timeoutMs ?? undefined,
         method: RPC_METHODS.DAEMON_TERMINAL_CLOSE,
         payload,
+        ...(opts?.signal ? { signal: opts.signal } : {}),
     });
     const parsed = DaemonTerminalCloseResponseSchema.safeParse(response);
     if (!parsed.success) {

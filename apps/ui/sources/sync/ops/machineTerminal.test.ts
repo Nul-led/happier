@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { machineTerminalList } from './machineTerminal';
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
 
@@ -11,6 +12,24 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 describe('machine terminal ops (server-scoped routing)', () => {
     beforeEach(() => {
         machineRpcWithServerScopeMock.mockReset();
+    });
+
+    it('lists attributed terminals on the selected Home and only degrades for an unavailable method', async () => {
+        const response = { ok: true, terminals: [{ terminalId: 't1', terminalKey: 'shell', cwd: '/project', sessionId: 'other-session', ended: false, exit: null }] };
+        machineRpcWithServerScopeMock.mockResolvedValueOnce(response);
+        await expect(machineTerminalList('machine-1', { serverId: 'server-a' })).resolves.toEqual(response);
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1', serverId: 'server-a', method: 'daemon.terminal.list', payload: {},
+        }));
+        machineRpcWithServerScopeMock.mockRejectedValueOnce({ rpcErrorCode: 'RPC_METHOD_NOT_AVAILABLE' });
+        await expect(machineTerminalList('machine-1')).resolves.toBeNull();
+        const denied = Object.assign(new Error('denied'), { rpcErrorCode: 'FORBIDDEN' });
+        machineRpcWithServerScopeMock.mockRejectedValueOnce(denied);
+        await expect(machineTerminalList('machine-1')).rejects.toBe(denied);
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ ...response, internal: 'secret' });
+        await expect(machineTerminalList('machine-1')).rejects.toThrow('Unsupported response');
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({ ok: false, errorCode: 'terminal_disabled', error: 'terminal_disabled' });
+        await expect(machineTerminalList('machine-1')).resolves.toEqual({ ok: false, errorCode: 'terminal_disabled', error: 'terminal_disabled' });
     });
 
     it('routes daemon terminal ensure through server-scoped machine rpc', async () => {
