@@ -57,6 +57,13 @@ describe('provider stable errors and compatibility envelopes', () => {
     });
   });
 
+  it('reuses external-session transport outcomes for Provider RPC failures', () => {
+    expect(createProviderErrorV1('machine_offline')).toMatchObject({ retryable: true, action: 'retry' });
+    expect(createProviderErrorV1('agent_unavailable')).toMatchObject({ retryable: false, action: 'review_connection' });
+    expect(createProviderErrorV1('agent_timeout')).toMatchObject({ retryable: true, action: 'retry' });
+    expect(createProviderErrorV1('agent_error')).toMatchObject({ retryable: false, action: 'review_connection' });
+  });
+
   it('requires current-state review when a Provider RPC mutation outcome is unknown', () => {
     expect(createProviderErrorV1('provider_rpc_mutation_outcome_unknown', {
       connectionId: 'pc_gateway',

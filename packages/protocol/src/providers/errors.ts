@@ -3,11 +3,13 @@ import { z } from 'zod';
 import { ProviderConnectionIdSchema, ProviderMachineIdSchema } from './ids.js';
 
 export const ProviderErrorCodeV1Schema = z.enum([
+  'model_not_granted', 'permission_mode_not_granted',
   'provider_feature_disabled', 'provider_connection_not_found', 'provider_connection_changed', 'provider_contribution_unavailable', 'provider_connection_disabled',
   'provider_account_grant_stale', 'provider_not_enabled_on_machine', 'provider_machine_grant_stale',
   'provider_incompatible_with_agent', 'provider_compatibility_unverified', 'provider_secret_missing', 'provider_secret_unavailable',
   'provider_credential_transport_unavailable', 'provider_endpoint_unreachable', 'provider_endpoint_unavailable',
   'provider_machine_unavailable',
+  'machine_offline', 'agent_unavailable', 'agent_timeout', 'agent_error',
   'provider_probe_capacity_exhausted',
   'provider_rpc_response_invalid', 'provider_rpc_mutation_outcome_unknown',
   'provider_endpoint_rate_limited', 'provider_endpoint_auth_required', 'provider_endpoint_unauthorized',
@@ -31,6 +33,8 @@ export const ProviderRecoveryActionV1Schema = z.enum([
 export type ProviderRecoveryActionV1 = z.infer<typeof ProviderRecoveryActionV1Schema>;
 
 const ERROR_DEFAULTS = {
+  model_not_granted: [false, 'choose_model'],
+  permission_mode_not_granted: [false, 'review_account_grant'],
   provider_feature_disabled: [false, 'review_features'],
   provider_connection_not_found: [false, 'choose_connection'],
   provider_connection_changed: [true, 'review_connection'],
@@ -47,6 +51,10 @@ const ERROR_DEFAULTS = {
   provider_endpoint_unreachable: [true, 'retry'],
   provider_endpoint_unavailable: [true, 'retry'],
   provider_machine_unavailable: [true, 'retry'],
+  machine_offline: [true, 'retry'],
+  agent_unavailable: [false, 'review_connection'],
+  agent_timeout: [true, 'retry'],
+  agent_error: [false, 'review_connection'],
   // Host-side probe admission was full, so no endpoint request was attempted.
   // Reporting an endpoint outage here would send users to check a healthy service.
   provider_probe_capacity_exhausted: [true, 'retry'],
