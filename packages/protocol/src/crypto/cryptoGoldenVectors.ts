@@ -1,5 +1,12 @@
 export const CRYPTO_GOLDEN_VECTORS = {
   schema: 'happier.cryptoGoldenVectors.v1',
+  sessionDataKeyBundleV0: {
+    // Captured from the original UI AES256Encryption + aes.web adapter before
+    // extraction, 2026-09-30 (mac3-linux source Vitest capture run).
+    keyHex: '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+    value: { message: 'UI ciphertext before extraction 🗝️', count: 0, nullable: null },
+    ciphertextBase64: 'AGE9cspT/+BQXzlF5ZSWUUPIRFvCSkpqthzi+8m/m7MnDTCFi0bpt4ANqnxXO/G5KGMn/SWZy/XO2NLN2gio9KZ4BiPYGiV0Gn+tKwhy+izLWAjhcvRKCOEpMAy7h+S7i/0aTD0Z5Hu24GU+J4kQ6/U1G4tUDJS1cSzhOEoNlOBDMANYeuoi3nt3/FFyEd9oTbaKspanWIQ6SFIIQC57xI/4ICSFdVG2zi8=',
+  },
   boxBundle: {
     directSecretKey: {
       recipientSecretKeyOrSeed: {

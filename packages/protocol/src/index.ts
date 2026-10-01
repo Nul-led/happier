@@ -10,6 +10,8 @@ export {
   TeamInvitationAccountAdmissionV1Schema,
   type TeamInvitationAccountAdmissionV1,
 } from './auth/accountAdmission.js';
+export * from './crypto/sessionDataKeyBundleV0.js';
+export * from './crypto/sessionDataKeyBundleWebCrypto.js';
 export {
   PROVIDER_ACCOUNT_SUBSCRIPTION_ACCEPT,
   ProviderAccountSubscriptionV1Schema,

@@ -5,8 +5,14 @@ import {
   encodeBase64 as encodeBase64Protocol,
   deriveBoxPublicKeyFromSeed,
   openBoxBundle,
+  packSessionDataKeyBundleV0,
+  parseSessionDataKeyValue,
   parseSerializedJsonValue,
+  readSessionDataKeyBundleV0,
   sealBoxBundle,
+  serializeSessionDataKeyValue,
+  SESSION_DATA_KEY_BYTES,
+  SESSION_DATA_KEY_NONCE_BYTES,
   stringifySerializedJsonValue,
   type Base64Variant,
 } from '@happier-dev/protocol';
@@ -134,12 +140,12 @@ export function decryptLegacyResult(data: Uint8Array, secret: Uint8Array): Decry
  * @returns The encrypted data bundle (nonce + ciphertext + auth tag)
  */
 function encryptWithDataKeyAndNonce(data: any, dataKey: Uint8Array, nonce: Uint8Array): Uint8Array {
-  if (nonce.length !== 12) {
+  if (nonce.length !== SESSION_DATA_KEY_NONCE_BYTES) {
     throw new Error('Data-key encryption nonce must be 12 bytes');
   }
   const cipher = createCipheriv('aes-256-gcm', dataKey, nonce);
 
-  const plaintext = new TextEncoder().encode(stringifySerializedJsonValue(data));
+  const plaintext = new TextEncoder().encode(serializeSessionDataKeyValue(data));
   const encrypted = Buffer.concat([
     cipher.update(plaintext),
     cipher.final()
@@ -147,18 +153,11 @@ function encryptWithDataKeyAndNonce(data: any, dataKey: Uint8Array, nonce: Uint8
 
   const authTag = cipher.getAuthTag();
 
-  // Bundle: version(1) + nonce (12) + ciphertext + auth tag (16)
-  const bundle = new Uint8Array(12 + encrypted.length + 16 + 1);
-  bundle.set([0], 0);
-  bundle.set(nonce, 1);
-  bundle.set(new Uint8Array(encrypted), 13);
-  bundle.set(new Uint8Array(authTag), 13 + encrypted.length);
-
-  return bundle;
+  return packSessionDataKeyBundleV0({ nonce, ciphertext: encrypted, authTag });
 }
 
 export function encryptWithDataKey(data: any, dataKey: Uint8Array): Uint8Array {
-  return encryptWithDataKeyAndNonce(data, dataKey, getRandomBytes(12));
+  return encryptWithDataKeyAndNonce(data, dataKey, getRandomBytes(SESSION_DATA_KEY_NONCE_BYTES));
 }
 
 /**
@@ -188,28 +187,24 @@ export function decryptWithDataKey(bundle: Uint8Array, dataKey: Uint8Array): any
 }
 
 export function decryptWithDataKeyResult(bundle: Uint8Array, dataKey: Uint8Array): DecryptionResult {
-  // Version 0: version byte, 12-byte nonce, ciphertext, 16-byte tag.
-  if (bundle.length < 12 + 16 + 1 || bundle[0] !== 0 || dataKey.length !== 32) {
+  const parts = readSessionDataKeyBundleV0(bundle);
+  if (parts.status !== 'ready' || dataKey.length !== SESSION_DATA_KEY_BYTES) {
     return { status: 'unsupported' };
   }
-  const nonce = bundle.slice(1, 13);
-  const authTag = bundle.slice(bundle.length - 16);
-  const ciphertext = bundle.slice(13, bundle.length - 16);
-
   let decrypted: Uint8Array;
   try {
-    const decipher = createDecipheriv('aes-256-gcm', dataKey, nonce);
-    decipher.setAuthTag(authTag);
+    const decipher = createDecipheriv('aes-256-gcm', dataKey, parts.nonce);
+    decipher.setAuthTag(parts.authTag);
 
     decrypted = Buffer.concat([
-      decipher.update(ciphertext),
+      decipher.update(parts.ciphertext),
       decipher.final()
     ]);
 
   } catch {
     return { status: 'authentication_failed' };
   }
-  return parseAuthenticatedContent(decrypted);
+  return parseSessionDataKeyValue(new TextDecoder().decode(decrypted));
 }
 
 export function encrypt(
