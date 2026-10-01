@@ -7,6 +7,10 @@ import {
 import { collectHostText, installToolShellCommonModuleMocks, makeToolCall } from './ToolView.testHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('@/sync/sync', () => ({
@@ -135,7 +139,9 @@ describe('ToolView (running tools)', () => {
         expect(flattened).toContain('stdout');
         expect(flattened).not.toContain('toolView.output');
 
-        const spinner = screen.findByType('ActivityIndicator' as any);
+        // The tool owns which colour its running spinner gets; how the spinner draws it depends on
+        // the user's loading indicator style.
+        const spinner = screen.findByType(await loadActivitySpinner());
         expect(spinner?.props?.color).toBe('#555555');
     });
 });

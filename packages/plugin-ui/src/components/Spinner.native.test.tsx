@@ -4,12 +4,35 @@ import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const nativePlatform = vi.hoisted(() => ({ OS: 'ios' }));
+/** `Animated.loop` hands the dots' clock to the native driver; start/stop is the observable boundary. */
+const loops = vi.hoisted(() => [] as Array<{ started: number; stopped: number }>);
 
-vi.mock('react-native', () => ({
-  ActivityIndicator: 'ActivityIndicator',
-  Platform: nativePlatform,
-  View: 'View',
-}));
+vi.mock('react-native', () => {
+  class Value {
+    constructor(readonly initial: number) {}
+    setValue(_value: number) {}
+    interpolate() {
+      return this;
+    }
+  }
+  return {
+    ActivityIndicator: 'ActivityIndicator',
+    Animated: {
+      Value,
+      View: 'AnimatedView',
+      loop: () => {
+        const record = { started: 0, stopped: 0 };
+        loops.push(record);
+        return { start: () => { record.started += 1; }, stop: () => { record.stopped += 1; } };
+      },
+      sequence: (steps: unknown[]) => steps,
+      timing: (_value: unknown, config: unknown) => config,
+    },
+    Easing: { linear: (t: number) => t, ease: (t: number) => t, inOut: (easing: unknown) => easing },
+    Platform: nativePlatform,
+    View: 'View',
+  };
+});
 
 import { PluginUiProvider } from './PluginUiProvider.js';
 import { PluginUiProviderInternal } from './PluginUiProvider.js';
@@ -24,10 +47,19 @@ afterEach(() => {
     renderer?.unmount();
   });
   renderer = null;
+  loops.length = 0;
 });
 
+const running = () => loops.filter((loop) => loop.started > loop.stopped).length;
+
+function dotOpacities(): unknown[] {
+  return renderer!.root
+    .findAll((node) => node.type === 'AnimatedView' && node.props.testID === 'happier-spinner-dot')
+    .map((dot) => (dot.props.style as { opacity: unknown }).opacity);
+}
+
 describe('native HappierSpinner presentation', () => {
-  it('keeps an indeterminate spinner visible without rotation when the projected reduced-motion preference is on', async () => {
+  it('keeps an indeterminate spinner visible, breathing the still H, when the projected reduced-motion preference is on', async () => {
     const context = createSurfaceContext({ platform: 'ios', reducedMotion: true });
 
     await act(async () => {
@@ -38,12 +70,11 @@ describe('native HappierSpinner presentation', () => {
       );
     });
 
-    const spinner = renderer!.root.findByType('ActivityIndicator');
-    expect(spinner.props.animating).toBe(false);
-    expect(spinner.props.hidesWhenStopped).toBe(false);
+    expect(renderer!.root.findAllByType('ActivityIndicator' as never)).toHaveLength(0);
+    expect(dotOpacities()).toEqual(Array(7).fill(0.85));
   });
 
-  it('pauses public Spinner animation while its retained surface is inactive', async () => {
+  it('holds public Spinner still, with no running clock, while its retained surface is inactive', async () => {
     const context = createSurfaceContext({ platform: 'ios', reducedMotion: false });
     const renderSpinner = (active: boolean) => (
       <PluginUiProviderInternal
@@ -58,16 +89,17 @@ describe('native HappierSpinner presentation', () => {
     await act(async () => {
       renderer = create(renderSpinner(false));
     });
-    let spinner = renderer!.root.findByType('ActivityIndicator');
-    expect(spinner.props.animating).toBe(false);
-    expect(spinner.props.hidesWhenStopped).toBe(false);
+    expect(dotOpacities()).toEqual(Array(7).fill(0.85));
+    expect(running()).toBe(0);
 
     await act(async () => {
       renderer!.update(renderSpinner(true));
     });
-    spinner = renderer!.root.findByType('ActivityIndicator');
-    // Leaving the prop undefined preserves React Native's default active
-    // indicator; the adapter only needs to force it off for inactive mounts.
-    expect(spinner.props.animating).not.toBe(false);
+    expect(running()).toBe(1);
+
+    await act(async () => {
+      renderer!.update(renderSpinner(false));
+    });
+    expect(running()).toBe(0);
   });
 });

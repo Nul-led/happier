@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { installSessionDetailsPanelCommonModuleMocks } from './sessionDetailsPanelTestHelpers';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock('@/components/ui/text/Text', () => ({
@@ -180,7 +184,7 @@ describe('SessionDetailsPanel (execution run launcher resource)', () => {
             serverId: 'server-1',
             intent: 'review',
         });
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('renders execution-run launcher tabs without an intermediate loading fallback', async () => {
@@ -189,7 +193,7 @@ describe('SessionDetailsPanel (execution run launcher resource)', () => {
         const SessionDetailsPanel = await getSessionDetailsPanel();
         const screen = await renderScreen(<SessionDetailsPanel sessionId="s1" scopeId="session:s1" />);
 
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         expect(launcherViewSpy.mock.calls.length).toBeGreaterThan(0);
     });
 });

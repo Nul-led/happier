@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   ActivityIndicator as ReactNativeActivityIndicator,
   Platform,
@@ -7,21 +8,26 @@ import {
 import { useOptionalHappierUiAccessibility, useOptionalHappierUiTheme } from '../../environment/context.js';
 import type { HappierActivityIndicatorHostProps } from '../portableTypes.js';
 import { HAPPIER_TONE_COLOR_TOKEN } from '../semantics.js';
+import { DotSpinnerNative } from './DotSpinnerNative.js';
+import { DotSpinnerWeb } from './DotSpinnerWeb.js';
+import type { DotSpinnerInk } from './dotSpinnerFrames.js';
+import { normalizeHappierSpinnerStyleId, type DotSpinnerStyleId } from './spinnerStyles.js';
 
 /**
  * The single implementation owner for Happier's activity spinner (UI-T27).
  *
- * Extracted from `apps/ui/sources/components/ui/feedback/ActivitySpinner.tsx`,
- * whose measured behaviour it preserves exactly: React Native Web's own
- * `ActivityIndicator` is replaced on web by a CSS-transform ring, the stepped
- * timing function is used below the small-spinner threshold, and a
- * reduced-motion preference keeps the ring VISIBLE while removing its
- * animation rather than hiding the fact that work is in progress.
+ * The default mark is the H of Happier drawn in dots with light moving through it; the style is
+ * chosen by the host (Happier core reads its Settings → Appearance choice; plugin surfaces draw the
+ * default wave). The original rotating ring stays available as the `classicRing` style: on web a
+ * CSS-transform ring (stepped below the small-spinner threshold), on native the platform indicator.
  *
- * The two host facts it needs — the resolved colour and the reduced-motion
- * preference — are injected (§3.10.2). Happier core supplies them from
- * Unistyles and its app-wide preference watch; a plugin surface receives them
- * through the projected environment.
+ * Paused spinners stay VISIBLE — dot styles hold the full H still and the ring stops turning —
+ * because a missing spinner says the work ended. Reduced motion replaces the travelling light with a
+ * gentle fade of the still H, and stops the ring.
+ *
+ * Host facts — colour, reduced motion, style, accents — are injected (§3.10.2). Happier core
+ * supplies them from Unistyles, its app-wide preference watch and its local setting; a plugin
+ * surface receives them through the projected environment.
  */
 const DEFAULT_SMALL_SPINNER_SIZE = 20;
 const DEFAULT_LARGE_SPINNER_SIZE = 36;
@@ -61,9 +67,47 @@ export type HappierWebSpinnerPresentation = Readonly<{
   style: HappierWebSpinnerStyle;
 }>;
 
+/** How a dot spinner moves: the style plays, the full H is held still, or (reduced motion) it breathes. */
+export type HappierDotSpinnerMotion = 'animate' | 'still' | 'breathe';
+
+export type HappierDotSpinnerModel = Readonly<{
+  styleId: DotSpinnerStyleId;
+  size: number;
+  motion: HappierDotSpinnerMotion;
+  ink: DotSpinnerInk;
+}>;
+
+export type HappierSpinnerPresentationInput = HappierWebSpinnerPresentationInput & Readonly<{
+  platform: 'web' | 'native';
+  /** The host's secondary text colour, drawn when the caller gives no colour. */
+  defaultColor?: string;
+  /** A stored style id; an id this build does not know draws the default wave. */
+  indicatorStyle?: unknown;
+  /** Theme accents for `aurora`. Without them, or with an explicit colour, aurora draws one colour. */
+  auroraAccents?: readonly [string, string, string];
+}>;
+
+export type HappierSpinnerDotBoxStyle = Readonly<{
+  width: number;
+  height: number;
+  alignSelf: 'center';
+  overflow: 'hidden';
+}>;
+
+export type HappierSpinnerPresentation =
+  | Readonly<{
+    kind: 'dots';
+    accessibilityRole: 'progressbar';
+    style: HappierSpinnerDotBoxStyle;
+    /** `null`: stopped and hidden on native, where the box keeps its layout slot. */
+    dots: HappierDotSpinnerModel | null;
+  }>
+  | Readonly<{ kind: 'webRing'; accessibilityRole: 'progressbar'; style: HappierWebSpinnerStyle }>
+  | Readonly<{ kind: 'nativeRing'; color: string | undefined; animating?: boolean; hidesWhenStopped?: boolean }>;
+
 export type HappierSpinnerProps = HappierActivityIndicatorHostProps & Readonly<{
   size?: HappierActivityIndicatorHostProps['size'];
-  /** Keep the web spinner visible while disabling the CSS transform animation. */
+  /** Keep the spinner visible but hold it still: the full H at rest, or a ring that stops turning. */
   animationEnabled?: boolean;
   /**
    * The resolved reduced-motion preference.
@@ -155,72 +199,132 @@ export function resolveHappierWebSpinnerPresentation(
   };
 }
 
+/**
+ * The one spinner decision, for every host and platform: which mark to draw (dots, the web ring, or
+ * the native ring), its box, its ink, and how it moves. `HappierSpinner` renders it for plugin
+ * surfaces; Happier core renders it on its own RN host so its private style contract stays there.
+ */
+export function resolveHappierSpinnerPresentation(
+  input: HappierSpinnerPresentationInput,
+): HappierSpinnerPresentation | null {
+  const {
+    platform,
+    defaultColor,
+    color,
+    indicatorStyle,
+    auroraAccents,
+    animating = true,
+    animationEnabled = true,
+    hidesWhenStopped,
+    reducedMotion = false,
+  } = input;
+  const styleId = normalizeHappierSpinnerStyleId(indicatorStyle);
+  const resolvedColor = typeof color === 'string' ? color : defaultColor;
+
+  if (styleId === 'classicRing') {
+    if (platform === 'native') {
+      // Only a pause (or reduced motion) forces the ring visible. A caller that stopped it itself
+      // keeps its own `hidesWhenStopped`: hiding a stopped spinner is a legitimate thing to want.
+      const keepVisibleWhileStill = input.animating !== false && (!animationEnabled || reducedMotion);
+      return keepVisibleWhileStill
+        ? { kind: 'nativeRing', color: resolvedColor, animating: false, hidesWhenStopped: false }
+        : { kind: 'nativeRing', color: resolvedColor, animating: input.animating, hidesWhenStopped };
+    }
+    const ring = resolveHappierWebSpinnerPresentation({ ...input, color: resolvedColor });
+    return ring ? { kind: 'webRing', ...ring } : null;
+  }
+
+  const hidden = !animating && hidesWhenStopped !== false;
+  if (hidden && platform === 'web') return null;
+
+  const size = resolveSpinnerSize(input.size ?? DEFAULT_NUMERIC_SPINNER_SIZE);
+  const style: HappierSpinnerDotBoxStyle = { width: size, height: size, alignSelf: 'center', overflow: 'hidden' };
+  if (hidden) return { kind: 'dots', accessibilityRole: 'progressbar', style, dots: null };
+
+  const paused = !animating || !animationEnabled;
+  const motion: HappierDotSpinnerMotion = paused ? 'still' : reducedMotion ? 'breathe' : 'animate';
+  // Aurora uses the theme accents only when the caller left the colour to the host: an explicit
+  // colour usually means a tinted surface (a filled button) where accents would not read.
+  const ink: DotSpinnerInk = styleId === 'aurora' && color == null && auroraAccents
+    ? { aurora: auroraAccents }
+    : { color: resolvedColor ?? FALLBACK_DOT_INK };
+  return { kind: 'dots', accessibilityRole: 'progressbar', style, dots: { styleId, size, motion, ink } };
+}
+
+/**
+ * Ink for a spinner rendered with no colour and no theme (outside any provider). Dots are drawn
+ * into an image or a native view, where `currentColor` does not resolve, so they need a real colour.
+ */
+const FALLBACK_DOT_INK = 'gray';
+
+/**
+ * The dots of one spinner, drawn inside a host box of `model.size` that clips its overflow. Exported
+ * so Happier core can place them in its own RN host.
+ */
+export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerModel }>) {
+  const { styleId, size, motion, ink } = props.model;
+  // A stable ink identity per value: the native dots build their animated graph from it, and a new
+  // graph on every parent render would re-attach every dot to the native driver.
+  const inkColor = 'color' in ink ? ink.color : null;
+  const [first, second, third] = 'aurora' in ink ? ink.aurora : [null, null, null];
+  const stableInk = useMemo<DotSpinnerInk>(
+    () => (inkColor !== null ? { color: inkColor } : { aurora: [first ?? '', second ?? '', third ?? ''] }),
+    [first, inkColor, second, third],
+  );
+  if (Platform.OS === 'web') {
+    return <DotSpinnerWeb styleId={styleId} ink={stableInk} motion={motion} />;
+  }
+  return <DotSpinnerNative styleId={styleId} size={size} ink={stableInk} motion={motion} />;
+}
+
 export function HappierSpinner(props: HappierSpinnerProps) {
   const theme = useOptionalHappierUiTheme();
   const environmentAccessibility = useOptionalHappierUiAccessibility();
-  const resolvedColor = props.color ?? theme?.colors[HAPPIER_TONE_COLOR_TOKEN.secondary];
-  const reducedMotion = props.reducedMotion ?? environmentAccessibility?.reducedMotion ?? false;
-
-  if (Platform.OS !== 'web') {
-    const {
-      animationEnabled,
-      reducedMotion: _reducedMotion,
-      animating,
-      hidesWhenStopped,
-      size,
-      ...native
-    } = props;
-    const keepIndeterminateSpinnerVisible = animating !== false && (
-      animationEnabled === false || reducedMotion
-    );
-    return (
-      <ReactNativeActivityIndicator
-        {...native}
-        size={size}
-        color={resolvedColor}
-        animating={keepIndeterminateSpinnerVisible ? false : animating}
-        hidesWhenStopped={keepIndeterminateSpinnerVisible ? false : hidesWhenStopped}
-      />
-    );
-  }
-
-  return <WebSpinner {...props} resolvedColor={resolvedColor} resolvedReducedMotion={reducedMotion} />;
-}
-
-function WebSpinner(props: HappierSpinnerProps & Readonly<{
-  resolvedColor: string | undefined;
-  resolvedReducedMotion: boolean;
-}>) {
   const {
     animating,
     animationEnabled,
-    color: _color,
+    color,
     hidesWhenStopped,
     reducedMotion,
     size,
     style,
-    resolvedColor,
-    ...viewProps
+    ...hostProps
   } = props;
 
-  const presentation = resolveHappierWebSpinnerPresentation({
+  const presentation = resolveHappierSpinnerPresentation({
+    platform: Platform.OS === 'web' ? 'web' : 'native',
+    defaultColor: theme?.colors[HAPPIER_TONE_COLOR_TOKEN.secondary],
+    color,
+    size,
     animating,
     animationEnabled,
-    color: resolvedColor,
     hidesWhenStopped,
-    reducedMotion: reducedMotion ?? props.resolvedReducedMotion,
-    size,
+    reducedMotion: reducedMotion ?? environmentAccessibility?.reducedMotion ?? false,
   });
 
   if (!presentation) {
     return null;
   }
+  if (presentation.kind === 'nativeRing') {
+    return (
+      <ReactNativeActivityIndicator
+        {...hostProps}
+        style={style}
+        size={size}
+        color={presentation.color}
+        animating={presentation.animating}
+        hidesWhenStopped={presentation.hidesWhenStopped}
+      />
+    );
+  }
 
   return (
     <View
-      {...viewProps}
+      {...hostProps}
       accessibilityRole={props.accessibilityRole ?? presentation.accessibilityRole}
       style={[presentation.style, style]}
-    />
+    >
+      {presentation.kind === 'dots' && presentation.dots ? <HappierDotSpinner model={presentation.dots} /> : null}
+    </View>
   );
 }

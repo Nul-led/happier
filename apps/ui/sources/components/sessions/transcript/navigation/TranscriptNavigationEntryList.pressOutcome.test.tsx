@@ -144,6 +144,9 @@ describe('TranscriptNavigationEntryList press outcomes', () => {
 
         await screen.pressByTestIdAsync('nav-entry:turn-1');
         expect(screen.findByTestId('nav-entry-pending:turn-1')).toBeTruthy();
+        // The pending mark is the app's loading indicator, so it follows the chosen style and pauses with the window.
+        const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
+        expect(screen.findAllByType(ActivitySpinner as never).map((node) => node.props.testID)).toEqual(['nav-entry-pending:turn-1']);
 
         await act(async () => {
             unloadedJump.resolve({ status: 'window-rendered' });

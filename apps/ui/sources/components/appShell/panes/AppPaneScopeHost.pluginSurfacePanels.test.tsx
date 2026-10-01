@@ -37,10 +37,10 @@ installAppPaneScopeHostCommonModuleMocks({
     getLocalSetting: (key) => key === 'uiMultiPanePanelsEnabled' ? true : null,
 });
 
-vi.mock('react-native-unistyles', () => ({
-    useUnistyles: () => ({ theme: { colors: { text: { secondary: '#777' } } } }),
-    StyleSheet: { create: () => ({}) },
-}));
+vi.mock('react-native-unistyles', async () => {
+    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
+    return createUnistylesMock({ theme: { colors: { text: { secondary: '#777' } } } });
+});
 
 vi.mock('@/components/ui/panels/MultiPaneHostWithBottom', () => ({
     MultiPaneHostWithBottom: (props: Readonly<Record<string, unknown>>) => {

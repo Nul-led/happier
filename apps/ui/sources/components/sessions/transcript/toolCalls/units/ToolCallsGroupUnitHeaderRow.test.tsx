@@ -5,6 +5,10 @@ import { createToolCallMessageFixture, renderScreen } from '@/dev/testkit';
 import { installToolCallsGroupViewCommonModuleMocks } from '@/components/sessions/transcript/turns/toolCalls/toolCallsGroupViewTestHelpers';
 import { createTranscriptSessionCommonPropsFixture, flattenStyleProp } from './toolCallsGroupUnitsTestFixtures';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 installToolCallsGroupViewCommonModuleMocks({
@@ -80,7 +84,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
             ],
         });
 
-        expect(screen.findAllByType('ActivityIndicator' as any).length).toBeGreaterThan(0);
+        expect(screen.findAllByType(await loadActivitySpinner()).length).toBeGreaterThan(0);
         expect(screen.findByTestId('icon:check-circle')).toBeNull();
     });
 
@@ -174,7 +178,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
             ],
         });
 
-        expect(screen.findAllByType('ActivityIndicator' as any)).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         expect(screen.findByTestId('icon:check-circle')).toBeNull();
         expect(screen.findByTestId('icon:minus-circle')).not.toBeNull();
         expect(screen.findByTestId('tool-calls-group-status:permission_denied')).toMatchObject({
@@ -202,7 +206,7 @@ describe('ToolCallsGroupUnitHeaderRow', () => {
             ],
         });
 
-        expect(screen.findAllByType('ActivityIndicator' as any)).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         expect(screen.findByTestId('icon:check-circle')).toBeNull();
         expect(screen.findByTestId('icon:minus-circle')).not.toBeNull();
         expect(screen.findByTestId('tool-calls-group-status:permission_canceled')).toMatchObject({

@@ -40,6 +40,15 @@ import {
     clearActiveThemeProfiles,
 } from '@/theme/profiles/themeProfilePersistence';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
+import {
+    HAPPIER_SPINNER_STYLE_IDS,
+    isHappierSpinnerStyleId,
+    normalizeHappierSpinnerStyleId,
+} from '@happier-dev/plugin-ui/presentation';
+import {
+    LOADING_INDICATOR_STYLE_LABEL_KEYS,
+    LoadingIndicatorStylePreview,
+} from '@/components/settings/appearance/LoadingIndicatorStylePreview';
 
 // Define known avatar styles for this version of the app
 type KnownAvatarStyle = 'pixelated' | 'gradient' | 'brutalist';
@@ -77,6 +86,7 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
     const [uiFontScale, setUiFontScale] = useLocalSettingMutable('uiFontScale');
     const [uiContentWidthMode, setUiContentWidthMode] = useLocalSettingMutable('uiContentWidthMode');
     const [uiItemDensity, setUiItemDensity] = useLocalSettingMutable('uiItemDensity');
+    const [loadingIndicatorStyle, setLoadingIndicatorStyle] = useLocalSettingMutable('loadingIndicatorStyle');
     const [uiMultiPanePanelsEnabled, setUiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
     const [uiBackdropBlurEnabled, setUiBackdropBlurEnabled] = useLocalSettingMutable('uiBackdropBlurEnabled');
     const [hideConnectedAccountIdentities, setHideConnectedAccountIdentities] = useLocalSettingMutable('hideConnectedAccountIdentities');
@@ -188,6 +198,14 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
         ];
     }, []);
 
+    const loadingIndicatorOptions = React.useMemo(() => {
+        return HAPPIER_SPINNER_STYLE_IDS.map((styleId) => ({
+            id: styleId,
+            title: t(LOADING_INDICATOR_STYLE_LABEL_KEYS[styleId]),
+            preview: <LoadingIndicatorStylePreview styleId={styleId} />,
+        }));
+    }, []);
+
     const itemDensityMenuItems = React.useMemo(() => {
         return [
             {
@@ -269,6 +287,7 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
 
     // Ensure we have a valid style for display, defaulting to gradient for unknown values
     const displayStyle: KnownAvatarStyle = isKnownAvatarStyle(avatarStyle) ? avatarStyle : 'gradient';
+    const displayLoadingIndicatorStyle = normalizeHappierSpinnerStyleId(loadingIndicatorStyle);
     
     // Language display
     const getLanguageDisplayText = () => {
@@ -587,6 +606,26 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
                             testID="settings-appearance-alwaysShowContextSize-switch"
                             value={alwaysShowContextSize}
                             onValueChange={setAlwaysShowContextSize}
+                        />
+                    }
+                    showChevron={false}
+                />
+            </ItemGroup>
+
+            <ItemGroup title={t('settingsAppearance.loadingIndicator')} description={t('settingsAppearance.loadingIndicatorFooter')}>
+                <SettingRow
+                    setting={APPEARANCE_SETTINGS.settings.loadingIndicatorStyle}
+                    accessoryLayout="stacked"
+                    rightElement={
+                        <SelectionTiles
+                            variant="visual"
+                            accessibilityLabel={t(APPEARANCE_SETTINGS.settings.loadingIndicatorStyle.titleKey)}
+                            testIdPrefix="settings-appearance-loadingIndicator"
+                            value={displayLoadingIndicatorStyle}
+                            options={loadingIndicatorOptions}
+                            onChange={(next) => {
+                                if (isHappierSpinnerStyleId(next)) setLoadingIndicatorStyle(next);
+                            }}
                         />
                     }
                     showChevron={false}

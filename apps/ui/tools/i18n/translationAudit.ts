@@ -276,6 +276,11 @@ const ALLOW_SAME_STRING_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<stri
     'sessionPages.info.detailsTitle': new Set(['de']),
     'teams.create.detailsSection': new Set(['it', 'de']),
     'homeGovernance.accountSection': new Set(['it']),
+    // Loading indicator style names: "Radar" and "Aurora" are the same word in these locales,
+    // and French uses "Style" for the picker title.
+    'settingsAppearance.loadingIndicatorOptions.radar': new Set(['pl', 'es', 'fr', 'it', 'pt', 'ca', 'de']),
+    'settingsAppearance.loadingIndicatorOptions.aurora': new Set(['es', 'it', 'pt', 'ca']),
+    'settingsAppearance.loadingIndicatorStyle': new Set(['fr']),
 };
 
 function isProviderPluginTitleKey(key: string): boolean {

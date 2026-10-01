@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ActivityIndicator, Animated, FlatList, Pressable, View } from 'react-native';
+import { Animated, FlatList, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
@@ -643,7 +643,7 @@ const TimelineEntryRow = React.memo((props: TimelineEntryRowProps) => {
                         ) : null}
                     </View>
                     {props.pressState === 'pending' ? (
-                        <ActivityIndicator
+                        <ActivitySpinner
                             testID={`${props.testIDPrefix}-entry-pending:${entry.id}`}
                             size="small"
                             color={theme.colors.text.secondary}

@@ -13,6 +13,10 @@ import { createReducer } from "@happier-dev/session-core/reducer";
 import { installToolCallsGroupViewCommonModuleMocks } from './toolCallsGroupViewTestHelpers';
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let collapsedPreviewCount: number | null = 1;
@@ -444,7 +448,9 @@ describe('ToolCallsGroupView (collapsed preview)', () => {
             setExpanded: vi.fn(),
         });
 
-        const spinner = screen.findAllByType('ActivityIndicator' as any)[0];
+        // The header owns which colour its running spinner gets; how the spinner draws it depends on
+        // the user's loading indicator style.
+        const spinner = screen.findAllByType(await loadActivitySpinner())[0];
         expect(spinner?.props?.color).toBe('#555555');
     });
 

@@ -5,6 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { invokeTestInstanceHandler, renderScreen } from '@/dev/testkit';
 import type { StoryDeckImageCard as ImageCardData } from '@/changelog/releaseNotes/types';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -94,7 +98,7 @@ describe('StoryDeckImageCard', () => {
         });
 
         expect(screen.findByTestId('story-image-media-failed')).toBeTruthy();
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('shows a stable failure placeholder when image loading stalls past the media timeout', async () => {
@@ -116,7 +120,7 @@ describe('StoryDeckImageCard', () => {
             });
 
             expect(screen.findByTestId('story-image-media-failed')).toBeTruthy();
-            expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+            expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         } finally {
             vi.useRealTimers();
         }

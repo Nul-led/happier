@@ -51,7 +51,9 @@ describe('HeaderTitleWithAction', () => {
 
         const title = screen.findByProps({ accessibilityRole: 'header' });
         expect(flattenStyle(title.props.style).color).toBe('theme-primary-text');
-        const spinner = screen.findByProps({ accessibilityRole: 'progressbar' });
-        expect(flattenStyle(spinner.props.style).borderColor).toBe('theme-primary-text');
+        // The header owns which colour its spinner gets; how the spinner draws it depends on the
+        // user's loading indicator style.
+        const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
+        expect(screen.findByType(ActivitySpinner).props.color).toBe('theme-primary-text');
     });
 });

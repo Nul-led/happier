@@ -1081,7 +1081,10 @@ describe('SessionItem activity time', () => {
         expect(dots[0]?.props.testID).toBe('session-row-attention-indicator-dot-sess_status_plain_dot-secondary');
         expect(dots[0]?.props.isPulsing).toBe(true);
         expect(dots[0]?.props.animationEnabled).toBe(false);
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        // Imported here, not at the top: an eager import would load the row's platform-dependent
+        // modules before each test picks its platform.
+        const { ActivitySpinner } = await import('@/components/ui/feedback/ActivitySpinner');
+        expect(screen.findAllByType(ActivitySpinner)).toHaveLength(0);
     });
 
     it.each([

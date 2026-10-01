@@ -10,6 +10,10 @@ import { storePlainReviewCommentFixture } from '@/dev/testkit/fixtures/reviewCom
 import { invalidateAccountEncryptionModeCache } from '@/sync/api/account/apiAccountEncryptionMode';
 import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockSnapshot: any = null;
@@ -328,7 +332,7 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         });
 
         expect(tree.findAllByType('ChangedFilesReview' as any)).toHaveLength(1);
-        expect(tree.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(tree.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('uses the auto-refresh lease for the initial review snapshot warm-up', async () => {

@@ -5,6 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import type { StoryDeckVideoCard as VideoCardData } from '@/changelog/releaseNotes/types';
 
+// Loaded at the assertion, not at the top: an eager import would evaluate the spinner's module
+// graph before this file's mocks and per-test setup have run.
+const loadActivitySpinner = async () => (await import('@/components/ui/feedback/ActivitySpinner')).ActivitySpinner;
+
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -119,7 +123,7 @@ describe('StoryDeckVideoCard', () => {
         expect(shared.useVideoPlayer).not.toHaveBeenCalled();
         expect(screen.findByTestId('story-video-media-poster')).toBeTruthy();
         expect(screen.findAllByType('VideoView')).toHaveLength(0);
-        expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+        expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
     });
 
     it('falls back to poster without console warnings or infinite spinner when video loading fails', async () => {
@@ -142,7 +146,7 @@ describe('StoryDeckVideoCard', () => {
 
             expect(warnSpy).not.toHaveBeenCalled();
             expect(screen.findByTestId('story-video-media-poster')).toBeTruthy();
-            expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+            expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         } finally {
             warnSpy.mockRestore();
         }
@@ -171,7 +175,7 @@ describe('StoryDeckVideoCard', () => {
             });
 
             expect(screen.findByTestId('story-video-media-poster')).toBeTruthy();
-            expect(screen.findAllByType('ActivityIndicator')).toHaveLength(0);
+            expect(screen.findAllByType(await loadActivitySpinner())).toHaveLength(0);
         } finally {
             vi.useRealTimers();
         }
